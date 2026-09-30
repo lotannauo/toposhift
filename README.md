@@ -17,6 +17,14 @@ mise install
 mise run ci
 ```
 
+Run the server. It needs no configuration and listens on loopback only:
+
+```
+mise run build
+./bin/toposhift serve
+curl http://127.0.0.1:7070/healthz
+```
+
 If mise cannot install a tool on your platform, install that tool with your package manager at the pinned version.
 
 ## License
