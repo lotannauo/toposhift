@@ -1,0 +1,33 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Local data written by a running toposhift (zero-config default data directory)
+/data/
+/toposhift-data/
+
+# Secrets and local environment. Never commit these.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Python (bench/raphtory harness)
+__pycache__/
+.venv/
+
+# Node (web client, edge workers)
+node_modules/
+
+# Rust (mst side quest)
+/mst/target/

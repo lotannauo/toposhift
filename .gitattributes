@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Golden fixtures must never be rewritten by line-ending or diff heuristics.
+**/testdata/golden/** -text -diff
+*.parquet binary
+*.jsonl text eol=lf
