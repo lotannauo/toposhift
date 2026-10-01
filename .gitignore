@@ -22,6 +22,10 @@ credentials*.json
 .vscode/
 .DS_Store
 
+# Architecture decision records are kept local for now (decided 2026-09-30).
+# Remove this entry, then `git add docs/adr`, to publish them.
+/docs/adr/
+
 # Python (bench/raphtory harness)
 __pycache__/
 .venv/

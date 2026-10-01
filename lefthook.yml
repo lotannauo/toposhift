@@ -1,0 +1,17 @@
+# Git hooks are a convenience. CI runs the same checks and is the enforcement.
+# Install with: mise run hooks
+#
+# Hooks run outside an interactive shell, where mise's tools are not on PATH,
+# so every command goes through `mise exec`.
+
+pre-commit:
+  parallel: true
+  commands:
+    secrets:
+      run: mise exec -- gitleaks git --staged --redact --no-banner
+    spelling:
+      glob: "*.{go,md,yml,yaml,toml}"
+      run: mise exec -- typos {staged_files}
+    format:
+      glob: "*.go"
+      run: mise exec -- golangci-lint fmt --diff

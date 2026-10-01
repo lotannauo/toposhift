@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "minimumReleaseAge": "3 days",
+  "semanticCommits": "disabled",
+  "packageRules": [
+    {
+      "description": "Major versions of the storage engine and the embedded message bus are merged by hand.",
+      "matchPackageNames": [
+        "github.com/cockroachdb/pebble/**",
+        "github.com/nats-io/nats-server/**"
+      ],
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "labels": ["manual-review"]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+# Tool versions for local development and CI. CI installs exactly these.
+# Go dev tools that live in go.mod (govulncheck) are run with `go tool`.
+
+[tools]
+go = "1.27.1"
+golangci-lint = "2.14.0"
+gitleaks = "8.30.1"
+lefthook = "2.1.15"
+typos = "1.50.3"
+actionlint = "1.7.12"
+zizmor = "1.30.1"
+shellcheck = "0.11.0"
+jq = "1.8.2"
+
+[tasks.fmt]
+description = "Format Go code in place"
+run = "golangci-lint fmt"
+
+[tasks."fmt:check"]
+description = "Fail if any Go file is not formatted"
+run = "golangci-lint fmt --diff"
+
+[tasks.lint]
+description = "Lint Go code"
+run = "golangci-lint run"
+
+[tasks."lint:workflows"]
+description = "Lint GitHub Actions workflows"
+run = [
+  "actionlint",
+  "zizmor --min-severity low .github/workflows",
+]
+
+[tasks.spelling]
+description = "Check spelling in code and docs"
+run = "typos"
+
+[tasks.test]
+description = "Run tests with the race detector"
+run = "go test -race -count=1 ./..."
+
+[tasks.vuln]
+description = "Scan dependencies for known vulnerabilities"
+run = "go tool govulncheck ./..."
+
+[tasks.secrets]
+description = "Scan the working tree and history for secrets"
+run = "gitleaks git --redact --verbose"
+
+[tasks."check:replace"]
+description = "Fail if go.mod has replace directives (go install @latest must work)"
+run = '''
+if [ "$(go mod edit -json | jq '(.Replace // []) | length')" != "0" ]; then
+  echo "go.mod must not contain replace directives" >&2
+  exit 1
+fi
+'''
+
+[tasks.build]
+description = "Build the toposhift binary into ./bin"
+run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
+
+[tasks.ci]
+description = "Everything CI runs, in the same order"
+depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "vuln", "lint:workflows", "secrets"]
+
+[tasks.hooks]
+description = "Install the git hooks"
+run = "lefthook install"
