@@ -4,7 +4,7 @@ The project is at an early stage and the design is still moving, so please open 
 
 ## Setup
 
-```
+```sh
 mise install
 mise run hooks
 mise run ci

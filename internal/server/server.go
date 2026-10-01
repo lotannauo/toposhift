@@ -1,5 +1,5 @@
-// Package server is toposhift's network front door. For now it only answers
-// health checks; ingest and query handlers arrive with later milestones.
+// Package server provides the HTTP server for toposhift. Currently it only
+// answers health checks; ingest and query handlers arrive in later milestones.
 package server
 
 import (
@@ -12,21 +12,21 @@ import (
 	"time"
 )
 
-// DefaultListen is where toposhift listens when nothing is configured.
-// It is loopback only: a server started with no configuration must not be
-// reachable from the network (see ADR 0004).
+// DefaultListen is the default loopback address used when unconfigured.
+// A server started with no configuration must not be reachable from the network
+// (see ADR 0004).
 const DefaultListen = "127.0.0.1:7070"
 
 const shutdownTimeout = 5 * time.Second
 
-// Config is the server configuration. The zero value is not valid; start from
+// Config is the server configuration. The zero value is invalid; start from
 // DefaultConfig.
 type Config struct {
 	// Listen is the TCP address to bind, in host:port form.
 	Listen string
 }
 
-// DefaultConfig returns the configuration used when nothing is configured.
+// DefaultConfig returns the default server configuration.
 func DefaultConfig() Config {
 	return Config{Listen: DefaultListen}
 }
@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	return Serve(ctx, ln, log)
 }
 
-// Serve serves on ln until ctx is cancelled, then shuts down gracefully.
+// Serve runs the HTTP server on ln until ctx is cancelled, then shuts down gracefully.
 // It returns nil on a clean shutdown.
 func Serve(ctx context.Context, ln net.Listener, log *slog.Logger) error {
 	srv := &http.Server{

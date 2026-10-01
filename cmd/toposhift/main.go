@@ -57,7 +57,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 }
 
 func serve(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
-	// Precedence, lowest to highest: built-in defaults, environment, flags.
+	// Precedence, lowest to highest: defaults, environment, flags.
 	// YAML config joins the chain when there is something to configure.
 	cfg := server.DefaultConfig()
 	if v := getenv(envListen); v != "" {

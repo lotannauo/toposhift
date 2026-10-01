@@ -4,7 +4,7 @@ toposhift is a temporal topology graph for infrastructure. Read `README.md` for 
 
 ## Commands
 
-```
+```sh
 mise install        # install pinned tools
 mise run ci         # everything CI runs
 mise run fmt        # format Go code
