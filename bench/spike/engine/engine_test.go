@@ -1,0 +1,168 @@
+package engine_test
+
+import (
+	"errors"
+	"math"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/lifecycle"
+)
+
+func fp(t *testing.T, typ catalog.EntityType, key catalog.AttributeKey, v string) identity.Fingerprint {
+	t.Helper()
+	id, err := identity.NewResolver(catalog.Default()).Resolve(typ, []identity.Attr{{Key: key, Value: v}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Fingerprint()
+}
+
+func TestValidate(t *testing.T) {
+	t.Parallel()
+
+	pod, node := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p"), fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	good := engine.Record{
+		Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "k8s",
+		EventTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Seq: 1, Kind: lifecycle.Observe,
+	}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("a good record was rejected: %v", err)
+	}
+
+	edge := func(f func(*engine.Record)) engine.Record { r := good; f(&r); return r }
+	for name, r := range map[string]engine.Record{
+		"zero subject":       edge(func(r *engine.Record) { r.Subject = engine.Subject{} }),
+		"edge without peer":  edge(func(r *engine.Record) { r.Subject.B = identity.Fingerprint{} }),
+		"edge without rel":   edge(func(r *engine.Record) { r.Subject.Relation = "" }),
+		"entity with peer":   edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.B = node }),
+		"entity with rel":    edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.Relation = catalog.PartOf }),
+		"empty producer":     edge(func(r *engine.Record) { r.Producer = "" }),
+		"before 1970":        edge(func(r *engine.Record) { r.EventTime = time.Unix(-1, 0) }),
+		"after 2262":         edge(func(r *engine.Record) { r.EventTime = time.Date(2263, 1, 1, 0, 0, 0, 0, time.UTC) }),
+		"through before":     edge(func(r *engine.Record) { r.Through = r.EventTime.Add(-time.Second) }),
+		"unset kind":         edge(func(r *engine.Record) { r.Kind = 0 }),
+		"unknown kind":       edge(func(r *engine.Record) { r.Kind = 9 }),
+		"negative TTL":       edge(func(r *engine.Record) { r.TTL = -time.Second }),
+		"unset layer":        edge(func(r *engine.Record) { r.Layer = 0 }),
+		"layer out of range": edge(func(r *engine.Record) { r.Layer = catalog.L3 + 1 }),
+		"delete with TTL":    edge(func(r *engine.Record) { r.Kind, r.TTL = lifecycle.Delete, time.Minute }),
+		"delete with through": edge(func(r *engine.Record) {
+			r.Kind, r.Through = lifecycle.Delete, r.EventTime.Add(time.Minute)
+		}),
+		"delete with payload": edge(func(r *engine.Record) { r.Kind, r.Payload = lifecycle.Delete, []byte("x") }),
+		"through after 2262": edge(func(r *engine.Record) {
+			r.Through = time.Date(2263, 1, 1, 0, 0, 0, 0, time.UTC)
+		}),
+		"deadline after 2262": edge(func(r *engine.Record) {
+			r.EventTime, r.TTL = engine.MaxEventTime.Add(-time.Second), time.Minute
+		}),
+		"run deadline after 2262": edge(func(r *engine.Record) {
+			r.EventTime = engine.MaxEventTime.Add(-time.Hour)
+			r.Through, r.TTL = engine.MaxEventTime.Add(-time.Second), time.Minute
+		}),
+	} {
+		if err := r.Validate(); !errors.Is(err, engine.ErrInvalid) {
+			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
+		}
+	}
+
+	// A deadline exactly at the end of the range is representable.
+	edgeCase := good
+	edgeCase.EventTime, edgeCase.TTL = engine.MaxEventTime.Add(-time.Minute), time.Minute
+	if err := edgeCase.Validate(); err != nil {
+		t.Errorf("a deadline at the end of the range was rejected: %v", err)
+	}
+
+	// The representable range includes both ends.
+	for _, at := range []time.Time{engine.MinEventTime, engine.MaxEventTime} {
+		r := good
+		r.EventTime = at
+		if err := r.Validate(); err != nil {
+			t.Errorf("event time %s was rejected: %v", at, err)
+		}
+	}
+	if engine.MaxEventTime.UnixNano() != math.MaxInt64 {
+		t.Errorf("MaxEventTime is %d ns, want the largest int64", engine.MaxEventTime.UnixNano())
+	}
+}
+
+func TestAssertionCarriesThePayloadAsADescription(t *testing.T) {
+	t.Parallel()
+
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	obs := engine.Record{
+		Subject: engine.EntitySubject(pod), Producer: "k8s", EventTime: time.Unix(10, 0).UTC(), Seq: 3,
+		Kind: lifecycle.Observe, TTL: time.Minute, Through: time.Unix(20, 0).UTC(), Payload: []byte("abc"),
+	}
+	a := obs.Assertion()
+	if a.Producer != "k8s" || a.Seq != 3 || a.TTL != time.Minute || !a.Through.Equal(obs.Through) || len(a.Attrs) != 1 {
+		t.Errorf("assertion = %+v", a)
+	}
+
+	// Equal payloads give equal descriptions, which is what lets a run of
+	// refreshes coalesce into one assertion that extends through the last.
+	later := obs
+	later.Seq, later.EventTime, later.Through = 4, time.Unix(20, 0).UTC(), time.Time{}
+	obs.Through = time.Time{}
+	first, second := obs.Assertion(), later.Assertion()
+	got := lifecycle.Coalesce([]lifecycle.Assertion{first, second})
+	if len(got) != 1 || !got[0].EventTime.Equal(first.EventTime) || !got[0].Through.Equal(second.EventTime) {
+		t.Errorf("two identical refreshes coalesced to %+v, want one run from 10s through 20s", got)
+	}
+	changed := later
+	changed.Payload = []byte("different")
+	if got := lifecycle.Coalesce([]lifecycle.Assertion{first, changed.Assertion()}); len(got) != 2 {
+		t.Errorf("a changed payload coalesced to %d assertions, want 2", len(got))
+	}
+
+	del := obs
+	del.Kind, del.TTL, del.Through, del.Payload = lifecycle.Delete, 0, time.Time{}, nil
+	if got := del.Assertion(); len(got.Attrs) != 0 {
+		t.Errorf("a delete carries attributes: %+v", got)
+	}
+}
+
+func TestSortingIsByTypeThenHashThenRelation(t *testing.T) {
+	t.Parallel()
+
+	a, b, c := fp(t, catalog.K8sPod, catalog.K8sPodUID, "a"), fp(t, catalog.K8sPod, catalog.K8sPodUID, "b"), fp(t, catalog.Host, catalog.HostID, "h")
+	ns := []engine.Neighbor{{Peer: b, Relation: catalog.RunsOn}, {Peer: a, Relation: catalog.RunsOn}, {Peer: c, Relation: catalog.RunsOn}, {Peer: a, Relation: catalog.PartOf}}
+	engine.SortNeighbors(ns)
+	if ns[0].Peer != c { // "host" sorts before "k8s.pod"
+		t.Errorf("first neighbor is %s, want the host", ns[0].Peer)
+	}
+	if !slices.IsSortedFunc(ns, func(x, y engine.Neighbor) int { return engine.CompareFingerprints(x.Peer, y.Peer) }) {
+		t.Errorf("not sorted by fingerprint: %v", ns)
+	}
+	if ns[1].Peer == ns[2].Peer && ns[1].Relation > ns[2].Relation {
+		t.Errorf("relations out of order for one peer: %v", ns)
+	}
+	if engine.CompareFingerprints(a, a) != 0 {
+		t.Error("a fingerprint does not equal itself")
+	}
+
+	rs := []engine.Record{{EventTime: time.Unix(5, 0), Seq: 2}, {EventTime: time.Unix(5, 0), Seq: 1}, {EventTime: time.Unix(1, 0), Seq: 9}}
+	engine.SortRecords(rs)
+	if rs[0].Seq != 9 || rs[1].Seq != 1 || rs[2].Seq != 2 {
+		t.Errorf("records sorted to %+v", rs)
+	}
+}
+
+func TestDirectionString(t *testing.T) {
+	t.Parallel()
+	if engine.Forward.String() != "forward" || engine.Reverse.String() != "reverse" || engine.Direction(0).String() != "Direction(0)" {
+		t.Error("Direction.String")
+	}
+}
+
+func TestErrBeforeHorizonIsInvalid(t *testing.T) {
+	t.Parallel()
+	if !errors.Is(engine.ErrBeforeHorizon, engine.ErrInvalid) {
+		t.Error("ErrBeforeHorizon does not wrap ErrInvalid")
+	}
+}
