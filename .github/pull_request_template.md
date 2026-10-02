@@ -5,5 +5,4 @@
 ## Checklist
 
 - [ ] `mise run ci` passes locally
-- [ ] Decisions that are expensive to reverse have an ADR in `docs/adr/`
 - [ ] No secrets, credentials or personal data in the diff

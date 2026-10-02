@@ -43,3 +43,41 @@ jobs:
 
       - name: Run the same tasks as local development
         run: mise run ci
+
+  # The published module must install with `go install` after every push to
+  # main. This builds from the module proxy, never from the checkout, so it
+  # catches replace/exclude directives and broken published versions.
+  install:
+    name: go install @sha
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: true
+
+      - name: Install the pushed commit from the proxy
+        run: |
+          GOPROXY=direct go install github.com/lotannauo/toposhift/cmd/toposhift@"${SHA}"
+          version="$(toposhift version)"
+          echo "toposhift version: ${version}"
+          case "${version}" in
+            *devel*) echo "expected a published pseudo-version, got: ${version}" >&2; exit 1 ;;
+          esac
+
+      - name: Smoke test the installed binary
+        run: |
+          toposhift version
+          toposhift help >/dev/null

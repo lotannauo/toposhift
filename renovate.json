@@ -10,7 +10,9 @@
     {
       "description": "Major versions of the storage engine and the embedded message bus are merged by hand.",
       "matchPackageNames": [
+        "github.com/cockroachdb/pebble",
         "github.com/cockroachdb/pebble/**",
+        "github.com/nats-io/nats-server",
         "github.com/nats-io/nats-server/**"
       ],
       "matchUpdateTypes": ["major"],
