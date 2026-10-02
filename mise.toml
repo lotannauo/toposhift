@@ -48,10 +48,10 @@ description = "Scan the working tree and history for secrets"
 run = "gitleaks git --redact --verbose"
 
 [tasks."check:replace"]
-description = "Fail if go.mod has replace directives (go install @latest must work)"
+description = "Fail if go.mod has replace or exclude directives (go install @latest must work)"
 run = '''
-if [ "$(go mod edit -json | jq '(.Replace // []) | length')" != "0" ]; then
-  echo "go.mod must not contain replace directives" >&2
+if [ "$(go mod edit -json | jq '((.Replace // []) | length) + ((.Exclude // []) | length)')" != "0" ]; then
+  echo "go.mod must not contain replace or exclude directives" >&2
   exit 1
 fi
 '''

@@ -13,8 +13,7 @@ import (
 )
 
 // DefaultListen is the default loopback address used when unconfigured.
-// A server started with no configuration must not be reachable from the network
-// (see ADR 0004).
+// A server started with no configuration must not be reachable from the network.
 const DefaultListen = "127.0.0.1:7070"
 
 const shutdownTimeout = 5 * time.Second

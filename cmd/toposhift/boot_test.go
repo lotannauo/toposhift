@@ -13,7 +13,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/server"
 )
 
-// TestBootsWithNoConfig is the zero-config contract (ADR 0004): the built
+// TestBootsWithNoConfig is the zero-config contract: the built
 // binary, started with no flags, no environment and no config file, serves on
 // the default loopback address and stops cleanly on SIGINT.
 func TestBootsWithNoConfig(t *testing.T) {

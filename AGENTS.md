@@ -1,6 +1,6 @@
 # Guidance for agents and contributors
 
-toposhift is a temporal topology graph for infrastructure. Read `README.md` for the pitch and `docs/adr/` for the decisions that bind you. The design plan is maintained outside this repository; ADRs are the durable record.
+toposhift is a temporal topology graph for infrastructure. Read `README.md` for the pitch. Architecture decision records live in `docs/adr/`: that folder is local and untracked, present only in the owner's checkout and never on GitHub. The design plan is maintained outside this repository; ADRs are the durable record.
 
 ## Commands
 
@@ -20,7 +20,7 @@ mise run hooks      # install git hooks
 - Prefer "unattributed" over "guessed" in identity and IP ownership. Exact identity matching only. Clone collisions are loud errors.
 - Late events are diffed against the record just before them in event time, never against current state, and invalidate later checkpoints.
 - Both time axes (event time and ingest time) on every record. Checkpoints carry the fold-logic version and the ingest sequence number they were built through.
-- `toposhift` stays pure Go and boots with zero config (ADR 0004). CGO (RocksDB) and GPL (Raphtory) code lives only in separate benchmark builds.
+- `toposhift` stays pure Go and boots with zero config. CGO (RocksDB) and GPL (Raphtory) code lives only in separate benchmark builds.
 - Identity encoding changes require updated golden vectors and an ADR.
 - Published performance numbers come only from CI hardware, never from the Oracle Cloud VM, whose terms forbid publishing benchmarks.
 
@@ -31,3 +31,9 @@ mise run hooks      # install git hooks
 - No secrets in the repository. Secrets come from the environment.
 - Commits are signed. Changes reach `main` through pull requests, squash-merged.
 - Do not edit git configuration. Do not force-push or skip hooks unless the repository owner asks.
+
+## Handoff conditions for agents
+
+- Commits are signed with the owner's Touch ID, so an unattended agent cannot sign. Leave changes uncommitted and ask the owner to commit.
+- Never add or remove keys on the GitHub account.
+- Work only in the owner's local checkout: `docs/adr/` is untracked, so a fresh clone cannot see it.
