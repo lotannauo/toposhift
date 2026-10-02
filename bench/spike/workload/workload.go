@@ -13,7 +13,9 @@
 // instance, and services depend on one another. Producers differ in how they
 // speak: a watch-mode producer asserts a fact once and deletes it explicitly; a
 // heartbeating producer refreshes the same description on a schedule and can go
-// quiet; a rollup producer refreshes service dependencies. Payloads are random
+// quiet; a rollup producer refreshes service dependencies; and a second
+// producer, the kubelet, can also assert a pod's placement, so two producers
+// hold one edge and one can delete what the other still holds. Payloads are random
 // bytes, so byte counts are not flattered by compression.
 package workload
 
@@ -35,6 +37,7 @@ const (
 	ProducerK8sObjects    lifecycle.Producer = "k8sobjects"     // Kubernetes watch, watch mode
 	ProducerNodeCollector lifecycle.Producer = "node-collector" // heartbeats
 	ProducerTraces        lifecycle.Producer = "traces"         // service dependency rollups
+	ProducerKubelet       lifecycle.Producer = "kubelet"        // a second opinion on pod placement
 )
 
 // Config describes a workload. [New] validates it and fills in nothing, so a
@@ -43,6 +46,12 @@ type Config struct {
 	Seed     uint64
 	Start    time.Time
 	Duration time.Duration
+
+	// FirstSeq is the Seq of the first record; the rest count up from it. It is
+	// at least 1 (0 means "nothing" as a snapshot token) and at most 1<<63. A
+	// layout that stores Seq in too few bits is only found by a stream that
+	// crosses the boundary, so a config can start just below one.
+	FirstSeq uint64
 
 	Racks, Hosts, Pods, Services int
 	ContainersPerPod             int // each pod has between one and this many
@@ -66,6 +75,17 @@ type Config struct {
 
 	// RollupInterval is how often service dependencies are refreshed.
 	RollupInterval time.Duration
+
+	// ConfirmProbability is the chance that a pod's placement edge is also
+	// asserted by a second producer (the kubelet), at the same instant as the
+	// scheduler's own assertion, with a TTL of ConfirmTTL. When the placement
+	// ends, the kubelet withdraws its assertion half the time and otherwise lets it
+	// expire. So an edge can be held up by one producer while the other has
+	// deleted it, and two producers can assert and delete at one instant: the
+	// cases that decide whether a layout keeps producers apart. Zero leaves the
+	// stream as if there were no second producer.
+	ConfirmProbability float64
+	ConfirmTTL         time.Duration
 
 	// CoalesceRuns models the ingest-side coalescer: a refresh that repeats a
 	// producer's current run is not a new record but an extension of the run,
@@ -103,6 +123,7 @@ func Tiny() Config {
 func Small() Config {
 	return Config{
 		Seed:     1,
+		FirstSeq: 1,
 		Start:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		Duration: time.Hour,
 		Racks:    10, Hosts: 100, Pods: 1000, Services: 40,
@@ -128,6 +149,12 @@ func (c Config) valid() error {
 		return bad("Start must be set, on a whole second: event times have one-second resolution")
 	case c.Duration <= 0:
 		return bad("Duration must be positive")
+	case c.FirstSeq < 1 || c.FirstSeq > 1<<63:
+		return bad("FirstSeq must be in [1, 1<<63]")
+	case c.ConfirmProbability < 0 || c.ConfirmProbability > 1 || (c.ConfirmProbability > 0 && c.ConfirmTTL <= 0):
+		return bad("ConfirmProbability must be in [0, 1], with a positive ConfirmTTL if above 0")
+	case c.ConfirmTTL%time.Second != 0:
+		return bad("ConfirmTTL must be whole seconds")
 	case c.Start.Before(engine.MinEventTime) || c.Start.Add(c.Duration).After(engine.MaxEventTime):
 		return bad("the period %s to %s is outside the representable event times (1970 to 2262)",
 			c.Start.Format(time.RFC3339), c.Start.Add(c.Duration).Format(time.RFC3339))
@@ -189,6 +216,7 @@ func New(cfg Config) (*Generator, error) {
 		res:  identity.NewResolver(catalog.Default()),
 		end:  cfg.Start.Add(cfg.Duration),
 		runs: make(map[runKey]*run),
+		seq:  cfg.FirstSeq - 1,
 	}
 	g.podZipf = rand.NewZipf(g.rng, cfg.PodSkew, 1, uint64(cfg.Pods-1))
 	g.nodeZipf = rand.NewZipf(g.rng, cfg.NodeSkew, 1, uint64(cfg.Hosts-1))

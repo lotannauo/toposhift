@@ -2,16 +2,21 @@
 //
 // Check feeds one generated workload to the candidate and to the oracle in
 // the same random batches, and after chunks of the stream asks both the same
-// questions, at instants chosen to hit the boundaries: exactly on a record's
-// event time, one nanosecond either side, before everything and after
-// everything. Any difference is an error naming the question and both
-// answers. Mid-stream it also moves the retention horizon, after which it keeps
-// offering records older than it and requires both engines to refuse them with
-// [engine.ErrBeforeHorizon].
+// questions: in every layer an entity is in and one it is not, as of the latest
+// token and as of earlier ones, at instants chosen to hit the boundaries (exactly
+// on a record's event time, one nanosecond either side, before everything and
+// after everything), including windows whose edges sit on a record's instant. Any
+// difference is an error naming the question and both answers. Mid-stream it
+// also moves the retention horizon, after which it keeps offering records older
+// than it and requires both engines to refuse them with [engine.ErrBeforeHorizon],
+// and from then on asks only about instants at or after the horizon and tokens at
+// or above the sequence the engine had reached.
+//
+// CheckInstant, CheckProducers, CheckExtremes, CheckReadContract and
+// CheckWriteContract are scripted: each runs a fixed scenario on a fresh engine.
 package conformance
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -25,9 +30,14 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/bench/spike/oracle"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
-	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
+
+// ErrMismatch is wrapped by every error that reports a read on which the
+// candidate and the oracle disagree, so a caller can tell a wrong answer from a
+// failed call or a refused write.
+var ErrMismatch = errors.New("candidate and oracle disagree")
 
 // Factory builds a fresh, empty candidate that keeps whatever it stores under
 // dir, an empty directory the harness owns and removes afterwards. A candidate
@@ -77,6 +87,10 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 	ora := oracle.New()
 	entities := g.Entities()
 	rng := rand.New(rand.NewPCG(cfg.Seed+1, 0x5eed))
+	stranger, err := strangerEntity()
+	if err != nil {
+		return err
+	}
 
 	horizons := make([]time.Time, len(opts.RetainAt))
 	for i, f := range opts.RetainAt {
@@ -88,33 +102,33 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 
 	var written []engine.Record
 	var horizon time.Time // the current retention horizon; zero before the first
+	var tokenFloor uint64 // the sequence the engine had reached at the last retention
 	next := 0             // the next entry of horizons to apply
 	batches := 0
+	state := func() probeState {
+		return probeState{entities: entities, stranger: stranger, written: written, horizon: horizon, tokenFloor: tokenFloor}
+	}
 
 	for {
 		batch := g.Batch(1 + rng.IntN(opts.MaxBatch))
 		if len(batch) == 0 {
 			break
 		}
-		if !horizon.IsZero() {
-			// Offer what is older than the horizon first. Both engines must
-			// refuse it whole, and refuse it the same way.
-			var stale []engine.Record
-			for _, r := range batch {
-				if r.EventTime.Before(horizon) {
-					stale = append(stale, r)
+		if !horizon.IsZero() && slices.ContainsFunc(batch, func(r engine.Record) bool { return r.EventTime.Before(horizon) }) {
+			// Offer the batch as it is, stale records among valid ones: both
+			// engines must refuse it whole, refuse it the same way, and leave
+			// the token where it was.
+			before := ora.LastSeq()
+			for name, w := range map[string]func([]engine.Record) error{"candidate": cand.Write, "oracle": ora.Write} {
+				if err := w(cloneRecords(batch)); !errors.Is(err, engine.ErrBeforeHorizon) {
+					return fmt.Errorf("%s Write of a batch with records before the horizon %s must fail with ErrBeforeHorizon, got %w",
+						name, horizon.Format(time.RFC3339), orNil(err))
 				}
 			}
-			if len(stale) > 0 {
-				for name, w := range map[string]func([]engine.Record) error{"candidate": cand.Write, "oracle": ora.Write} {
-					own := cloneRecords(stale)
-					if err := w(own); !errors.Is(err, engine.ErrBeforeHorizon) {
-						return fmt.Errorf("%s Write of %d records before the horizon %s must fail with ErrBeforeHorizon, got %w",
-							name, len(stale), horizon.Format(time.RFC3339), orNil(err))
-					}
-				}
-				batch = slices.DeleteFunc(batch, func(r engine.Record) bool { return r.EventTime.Before(horizon) })
+			if got, want := cand.LastSeq(), ora.LastSeq(); got != want || want != before {
+				return fmt.Errorf("a refused batch moved LastSeq: candidate %d, oracle %d, before %d", got, want, before)
 			}
+			batch = slices.DeleteFunc(batch, func(r engine.Record) bool { return r.EventTime.Before(horizon) })
 		}
 		if len(batch) > 0 {
 			// The candidate gets its own copy, payloads included, so an engine
@@ -127,31 +141,50 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 			}
 			written = append(written, batch...)
 		}
+		// Refused batches must leave the token alone too, so this runs after
+		// every round, not only after accepted ones.
+		if got, want := cand.LastSeq(), ora.LastSeq(); got != want {
+			return fmt.Errorf("LastSeq = %d after %d records; oracle says %d", got, len(written), want)
+		}
 		batches++
 
 		for len(batch) > 0 && next < len(horizons) && !batch[len(batch)-1].EventTime.Before(horizons[next]) {
 			horizon = horizons[next]
 			next++
+			tokenFloor = ora.LastSeq()
 			if err := cand.Retain(horizon); err != nil {
 				return fmt.Errorf("candidate Retain: %w", err)
 			}
 			if err := ora.Retain(horizon); err != nil {
 				return err
 			}
-			if err := compare(cand, ora, entities, written, rng, opts, horizon); err != nil {
+			if got, want := cand.LastSeq(), ora.LastSeq(); got != want {
+				return fmt.Errorf("retaining moved LastSeq: candidate %d, oracle %d", got, want)
+			}
+			if err := compare(cand, ora, rng, opts, state()); err != nil {
 				return fmt.Errorf("after Retain(%s): %w", horizon.Format(time.RFC3339), err)
 			}
 		}
 		if batches%opts.CheckEvery == 0 {
-			if err := compare(cand, ora, entities, written, rng, opts, horizon); err != nil {
+			if err := compare(cand, ora, rng, opts, state()); err != nil {
 				return fmt.Errorf("after %d records: %w", len(written), err)
 			}
 		}
 	}
-	if err := compare(cand, ora, entities, written, rng, opts, horizon); err != nil {
+	if err := compare(cand, ora, rng, opts, state()); err != nil {
 		return fmt.Errorf("at the end (%d records): %w", len(written), err)
 	}
 	return nil
+}
+
+// strangerEntity is an entity nothing is ever written about, to put in batched
+// reads.
+func strangerEntity() (identity.Fingerprint, error) {
+	id, err := identity.NewResolver(catalog.Default()).Resolve(catalog.Host, []identity.Attr{{Key: catalog.HostID, Value: "never-written"}})
+	if err != nil {
+		return identity.Fingerprint{}, err
+	}
+	return id.Fingerprint(), nil
 }
 
 // cloneRecords copies records, payloads included, so a candidate that keeps or
@@ -164,134 +197,35 @@ func cloneRecords(rs []engine.Record) []engine.Record {
 	return out
 }
 
-// probeTimes picks instants at or after the horizon: boundaries of real
-// records, and the extremes.
-func probeTimes(written []engine.Record, rng *rand.Rand, n int, horizon time.Time) []time.Time {
-	floor := horizon
-	if floor.IsZero() {
-		floor = engine.MinEventTime
-	}
-	ts := []time.Time{floor}
-	if len(written) == 0 {
-		return ts
-	}
-	ts = append(ts, written[len(written)-1].EventTime.Add(24*time.Hour))
-	// Bounded: instants before the horizon are skipped, and the loop must end
-	// even if most records are older than it.
-	for attempts := 0; len(ts) < n && attempts < 20*n; attempts++ {
-		r := written[rng.IntN(len(written))]
-		for _, t := range []time.Time{
-			r.EventTime, r.EventTime.Add(-time.Nanosecond), r.EventTime.Add(r.TTL),
-			r.EventTime.Add(time.Duration(rng.Int64N(int64(time.Hour)))),
-		} {
-			if !t.Before(floor) && len(ts) < n {
-				ts = append(ts, t)
-			}
-		}
-	}
-	return ts
-}
-
-func compare(cand engine.Engine, ora *oracle.Oracle, entities []identity.Fingerprint, written []engine.Record, rng *rand.Rand, opts Options, horizon time.Time) error {
-	if len(written) == 0 {
-		return nil
-	}
-	// Mostly random entities, but always some that were just written to.
-	sample := make([]identity.Fingerprint, 0, opts.Entities)
-	for range opts.Entities / 2 {
-		sample = append(sample, entities[rng.IntN(len(entities))])
-	}
-	// Both ends of recent edges, so reverse reads see the newest writes too.
-	for len(sample) < opts.Entities {
-		r := written[len(written)-1-rng.IntN(min(len(written), 50))]
-		end := r.Subject.A
-		if r.Subject.Kind == engine.SubjectEdge && rng.IntN(2) == 0 {
-			end = r.Subject.B
-		}
-		sample = append(sample, end)
-	}
-
-	for _, fp := range sample {
-		times := probeTimes(written, rng, opts.Probes, horizon)
-		for _, t := range times {
-			wantAlive, err := ora.Alive(fp, t)
-			if err != nil {
-				return err
-			}
-			gotAlive, err := cand.Alive(fp, t)
-			if err != nil {
-				return fmt.Errorf("Alive(%s, %s): %w", fp, offset(written, t), err)
-			}
-			if gotAlive != wantAlive {
-				return fmt.Errorf("Alive(%s, %s) = %v; oracle says %v", fp, offset(written, t), gotAlive, wantAlive)
-			}
-			for _, dir := range []engine.Direction{engine.Forward, engine.Reverse} {
-				want, err := ora.Neighbors(fp, dir, t)
-				if err != nil {
-					return err
-				}
-				got, err := cand.Neighbors(fp, dir, t)
-				if err != nil {
-					return fmt.Errorf("Neighbors(%s, %s, %s): %w", fp, dir, offset(written, t), err)
-				}
-				if !slices.Equal(got, want) {
-					return fmt.Errorf("Neighbors(%s, %s, %s) = %v; oracle says %v", fp, dir, offset(written, t), got, want)
-				}
-			}
-		}
-		slices.SortFunc(times, time.Time.Compare)
-		for i := 0; i+1 < len(times); i++ {
-			from, to := times[i], times[i+1]
-			for _, dir := range []engine.Direction{engine.Forward, engine.Reverse} {
-				want, err := ora.Window(fp, dir, from, to)
-				if err != nil {
-					return err
-				}
-				got, err := cand.Window(fp, dir, from, to)
-				if err != nil {
-					return fmt.Errorf("Window(%s, %s): %w", fp, dir, err)
-				}
-				if msg := diffRecords(got, want); msg != "" {
-					return fmt.Errorf("Window(%s, %s, [%s, %s)): %s", fp, dir, offset(written, from), offset(written, to), msg)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func offset(written []engine.Record, t time.Time) string {
-	return t.Sub(written[0].EventTime).String()
-}
-
-func diffRecords(got, want []engine.Record) string {
-	if len(got) != len(want) {
-		return fmt.Sprintf("%d records, oracle says %d", len(got), len(want))
-	}
-	for i := range want {
-		g, w := got[i], want[i]
-		if g.Layer != w.Layer || g.Subject != w.Subject || g.Producer != w.Producer || !g.EventTime.Equal(w.EventTime) ||
-			g.Seq != w.Seq || g.Kind != w.Kind || g.TTL != w.TTL || !g.Through.Equal(w.Through) || !bytes.Equal(g.Payload, w.Payload) {
-			return fmt.Sprintf("record %d is %+v, oracle says %+v", i, g, w)
-		}
-	}
-	return ""
-}
-
-// Configs returns the workloads Run uses: ordinary churn, heavy lateness, watch
-// mode only, many outages, heavy skew, and coalesced runs with lateness.
+// Configs returns the workloads Run uses: ordinary churn with a second producer
+// confirming placements, heavy lateness, watch mode only with sequence numbers
+// that cross 2^32, many outages, heavy skew with sequence numbers near 2^63, and
+// coalesced runs with lateness.
 func Configs() []workload.Config {
 	base := workload.Tiny()
 	var out []workload.Config
 	for i, mod := range []func(*workload.Config){
-		func(*workload.Config) {},
-		func(c *workload.Config) { c.LateProbability, c.LateMeanDelay = 0.4, 5*time.Minute },
-		func(c *workload.Config) { c.HeartbeatInterval, c.RollupInterval = 0, 0 },
-		func(c *workload.Config) { c.OutageProbability, c.OutageLength = 0.1, 6*time.Minute },
+		func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 0.5, 3*time.Minute },
+		func(c *workload.Config) {
+			c.LateProbability, c.LateMeanDelay = 0.4, 5*time.Minute
+			c.ConfirmProbability, c.ConfirmTTL = 0.3, 2*time.Minute
+		},
+		func(c *workload.Config) {
+			c.HeartbeatInterval, c.RollupInterval = 0, 0
+			c.FirstSeq = 1<<32 - 200
+		},
+		func(c *workload.Config) {
+			c.OutageProbability, c.OutageLength = 0.1, 6*time.Minute
+			c.ConfirmProbability, c.ConfirmTTL = 0.5, 5*time.Minute
+		},
 		// A few pods take most of the churn, so a few edges have long histories.
-		func(c *workload.Config) { c.EventsPerSecond, c.PodSkew = 3, 3 },
+		func(c *workload.Config) {
+			c.EventsPerSecond, c.PodSkew = 3, 3
+			c.FirstSeq = 1<<63 - 100
+		},
 		func(c *workload.Config) {
 			c.CoalesceRuns, c.LateProbability, c.OutageProbability = true, 0.3, 0.05
+			c.ConfirmProbability, c.ConfirmTTL = 0.4, 4*time.Minute
 		},
 	} {
 		c := base
@@ -303,7 +237,7 @@ func Configs() []workload.Config {
 }
 
 // Run checks a candidate against the oracle on every config, with and without a
-// mid-stream retention, and checks the write contract. It is the test a
+// mid-stream retention, and runs the scripted checks. It is the test a
 // candidate layout must pass.
 func Run(t *testing.T, newEngine Factory) {
 	t.Helper()
@@ -325,11 +259,19 @@ func Run(t *testing.T, newEngine Factory) {
 			})
 		}
 	}
-	t.Run("write contract", func(t *testing.T) {
-		if err := CheckWriteContract(open(t)); err != nil {
-			t.Fatal(err)
-		}
-	})
+	for name, check := range map[string]func(engine.Engine) error{
+		"write contract": CheckWriteContract,
+		"read contract":  CheckReadContract,
+		"instant":        CheckInstant,
+		"producers":      CheckProducers,
+		"extremes":       CheckExtremes,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := check(open(t)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 	t.Run("random workloads", func(t *testing.T) {
 		rapid.Check(t, func(rt *rapid.T) {
 			cfg := workload.Tiny()
@@ -337,6 +279,9 @@ func Run(t *testing.T, newEngine Factory) {
 			cfg.Duration = time.Duration(rapid.IntRange(2, 12).Draw(rt, "minutes")) * time.Minute
 			cfg.LateProbability = rapid.Float64Range(0, 0.5).Draw(rt, "late")
 			cfg.EventsPerSecond = rapid.Float64Range(0.2, 4).Draw(rt, "rate")
+			cfg.ConfirmProbability = rapid.SampledFrom([]float64{0, 0.3, 0.8}).Draw(rt, "confirm")
+			cfg.ConfirmTTL = time.Duration(rapid.IntRange(1, 6).Draw(rt, "confirmMinutes")) * time.Minute
+			cfg.FirstSeq = rapid.SampledFrom([]uint64{1, 1<<32 - 300, 1<<63 - 300}).Draw(rt, "firstSeq")
 			retain := rapid.SampledFrom([][]float64{nil, {0.3}, {0.6}, {0.25, 0.6}}).Draw(rt, "retain")
 
 			// Each iteration gets, and removes, its own directory: iterations
@@ -356,79 +301,4 @@ func Run(t *testing.T, newEngine Factory) {
 			}
 		})
 	})
-}
-
-// CheckWriteContract checks that an engine refuses records out of sequence and
-// records its validation rules say are invalid, that a refused batch is
-// refused whole (its valid records are not stored and their sequence numbers
-// are not consumed), and that the retention horizon only moves forward. It
-// leaves the engine with a retention horizon, so use a fresh engine.
-func CheckWriteContract(cand engine.Engine) error {
-	g, err := workload.New(workload.Tiny())
-	if err != nil {
-		return err
-	}
-	recs := g.Batch(12)
-	if err := cand.Write(cloneRecords(recs[:10])); err != nil {
-		return fmt.Errorf("a valid batch was refused: %w", err)
-	}
-	if err := cand.Write(cloneRecords(recs[:1])); !errors.Is(err, engine.ErrInvalid) {
-		return fmt.Errorf("a repeated seq must be refused with ErrInvalid, got %w", orNil(err))
-	}
-
-	good := recs[10]
-	broken := map[string]func(engine.Record) engine.Record{
-		"an event time before 1970": func(r engine.Record) engine.Record {
-			r.EventTime = time.Date(1969, 1, 1, 0, 0, 0, 0, time.UTC)
-			return r
-		},
-		"an empty producer": func(r engine.Record) engine.Record { r.Producer = ""; return r },
-		"an unset layer":    func(r engine.Record) engine.Record { r.Layer = 0; return r },
-		"an unset kind":     func(r engine.Record) engine.Record { r.Kind = 0; return r },
-		"a delete with a TTL": func(r engine.Record) engine.Record {
-			r.Kind, r.Payload, r.TTL = lifecycle.Delete, nil, time.Minute
-			return r
-		},
-	}
-	names := make([]string, 0, len(broken))
-	for name := range broken {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		bad := broken[name](recs[11])
-		// A valid record followed by an invalid one: the whole batch is refused.
-		if err := cand.Write(cloneRecords([]engine.Record{good, bad})); !errors.Is(err, engine.ErrInvalid) {
-			return fmt.Errorf("a batch with %s must be refused with ErrInvalid, got %w", name, orNil(err))
-		}
-	}
-	// If any refused batch had stored its valid record, that record's sequence
-	// number would now be used and this would fail.
-	if err := cand.Write(cloneRecords([]engine.Record{good})); err != nil {
-		return fmt.Errorf("a refused batch left its valid record behind: %w", err)
-	}
-
-	// The horizon only moves forward: a later, earlier-dated Retain must not
-	// bring back the window between the two.
-	start := recs[0].EventTime
-	if err := cand.Retain(start.Add(2 * time.Hour)); err != nil {
-		return fmt.Errorf("retaining: %w", err)
-	}
-	if err := cand.Retain(start.Add(time.Hour)); err != nil {
-		return fmt.Errorf("an earlier Retain must be accepted and ignored: %w", err)
-	}
-	between := recs[11]
-	between.Seq, between.EventTime = recs[11].Seq+1000, start.Add(90*time.Minute)
-	if err := cand.Write(cloneRecords([]engine.Record{between})); !errors.Is(err, engine.ErrBeforeHorizon) {
-		return fmt.Errorf("after Retain(+2h) then Retain(+1h), a record at +90m must still be refused with ErrBeforeHorizon, got %w", orNil(err))
-	}
-	return nil
-}
-
-// orNil makes "accepted" print as an error value.
-func orNil(err error) error {
-	if err == nil {
-		return errors.New("no error")
-	}
-	return err
 }

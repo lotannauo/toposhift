@@ -36,17 +36,21 @@ func TestValidate(t *testing.T) {
 
 	edge := func(f func(*engine.Record)) engine.Record { r := good; f(&r); return r }
 	for name, r := range map[string]engine.Record{
-		"zero subject":       edge(func(r *engine.Record) { r.Subject = engine.Subject{} }),
-		"edge without peer":  edge(func(r *engine.Record) { r.Subject.B = identity.Fingerprint{} }),
-		"edge without rel":   edge(func(r *engine.Record) { r.Subject.Relation = "" }),
-		"entity with peer":   edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.B = node }),
-		"entity with rel":    edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.Relation = catalog.PartOf }),
-		"empty producer":     edge(func(r *engine.Record) { r.Producer = "" }),
-		"before 1970":        edge(func(r *engine.Record) { r.EventTime = time.Unix(-1, 0) }),
-		"after 2262":         edge(func(r *engine.Record) { r.EventTime = time.Date(2263, 1, 1, 0, 0, 0, 0, time.UTC) }),
-		"through before":     edge(func(r *engine.Record) { r.Through = r.EventTime.Add(-time.Second) }),
-		"unset kind":         edge(func(r *engine.Record) { r.Kind = 0 }),
-		"unknown kind":       edge(func(r *engine.Record) { r.Kind = 9 }),
+		"zero subject":      edge(func(r *engine.Record) { r.Subject = engine.Subject{} }),
+		"edge without peer": edge(func(r *engine.Record) { r.Subject.B = identity.Fingerprint{} }),
+		"edge without rel":  edge(func(r *engine.Record) { r.Subject.Relation = "" }),
+		"entity with peer":  edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.B = node }),
+		"entity with rel":   edge(func(r *engine.Record) { r.Subject = engine.EntitySubject(pod); r.Subject.Relation = catalog.PartOf }),
+		"empty producer":    edge(func(r *engine.Record) { r.Producer = "" }),
+		"before 1970":       edge(func(r *engine.Record) { r.EventTime = time.Unix(-1, 0) }),
+		"after 2262":        edge(func(r *engine.Record) { r.EventTime = time.Date(2263, 1, 1, 0, 0, 0, 0, time.UTC) }),
+		"through before":    edge(func(r *engine.Record) { r.Through = r.EventTime.Add(-time.Second) }),
+		"unset kind":        edge(func(r *engine.Record) { r.Kind = 0 }),
+		"unknown kind":      edge(func(r *engine.Record) { r.Kind = 9 }),
+		"entity in a layer other than its type's": edge(func(r *engine.Record) {
+			r.Subject = engine.EntitySubject(pod) // a pod lives in L2
+			r.Layer = catalog.L1
+		}),
 		"negative TTL":       edge(func(r *engine.Record) { r.TTL = -time.Second }),
 		"unset layer":        edge(func(r *engine.Record) { r.Layer = 0 }),
 		"layer out of range": edge(func(r *engine.Record) { r.Layer = catalog.L3 + 1 }),
@@ -69,6 +73,13 @@ func TestValidate(t *testing.T) {
 		if err := r.Validate(); !errors.Is(err, engine.ErrInvalid) {
 			t.Errorf("%s: err = %v, want ErrInvalid", name, err)
 		}
+	}
+
+	// An entity record in the layer its type belongs to is fine.
+	entity := good
+	entity.Subject = engine.EntitySubject(pod)
+	if err := entity.Validate(); err != nil {
+		t.Errorf("a pod entity in L2 was rejected: %v", err)
 	}
 
 	// A deadline exactly at the end of the range is representable.
@@ -164,5 +175,55 @@ func TestErrBeforeHorizonIsInvalid(t *testing.T) {
 	t.Parallel()
 	if !errors.Is(engine.ErrBeforeHorizon, engine.ErrInvalid) {
 		t.Error("ErrBeforeHorizon does not wrap ErrInvalid")
+	}
+}
+
+func TestScope(t *testing.T) {
+	t.Parallel()
+
+	cur := engine.Current(catalog.L2)
+	if cur.Layer != catalog.L2 || cur.AsOf != engine.Latest || engine.Latest != math.MaxUint64 {
+		t.Errorf("Current(L2) = %+v", cur)
+	}
+	if err := cur.Validate(); err != nil {
+		t.Errorf("a current scope was rejected: %v", err)
+	}
+	for _, l := range []catalog.Layer{catalog.L0, catalog.L1, catalog.L2, catalog.L3} {
+		if err := (engine.Scope{Layer: l}).Validate(); err != nil {
+			t.Errorf("layer %s: %v", l, err)
+		}
+	}
+	for _, l := range []catalog.Layer{0, catalog.L3 + 1, 200} {
+		if err := (engine.Scope{Layer: l, AsOf: engine.Latest}).Validate(); !errors.Is(err, engine.ErrInvalid) {
+			t.Errorf("layer %d: err = %v, want ErrInvalid", l, err)
+		}
+	}
+}
+
+func TestNeighborsEachAsksOncePerFingerprintInOrder(t *testing.T) {
+	t.Parallel()
+
+	a, b := fp(t, catalog.K8sPod, catalog.K8sPodUID, "a"), fp(t, catalog.K8sPod, catalog.K8sPodUID, "b")
+	var asked []string
+	got, err := engine.NeighborsEach([]identity.Fingerprint{b, a, b}, func(f identity.Fingerprint) ([]engine.Neighbor, error) {
+		asked = append(asked, f.String())
+		return []engine.Neighbor{{Peer: f, Relation: catalog.PartOf}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0][0].Peer != b || got[1][0].Peer != a || got[2][0].Peer != b {
+		t.Errorf("results are not parallel to the input: %v", got)
+	}
+	if len(asked) != 3 {
+		t.Errorf("read was called %d times, want 3", len(asked))
+	}
+	if empty, err := engine.NeighborsEach(nil, nil); err != nil || len(empty) != 0 {
+		t.Errorf("an empty input answered %v, %v", empty, err)
+	}
+
+	boom := errors.New("boom")
+	if _, err := engine.NeighborsEach([]identity.Fingerprint{a, b}, func(identity.Fingerprint) ([]engine.Neighbor, error) { return nil, boom }); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the read's error", err)
 	}
 }

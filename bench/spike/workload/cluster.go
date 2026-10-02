@@ -19,7 +19,8 @@ type cluster struct {
 	racks, hosts, nodes, services []identity.Fingerprint
 	pods, instances               []identity.Fingerprint
 	containers                    [][]identity.Fingerprint
-	podNode                       []int // node index, or -1 when the pod does not exist
+	podNode                       []int  // node index, or -1 when the pod does not exist
+	confirmed                     []bool // the kubelet also asserts the pod's current placement
 	nodeOutageUntil               []time.Time
 	nodePayload, rollupPayload    [][]byte
 	depends                       [][2]int
@@ -63,6 +64,7 @@ func (g *Generator) buildCluster() {
 		}
 		cl.containers = append(cl.containers, cs)
 	}
+	cl.confirmed = make([]bool, c.Pods)
 	cl.podNode = make([]int, c.Pods)
 	for i := range cl.podNode {
 		cl.podNode[i] = int(g.nodeZipf.Uint64())
