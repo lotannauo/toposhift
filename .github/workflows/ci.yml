@@ -44,9 +44,10 @@ jobs:
       - name: Run the same tasks as local development
         run: mise run ci
 
-  # The published module must install with `go install` after every push to
-  # main. This builds from the module proxy, never from the checkout, so it
-  # catches replace/exclude directives and broken published versions.
+  # After every push to main, install the pushed commit exactly the way a user
+  # would: `go install pkg@version`. That form ignores the checkout's go.mod and
+  # refuses any module whose go.mod has replace or exclude directives. The
+  # checkout is only there so mise can read mise.toml and use the pinned Go.
   install:
     name: go install @sha
     if: github.event_name == 'push'
@@ -62,22 +63,42 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Install pinned tools
+      - name: Check out (for mise.toml only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Go only
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install: true
-          cache: true
+          install_args: go
+          # Off so this go-only install never shares a cache entry with the
+          # ci job, which installs every tool.
+          cache: false
 
-      - name: Install the pushed commit from the proxy
+      - name: Install the pushed commit and check its version
+        env:
+          # Fetch this module straight from GitHub and skip the checksum
+          # database for it, since both can lag a fresh merge. Dependencies
+          # still come through the proxy and are still checksum-verified.
+          GOPRIVATE: github.com/lotannauo/toposhift
         run: |
-          GOPROXY=direct go install github.com/lotannauo/toposhift/cmd/toposhift@"${SHA}"
-          version="$(toposhift version)"
-          echo "toposhift version: ${version}"
+          export GOBIN="${RUNNER_TEMP}/bin"
+          go install "github.com/lotannauo/toposhift/cmd/toposhift@${SHA}"
+
+          version="$("${GOBIN}/toposhift" version)"
+          echo "installed: ${version}"
+          short="${SHA:0:12}"
           case "${version}" in
-            *devel*) echo "expected a published pseudo-version, got: ${version}" >&2; exit 1 ;;
+            "toposhift v"*"-${short}") ;;  # pseudo-version of this exact commit
+            "toposhift v"*-*|*devel*)
+              echo "expected the pseudo-version for ${short}, got: ${version}" >&2
+              exit 1 ;;
+            "toposhift v"*) ;;             # a release tag that points at this commit
+            *)
+              echo "unexpected version output: ${version}" >&2
+              exit 1 ;;
           esac
 
-      - name: Smoke test the installed binary
-        run: |
-          toposhift version
-          toposhift help >/dev/null
+          "${GOBIN}/toposhift" help >/dev/null
