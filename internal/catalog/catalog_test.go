@@ -13,8 +13,8 @@ import (
 // below breaks exactly one rule in a copy of it.
 func validEntities() []catalog.EntitySpec {
 	return []catalog.EntitySpec{
-		{Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id"}}},
-		{Type: "pod", Layer: catalog.L2, Keys: []catalog.Key{{Name: "pod.uid"}}},
+		{Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id", Kind: catalog.KindString}}},
+		{Type: "pod", Layer: catalog.L2, Keys: []catalog.Key{{Name: "pod.uid", Kind: catalog.KindString}}},
 	}
 }
 
@@ -88,23 +88,44 @@ func TestNewRejects(t *testing.T) {
 		{
 			name: "duplicate key",
 			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
-				(*e)[0].Keys = []catalog.Key{{Name: "host.id"}, {Name: "host.id"}}
+				(*e)[0].Keys = []catalog.Key{{Name: "host.id", Kind: catalog.KindString}, {Name: "host.id", Kind: catalog.KindString}}
 			},
 			want: catalog.ErrDuplicate, offend: `key "host.id"`,
 		},
 		{
 			name: "key name invalid",
 			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
-				(*e)[0].Keys = []catalog.Key{{Name: "host id"}}
+				(*e)[0].Keys = []catalog.Key{{Name: "host id", Kind: catalog.KindString}}
 			},
 			want: catalog.ErrInvalid, offend: `key "host id"`,
 		},
 		{
 			name: "all keys optional",
 			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
-				(*e)[0].Keys = []catalog.Key{{Name: "host.id", Optional: true}}
+				(*e)[0].Keys = []catalog.Key{{Name: "host.id", Kind: catalog.KindString, Optional: true}}
 			},
 			want: catalog.ErrInvalid, offend: "all keys are optional",
+		},
+		{
+			name: "zero key kind",
+			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
+				(*e)[0].Keys[0].Kind = 0
+			},
+			want: catalog.ErrInvalid, offend: "Kind(0)",
+		},
+		{
+			name: "key kind out of range",
+			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
+				(*e)[0].Keys[0].Kind = catalog.KindTime + 1
+			},
+			want: catalog.ErrInvalid, offend: "Kind(4)",
+		},
+		{
+			name: "same key with two kinds",
+			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
+				(*e)[1].Keys = []catalog.Key{{Name: "host.id", Kind: catalog.KindInt}}
+			},
+			want: catalog.ErrInvalid, offend: `conflicts with kind string declared by entity "host"`,
 		},
 		{
 			name: "duplicate relation",
@@ -324,6 +345,10 @@ func TestEnumStrings(t *testing.T) {
 		{catalog.L0.String(), "L0"},
 		{catalog.L3.String(), "L3"},
 		{catalog.Layer(0).String(), "Layer(0)"},
+		{catalog.KindString.String(), "string"},
+		{catalog.KindInt.String(), "int"},
+		{catalog.KindTime.String(), "time"},
+		{catalog.Kind(0).String(), "Kind(0)"},
 		{catalog.PropagateDown.String(), "down"},
 		{catalog.PropagateUp.String(), "up"},
 		{catalog.PropagateNone.String(), "none"},
@@ -335,6 +360,42 @@ func TestEnumStrings(t *testing.T) {
 	for _, tt := range tests {
 		if tt.got != tt.want {
 			t.Errorf("String() = %q, want %q", tt.got, tt.want)
+		}
+	}
+}
+
+func TestNameValid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"host", true},
+		{"k8s.node", true},
+		{"process.creation.time", true},
+		{"a_b.c_d", true},
+		{"", false},
+		{"Host", false},
+		{"host:id", false},
+		{"host id", false},
+		{".host", false},
+		{"host.", false},
+		{"host..id", false},
+		{"1host", false},
+		{"host\n", false},
+		{strings.Repeat("a", catalog.MaxNameLen), true},
+		{strings.Repeat("a", catalog.MaxNameLen+1), false},
+	}
+	for _, tt := range tests {
+		if got := catalog.EntityType(tt.name).Valid(); got != tt.want {
+			t.Errorf("EntityType(%q).Valid() = %v, want %v", tt.name, got, tt.want)
+		}
+		if got := catalog.RelationType(tt.name).Valid(); got != tt.want {
+			t.Errorf("RelationType(%q).Valid() = %v, want %v", tt.name, got, tt.want)
+		}
+		if got := catalog.AttributeKey(tt.name).Valid(); got != tt.want {
+			t.Errorf("AttributeKey(%q).Valid() = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }

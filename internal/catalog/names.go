@@ -11,6 +11,25 @@ type RelationType string
 // AttributeKey names an identifying attribute, such as "host.id".
 type AttributeKey string
 
+// MaxNameLen is the longest a type, relation or attribute name may be, in
+// bytes. Bounding it lets decoders of persisted or wire data reject absurd
+// lengths before allocating.
+const MaxNameLen = 255
+
+// Valid reports whether the name has the syntax every catalog name must have:
+// at most [MaxNameLen] bytes of lowercase dotted segments. That excludes ":"
+// and whitespace, because a fingerprint is the entity type, a colon, then a
+// hash, and names also end up in storage keys and on the wire.
+func (t EntityType) Valid() bool { return validName(string(t)) }
+
+// Valid reports whether the name has the catalog name syntax; see
+// [EntityType.Valid].
+func (t RelationType) Valid() bool { return validName(string(t)) }
+
+// Valid reports whether the name has the catalog name syntax; see
+// [EntityType.Valid].
+func (k AttributeKey) Valid() bool { return validName(string(k)) }
+
 // Entity types in the shipped catalog.
 const (
 	Rack            EntityType = "topo.rack"

@@ -18,20 +18,22 @@ var (
 	ErrUnknown = errors.New("unknown entity type")
 )
 
-// namePattern is the syntax of every type, relation and attribute name:
-// lowercase dotted segments. It excludes ":" and whitespace, because a
-// fingerprint is the entity type, a colon, then a hash, and names also end up
-// in storage keys and on the wire.
+// namePattern is the syntax of every type, relation and attribute name; see
+// [EntityType.Valid].
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$`)
+
+func validName(s string) bool { return len(s) <= MaxNameLen && namePattern.MatchString(s) }
 
 // New builds a Catalog from the given specs. It copies its inputs, so later
 // changes to the specs do not affect the Catalog.
 //
 // New checks every invariant and returns all violations joined, not just the
 // first:
-//   - every name matches the name syntax;
+//   - every name matches the name syntax and is at most MaxNameLen bytes;
 //   - entity names are unique, and so are relation names;
-//   - layers, propagations and storages are valid (non-zero and known);
+//   - layers, propagations, storages and key kinds are valid (non-zero and
+//     known);
+//   - an attribute name has the same kind in every entity type that uses it;
 //   - an entity has at least one key, no duplicate key names, and at least
 //     one required key (an entity whose keys are all optional could have an
 //     empty identity, and every instance would then fingerprint the same);
@@ -46,8 +48,10 @@ func New(entities []EntitySpec, relations []RelationSpec) (*Catalog, error) {
 		relIdx:    make(map[RelationType]int, len(relations)),
 	}
 
+	kinds := make(map[AttributeKey]keyKind)
 	for _, s := range entities {
 		errs = append(errs, checkEntity(s)...)
+		errs = append(errs, checkKindConsistency(s, kinds)...)
 		if _, dup := c.entityIdx[s.Type]; dup {
 			errs = append(errs, fmt.Errorf("entity %q: %w", s.Type, ErrDuplicate))
 			continue
@@ -83,7 +87,7 @@ func checkEntity(s EntitySpec) []error {
 		errs = append(errs, fmt.Errorf("entity %q: %s: %w", s.Type, fmt.Sprintf(format, args...), err))
 	}
 
-	if !namePattern.MatchString(string(s.Type)) {
+	if !s.Type.Valid() {
 		fail(ErrInvalid, "name does not match %s", namePattern)
 	}
 	if s.Layer < L0 || s.Layer > L3 {
@@ -96,8 +100,11 @@ func checkEntity(s EntitySpec) []error {
 	seen := make(map[AttributeKey]bool, len(s.Keys))
 	required := 0
 	for _, k := range s.Keys {
-		if !namePattern.MatchString(string(k.Name)) {
+		if !k.Name.Valid() {
 			fail(ErrInvalid, "key %q: name does not match %s", k.Name, namePattern)
+		}
+		if k.Kind < KindString || k.Kind > KindTime {
+			fail(ErrInvalid, "key %q: kind %s", k.Name, k.Kind)
 		}
 		if seen[k.Name] {
 			fail(ErrDuplicate, "key %q", k.Name)
@@ -119,7 +126,7 @@ func checkRelation(s RelationSpec, entities map[EntityType]int) []error {
 		errs = append(errs, fmt.Errorf("relation %q: %s: %w", s.Type, fmt.Sprintf(format, args...), err))
 	}
 
-	if !namePattern.MatchString(string(s.Type)) {
+	if !s.Type.Valid() {
 		fail(ErrInvalid, "name does not match %s", namePattern)
 	}
 	if s.Propagation < PropagateDown || s.Propagation > PropagateNone {
@@ -143,6 +150,29 @@ func checkRelation(s RelationSpec, entities map[EntityType]int) []error {
 			fail(ErrDuplicate, "endpoint %s -> %s", ep.From, ep.To)
 		}
 		seen[ep] = true
+	}
+	return errs
+}
+
+// keyKind remembers the kind an attribute name was first declared with, and by
+// which entity type, so a later conflicting declaration can name both.
+type keyKind struct {
+	kind   Kind
+	entity EntityType
+}
+
+func checkKindConsistency(s EntitySpec, first map[AttributeKey]keyKind) []error {
+	var errs []error
+	for _, k := range s.Keys {
+		prev, ok := first[k.Name]
+		switch {
+		case !ok:
+			first[k.Name] = keyKind{kind: k.Kind, entity: s.Type}
+		case prev.kind != k.Kind:
+			errs = append(errs, fmt.Errorf(
+				"entity %q: key %q: kind %s conflicts with kind %s declared by entity %q: %w",
+				s.Type, k.Name, k.Kind, prev.kind, prev.entity, ErrInvalid))
+		}
 	}
 	return errs
 }

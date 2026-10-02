@@ -1,0 +1,369 @@
+{
+  "encoding_version": 1,
+  "vectors": [
+    {
+      "name": "host",
+      "type": "host",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "h1"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000004686f73740000000100000007686f73742e696401000000026831",
+      "fingerprint": "host:56445241b9a3fe7e60745db5181df4b3"
+    },
+    {
+      "name": "host, cloud instance id",
+      "type": "host",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abcd1234ef567890"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000004686f73740000000100000007686f73742e69640100000013692d3061626364313233346566353637383930",
+      "fingerprint": "host:98b5ee66a91bccee3bf21acb2d034304"
+    },
+    {
+      "name": "host, non-ASCII",
+      "type": "host",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "ホスト-1"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000004686f73740000000100000007686f73742e6964010000000be3839be382b9e383882d31",
+      "fingerprint": "host:d024949145061bb80c851e7517e725f1"
+    },
+    {
+      "name": "host, value with surrounding spaces",
+      "type": "host",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": " h1 "
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000004686f73740000000100000007686f73742e6964010000000420683120",
+      "fingerprint": "host:60bff3f55e9b814ce6ff40ba70b64829"
+    },
+    {
+      "name": "host, value containing separator bytes",
+      "type": "host",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "a\u001fb:c\u001ed\u0000e"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000004686f73740000000100000007686f73742e69640100000009611f623a631e640065",
+      "fingerprint": "host:e4c7e09cf3b7bb1d259ce7bfe3a3207a"
+    },
+    {
+      "name": "pod",
+      "type": "k8s.pod",
+      "attrs": [
+        {
+          "key": "k8s.pod.uid",
+          "value": "abc"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e7469747901000000076b38732e706f64000000010000000b6b38732e706f642e7569640100000003616263",
+      "fingerprint": "k8s.pod:3f679294038a7ed796fd99392a4bcd47"
+    },
+    {
+      "name": "node, same uid as the pod",
+      "type": "k8s.node",
+      "attrs": [
+        {
+          "key": "k8s.node.uid",
+          "value": "abc"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e7469747901000000086b38732e6e6f6465000000010000000c6b38732e6e6f64652e7569640100000003616263",
+      "fingerprint": "k8s.node:5e19bdce84996a1f3baf57f960a9288b"
+    },
+    {
+      "name": "container",
+      "type": "container",
+      "attrs": [
+        {
+          "key": "container.id",
+          "value": "3f4c9a7b"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000009636f6e7461696e6572000000010000000c636f6e7461696e65722e696401000000083366346339613762",
+      "fingerprint": "container:c55743177c071cdc600c73e225e519e8"
+    },
+    {
+      "name": "rack",
+      "type": "topo.rack",
+      "attrs": [
+        {
+          "key": "topo.rack.id",
+          "value": "r1"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000009746f706f2e7261636b000000010000000c746f706f2e7261636b2e696401000000027231",
+      "fingerprint": "topo.rack:87b95437d8f4e23747fd6a9856c1293b"
+    },
+    {
+      "name": "switch",
+      "type": "topo.switch",
+      "attrs": [
+        {
+          "key": "topo.switch.id",
+          "value": "sw1"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000b746f706f2e737769746368000000010000000e746f706f2e7377697463682e69640100000003737731",
+      "fingerprint": "topo.switch:acec78bb7772962fc0589c30aec9d191"
+    },
+    {
+      "name": "port",
+      "type": "topo.port",
+      "attrs": [
+        {
+          "key": "topo.port.id",
+          "value": "sw1/eth0"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000009746f706f2e706f7274000000010000000c746f706f2e706f72742e696401000000087377312f65746830",
+      "fingerprint": "topo.port:14387c0f6f19d12dadd4dcf20f4d4059"
+    },
+    {
+      "name": "zone",
+      "type": "topo.zone",
+      "attrs": [
+        {
+          "key": "topo.zone.id",
+          "value": "eu-west-1a"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000009746f706f2e7a6f6e65000000010000000c746f706f2e7a6f6e652e6964010000000a65752d776573742d3161",
+      "fingerprint": "topo.zone:f25e6bd8c24a82707e8503053e34bc6d"
+    },
+    {
+      "name": "process",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "1234"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "2023-11-21T09:25:34.853Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d650300000000655c778e32d7bf400000000b70726f636573732e7069640200000000000004d2",
+      "fingerprint": "process:39f63099c3a070cea55c43db6138f7cf"
+    },
+    {
+      "name": "process, same instant written with an offset and keys reordered",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "process.creation.time",
+          "value": "2023-11-21T10:25:34.853+01:00"
+        },
+        {
+          "key": "process.pid",
+          "value": "1234"
+        },
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d650300000000655c778e32d7bf400000000b70726f636573732e7069640200000000000004d2",
+      "fingerprint": "process:39f63099c3a070cea55c43db6138f7cf"
+    },
+    {
+      "name": "process, negative pid",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "-1"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "2023-11-21T09:25:34.853Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d650300000000655c778e32d7bf400000000b70726f636573732e70696402ffffffffffffffff",
+      "fingerprint": "process:3e1af4ec23e0cd0dd7aaff2e4daeed65"
+    },
+    {
+      "name": "process, largest pid",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "9223372036854775807"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "2023-11-21T09:25:34.853Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d650300000000655c778e32d7bf400000000b70726f636573732e706964027fffffffffffffff",
+      "fingerprint": "process:a86a318b0f45a3d5ab28bd151bb5da21"
+    },
+    {
+      "name": "process, time before the epoch",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "0"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "1969-12-31T23:59:59.5Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d6503ffffffffffffffff1dcd65000000000b70726f636573732e706964020000000000000000",
+      "fingerprint": "process:8b7f467196e3ce6238b15a3521ac298e"
+    },
+    {
+      "name": "process, time at the end of year 9999",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "1"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "9999-12-31T23:59:59.999999999Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d65030000003afff4417f3b9ac9ff0000000b70726f636573732e706964020000000000000001",
+      "fingerprint": "process:40e4d28af93e0d6061f975c29420dac6"
+    },
+    {
+      "name": "process, time in year 1",
+      "type": "process",
+      "attrs": [
+        {
+          "key": "host.id",
+          "value": "i-0abc"
+        },
+        {
+          "key": "process.pid",
+          "value": "1"
+        },
+        {
+          "key": "process.creation.time",
+          "value": "0001-01-02T00:00:00Z"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000770726f636573730000000300000007686f73742e69640100000006692d306162630000001570726f636573732e6372656174696f6e2e74696d6503fffffff1886f5a80000000000000000b70726f636573732e706964020000000000000001",
+      "fingerprint": "process:d5a73f2c0c4fe6e565d00ae817412196"
+    },
+    {
+      "name": "service, no namespace",
+      "type": "service",
+      "attrs": [
+        {
+          "key": "service.name",
+          "value": "web"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000773657276696365000000010000000c736572766963652e6e616d650100000003776562",
+      "fingerprint": "service:275a3847475b0d9794e2502f5d4de8d9"
+    },
+    {
+      "name": "service, empty namespace is the same as none",
+      "type": "service",
+      "attrs": [
+        {
+          "key": "service.namespace",
+          "value": ""
+        },
+        {
+          "key": "service.name",
+          "value": "web"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000773657276696365000000010000000c736572766963652e6e616d650100000003776562",
+      "fingerprint": "service:275a3847475b0d9794e2502f5d4de8d9"
+    },
+    {
+      "name": "service, with namespace",
+      "type": "service",
+      "attrs": [
+        {
+          "key": "service.namespace",
+          "value": "shop"
+        },
+        {
+          "key": "service.name",
+          "value": "web"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e74697479010000000773657276696365000000020000000c736572766963652e6e616d65010000000377656200000011736572766963652e6e616d657370616365010000000473686f70",
+      "fingerprint": "service:efa52cf7b7610844df220f7f51bb6c8e"
+    },
+    {
+      "name": "service instance",
+      "type": "service.instance",
+      "attrs": [
+        {
+          "key": "service.namespace",
+          "value": "shop"
+        },
+        {
+          "key": "service.name",
+          "value": "web"
+        },
+        {
+          "key": "service.instance.id",
+          "value": "0f8fad5b-d9cb-469f-a165-70867728950e"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000010736572766963652e696e7374616e63650000000300000013736572766963652e696e7374616e63652e6964010000002430663866616435622d643963622d343639662d613136352d3730383637373238393530650000000c736572766963652e6e616d65010000000377656200000011736572766963652e6e616d657370616365010000000473686f70",
+      "fingerprint": "service.instance:56c25cb887c7e06d34bd622bfab803f9"
+    },
+    {
+      "name": "service instance, no namespace",
+      "type": "service.instance",
+      "attrs": [
+        {
+          "key": "service.name",
+          "value": "web"
+        },
+        {
+          "key": "service.instance.id",
+          "value": "0f8fad5b-d9cb-469f-a165-70867728950e"
+        }
+      ],
+      "canonical": "746f706f73686966742f6964656e746974790100000010736572766963652e696e7374616e63650000000200000013736572766963652e696e7374616e63652e6964010000002430663866616435622d643963622d343639662d613136352d3730383637373238393530650000000c736572766963652e6e616d650100000003776562",
+      "fingerprint": "service.instance:89034e064a443ae1230551380d2d0181"
+    }
+  ]
+}

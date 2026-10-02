@@ -19,36 +19,36 @@ func mustNew(entities []EntitySpec, relations []RelationSpec) *Catalog {
 func defaultEntities() []EntitySpec {
 	return []EntitySpec{
 		// L0 fabric.
-		{Type: Rack, Layer: L0, Keys: []Key{{Name: RackID}}},
-		{Type: Switch, Layer: L0, Keys: []Key{{Name: SwitchID}}},
-		{Type: Port, Layer: L0, Keys: []Key{{Name: PortID}}},
+		{Type: Rack, Layer: L0, Keys: []Key{{Name: RackID, Kind: KindString}}},
+		{Type: Switch, Layer: L0, Keys: []Key{{Name: SwitchID, Kind: KindString}}},
+		{Type: Port, Layer: L0, Keys: []Key{{Name: PortID, Kind: KindString}}},
 
 		// L1 host placement.
-		{Type: Host, Layer: L1, Keys: []Key{{Name: HostID}}},
-		{Type: Zone, Layer: L1, Keys: []Key{{Name: ZoneID}}},
+		{Type: Host, Layer: L1, Keys: []Key{{Name: HostID, Kind: KindString}}},
+		{Type: Zone, Layer: L1, Keys: []Key{{Name: ZoneID, Kind: KindString}}},
 
 		// L2 workload placement. A process registers the raw host.id rather
 		// than a host fingerprint: the identity layer computes the hash from
 		// registered keys, and registering a fingerprint would hash twice and
 		// tie the catalog to the identity implementation.
-		{Type: K8sNode, Layer: L2, Keys: []Key{{Name: K8sNodeUID}}},
-		{Type: K8sPod, Layer: L2, Keys: []Key{{Name: K8sPodUID}}},
-		{Type: Container, Layer: L2, Keys: []Key{{Name: ContainerID}}},
+		{Type: K8sNode, Layer: L2, Keys: []Key{{Name: K8sNodeUID, Kind: KindString}}},
+		{Type: K8sPod, Layer: L2, Keys: []Key{{Name: K8sPodUID, Kind: KindString}}},
+		{Type: Container, Layer: L2, Keys: []Key{{Name: ContainerID, Kind: KindString}}},
 		{Type: Process, Layer: L2, Keys: []Key{
-			{Name: HostID},
-			{Name: ProcessPID},
-			{Name: ProcessCreationTime},
+			{Name: HostID, Kind: KindString},
+			{Name: ProcessPID, Kind: KindInt},
+			{Name: ProcessCreationTime, Kind: KindTime},
 		}},
 		{Type: ServiceInstance, Layer: L2, Keys: []Key{
-			{Name: ServiceNamespace, Optional: true},
-			{Name: ServiceName},
-			{Name: ServiceInstanceID},
+			{Name: ServiceNamespace, Kind: KindString, Optional: true},
+			{Name: ServiceName, Kind: KindString},
+			{Name: ServiceInstanceID, Kind: KindString},
 		}},
 
 		// L3 logical dependency.
 		{Type: Service, Layer: L3, Keys: []Key{
-			{Name: ServiceNamespace, Optional: true},
-			{Name: ServiceName},
+			{Name: ServiceNamespace, Kind: KindString, Optional: true},
+			{Name: ServiceName, Kind: KindString},
 		}},
 	}
 }
