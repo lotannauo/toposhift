@@ -9,10 +9,12 @@ package oracle
 import (
 	"fmt"
 	"slices"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
@@ -24,19 +26,19 @@ type Oracle struct {
 	horizon time.Time
 	recs    []engine.Record
 
-	bySubject map[engine.Subject][]int           // subject -> indexes into recs
+	bySubject map[engine.Subject][]int           // subject -> indexes into recs, ascending Seq
+	layers    map[engine.Subject]catalog.Layer   // the one layer each subject is stored in
 	incident  [3]map[identity.Fingerprint][]edge // by direction: entity -> its edges
-	folds     map[engine.Subject]fold
+	folds     map[engine.Subject]map[int]lifecycle.Timeline
 }
+
+// maxCachedFolds bounds the folds kept per subject, so probing many tokens
+// cannot grow the cache without limit.
+const maxCachedFolds = 32
 
 type edge struct {
 	subject engine.Subject
 	peer    identity.Fingerprint
-}
-
-type fold struct {
-	n  int // records folded, so a cache entry is stale after a write
-	tl lifecycle.Timeline
 }
 
 var _ engine.Engine = (*Oracle)(nil)
@@ -45,18 +47,23 @@ var _ engine.Engine = (*Oracle)(nil)
 func New() *Oracle {
 	o := &Oracle{
 		bySubject: make(map[engine.Subject][]int),
-		folds:     make(map[engine.Subject]fold),
+		layers:    make(map[engine.Subject]catalog.Layer),
+		folds:     make(map[engine.Subject]map[int]lifecycle.Timeline),
 	}
 	o.incident[engine.Forward] = make(map[identity.Fingerprint][]edge)
 	o.incident[engine.Reverse] = make(map[identity.Fingerprint][]edge)
 	return o
 }
 
-// Write implements [engine.Engine].
+// Write implements [engine.Engine]. It also refuses a record whose layer
+// differs from the layer its subject was first stored in: that is the caller's
+// precondition for every engine, and the oracle is where a bad workload is
+// caught.
 func (o *Oracle) Write(batch []engine.Record) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	seq := o.lastSeq
+	inBatch := make(map[engine.Subject]catalog.Layer)
 	for _, r := range batch {
 		if err := r.Validate(); err != nil {
 			return err
@@ -68,12 +75,23 @@ func (o *Oracle) Write(batch []engine.Record) error {
 			return fmt.Errorf("record seq %d is not above the last written seq %d: %w", r.Seq, seq, engine.ErrInvalid)
 		}
 		seq = r.Seq
+		known, ok := o.layers[r.Subject]
+		if !ok {
+			known, ok = inBatch[r.Subject]
+		}
+		if ok && known != r.Layer {
+			return fmt.Errorf("record seq %d: subject is stored in layer %s, not %s: %w", r.Seq, known, r.Layer, engine.ErrInvalid)
+		}
+		inBatch[r.Subject] = r.Layer
 	}
 	for _, r := range batch {
 		r.Payload = slices.Clone(r.Payload)
-		if _, known := o.bySubject[r.Subject]; !known && r.Subject.Kind == engine.SubjectEdge {
-			o.incident[engine.Forward][r.Subject.A] = append(o.incident[engine.Forward][r.Subject.A], edge{r.Subject, r.Subject.B})
-			o.incident[engine.Reverse][r.Subject.B] = append(o.incident[engine.Reverse][r.Subject.B], edge{r.Subject, r.Subject.A})
+		if _, known := o.bySubject[r.Subject]; !known {
+			o.layers[r.Subject] = r.Layer
+			if r.Subject.Kind == engine.SubjectEdge {
+				o.incident[engine.Forward][r.Subject.A] = append(o.incident[engine.Forward][r.Subject.A], edge{r.Subject, r.Subject.B})
+				o.incident[engine.Reverse][r.Subject.B] = append(o.incident[engine.Reverse][r.Subject.B], edge{r.Subject, r.Subject.A})
+			}
 		}
 		o.bySubject[r.Subject] = append(o.bySubject[r.Subject], len(o.recs))
 		o.recs = append(o.recs, r)
@@ -82,14 +100,55 @@ func (o *Oracle) Write(batch []engine.Record) error {
 	return nil
 }
 
-// timeline folds a subject's records, reusing the last fold if nothing was
-// written since.
-func (o *Oracle) timeline(s engine.Subject) (lifecycle.Timeline, error) {
-	idx := o.bySubject[s]
-	if f, ok := o.folds[s]; ok && f.n == len(idx) {
-		return f.tl, nil
+// LastSeq implements [engine.Engine].
+func (o *Oracle) LastSeq() uint64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.lastSeq
+}
+
+// Layers returns, ascending, the layers in which fp has anything stored: its
+// own existence or any edge touching it, in either direction. It is not part of
+// [engine.Engine]; the conformance test uses it to probe the layers an entity is
+// in and one it is not.
+func (o *Oracle) Layers(fp identity.Fingerprint) []catalog.Layer {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	seen := map[catalog.Layer]bool{}
+	if l, ok := o.layers[engine.EntitySubject(fp)]; ok {
+		seen[l] = true
 	}
-	as := make([]lifecycle.Assertion, len(idx))
+	for _, dir := range []engine.Direction{engine.Forward, engine.Reverse} {
+		for _, e := range o.incident[dir][fp] {
+			seen[o.layers[e.subject]] = true
+		}
+	}
+	out := make([]catalog.Layer, 0, len(seen))
+	for l := range seen {
+		out = append(out, l)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// visible is how many of a subject's records a token sees. The records are in
+// ascending Seq, so they are a prefix.
+func (o *Oracle) visible(idx []int, asOf uint64) int {
+	return sort.Search(len(idx), func(i int) bool { return o.recs[idx[i]].Seq > asOf })
+}
+
+// timeline folds the first n records of a subject: what a token that sees n of
+// them sees. The first n records never change, so a cached fold never goes
+// stale.
+func (o *Oracle) timeline(s engine.Subject, n int) (lifecycle.Timeline, error) {
+	if n == 0 {
+		return lifecycle.Timeline{}, nil
+	}
+	if tl, ok := o.folds[s][n]; ok {
+		return tl, nil
+	}
+	idx := o.bySubject[s][:n]
+	as := make([]lifecycle.Assertion, n)
 	for i, j := range idx {
 		as[i] = o.recs[j].Assertion()
 	}
@@ -97,21 +156,35 @@ func (o *Oracle) timeline(s engine.Subject) (lifecycle.Timeline, error) {
 	if err != nil {
 		return lifecycle.Timeline{}, fmt.Errorf("oracle: folding %v: %w", s, err)
 	}
-	o.folds[s] = fold{n: len(idx), tl: tl}
+	cache := o.folds[s]
+	if cache == nil || len(cache) >= maxCachedFolds {
+		cache = make(map[int]lifecycle.Timeline)
+		o.folds[s] = cache
+	}
+	cache[n] = tl
 	return tl, nil
 }
 
-// Neighbors implements [engine.Engine].
-func (o *Oracle) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time.Time) ([]engine.Neighbor, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// aliveAt folds what the scope sees of a subject and asks it.
+func (o *Oracle) aliveAt(s engine.Subject, t time.Time, sc engine.Scope) (bool, error) {
+	if o.layers[s] != sc.Layer {
+		return false, nil
+	}
+	tl, err := o.timeline(s, o.visible(o.bySubject[s], sc.AsOf))
+	if err != nil {
+		return false, err
+	}
+	return tl.AliveAt(t), nil
+}
+
+func (o *Oracle) neighbors(fp identity.Fingerprint, dir engine.Direction, t time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
 	var out []engine.Neighbor
 	for _, e := range o.incident[dir][fp] {
-		tl, err := o.timeline(e.subject)
+		alive, err := o.aliveAt(e.subject, t, sc)
 		if err != nil {
 			return nil, err
 		}
-		if tl.AliveAt(t) {
+		if alive {
 			out = append(out, engine.Neighbor{Peer: e.peer, Relation: e.subject.Relation})
 		}
 	}
@@ -119,24 +192,52 @@ func (o *Oracle) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time
 	return out, nil
 }
 
-// Alive implements [engine.Engine].
-func (o *Oracle) Alive(fp identity.Fingerprint, t time.Time) (bool, error) {
+// Neighbors implements [engine.Engine].
+func (o *Oracle) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	tl, err := o.timeline(engine.EntitySubject(fp))
-	if err != nil {
+	return o.neighbors(fp, dir, t, sc)
+}
+
+// NeighborsBatch implements [engine.Engine].
+func (o *Oracle) NeighborsBatch(fps []identity.Fingerprint, dir engine.Direction, t time.Time, sc engine.Scope) ([][]engine.Neighbor, error) {
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return engine.NeighborsEach(fps, func(fp identity.Fingerprint) ([]engine.Neighbor, error) {
+		return o.neighbors(fp, dir, t, sc)
+	})
+}
+
+// Alive implements [engine.Engine].
+func (o *Oracle) Alive(fp identity.Fingerprint, t time.Time, sc engine.Scope) (bool, error) {
+	if err := sc.Validate(); err != nil {
 		return false, err
 	}
-	return tl.AliveAt(t), nil
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.aliveAt(engine.EntitySubject(fp), t, sc)
 }
 
 // Window implements [engine.Engine].
-func (o *Oracle) Window(fp identity.Fingerprint, dir engine.Direction, from, to time.Time) ([]engine.Record, error) {
+func (o *Oracle) Window(fp identity.Fingerprint, dir engine.Direction, from, to time.Time, sc engine.Scope) ([]engine.Record, error) {
+	if err := sc.Validate(); err != nil {
+		return nil, err
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var out []engine.Record
 	for _, e := range o.incident[dir][fp] {
-		for _, j := range o.bySubject[e.subject] {
+		if o.layers[e.subject] != sc.Layer {
+			continue
+		}
+		idx := o.bySubject[e.subject]
+		for _, j := range idx[:o.visible(idx, sc.AsOf)] {
 			r := o.recs[j]
 			if !r.EventTime.Before(from) && r.EventTime.Before(to) {
 				r.Payload = slices.Clone(r.Payload)

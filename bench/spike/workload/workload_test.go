@@ -13,6 +13,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/oracle"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
 
@@ -308,6 +309,11 @@ func TestRejectsBadConfigs(t *testing.T) {
 		"negative rollup":           func(c *workload.Config) { c.RollupInterval = -time.Minute },
 		"negative rate":             func(c *workload.Config) { c.EventsPerSecond = -1 },
 		"extend without coalescing": func(c *workload.Config) { c.ExtendEvery = time.Minute },
+		"no first seq":              func(c *workload.Config) { c.FirstSeq = 0 },
+		"first seq too high":        func(c *workload.Config) { c.FirstSeq = 1<<63 + 1 },
+		"confirm without a TTL":     func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 0.5, 0 },
+		"confirm over one":          func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 1.5, time.Minute },
+		"fractional confirm TTL":    func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 0.5, 1500*time.Millisecond },
 	} {
 		c := workload.Tiny()
 		mod(&c)
@@ -367,14 +373,16 @@ func TestCoalescedStreamAnswersLikeTheRawOne(t *testing.T) {
 		for off := time.Duration(0); off <= raw.Duration+10*time.Minute; off += 90 * time.Second {
 			at := raw.Start.Add(off)
 			for _, dir := range []engine.Direction{engine.Forward, engine.Reverse} {
-				x, _ := oa.Neighbors(fp, dir, at)
-				y, _ := ob.Neighbors(fp, dir, at)
-				if !slices.Equal(x, y) {
-					t.Fatalf("%s %s at +%s: raw %v, coalesced %v", fp, dir, off, x, y)
+				for _, layer := range allLayers {
+					x, _ := oa.Neighbors(fp, dir, at, engine.Current(layer))
+					y, _ := ob.Neighbors(fp, dir, at, engine.Current(layer))
+					if !slices.Equal(x, y) {
+						t.Fatalf("%s %s %s at +%s: raw %v, coalesced %v", fp, dir, layer, off, x, y)
+					}
 				}
 			}
-			x, _ := oa.Alive(fp, at)
-			y, _ := ob.Alive(fp, at)
+			x, _ := oa.Alive(fp, at, entityScope(fp))
+			y, _ := ob.Alive(fp, at, entityScope(fp))
 			if x != y {
 				t.Fatalf("Alive(%s) at +%s: raw %v, coalesced %v", fp, off, x, y)
 			}
@@ -421,8 +429,8 @@ func TestBoundedExtensionOnlyEndsExistenceEarly(t *testing.T) {
 		}
 		for off := time.Duration(0); off <= exact.Duration+10*time.Minute; off += 30 * time.Second {
 			at := exact.Start.Add(off)
-			x, _ := oa.Alive(fp, at)
-			y, _ := ob.Alive(fp, at)
+			x, _ := oa.Alive(fp, at, entityScope(fp))
+			y, _ := ob.Alive(fp, at, entityScope(fp))
 			if y && !x {
 				t.Fatalf("%s at +%s: the bounded stream says alive, the exact one dead", fp, off)
 			}
@@ -535,5 +543,173 @@ func TestFlapsReassertAtTheSameInstant(t *testing.T) {
 	}
 	if flaps == 0 {
 		t.Error("no edge was deleted and re-asserted at one instant")
+	}
+}
+
+var allLayers = []catalog.Layer{catalog.L0, catalog.L1, catalog.L2, catalog.L3}
+
+// entityScope reads the layer an entity of this type is stored in.
+func entityScope(fp identity.Fingerprint) engine.Scope {
+	e, ok := catalog.Default().Entity(fp.Type())
+	if !ok {
+		panic("unknown entity type " + string(fp.Type()))
+	}
+	return engine.Current(e.Layer())
+}
+
+func TestSeqStartsWhereTheConfigSays(t *testing.T) {
+	t.Parallel()
+
+	for _, first := range []uint64{1, 1<<32 - 50, 1 << 63} {
+		cfg := workload.Tiny()
+		cfg.FirstSeq = first
+		recs := generate(t, cfg)
+		if len(recs) < 100 {
+			t.Fatalf("only %d records", len(recs))
+		}
+		for i, r := range recs {
+			if r.Seq != first+uint64(i) {
+				t.Fatalf("FirstSeq %d: record %d has Seq %d, want %d", first, i, r.Seq, first+uint64(i))
+			}
+		}
+	}
+	// Starting just below 2^32 crosses it, which is the point.
+	cfg := workload.Tiny()
+	cfg.FirstSeq = 1<<32 - 50
+	recs := generate(t, cfg)
+	if recs[0].Seq >= 1<<32 || recs[len(recs)-1].Seq < 1<<32 {
+		t.Errorf("the stream does not cross 2^32: %d to %d", recs[0].Seq, recs[len(recs)-1].Seq)
+	}
+}
+
+func TestASecondProducerConfirmsPlacementAtTheAskedRate(t *testing.T) {
+	t.Parallel()
+
+	none := workload.Small()
+	none.Duration = 20 * time.Minute
+	for _, r := range generate(t, none) {
+		if r.Producer == workload.ProducerKubelet {
+			t.Fatal("a kubelet record appeared with ConfirmProbability 0")
+		}
+	}
+
+	// The stream without the knob is the stream it always was: the knob draws
+	// from the random stream only when it is on.
+	first, second := generate(t, none), generate(t, none)
+	if digest(first) != digest(second) {
+		t.Error("the stream without a second producer is not deterministic")
+	}
+
+	for _, p := range []float64{0.2, 0.7} {
+		cfg := none
+		cfg.ConfirmProbability, cfg.ConfirmTTL = p, 5*time.Minute
+		recs := generate(t, cfg)
+
+		var scheduler, kubelet, kubeletDeletes, sameInstantDeletes int
+		type at struct {
+			s engine.Subject
+			t int64
+		}
+		schedulerDeletes := map[at]bool{}
+		for _, r := range recs {
+			if r.Subject.Relation != catalog.ScheduledOn {
+				continue
+			}
+			switch {
+			case r.Producer == workload.ProducerK8sObjects && r.Kind == lifecycle.Observe:
+				scheduler++
+			case r.Producer == workload.ProducerK8sObjects:
+				schedulerDeletes[at{r.Subject, r.EventTime.UnixNano()}] = true
+			}
+		}
+		for _, r := range recs {
+			if r.Subject.Relation != catalog.ScheduledOn || r.Producer != workload.ProducerKubelet {
+				continue
+			}
+			if r.Kind == lifecycle.Observe {
+				kubelet++
+				if r.TTL != cfg.ConfirmTTL {
+					t.Fatalf("a kubelet record has TTL %s, want %s", r.TTL, cfg.ConfirmTTL)
+				}
+				continue
+			}
+			kubeletDeletes++
+			if schedulerDeletes[at{r.Subject, r.EventTime.UnixNano()}] {
+				sameInstantDeletes++
+			}
+		}
+		// One confirmation is attempted per scheduler placement, so the rate is
+		// the probability, give or take sampling noise (several thousand draws).
+		if scheduler < 3000 {
+			t.Fatalf("only %d placements: the rate cannot be checked", scheduler)
+		}
+		if got := float64(kubelet) / float64(scheduler); got < p-0.03 || got > p+0.03 {
+			t.Errorf("ConfirmProbability %.1f: %d kubelet records for %d placements (%.3f)", p, kubelet, scheduler, got)
+		}
+		// Withdrawals happen at the instant the scheduler withdraws, and not for
+		// every confirmed placement: the rest are left to expire.
+		if kubeletDeletes == 0 || kubeletDeletes != sameInstantDeletes {
+			t.Errorf("%d kubelet deletes, %d of them at the instant of the scheduler's delete: want all, and some", kubeletDeletes, sameInstantDeletes)
+		}
+		if kubeletDeletes >= kubelet {
+			t.Errorf("%d kubelet deletes for %d confirmations: some must be left to expire", kubeletDeletes, kubelet)
+		}
+		// Of the confirmed placements that end, the kubelet withdraws half. A
+		// placement ends at a scheduler delete that is not part of a flap (a flap
+		// deletes and re-observes at one instant).
+		type event struct {
+			at       int64
+			producer lifecycle.Producer
+			kind     lifecycle.Kind
+		}
+		bySubject := map[engine.Subject][]event{}
+		for _, r := range recs {
+			if r.Subject.Relation == catalog.ScheduledOn {
+				bySubject[r.Subject] = append(bySubject[r.Subject], event{r.EventTime.UnixNano(), r.Producer, r.Kind})
+			}
+		}
+		ended, withdrawn := 0, 0
+		for _, evs := range bySubject {
+			slices.SortStableFunc(evs, func(a, b event) int { return int(a.at - b.at) })
+			active := false
+			for i := 0; i < len(evs); {
+				j := i
+				for j < len(evs) && evs[j].at == evs[i].at {
+					j++
+				}
+				group := evs[i:j]
+				i = j
+				var schedulerDelete, schedulerObserve, kubeletDelete, kubeletObserve bool
+				for _, e := range group {
+					switch {
+					case e.producer == workload.ProducerK8sObjects && e.kind == lifecycle.Delete:
+						schedulerDelete = true
+					case e.producer == workload.ProducerK8sObjects:
+						schedulerObserve = true
+					case e.kind == lifecycle.Delete:
+						kubeletDelete = true
+					default:
+						kubeletObserve = true
+					}
+				}
+				if schedulerDelete && !schedulerObserve && active {
+					ended++
+					if kubeletDelete {
+						withdrawn++
+					}
+				}
+				if kubeletObserve {
+					active = true
+				} else if schedulerDelete && !schedulerObserve {
+					active = false
+				}
+			}
+		}
+		if ended < 300 {
+			t.Fatalf("only %d confirmed placements ended: the withdrawal rate cannot be checked", ended)
+		}
+		if got := float64(withdrawn) / float64(ended); got < 0.4 || got > 0.6 {
+			t.Errorf("the kubelet withdrew %d of %d ended confirmations (%.2f), want about half", withdrawn, ended, got)
+		}
 	}
 }

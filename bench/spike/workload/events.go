@@ -39,6 +39,7 @@ func (g *Generator) createPod(at time.Time, p, node int) {
 	cl.podNode[p] = node
 	g.entityRecord(at, ProducerK8sObjects, cl.pods[p], lifecycle.Observe, 0, g.payload())
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Observe, 0, g.payload())
+	g.confirm(at, p, node)
 	g.entityRecord(at, ProducerK8sObjects, cl.instances[p], lifecycle.Observe, 0, g.payload())
 	g.edgeRecord(at, ProducerK8sObjects, cl.instances[p], cl.services[p%g.cfg.Services], catalog.InstanceOf, lifecycle.Observe, 0, g.payload())
 	for _, c := range cl.containers[p] {
@@ -51,6 +52,7 @@ func (g *Generator) createPod(at time.Time, p, node int) {
 func (g *Generator) deletePod(at time.Time, p int) {
 	cl := &g.cl
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[cl.podNode[p]], catalog.ScheduledOn, lifecycle.Delete, 0, nil)
+	g.unconfirm(at, p, cl.podNode[p])
 	g.entityRecord(at, ProducerK8sObjects, cl.pods[p], lifecycle.Delete, 0, nil)
 	g.edgeRecord(at, ProducerK8sObjects, cl.instances[p], cl.services[p%g.cfg.Services], catalog.InstanceOf, lifecycle.Delete, 0, nil)
 	g.entityRecord(at, ProducerK8sObjects, cl.instances[p], lifecycle.Delete, 0, nil)
@@ -69,8 +71,10 @@ func (g *Generator) reschedule(at time.Time, p int) {
 		node = (node + 1) % g.cfg.Hosts
 	}
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[old], catalog.ScheduledOn, lifecycle.Delete, 0, nil)
+	g.unconfirm(at, p, old)
 	cl.podNode[p] = node
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Observe, 0, g.payload())
+	g.confirm(at, p, node)
 }
 
 // flap replaces a pod's placement in place within one second: the old edge is
@@ -81,6 +85,35 @@ func (g *Generator) flap(at time.Time, p int) {
 	node := cl.nodes[cl.podNode[p]]
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], node, catalog.ScheduledOn, lifecycle.Delete, 0, nil)
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], node, catalog.ScheduledOn, lifecycle.Observe, 0, g.payload())
+	g.confirm(at, p, cl.podNode[p])
+}
+
+// confirm has the kubelet also assert pod p's placement on node, at the same
+// instant as the scheduler, with probability ConfirmProbability. It draws from
+// the random stream only when the probability is above zero, so a stream without
+// a second producer is the same as it was before there was one.
+func (g *Generator) confirm(at time.Time, p, node int) {
+	if g.cfg.ConfirmProbability <= 0 || g.rng.Float64() >= g.cfg.ConfirmProbability {
+		return
+	}
+	cl := &g.cl
+	g.edgeRecord(at, ProducerKubelet, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Observe, g.cfg.ConfirmTTL, g.payload())
+	cl.confirmed[p] = true
+}
+
+// unconfirm ends pod p's placement on node as far as the kubelet is concerned: half
+// the time it withdraws its assertion at the instant the scheduler withdrew
+// its own, and otherwise leaves it to expire after ConfirmTTL, holding the edge
+// up while the scheduler says it is gone.
+func (g *Generator) unconfirm(at time.Time, p, node int) {
+	cl := &g.cl
+	if !cl.confirmed[p] {
+		return
+	}
+	cl.confirmed[p] = false
+	if g.rng.IntN(2) == 0 {
+		g.edgeRecord(at, ProducerKubelet, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Delete, 0, nil)
+	}
 }
 
 // scheduleChurn picks the next churn event time. Gaps are exponential at
