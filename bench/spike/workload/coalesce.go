@@ -26,6 +26,12 @@ type run struct {
 // coalesce is the ingest-side coalescer. It turns a refresh that continues a
 // producer's run into an extension of that run, drops a refresh the run already
 // covers, and passes everything else through unchanged.
+//
+// An extension re-asserts the run at its first event time, so once the store has
+// retained past that time it would be refused and the run would silently die at
+// its deadline. A run that started before the retention horizon is therefore
+// continued by a new run, asserted at the refresh's own event time: the old run
+// ends at the new one's first assertion, so existence is continuous.
 func (g *Generator) coalesce(r engine.Record) (engine.Record, bool) {
 	key := runKey{r.Subject, r.Producer}
 	if r.Kind == lifecycle.Delete || r.TTL == 0 {
@@ -43,8 +49,9 @@ func (g *Generator) coalesce(r engine.Record) (engine.Record, bool) {
 		return r, true
 	case !r.EventTime.After(st.last):
 		return engine.Record{}, false // already covered by the run
-	case r.EventTime.After(st.last.Add(st.ttl)):
-		// A gap longer than the TTL: a new run.
+	case st.start.Before(g.horizon) || r.EventTime.After(st.last.Add(st.ttl)):
+		// A run the store can no longer extend, or a gap longer than the TTL: a
+		// new run.
 		g.runs[key] = &run{start: r.EventTime, last: r.EventTime, recorded: r.EventTime, ttl: r.TTL, payload: r.Payload}
 		return r, true
 	}

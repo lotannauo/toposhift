@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -226,4 +227,56 @@ func TestNeighborsEachAsksOncePerFingerprintInOrder(t *testing.T) {
 	if _, err := engine.NeighborsEach([]identity.Fingerprint{a, b}, func(identity.Fingerprint) ([]engine.Neighbor, error) { return nil, boom }); !errors.Is(err, boom) {
 		t.Errorf("err = %v, want the read's error", err)
 	}
+}
+
+func TestMemRecorderKeepsCountsAndSamples(t *testing.T) {
+	t.Parallel()
+
+	var r engine.MemRecorder
+	var _ engine.Recorder = &r
+	var _ engine.Recorder = engine.NopRecorder{}
+
+	if r.Counter("never") != 0 || r.Samples("never") != nil {
+		t.Error("an unused recorder holds something")
+	}
+	r.Count("hits", 2)
+	r.Count("hits", 3)
+	r.Count("misses", 1)
+	r.Sample("replay", 4)
+	r.Sample("replay", 9)
+	if r.Counter("hits") != 5 || r.Counter("misses") != 1 {
+		t.Errorf("counters = %d, %d", r.Counter("hits"), r.Counter("misses"))
+	}
+	got := r.Samples("replay")
+	if !slices.Equal(got, []int64{4, 9}) {
+		t.Errorf("samples = %v", got)
+	}
+	got[0] = 100 // a copy
+	if r.Samples("replay")[0] != 4 {
+		t.Error("Samples returned the recorder's own slice")
+	}
+	r.Reset()
+	if r.Counter("hits") != 0 || len(r.Samples("replay")) != 0 {
+		t.Error("Reset did not forget")
+	}
+
+	// Safe for concurrent use.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 500 {
+				r.Count("n", 1)
+				r.Sample("v", 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if r.Counter("n") != 4000 || len(r.Samples("v")) != 4000 {
+		t.Errorf("lost updates: %d counted, %d sampled", r.Counter("n"), len(r.Samples("v")))
+	}
+
+	engine.NopRecorder{}.Count("x", 1) // does nothing, and does not panic
+	engine.NopRecorder{}.Sample("x", 1)
 }

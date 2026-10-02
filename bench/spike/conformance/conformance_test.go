@@ -4,7 +4,10 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"runtime"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +35,7 @@ func TestMain(m *testing.M) {
 // The oracle satisfies its own harness: the checks are consistent.
 func TestOracleIsAConformingEngine(t *testing.T) {
 	t.Parallel()
-	conformance.Run(t, func(string) (engine.Engine, error) { return oracle.New(), nil })
+	conformance.Run(t, func(dir string) (engine.Engine, error) { return oracle.OpenDurable(dir) })
 }
 
 // broken wraps a correct engine and damages one behavior. A harness that cannot
@@ -966,9 +969,431 @@ func TestCheckAcceptsAnHonestCompactingEngine(t *testing.T) {
 		b.inner, b.written = fresh, kept
 		return nil
 	}
-	conformance.Run(t, func(string) (engine.Engine, error) {
+	// It lives in memory and is not safe for concurrent use, so it takes the
+	// serial run.
+	conformance.RunSerial(t, func(string) (engine.Engine, error) {
 		b := newBroken()
 		b.retain = compact
 		return b, nil
 	})
+}
+
+// volatileStore keeps engines in memory by directory, so a "reopen" returns the
+// engine that was "closed", after onReopen has damaged it as a bad persistence
+// layer would.
+type volatileStore struct {
+	mu       sync.Mutex
+	engines  map[string]*broken
+	onReopen func(b *broken)
+}
+
+func (s *volatileStore) open(dir string) (engine.Engine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.engines == nil {
+		s.engines = map[string]*broken{}
+	}
+	b, ok := s.engines[dir]
+	if !ok {
+		b = newBroken()
+		s.engines[dir] = b
+	} else if s.onReopen != nil {
+		s.onReopen(b)
+	}
+	return b, nil
+}
+
+func TestCheckReopenCatchesAnEngineThatForgets(t *testing.T) {
+	t.Parallel()
+
+	// Persisting in memory is correct, so the check must pass it; and it must
+	// pass the oracle that persists to a file.
+	honest := &volatileStore{}
+	if err := conformance.CheckReopen(honest.open); err != nil {
+		t.Fatalf("an engine that keeps everything fails the reopen check: %v", err)
+	}
+	if err := conformance.CheckReopen(func(dir string) (engine.Engine, error) { return oracle.OpenDurable(dir) }); err != nil {
+		t.Fatalf("the durable oracle fails the reopen check: %v", err)
+	}
+
+	for name, damage := range map[string]func(b *broken){
+		// The records come back, but the horizon is not remembered, so a record
+		// before it is accepted again.
+		"forgets the retention horizon": func(b *broken) {
+			fresh := oracle.New()
+			if err := fresh.Write(slices.Clone(b.written)); err != nil {
+				panic(err)
+			}
+			b.inner = fresh
+		},
+		// Whatever it is handed with a Seq that is not above the last is taken.
+		"accepts a sequence that is not above the last": func(b *broken) {
+			b.swallow = func(err error) bool {
+				return errors.Is(err, engine.ErrInvalid) && !errors.Is(err, engine.ErrBeforeHorizon)
+			}
+		},
+		"forgets the last sequence":    func(b *broken) { b.maxSeq = 0 },
+		"reports a sequence one ahead": func(b *broken) { b.maxSeq++ },
+		"loses the newest record": func(b *broken) {
+			b.written = b.written[:len(b.written)-1]
+			fresh := oracle.New()
+			if err := fresh.Write(slices.Clone(b.written)); err != nil {
+				panic(err)
+			}
+			b.inner = fresh
+		},
+	} {
+		store := &volatileStore{onReopen: damage}
+		if err := conformance.CheckReopen(store.open); err == nil {
+			t.Errorf("the reopen check did not notice an engine that %s", name)
+		}
+	}
+
+	// Reopening needs somewhere to reopen to, and valid fractions.
+	if err := conformance.Check(oracle.New(), workload.Tiny(), conformance.Options{ReopenAt: []float64{0.5}}); err == nil {
+		t.Error("ReopenAt without Reopen was accepted")
+	}
+	for _, bad := range [][]float64{{0}, {1}, {0.6, 0.4}} {
+		opts := conformance.Options{ReopenAt: bad, Reopen: func(e engine.Engine) (engine.Engine, error) { return e, nil }}
+		if err := conformance.Check(oracle.New(), workload.Tiny(), opts); err == nil {
+			t.Errorf("ReopenAt %v was accepted", bad)
+		}
+	}
+}
+
+// settling counts how often it is asked to settle.
+type settling struct {
+	*oracle.Oracle
+	settled atomic.Int64
+}
+
+func (s *settling) Settle() error { s.settled.Add(1); return nil }
+
+func TestCheckSettlesAnEngineThatCan(t *testing.T) {
+	t.Parallel()
+	s := &settling{Oracle: oracle.New()}
+	if err := conformance.Check(s, workload.Tiny(), conformance.Options{CheckEvery: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if s.settled.Load() == 0 {
+		t.Error("an engine that can settle was never asked to")
+	}
+	// And one that cannot is not troubled.
+	if err := conformance.Check(oracle.New(), workload.Tiny(), conformance.Options{CheckEvery: 3}); err != nil {
+		t.Fatal(err)
+	}
+	// A failing Settle is reported with its cause.
+	boom := errors.New("injected")
+	if err := conformance.Check(&failingSettle{Oracle: oracle.New(), err: boom}, workload.Tiny(), conformance.Options{CheckEvery: 1}); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the Settle error", err)
+	}
+}
+
+type failingSettle struct {
+	*oracle.Oracle
+	err error
+}
+
+func (f *failingSettle) Settle() error { return f.err }
+
+// slow is an engine that is consistent but slow: it takes its time inside each
+// read, so writes land while a read is in progress. A concurrent-read check that
+// failed it would be wrong.
+type slow struct {
+	*oracle.Oracle
+	// tear makes Neighbors inconsistent by answering one half from before a
+	// pause and the other half from after it.
+	tear bool
+	// tearBatchEnd answers a batched read with one snapshot per entry.
+	tearBatchEnd bool
+	// ahead raises LastSeq before a batch is visible.
+	ahead   bool
+	pending atomic.Uint64
+	// retainTear makes Retain briefly lose what is before the horizon: reads
+	// during it see nothing, as they would from an engine that deletes history
+	// before it has written the baseline that stands for it.
+	retainTear bool
+	retaining  atomic.Bool
+	// backward makes LastSeq lose ground on every other call.
+	backward bool
+	calls    atomic.Uint64
+}
+
+func (s *slow) Retain(h time.Time) error {
+	if !s.retainTear {
+		return s.Oracle.Retain(h)
+	}
+	s.retaining.Store(true)
+	pause()
+	defer s.retaining.Store(false)
+	return s.Oracle.Retain(h)
+}
+
+func pause() { runtime.Gosched(); time.Sleep(300 * time.Microsecond) }
+
+// pivot splits peers into two halves by the first byte of their hash.
+func pivot(n engine.Neighbor) bool { h := n.Peer.Hash(); return h[0] < 128 }
+
+func (s *slow) Neighbors(fp identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
+	if s.retaining.Load() {
+		return nil, nil
+	}
+	first, err := s.Oracle.Neighbors(fp, d, at, sc)
+	pause()
+	if err != nil || !s.tear {
+		return first, err
+	}
+	// The first half of the answer comes from before the pause and the second
+	// half from after it, as an engine would answer if it read one key range from
+	// one state and the next from another.
+	second, err := s.Oracle.Neighbors(fp, d, at, sc)
+	if err != nil {
+		return nil, err
+	}
+	var out []engine.Neighbor
+	for _, n := range first {
+		if pivot(n) {
+			out = append(out, n)
+		}
+	}
+	for _, n := range second {
+		if !pivot(n) {
+			out = append(out, n)
+		}
+	}
+	engine.SortNeighbors(out)
+	return out, nil
+}
+
+func (s *slow) NeighborsBatch(fps []identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([][]engine.Neighbor, error) {
+	if s.retaining.Load() {
+		return make([][]engine.Neighbor, len(fps)), nil
+	}
+	if !s.tearBatchEnd {
+		pause()
+		return s.Oracle.NeighborsBatch(fps, d, at, sc)
+	}
+	// One snapshot per entry instead of one for the whole batch.
+	out := make([][]engine.Neighbor, len(fps))
+	for i, fp := range fps {
+		ns, err := s.Oracle.Neighbors(fp, d, at, sc)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = ns
+		pause()
+	}
+	return out, nil
+}
+
+func (s *slow) Write(batch []engine.Record) error {
+	if s.ahead && len(batch) > 0 {
+		s.pending.Store(batch[len(batch)-1].Seq)
+		pause()
+	}
+	return s.Oracle.Write(batch)
+}
+
+func (s *slow) LastSeq() uint64 {
+	if s.backward && s.calls.Add(1)%2 == 0 && s.Oracle.LastSeq() > 0 {
+		return s.Oracle.LastSeq() - 1
+	}
+	if s.ahead {
+		return max(s.Oracle.LastSeq(), s.pending.Load())
+	}
+	return s.Oracle.LastSeq()
+}
+
+func TestCheckConcurrentReads(t *testing.T) {
+	t.Parallel()
+
+	if err := conformance.CheckConcurrentReads(&slow{Oracle: oracle.New()}); err != nil {
+		t.Fatalf("a slow but consistent engine was reported torn: %v", err)
+	}
+	if err := conformance.CheckConcurrentReads(&slow{Oracle: oracle.New(), backward: true}); err == nil {
+		t.Error("an engine whose LastSeq goes backward was not noticed")
+	}
+	for name, mk := range map[string]func() engine.Engine{
+		"answers half a read from before a batch and half from after it": func() engine.Engine { return &slow{Oracle: oracle.New(), tear: true} },
+		"answers a batched read from a snapshot per entry":               func() engine.Engine { return &slow{Oracle: oracle.New(), tearBatchEnd: true} },
+		"loses what is before the horizon while it retains":              func() engine.Engine { return &slow{Oracle: oracle.New(), retainTear: true} },
+		"raises LastSeq before the batch is visible":                     func() engine.Engine { return &slow{Oracle: oracle.New(), ahead: true} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// Whether a tear shows depends on how the goroutines happen to
+			// interleave, which a slow or busy machine changes. The check is built so
+			// that it shows almost every time; a few attempts make a miss on a
+			// loaded runner vanishingly unlikely without hiding a check that cannot
+			// see the tear at all, which would miss on every attempt.
+			var err error
+			for range 5 {
+				if err = conformance.CheckConcurrentReads(mk()); errors.Is(err, conformance.ErrTorn) {
+					return
+				}
+			}
+			t.Errorf("an engine that %s: err = %v, want ErrTorn", name, err)
+		})
+	}
+}
+
+// refusing counts the writes an engine refuses for being before the horizon.
+type refusing struct {
+	*oracle.Oracle
+	refused atomic.Int64
+}
+
+func (r *refusing) Write(batch []engine.Record) error {
+	err := r.Oracle.Write(batch)
+	if errors.Is(err, engine.ErrBeforeHorizon) {
+		r.refused.Add(1)
+	}
+	return err
+}
+
+// TestCheckTellsTheGeneratorTheHorizon: with no late records, nothing the
+// generator offers after a retention is older than it, as long as Check tells it
+// the horizon. Without that, a heartbeating run is extended at its start, which
+// the store would refuse.
+func TestCheckTellsTheGeneratorTheHorizon(t *testing.T) {
+	t.Parallel()
+	cfg := workload.Tiny()
+	cfg.CoalesceRuns, cfg.LateProbability = true, 0
+	e := &refusing{Oracle: oracle.New()}
+	if err := conformance.Check(e, cfg, conformance.Options{RetainAt: []float64{0.3, 0.6}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := e.refused.Load(); n != 0 {
+		t.Errorf("%d writes were refused for being before the horizon, in a stream with no late records", n)
+	}
+}
+
+// lockedCompactor is an engine that really discards history on Retain, by the
+// rule the layouts will follow, and is safe for concurrent use because every
+// operation holds a lock: a read is one consistent state, a Retain is atomic.
+// It is the honest control for the concurrent-read check, which the oracle (that
+// discards nothing) cannot be.
+type lockedCompactor struct {
+	mu      sync.RWMutex
+	inner   *oracle.Oracle
+	written []engine.Record
+	horizon time.Time
+	last    uint64
+	dropped int // records discarded by retentions so far
+}
+
+func (c *lockedCompactor) Write(batch []engine.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.inner.Write(slices.Clone(batch)); err != nil {
+		return err
+	}
+	c.written = append(c.written, cloneRecs(batch)...)
+	if len(batch) > 0 {
+		c.last = batch[len(batch)-1].Seq
+	}
+	return nil
+}
+
+func cloneRecs(rs []engine.Record) []engine.Record {
+	out := slices.Clone(rs)
+	for i := range out {
+		out[i].Payload = slices.Clone(out[i].Payload)
+	}
+	return out
+}
+
+func (c *lockedCompactor) Retain(h time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !h.After(c.horizon) {
+		return nil
+	}
+	c.horizon = h
+	type ref struct {
+		subject  engine.Subject
+		producer lifecycle.Producer
+	}
+	newest := map[ref]engine.Record{}
+	var kept []engine.Record
+	for _, r := range c.written {
+		if !r.EventTime.Before(h) {
+			kept = append(kept, r)
+			continue
+		}
+		k := ref{r.Subject, r.Producer}
+		if cur, ok := newest[k]; !ok || r.EventTime.After(cur.EventTime) || (r.EventTime.Equal(cur.EventTime) && r.Seq > cur.Seq) {
+			newest[k] = r
+		}
+	}
+	for _, r := range newest {
+		end := r.EventTime
+		if r.Through.After(end) {
+			end = r.Through
+		}
+		if r.Kind == lifecycle.Observe && (r.TTL == 0 || h.Before(end.Add(r.TTL))) {
+			kept = append(kept, r)
+		}
+	}
+	slices.SortFunc(kept, func(x, y engine.Record) int {
+		switch {
+		case x.Seq < y.Seq:
+			return -1
+		case x.Seq > y.Seq:
+			return 1
+		}
+		return 0
+	})
+	fresh := oracle.New()
+	if err := fresh.Write(cloneRecs(kept)); err != nil {
+		return err
+	}
+	if err := fresh.Retain(h); err != nil {
+		return err
+	}
+	c.dropped += len(c.written) - len(kept)
+	c.inner, c.written = fresh, kept
+	return nil
+}
+
+func (c *lockedCompactor) LastSeq() uint64      { c.mu.RLock(); defer c.mu.RUnlock(); return c.last }
+func (c *lockedCompactor) Size() (int64, error) { return 0, nil }
+func (c *lockedCompactor) Close() error         { return nil }
+
+func (c *lockedCompactor) Neighbors(fp identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inner.Neighbors(fp, d, at, sc)
+}
+
+func (c *lockedCompactor) NeighborsBatch(fps []identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([][]engine.Neighbor, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inner.NeighborsBatch(fps, d, at, sc)
+}
+
+func (c *lockedCompactor) Alive(fp identity.Fingerprint, at time.Time, sc engine.Scope) (bool, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inner.Alive(fp, at, sc)
+}
+
+func (c *lockedCompactor) Window(fp identity.Fingerprint, d engine.Direction, from, to time.Time, sc engine.Scope) ([]engine.Record, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.inner.Window(fp, d, from, to, sc)
+}
+
+func TestConcurrentReadsAgreeWithAnEngineThatReallyDiscardsHistory(t *testing.T) {
+	t.Parallel()
+	for i := range 2 {
+		c := &lockedCompactor{inner: oracle.New()}
+		if err := conformance.CheckConcurrentReads(c); err != nil {
+			t.Fatalf("run %d: an honest engine that compacts on every retention was reported: %v", i, err)
+		}
+		// The control means something only if the retentions took history away.
+		if c.dropped == 0 || len(c.written) == 0 {
+			t.Fatalf("run %d: the engine dropped %d records and kept %d", i, c.dropped, len(c.written))
+		}
+	}
 }
