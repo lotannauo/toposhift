@@ -23,9 +23,11 @@ run = [
 description = "Fail if any Go file is not formatted"
 run = "golangci-lint fmt --diff"
 
+# golangci-lint takes a file lock by default and fails a second concurrent run.
+# `mise run ci` runs the root and bench lints at the same time, so both allow it.
 [tasks.lint]
 description = "Lint Go code"
-run = "golangci-lint run"
+run = "golangci-lint run --allow-parallel-runners"
 
 # The bench module is separate (it carries a replace directive the root module
 # must never have), so the root tasks above do not descend into it.
@@ -37,7 +39,7 @@ run = "golangci-lint fmt --diff"
 [tasks."bench:lint"]
 description = "Lint the bench module"
 dir = "bench"
-run = "golangci-lint run"
+run = "golangci-lint run --allow-parallel-runners"
 
 [tasks."bench:test"]
 description = "Run the bench module's tests with the race detector"
