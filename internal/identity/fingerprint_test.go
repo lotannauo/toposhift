@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -71,6 +72,26 @@ func TestFingerprintForms(t *testing.T) {
 	}
 	if back.Handle != fp || back.ByHandle[fp] != 1 {
 		t.Errorf("JSON round trip lost the fingerprint: %+v from %s", back, raw)
+	}
+}
+
+func TestFingerprintHash(t *testing.T) {
+	t.Parallel()
+
+	id, err := newResolver().Resolve(catalog.Host, attrs(catalog.HostID, "h1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := id.Fingerprint().Hash()
+	if got, want := hex.EncodeToString(h[:]), "56445241b9a3fe7e60745db5181df4b3"; got != want {
+		t.Errorf("Hash() = %s, want %s", got, want)
+	}
+	if got := id.Fingerprint().String(); got != "host:"+hex.EncodeToString(h[:]) {
+		t.Errorf("String() = %s does not end with the hash", got)
+	}
+	var zero identity.Fingerprint
+	if zero.Hash() != ([identity.FingerprintBytes]byte{}) {
+		t.Error("the zero fingerprint has a non-zero hash")
 	}
 }
 

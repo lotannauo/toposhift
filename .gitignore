@@ -26,6 +26,10 @@ credentials*.json
 # Remove this entry, then `git add docs/adr`, to publish them.
 /docs/adr/
 
+# Local benchmark output. Numbers from a laptop or a VM are for choosing a
+# design, never for publishing; published numbers come from CI hardware only.
+/bench/results/
+
 # Python (bench/raphtory harness)
 __pycache__/
 .venv/

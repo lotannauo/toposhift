@@ -14,4 +14,4 @@ pre-commit:
       run: mise exec -- typos {staged_files}
     format:
       glob: "*.go"
-      run: mise exec -- golangci-lint fmt --diff
+      run: mise exec -- golangci-lint fmt --diff && cd bench && mise exec -- golangci-lint fmt --diff

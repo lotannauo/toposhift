@@ -36,6 +36,11 @@ type Fingerprint struct {
 // Type returns the entity type.
 func (f Fingerprint) Type() catalog.EntityType { return f.typ }
 
+// Hash returns the [FingerprintBytes] bytes of the digest, for a store that keys
+// by a compact binary form (a numeric type id plus these bytes) instead of the
+// text form.
+func (f Fingerprint) Hash() [FingerprintBytes]byte { return f.sum }
+
 // IsZero reports whether f is the zero, invalid fingerprint.
 func (f Fingerprint) IsZero() bool { return f == Fingerprint{} }
 

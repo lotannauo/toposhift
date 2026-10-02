@@ -13,16 +13,38 @@ shellcheck = "0.11.0"
 jq = "1.8.2"
 
 [tasks.fmt]
-description = "Format Go code in place"
-run = "golangci-lint fmt"
+description = "Format Go code in place, including the bench module"
+run = [
+  "golangci-lint fmt",
+  "cd bench && golangci-lint fmt",
+]
 
 [tasks."fmt:check"]
 description = "Fail if any Go file is not formatted"
 run = "golangci-lint fmt --diff"
 
+# golangci-lint takes a file lock by default and fails a second concurrent run.
+# `mise run ci` runs the root and bench lints at the same time, so both allow it.
 [tasks.lint]
 description = "Lint Go code"
-run = "golangci-lint run"
+run = "golangci-lint run --allow-parallel-runners"
+
+# The bench module is separate (it carries a replace directive the root module
+# must never have), so the root tasks above do not descend into it.
+[tasks."bench:fmt:check"]
+description = "Fail if any Go file in the bench module is not formatted"
+dir = "bench"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:lint"]
+description = "Lint the bench module"
+dir = "bench"
+run = "golangci-lint run --allow-parallel-runners"
+
+[tasks."bench:test"]
+description = "Run the bench module's tests with the race detector"
+dir = "bench"
+run = "go test -race -count=1 ./..."
 
 [tasks."lint:workflows"]
 description = "Lint GitHub Actions workflows"
@@ -62,7 +84,7 @@ run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
 [tasks.ci]
 description = "Everything CI runs, in the same order"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "vuln", "lint:workflows", "secrets"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "vuln", "lint:workflows", "secrets"]
 
 [tasks.hooks]
 description = "Install the git hooks"
