@@ -26,6 +26,7 @@ func TestDefaultIsValid(t *testing.T) {
 
 type wantKey struct {
 	name     catalog.AttributeKey
+	kind     catalog.Kind
 	optional bool
 }
 
@@ -37,22 +38,22 @@ func TestDefaultEntities(t *testing.T) {
 		layer catalog.Layer
 		keys  []wantKey
 	}{
-		{catalog.Rack, catalog.L0, []wantKey{{"topo.rack.id", false}}},
-		{catalog.Switch, catalog.L0, []wantKey{{"topo.switch.id", false}}},
-		{catalog.Port, catalog.L0, []wantKey{{"topo.port.id", false}}},
-		{catalog.Host, catalog.L1, []wantKey{{"host.id", false}}},
-		{catalog.Zone, catalog.L1, []wantKey{{"topo.zone.id", false}}},
-		{catalog.K8sNode, catalog.L2, []wantKey{{"k8s.node.uid", false}}},
-		{catalog.K8sPod, catalog.L2, []wantKey{{"k8s.pod.uid", false}}},
-		{catalog.Container, catalog.L2, []wantKey{{"container.id", false}}},
+		{catalog.Rack, catalog.L0, []wantKey{{"topo.rack.id", catalog.KindString, false}}},
+		{catalog.Switch, catalog.L0, []wantKey{{"topo.switch.id", catalog.KindString, false}}},
+		{catalog.Port, catalog.L0, []wantKey{{"topo.port.id", catalog.KindString, false}}},
+		{catalog.Host, catalog.L1, []wantKey{{"host.id", catalog.KindString, false}}},
+		{catalog.Zone, catalog.L1, []wantKey{{"topo.zone.id", catalog.KindString, false}}},
+		{catalog.K8sNode, catalog.L2, []wantKey{{"k8s.node.uid", catalog.KindString, false}}},
+		{catalog.K8sPod, catalog.L2, []wantKey{{"k8s.pod.uid", catalog.KindString, false}}},
+		{catalog.Container, catalog.L2, []wantKey{{"container.id", catalog.KindString, false}}},
 		{catalog.Process, catalog.L2, []wantKey{
-			{"host.id", false}, {"process.pid", false}, {"process.creation.time", false},
+			{"host.id", catalog.KindString, false}, {"process.pid", catalog.KindInt, false}, {"process.creation.time", catalog.KindTime, false},
 		}},
 		{catalog.ServiceInstance, catalog.L2, []wantKey{
-			{"service.namespace", true}, {"service.name", false}, {"service.instance.id", false},
+			{"service.namespace", catalog.KindString, true}, {"service.name", catalog.KindString, false}, {"service.instance.id", catalog.KindString, false},
 		}},
 		{catalog.Service, catalog.L3, []wantKey{
-			{"service.namespace", true}, {"service.name", false},
+			{"service.namespace", catalog.KindString, true}, {"service.name", catalog.KindString, false},
 		}},
 	}
 
@@ -69,7 +70,7 @@ func TestDefaultEntities(t *testing.T) {
 			}
 			var got []wantKey
 			for k := range e.Keys() {
-				got = append(got, wantKey{k.Name, k.Optional})
+				got = append(got, wantKey{k.Name, k.Kind, k.Optional})
 			}
 			if !slices.Equal(got, tt.keys) {
 				t.Errorf("keys = %v, want %v", got, tt.keys)

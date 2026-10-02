@@ -105,10 +105,40 @@ func (s Storage) String() string {
 	return "Storage(" + strconv.Itoa(int(s)) + ")"
 }
 
+// Kind is the value type of an identifying attribute. The identity layer
+// converts every incoming value to its key's kind before hashing, so producers
+// that disagree on integer versus string for one attribute still agree on one
+// entity. The zero value is invalid.
+type Kind uint8
+
+const (
+	// KindString is a UTF-8 string.
+	KindString Kind = iota + 1
+	// KindInt is a 64-bit signed integer.
+	KindInt
+	// KindTime is an instant in time.
+	KindTime
+)
+
+func (k Kind) String() string {
+	switch k {
+	case KindString:
+		return "string"
+	case KindInt:
+		return "int"
+	case KindTime:
+		return "time"
+	}
+	return "Kind(" + strconv.Itoa(int(k)) + ")"
+}
+
 // Key is one identifying attribute of an entity type.
 type Key struct {
 	// Name is the attribute name used in the identity hash.
 	Name AttributeKey
+	// Kind is the attribute's value type. An attribute name has one kind in
+	// every entity type that uses it.
+	Kind Kind
 	// Optional marks a key whose absence is valid; an empty value normalizes
 	// to absent. Every required key rejects empty values. OpenTelemetry
 	// treats an empty service.namespace as an unspecified one, which is why
