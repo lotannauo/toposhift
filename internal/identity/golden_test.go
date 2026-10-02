@@ -187,6 +187,10 @@ func TestGoldenFileRoundTrips(t *testing.T) {
 			if err != nil || fp != parsed.Fingerprint() {
 				t.Errorf("ParseFingerprint(%q) = %v, %v", v.Fingerprint, fp, err)
 			}
+			rebuilt, err := identity.FingerprintFromHash(fp.Type(), fp.Hash())
+			if err != nil || rebuilt != fp {
+				t.Errorf("FingerprintFromHash(%s, %x) = %v, %v; want %s", fp.Type(), fp.Hash(), rebuilt, err, fp)
+			}
 			resolved, err := r.Resolve(v.Type, toAttrs(v.Attrs))
 			if err != nil || resolved != parsed {
 				t.Errorf("Resolve(inputs) = %v, %v; want %s", resolved, err, parsed)

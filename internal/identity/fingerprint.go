@@ -78,6 +78,19 @@ func (f *Fingerprint) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// FingerprintFromHash is the inverse of [Fingerprint.Type] and
+// [Fingerprint.Hash]: it rebuilds a fingerprint from the type and bytes a store
+// keyed by the compact binary form kept. Like [ParseFingerprint] it does not
+// need a catalog and does not check that the type exists, only that the name is
+// a valid type name. Any hash is accepted, because a digest has no invalid
+// value.
+func FingerprintFromHash(typ catalog.EntityType, hash [FingerprintBytes]byte) (Fingerprint, error) {
+	if !typ.Valid() {
+		return Fingerprint{}, fmt.Errorf("%w: %q is not a valid type name", ErrFingerprint, typ)
+	}
+	return Fingerprint{typ: typ, sum: hash}, nil
+}
+
 // ParseFingerprint parses the form [Fingerprint.String] produces. It is
 // strict: a valid type name, a colon, and exactly 32 lowercase hex digits.
 // It does not need a catalog, so it does not check that the type exists.

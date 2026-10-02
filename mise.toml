@@ -46,6 +46,43 @@ description = "Run the bench module's tests with the race detector"
 dir = "bench"
 run = "go test -race -count=1 ./..."
 
+[tasks."bench:vuln"]
+description = "Scan the bench module's dependencies for known vulnerabilities"
+dir = "bench"
+run = "go tool govulncheck ./..."
+
+# toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
+# build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the
+# cgo DataDog/zstd otherwise. This builds and runs the Pebble code with cgo off
+# (the ordinary bench:test runs with the race detector, which needs cgo on Linux), and checks
+# that neither way of asking for pure Go leaves the cgo library in the build.
+[tasks."bench:purego"]
+description = "Build and run the Pebble code with CGO disabled and check no cgo zstd is linked"
+dir = "bench"
+run = '''
+set -eu
+export CGO_ENABLED=0
+go build ./...
+go test -count=1 ./spike/pebblekv
+go test -count=1 ./spike/pebblemvcc -rapid.checks=2 -run 'TestConforms/crdb1/(instant|extremes|producers|write_contract|read_contract|config_0_retain_\[0.3_0.7\]|reopen)|TestVersions|TestRetention'
+# The check below must be able to fail: with cgo on and no tag, Pebble does link
+# the cgo zstd. The package list is captured first, so a failing go list stops
+# the task (a pipeline into grep -q would hide it, and grep -q closing the pipe
+# early makes pipefail unusable).
+deps() {
+  list="$(CGO_ENABLED="$1" go list -deps -tags "$2" ./...)"
+  printf '%s\n' "$list" | grep -c 'github.com/DataDog/zstd' || true
+}
+if [ "$(deps 1 "")" = 0 ]; then
+  echo "bench:purego: the cgo zstd is not in a default build, so this check no longer proves anything" >&2
+  exit 1
+fi
+if [ "$(deps 0 "")" != 0 ] || [ "$(deps 1 pebblegozstd)" != 0 ]; then
+  echo "bench:purego: the cgo zstd is linked with cgo off, or with the pebblegozstd tag" >&2
+  exit 1
+fi
+'''
+
 [tasks."lint:workflows"]
 description = "Lint GitHub Actions workflows"
 run = [
@@ -84,7 +121,7 @@ run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
 [tasks.ci]
 description = "Everything CI runs, in the same order"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "vuln", "lint:workflows", "secrets"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "bench:purego", "vuln", "bench:vuln", "lint:workflows", "secrets"]
 
 [tasks.hooks]
 description = "Install the git hooks"

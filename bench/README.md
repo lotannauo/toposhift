@@ -11,9 +11,11 @@ based `internal/` visibility still lets it use the root module's `internal/`
 packages. There is no committed `go.work`.
 
 ```sh
-mise run bench:test   # tests with the race detector
-mise run bench:lint   # lint
-mise run ci           # includes the bench tasks
+mise run bench:test    # tests with the race detector
+mise run bench:lint    # lint
+mise run bench:vuln    # govulncheck on this module's dependencies
+mise run bench:purego  # the Pebble code builds and runs with CGO disabled
+mise run ci            # includes the bench tasks
 ```
 
 ## spike
@@ -25,6 +27,11 @@ mise run ci           # includes the bench tasks
 - `spike/oracle`: the reference engine, built on the lifecycle specification.
 - `spike/conformance`: the conformance test every candidate must pass, which
   checks a candidate against the oracle on generated workloads.
+- `spike/pebblekv`: what the Pebble-backed candidates share: the numeric ids that
+  keys carry (pinned by a golden file), the value codec, how a database is opened,
+  and the liveness rule applied to the versions a read finds.
+- `spike/pebblemvcc`: layout M, per-edge MVCC versions on Pebble's `cockroachkvs`
+  (see its package documentation for the key layout, the read and the retention).
 
 ### Adding a candidate
 
@@ -51,6 +58,13 @@ reads are checked against files and not only memory), `LayerSizer` and
 `Breakdowner`, and take an `engine.Recorder` at construction to report counts and
 samples (block bytes read, replay length, checkpoint hits) without changing its
 code for each measurement.
+
+`Run` runs the reopen and concurrent-read checks one at a time first, and then the
+workloads and the other scripted checks as parallel subtests (each opens its own
+engine from the factory, so a factory must not share state between engines);
+`RunSerial` keeps them serial. Because Go starts a parallel subtest only after the
+function that created it returns, a caller must not `defer` teardown after `Run`:
+it would run before the checks (`t.Cleanup` is fine).
 
 The contract the test enforces, beyond answering reads like the oracle:
 
@@ -100,7 +114,9 @@ Beyond the random workloads, `Run` runs scripted checks on a fresh engine:
 `CheckInstant` (several records of one producer at one instant, every token
 between them, then a retention at that very instant; sequence numbers that
 cross 2^32), `CheckProducers` (a reference belongs to the producer that made it:
-one producer's delete does not end another's), `CheckExtremes` (records,
+one producer's delete does not end another's), `CheckRelations` (two relations
+between one pair of entities are two edges, and a self-loop is read from both
+sides; no random workload builds either), `CheckExtremes` (records,
 deadlines and runs at both ends of the time range), `CheckReadContract` and
 `CheckWriteContract`.
 
@@ -109,7 +125,10 @@ The random workloads include a second producer that confirms pod placements
 (`FirstSeq`), late records and retention. The conformance package's own tests
 run `rapid` for 25 checks (a `-rapid.checks` on the command line wins), because
 they run it against the oracle and about fifty deliberately broken engines under
-the race detector; a candidate's own package gets rapid's default of 100. The
+the race detector. A candidate's package sets its own default: Pebble runs its own
+invariant checks in race builds, which costs seconds per workload, so the Pebble
+layouts run 4 and the fixed workloads carry the coverage; a deeper run is
+`go test ./spike/pebblemvcc -rapid.checks=100`. The
 broken engines are the evidence that each check can fail: every one must be caught
 by the check written for it, and by the random workloads too unless it says only a
 scripted check can reach it. An honest engine that really discards history

@@ -293,6 +293,7 @@ func withToken(sc engine.Scope, layer catalog.Layer) engine.Scope {
 var detectors = map[string]func(engine.Engine) error{
 	"instant":       conformance.CheckInstant,
 	"producers":     conformance.CheckProducers,
+	"relations":     conformance.CheckRelations,
 	"extremes":      conformance.CheckExtremes,
 	"read contract": conformance.CheckReadContract,
 }
@@ -483,6 +484,27 @@ func TestHarnessCatchesBrokenEngines(t *testing.T) {
 			}
 			return b
 		}, by: []string{"instant"}, wrong: true},
+
+		// The workload fixes an edge's relation by the types at its ends, so no
+		// random workload gives a pair two relations: only the scripted check
+		// can tell an engine that identifies an edge by its ends alone.
+		"identifies an edge by its two ends, not its relation": {make: func() *broken {
+			b := newBroken()
+			b.neighbors = func(r engine.Engine, fp identity.Fingerprint, dir engine.Direction, t time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
+				ns, err := r.Neighbors(fp, dir, t, sc)
+				if err != nil {
+					return nil, err
+				}
+				var out []engine.Neighbor
+				for _, n := range ns {
+					if len(out) == 0 || out[len(out)-1].Peer != n.Peer {
+						out = append(out, n)
+					}
+				}
+				return out, nil
+			}
+			return b
+		}, by: []string{"relations"}, wrong: true, scriptedOnly: true},
 
 		"ignores the layer in Neighbors": {make: func() *broken {
 			b := newBroken()
