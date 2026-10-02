@@ -270,6 +270,10 @@ func TestPropertyRoundTrip(t *testing.T) {
 		if err != nil || fp != id.Fingerprint() {
 			t.Fatalf("ParseFingerprint(String()) = %v, %v", fp, err)
 		}
+		fromHash, err := identity.FingerprintFromHash(id.Type(), id.Fingerprint().Hash())
+		if err != nil || fromHash != id.Fingerprint() {
+			t.Fatalf("FingerprintFromHash(Type(), Hash()) = %v, %v; want %s", fromHash, err, id.Fingerprint())
+		}
 		if got := (sample{typ: s.typ, norm: attrsToNorm(id.Attrs())}).signature(); got != s.signature() {
 			t.Fatalf("Attrs() changed the meaning:\n got %s\nwant %s", got, s.signature())
 		}

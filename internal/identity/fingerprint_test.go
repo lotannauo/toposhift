@@ -111,3 +111,39 @@ func TestZeroValues(t *testing.T) {
 		t.Errorf("zero identity: %+v", id)
 	}
 }
+
+func TestFingerprintFromHashRejectsAnInvalidType(t *testing.T) {
+	t.Parallel()
+
+	var hash [identity.FingerprintBytes]byte
+	for name, typ := range map[string]catalog.EntityType{
+		"empty":     "",
+		"uppercase": "Host",
+		"space":     "ho st",
+		"colon":     "host:x",
+	} {
+		fp, err := identity.FingerprintFromHash(typ, hash)
+		if !errors.Is(err, identity.ErrFingerprint) || !fp.IsZero() {
+			t.Errorf("%s: FingerprintFromHash(%q) = %v, %v; want the zero fingerprint and ErrFingerprint", name, typ, fp, err)
+		}
+	}
+}
+
+// A digest has no invalid value, so even the all-zero hash makes a fingerprint:
+// the zero fingerprint is the empty type, not a zero hash.
+func TestFingerprintFromHashAcceptsAnyHash(t *testing.T) {
+	t.Parallel()
+
+	var hash [identity.FingerprintBytes]byte
+	fp, err := identity.FingerprintFromHash(catalog.Host, hash)
+	if err != nil || fp.IsZero() {
+		t.Fatalf("FingerprintFromHash(host, zero hash) = %v, %v", fp, err)
+	}
+	if got, want := fp.String(), "host:"+strings.Repeat("0", 2*identity.FingerprintBytes); got != want {
+		t.Errorf("String() = %s, want %s", got, want)
+	}
+	back, err := identity.ParseFingerprint(fp.String())
+	if err != nil || back != fp {
+		t.Errorf("ParseFingerprint(String()) = %v, %v; want %s", back, err, fp)
+	}
+}

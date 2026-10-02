@@ -279,9 +279,19 @@ func Configs() []workload.Config {
 // alongside writes see consistent states. It is the test a candidate layout must
 // pass. [RunSerial] is the same without the last two, for an engine that has no
 // files or is not safe for concurrent use: a test double.
+//
+// Run returns before the parallel subtests have run (Go starts a parallel
+// subtest only after its parent function returns), so a caller must not defer
+// teardown after it; use t.Cleanup.
 func Run(t *testing.T, newEngine Factory) {
 	t.Helper()
-	runChecks(t, newEngine)
+	// The reopen and concurrent-read checks run first, one at a time, so the
+	// concurrent-read check's writer and readers are not also competing with this
+	// candidate's own heavy workloads (other tests in the process may still be
+	// running; the check's acceptance rule does not depend on timing, only its
+	// running time does). Go holds a parallel subtest until its parent returns, so
+	// the workloads and scripted checks, which are independent of one another and
+	// each own an engine, then run side by side.
 	t.Run("reopen", func(t *testing.T) {
 		if err := CheckReopen(newEngine); err != nil {
 			t.Fatal(err)
@@ -292,12 +302,13 @@ func Run(t *testing.T, newEngine Factory) {
 			t.Fatal(err)
 		}
 	})
+	runChecks(t, newEngine, true)
 }
 
 // RunSerial is [Run] without the reopen check and the concurrent-read check.
 func RunSerial(t *testing.T, newEngine Factory) {
 	t.Helper()
-	runChecks(t, newEngine)
+	runChecks(t, newEngine, false)
 }
 
 // open builds a candidate in a directory the test owns and closes it afterwards.
@@ -311,11 +322,22 @@ func open(t *testing.T, newEngine Factory) engine.Engine {
 	return e
 }
 
-func runChecks(t *testing.T, newEngine Factory) {
+func runChecks(t *testing.T, newEngine Factory, parallel bool) {
 	t.Helper()
+	// Every subtest opens its own engine from the factory, so with parallel set
+	// they may run side by side. RunSerial leaves them serial, for a factory whose
+	// engines share state.
+	sub := func(t *testing.T, name string, f func(*testing.T)) {
+		t.Run(name, func(t *testing.T) {
+			if parallel {
+				t.Parallel()
+			}
+			f(t)
+		})
+	}
 	for i, cfg := range Configs() {
 		for _, retain := range [][]float64{nil, {0.5}, {0.3, 0.7}} {
-			t.Run(fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
+			sub(t, fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
 				if err := Check(open(t, newEngine), cfg, Options{RetainAt: retain}); err != nil {
 					t.Fatal(err)
 				}
@@ -327,15 +349,16 @@ func runChecks(t *testing.T, newEngine Factory) {
 		"read contract":  CheckReadContract,
 		"instant":        CheckInstant,
 		"producers":      CheckProducers,
+		"relations":      CheckRelations,
 		"extremes":       CheckExtremes,
 	} {
-		t.Run(name, func(t *testing.T) {
+		sub(t, name, func(t *testing.T) {
 			if err := check(open(t, newEngine)); err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
-	t.Run("random workloads", func(t *testing.T) {
+	sub(t, "random workloads", func(t *testing.T) {
 		rapid.Check(t, func(rt *rapid.T) {
 			cfg := workload.Tiny()
 			cfg.Seed = rapid.Uint64Range(1, 1<<40).Draw(rt, "seed")

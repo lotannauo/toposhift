@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "container": 8,
+    "host": 4,
+    "k8s.node": 6,
+    "k8s.pod": 7,
+    "process": 9,
+    "service": 11,
+    "service.instance": 10,
+    "topo.port": 3,
+    "topo.rack": 1,
+    "topo.switch": 2,
+    "topo.zone": 5
+  },
+  "relations": {
+    "depends_on": 6,
+    "instance_of": 5,
+    "located_in": 4,
+    "part_of": 1,
+    "runs_on": 3,
+    "same_as": 7,
+    "scheduled_on": 2
+  },
+  "layers": {
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4
+  }
+}

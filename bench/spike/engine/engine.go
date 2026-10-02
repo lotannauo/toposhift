@@ -249,7 +249,9 @@ type Engine interface {
 	// The engine writes both directions of every edge.
 	// A batch with any invalid record, or any record before the retention
 	// horizon ([ErrBeforeHorizon]), is refused whole: nothing from it is
-	// stored, and its sequence numbers stay unused.
+	// stored, and its sequence numbers stay unused. An engine whose layout has a
+	// finite capacity may also refuse a valid record with [ErrInvalid] when it is
+	// reached (the MVCC layout, after 2^32-1 versions of one key at one instant).
 	//
 	// Every record of one subject must carry the same Layer. That is the
 	// caller's precondition: an engine is not required to detect a violation,

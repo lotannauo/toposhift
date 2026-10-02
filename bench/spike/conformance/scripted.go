@@ -219,6 +219,57 @@ func CheckProducers(cand engine.Engine) error {
 	return s.check([]identity.Fingerprint{pod, node}, []catalog.Layer{catalog.L2, catalog.L1}, times, tokensAround(seqBase+1, seq), engine.MinEventTime)
 }
 
+// CheckRelations checks that an edge is identified by its relation as well as
+// its two ends: two relations between one pair of entities are two edges, one
+// ending does not end the other, and an edge from an entity to itself is read from
+// both of its sides. The workload fixes the relation by the types at its ends, so
+// no random workload puts two relations on one pair, and a layout that grouped by
+// peer alone would pass them all. Use a fresh engine.
+func CheckRelations(cand engine.Engine) error {
+	pod, err := entityFP(catalog.K8sPod, catalog.K8sPodUID, "relations-pod")
+	if err != nil {
+		return err
+	}
+	node, err := entityFP(catalog.K8sNode, catalog.K8sNodeUID, "relations-node")
+	if err != nil {
+		return err
+	}
+	x := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	var seq uint64 = seqBase
+	var recs []engine.Record
+	say := func(sub engine.Subject, p lifecycle.Producer, at time.Duration, kind lifecycle.Kind, ttl time.Duration) {
+		seq++
+		r := engine.Record{Layer: catalog.L2, Subject: sub, Producer: p, EventTime: x.Add(at), Seq: seq, Kind: kind, TTL: ttl}
+		if kind == lifecycle.Observe {
+			r.Payload = []byte(sub.Relation)
+		}
+		recs = append(recs, r)
+	}
+	sched, runs := engine.EdgeSubject(pod, node, catalog.ScheduledOn), engine.EdgeSubject(pod, node, catalog.RunsOn)
+	loop := engine.EdgeSubject(pod, pod, catalog.PartOf)
+	say(sched, "p", 0, lifecycle.Observe, 0)
+	say(runs, "p", time.Minute, lifecycle.Observe, 0)
+	say(loop, "p", 90*time.Second, lifecycle.Observe, 2*time.Minute)
+	say(sched, "p", 2*time.Minute, lifecycle.Delete, 0) // only the first relation ends
+	say(runs, "q", 3*time.Minute, lifecycle.Observe, time.Minute)
+	say(runs, "p", 5*time.Minute, lifecycle.Delete, 0)
+
+	s := newScenario(cand, func(t time.Time) string { return t.Sub(x).String() })
+	for _, r := range recs {
+		if err := s.write(r); err != nil {
+			return err
+		}
+	}
+	times := []time.Time{x.Add(-time.Nanosecond)}
+	for _, at := range []time.Duration{
+		0, 30 * time.Second, time.Minute, 90 * time.Second, 2*time.Minute - 1, 2 * time.Minute, 3 * time.Minute,
+		3*time.Minute + 30*time.Second, 3*time.Minute + 30*time.Second + 1, 4 * time.Minute, 5 * time.Minute, time.Hour,
+	} {
+		times = append(times, x.Add(at))
+	}
+	return s.check([]identity.Fingerprint{pod, node}, []catalog.Layer{catalog.L2, catalog.L1}, times, tokensAround(seqBase+1, seq), engine.MinEventTime)
+}
+
 // CheckExtremes checks the ends of the representable range, where a layout that
 // encodes time in a narrow or unsigned field can go wrong: a record at the very
 // first instant (an encoding that treats time zero as "no version" sorts it
