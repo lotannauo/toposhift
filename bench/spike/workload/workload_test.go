@@ -713,3 +713,163 @@ func TestASecondProducerConfirmsPlacementAtTheAskedRate(t *testing.T) {
 		}
 	}
 }
+
+// storeStream plays a generator against a store that retains at h as soon as it
+// has seen an event time at or after h, and refuses, drops, any later record
+// older than h. It returns what the store kept. With tell, the generator is told
+// about the horizon, as the conformance test tells it.
+func storeStream(t *testing.T, cfg workload.Config, h time.Time, tell bool) []engine.Record {
+	t.Helper()
+	g, err := workload.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []engine.Record
+	retained := false
+	for {
+		r, ok := g.Next()
+		if !ok {
+			return kept
+		}
+		if retained && r.EventTime.Before(h) {
+			continue // refused: before the horizon
+		}
+		kept = append(kept, r)
+		if !retained && !r.EventTime.Before(h) {
+			retained = true
+			if tell {
+				g.SetHorizon(h)
+			}
+		}
+	}
+}
+
+func TestARunThatStartedBeforeTheHorizonIsContinuedNotExtended(t *testing.T) {
+	t.Parallel()
+
+	cfg := workload.Tiny()
+	cfg.CoalesceRuns, cfg.LateProbability = true, 0
+	h := cfg.Start.Add(10 * time.Minute)
+
+	extendedBefore := func(rs []engine.Record) (n int) {
+		for _, r := range rs {
+			if !r.Through.IsZero() && r.EventTime.Before(h) {
+				n++
+			}
+		}
+		return n
+	}
+	// Without the horizon, every heartbeat of a run that began at the start of
+	// the stream re-asserts it at that start: the store would refuse all of them.
+	generated := func() []engine.Record { // what the generator offers, before the store refuses any
+		var all []engine.Record
+		g, _ := workload.New(cfg)
+		retained := false
+		for {
+			r, ok := g.Next()
+			if !ok {
+				return all
+			}
+			if retained {
+				all = append(all, r)
+			}
+			if !r.EventTime.Before(h) {
+				retained = true
+			}
+		}
+	}()
+	if extendedBefore(generated) == 0 {
+		t.Fatal("without the horizon, no extension was offered at a start before it: the test shows nothing")
+	}
+
+	// Told the horizon, the generator never offers one.
+	g, err := workload.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	told := false
+	extended := 0
+	for {
+		r, ok := g.Next()
+		if !ok {
+			break
+		}
+		if told && !r.Through.IsZero() && r.EventTime.Before(h) {
+			t.Fatalf("after SetHorizon(%s), an extension was offered at %s", h, r.EventTime)
+		}
+		if told && !r.Through.IsZero() {
+			extended++
+		}
+		if !told && !r.EventTime.Before(h) {
+			told = true
+			g.SetHorizon(h)
+		}
+	}
+	if extended == 0 {
+		t.Error("after the horizon no run was extended at all: new runs are not being extended either")
+	}
+}
+
+func TestRetentionDoesNotKillAHeartbeatingRun(t *testing.T) {
+	t.Parallel()
+
+	nodesAlive := func(rs []engine.Record, cfg workload.Config, at time.Time) map[identity.Fingerprint]bool {
+		o := oracle.New()
+		if err := o.Write(slices.Clone(rs)); err != nil {
+			t.Fatal(err)
+		}
+		g, _ := workload.New(cfg)
+		alive := map[identity.Fingerprint]bool{}
+		for _, fp := range g.Entities() {
+			if fp.Type() != catalog.K8sNode {
+				continue
+			}
+			ok, err := o.Alive(fp, at, entityScope(fp))
+			if err != nil {
+				t.Fatal(err)
+			}
+			alive[fp] = ok
+		}
+		return alive
+	}
+
+	base := workload.Tiny()
+	base.LateProbability = 0 // a late record that the store refuses would differ for a reason other than the runs
+	h := base.Start.Add(10 * time.Minute)
+	probes := []time.Time{h, h.Add(7 * time.Minute), base.Start.Add(base.Duration - time.Second)}
+
+	truth := base // every heartbeat a record of its own: nothing coalesced, nothing retained
+	whole, err := workload.New(truth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference := whole.All()
+
+	for _, extendEvery := range []time.Duration{0, 2 * time.Minute} {
+		cfg := base
+		cfg.CoalesceRuns, cfg.ExtendEvery = true, extendEvery
+		for _, at := range probes {
+			want := nodesAlive(reference, truth, at)
+			told := nodesAlive(storeStream(t, cfg, h, true), cfg, at)
+			untold := nodesAlive(storeStream(t, cfg, h, false), cfg, at)
+
+			killed := 0
+			for fp, alive := range want {
+				switch {
+				case told[fp] && !alive:
+					t.Fatalf("ExtendEvery %s at %s: %s is alive after retention but not in the uncoalesced stream", extendEvery, at.Sub(base.Start), fp)
+				case extendEvery == 0 && alive && !told[fp]:
+					t.Fatalf("ExtendEvery 0 at %s: %s was alive and the retained, told stream says dead", at.Sub(base.Start), fp)
+				}
+				if alive && !untold[fp] {
+					killed++
+				}
+			}
+			// The stream that is not told the horizon loses every run that began
+			// before it, so by the end of the stream they are dead.
+			if at.After(h.Add(5*time.Minute)) && extendEvery == 0 && killed == 0 {
+				t.Errorf("at %s no run was killed by retention without the horizon: the test shows nothing", at.Sub(base.Start))
+			}
+		}
+	}
+}

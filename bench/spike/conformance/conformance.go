@@ -39,9 +39,12 @@ import (
 // failed call or a refused write.
 var ErrMismatch = errors.New("candidate and oracle disagree")
 
-// Factory builds a fresh, empty candidate that keeps whatever it stores under
-// dir, an empty directory the harness owns and removes afterwards. A candidate
-// with no files ignores it.
+// Factory opens a candidate that keeps whatever it stores under dir, a
+// directory the harness owns and removes afterwards. The directory is empty (a
+// new, empty candidate) or holds what the same candidate left before it was
+// closed, in which case the candidate must come back exactly as it was: its
+// records, its token and its retention horizon. A candidate with no files, a
+// test double, ignores dir and cannot be reopened (see [RunSerial]).
 type Factory func(dir string) (engine.Engine, error)
 
 // Options tunes Check.
@@ -58,6 +61,13 @@ type Options struct {
 	// the retention horizon is moved mid-stream. Moving it twice checks that a
 	// second retention works on what the first left behind. Empty disables it.
 	RetainAt []float64
+	// ReopenAt lists the fractions of the simulated period, ascending, at which
+	// the candidate is closed and opened again with Reopen, and then must have
+	// every answer, its token and its horizon as it was. Empty disables it.
+	ReopenAt []float64
+	// Reopen closes old, which the caller no longer owns afterwards, and returns
+	// the candidate opened over what it left. Required with ReopenAt.
+	Reopen func(old engine.Engine) (engine.Engine, error)
 }
 
 func (o Options) withDefaults() Options {
@@ -77,7 +87,9 @@ func (o Options) withDefaults() Options {
 }
 
 // Check runs one workload through the candidate and the oracle and returns the
-// first disagreement, or nil. The candidate is not closed.
+// first disagreement, or nil. The candidate is not closed, unless ReopenAt is
+// set, when the candidate the stream ends with is the one Reopen returned last
+// and the caller must close that one.
 func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 	opts = opts.withDefaults()
 	g, err := workload.New(cfg)
@@ -92,18 +104,33 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 		return err
 	}
 
-	horizons := make([]time.Time, len(opts.RetainAt))
-	for i, f := range opts.RetainAt {
-		if f <= 0 || f >= 1 || (i > 0 && f <= opts.RetainAt[i-1]) {
-			return fmt.Errorf("conformance: RetainAt must be ascending fractions in (0, 1), got %v", opts.RetainAt)
+	at := func(name string, fractions []float64) ([]time.Time, error) {
+		out := make([]time.Time, len(fractions))
+		for i, f := range fractions {
+			if f <= 0 || f >= 1 || (i > 0 && f <= fractions[i-1]) {
+				return nil, fmt.Errorf("conformance: %s must be ascending fractions in (0, 1), got %v", name, fractions)
+			}
+			out[i] = g.Start().Add(time.Duration(f * float64(g.End().Sub(g.Start()))))
 		}
-		horizons[i] = g.Start().Add(time.Duration(f * float64(g.End().Sub(g.Start()))))
+		return out, nil
+	}
+	horizons, err := at("RetainAt", opts.RetainAt)
+	if err != nil {
+		return err
+	}
+	reopens, err := at("ReopenAt", opts.ReopenAt)
+	if err != nil {
+		return err
+	}
+	if len(reopens) > 0 && opts.Reopen == nil {
+		return errors.New("conformance: ReopenAt needs Reopen")
 	}
 
 	var written []engine.Record
 	var horizon time.Time // the current retention horizon; zero before the first
 	var tokenFloor uint64 // the sequence the engine had reached at the last retention
 	next := 0             // the next entry of horizons to apply
+	nextReopen := 0       // the next entry of reopens to apply
 	batches := 0
 	state := func() probeState {
 		return probeState{entities: entities, stranger: stranger, written: written, horizon: horizon, tokenFloor: tokenFloor}
@@ -152,6 +179,7 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 			horizon = horizons[next]
 			next++
 			tokenFloor = ora.LastSeq()
+			g.SetHorizon(horizon)
 			if err := cand.Retain(horizon); err != nil {
 				return fmt.Errorf("candidate Retain: %w", err)
 			}
@@ -163,6 +191,15 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 			}
 			if err := compare(cand, ora, rng, opts, state()); err != nil {
 				return fmt.Errorf("after Retain(%s): %w", horizon.Format(time.RFC3339), err)
+			}
+		}
+		for len(batch) > 0 && nextReopen < len(reopens) && !batch[len(batch)-1].EventTime.Before(reopens[nextReopen]) {
+			nextReopen++
+			if cand, err = reopen(cand, opts, written, horizon); err != nil {
+				return fmt.Errorf("after %d records: %w", len(written), err)
+			}
+			if err := compare(cand, ora, rng, opts, state()); err != nil {
+				return fmt.Errorf("after reopening at %d records: %w", len(written), err)
 			}
 		}
 		if batches%opts.CheckEvery == 0 {
@@ -237,23 +274,49 @@ func Configs() []workload.Config {
 }
 
 // Run checks a candidate against the oracle on every config, with and without a
-// mid-stream retention, and runs the scripted checks. It is the test a
-// candidate layout must pass.
+// mid-stream retention, and runs the scripted checks, the check that it comes
+// back from being closed and reopened, and the check that reads running
+// alongside writes see consistent states. It is the test a candidate layout must
+// pass. [RunSerial] is the same without the last two, for an engine that has no
+// files or is not safe for concurrent use: a test double.
 func Run(t *testing.T, newEngine Factory) {
 	t.Helper()
-	open := func(t *testing.T) engine.Engine {
-		t.Helper()
-		e, err := newEngine(t.TempDir())
-		if err != nil {
+	runChecks(t, newEngine)
+	t.Run("reopen", func(t *testing.T) {
+		if err := CheckReopen(newEngine); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = e.Close() })
-		return e
+	})
+	t.Run("concurrent reads", func(t *testing.T) {
+		if err := CheckConcurrentReads(open(t, newEngine)); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// RunSerial is [Run] without the reopen check and the concurrent-read check.
+func RunSerial(t *testing.T, newEngine Factory) {
+	t.Helper()
+	runChecks(t, newEngine)
+}
+
+// open builds a candidate in a directory the test owns and closes it afterwards.
+func open(t *testing.T, newEngine Factory) engine.Engine {
+	t.Helper()
+	e, err := newEngine(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = e.Close() })
+	return e
+}
+
+func runChecks(t *testing.T, newEngine Factory) {
+	t.Helper()
 	for i, cfg := range Configs() {
 		for _, retain := range [][]float64{nil, {0.5}, {0.3, 0.7}} {
 			t.Run(fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
-				if err := Check(open(t), cfg, Options{RetainAt: retain}); err != nil {
+				if err := Check(open(t, newEngine), cfg, Options{RetainAt: retain}); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -267,7 +330,7 @@ func Run(t *testing.T, newEngine Factory) {
 		"extremes":       CheckExtremes,
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := check(open(t)); err != nil {
+			if err := check(open(t, newEngine)); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -300,5 +363,84 @@ func Run(t *testing.T, newEngine Factory) {
 				rt.Fatal(err)
 			}
 		})
+	})
+}
+
+// reopen closes the candidate and opens it again, and checks what a reopening
+// must not lose: the token, the rule that Seq only rises, the retention
+// horizon, and that an earlier Retain still changes nothing.
+func reopen(cand engine.Engine, opts Options, written []engine.Record, horizon time.Time) (engine.Engine, error) {
+	before := cand.LastSeq()
+	next, err := opts.Reopen(cand)
+	if err != nil {
+		return nil, fmt.Errorf("reopening: %w", err)
+	}
+	if got := next.LastSeq(); got != before {
+		return next, fmt.Errorf("LastSeq = %d after reopening; it was %d", got, before)
+	}
+	if len(written) == 0 {
+		return next, nil
+	}
+	last := written[len(written)-1]
+	if err := next.Write(cloneRecords([]engine.Record{last})); !errors.Is(err, engine.ErrInvalid) {
+		return next, fmt.Errorf("after reopening, a record whose Seq %d was already written must be refused with ErrInvalid, got %w", last.Seq, orNil(err))
+	}
+	if !horizon.IsZero() {
+		if err := next.Retain(horizon.Add(-time.Hour)); err != nil {
+			return next, fmt.Errorf("after reopening, an earlier Retain must be accepted and ignored: %w", err)
+		}
+		stale := last
+		stale.Seq, stale.EventTime = before+1, horizon.Add(-time.Second)
+		if err := next.Write(cloneRecords([]engine.Record{stale})); !errors.Is(err, engine.ErrBeforeHorizon) {
+			return next, fmt.Errorf("after reopening, a record before the horizon %s must be refused with ErrBeforeHorizon, got %w", horizon.Format(time.RFC3339), orNil(err))
+		}
+	}
+	if got := next.LastSeq(); got != before {
+		return next, fmt.Errorf("a refused record moved LastSeq to %d after reopening; it was %d", got, before)
+	}
+	return next, nil
+}
+
+// CheckReopen runs workloads through a candidate that is closed and opened
+// again three times along the way, with a retention in between, comparing every
+// answer to the oracle's after each reopening. It is for a candidate that
+// persists; use it on a Factory that opens the same directory again.
+func CheckReopen(newEngine Factory) error {
+	configs := Configs()
+	for _, i := range []int{0, 2, 5} {
+		if err := checkReopen(newEngine, configs[i]); err != nil {
+			return fmt.Errorf("config %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func checkReopen(newEngine Factory, cfg workload.Config) error {
+	dir, err := os.MkdirTemp("", "conformance-reopen")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	cand, err := newEngine(dir)
+	if err != nil {
+		return err
+	}
+	// Whatever candidate is current at the end, or when something fails, is
+	// closed here; Reopen closes the one it replaces.
+	current := &cand
+	defer func() { _ = (*current).Close() }()
+	return Check(cand, cfg, Options{
+		RetainAt: []float64{0.45, 0.8}, ReopenAt: []float64{0.2, 0.5, 0.85}, CheckEvery: 15,
+		Reopen: func(old engine.Engine) (engine.Engine, error) {
+			if err := old.Close(); err != nil {
+				return nil, err
+			}
+			next, err := newEngine(dir)
+			if err != nil {
+				return nil, err
+			}
+			*current = next
+			return next, nil
+		},
 	})
 }

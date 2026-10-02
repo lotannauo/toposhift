@@ -37,6 +37,21 @@ func TestConforms(t *testing.T) {
 }
 ```
 
+The function opens `dir`, which is empty or holds what the same candidate left
+when it was closed; it must come back exactly as it was (records, token and
+retention horizon), because `Run` closes and reopens it along the way. An engine
+with no files, or one that is not safe for concurrent use (a test double), runs
+`conformance.RunSerial` instead, which leaves out the reopen and concurrent-read
+checks. `oracle.OpenDurable` is the oracle with a file under `dir`: a reference
+that persists, and what the harness tests itself against.
+
+An engine may also implement the optional interfaces in `engine/hooks.go`:
+`Settler` (flush and compact, which the conformance test calls between rounds so
+reads are checked against files and not only memory), `LayerSizer` and
+`Breakdowner`, and take an `engine.Recorder` at construction to report counts and
+samples (block bytes read, replay length, checkpoint hits) without changing its
+code for each measurement.
+
 The contract the test enforces, beyond answering reads like the oracle:
 
 - Every read takes a `Scope`: one layer, and a snapshot token (`AsOf`) that makes
@@ -65,6 +80,22 @@ The contract the test enforces, beyond answering reads like the oracle:
   nanoseconds (1970 to 2262); a real store rejects what does not.
 - The candidate must not keep or alter the slices it is handed.
 
+Reads running alongside writes must each see one committed state:
+`CheckConcurrentReads` has a writer commit batches and retain while readers read
+as of the latest token, and every answer must equal the oracle's at some batch
+boundary between the engine's token before the read and after it. An answer that
+mixes the world before a batch with the world after it, or that sees a batch the
+token had not reached, fails. (Moving pods between nodes in every batch is what
+makes a torn read likely to show.) `CheckReopen` closes and reopens the engine
+three times along a workload with retentions between, and compares every answer
+to the oracle's after each.
+
+After a retention the workload generator is told the horizon (`SetHorizon`): a
+heartbeating run that began before it is continued by a new run at the refresh's
+own event time, not extended at its start. Extending at the start is what the
+coalescer did, and a store that has retained past that start refuses it, so every
+long-lived heartbeat would silently die at its deadline.
+
 Beyond the random workloads, `Run` runs scripted checks on a fresh engine:
 `CheckInstant` (several records of one producer at one instant, every token
 between them, then a retention at that very instant; sequence numbers that
@@ -77,7 +108,7 @@ The random workloads include a second producer that confirms pod placements
 (`ConfirmProbability`), sequence numbers that start just below 2^32 and 2^63
 (`FirstSeq`), late records and retention. The conformance package's own tests
 run `rapid` for 25 checks (a `-rapid.checks` on the command line wins), because
-they run it against the oracle and about forty deliberately broken engines under
+they run it against the oracle and about fifty deliberately broken engines under
 the race detector; a candidate's own package gets rapid's default of 100. The
 broken engines are the evidence that each check can fail: every one must be caught
 by the check written for it, and by the random workloads too unless it says only a

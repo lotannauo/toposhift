@@ -202,7 +202,8 @@ type Generator struct {
 	churnClock                           time.Time // continuous time behind nextChurn
 	exhausted                            bool
 
-	runs map[runKey]*run
+	runs    map[runKey]*run
+	horizon time.Time // the store's retention horizon, once told
 }
 
 // New builds a generator for a valid Config.
@@ -311,6 +312,18 @@ func (g *Generator) Entities() []identity.Fingerprint {
 		out = append(out, cs...)
 	}
 	return out
+}
+
+// SetHorizon tells the generator the store has retained everything before h, so
+// it will refuse a record with an earlier event time. A run of refreshes that
+// started before h is then continued by a new run rather than extended at its
+// start (see the coalescer). It only moves forward, and it changes nothing
+// unless CoalesceRuns is set. Call it after each retention, before drawing the
+// next record.
+func (g *Generator) SetHorizon(h time.Time) {
+	if h.After(g.horizon) {
+		g.horizon = h
+	}
 }
 
 // Start is the start of the simulated period. Event times fall between Start

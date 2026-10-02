@@ -281,6 +281,16 @@ func compare(cand engine.Engine, ora *oracle.Oracle, rng *rand.Rand, opts Option
 	if len(st.written) == 0 {
 		return nil
 	}
+	// Half the rounds ask an engine that can settle to flush and compact first,
+	// so reads are checked against its files and not only its memory. The draw is
+	// made for every engine, so the questions asked do not depend on whether the
+	// engine can settle.
+	settle := rng.IntN(2) == 0
+	if s, ok := cand.(engine.Settler); ok && settle {
+		if err := s.Settle(); err != nil {
+			return fmt.Errorf("settling the candidate: %w", err)
+		}
+	}
 	first := st.written[0].EventTime
 	rd := reads{cand: cand, ora: ora, label: func(t time.Time) string { return t.Sub(first).String() }, rotate: true}
 	floor := st.floorTime()
