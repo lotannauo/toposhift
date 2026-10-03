@@ -17,8 +17,17 @@ mise run bench:test:deep   # the full tests under the race detector, in random o
 mise run bench:lint    # lint
 mise run bench:vuln    # govulncheck on this module's dependencies
 mise run bench:purego  # the Pebble code builds and runs with CGO disabled
-mise run ci            # includes the bench tasks
+mise run check         # between edits: format and lint checks, bench:test, root tests without -race
+mise run ci            # before committing: includes the bench tasks
+mise run ci:deep       # what a push to main and the nightly run add: everything under -race
 ```
+
+`check`, `ci` and the tasks above other than `bench:test:deep` reuse a package's
+result when its test binary and the inputs it read are unchanged, so after an edit
+only the packages it reaches rerun (pebblelog alone: about 15 s on 10 cores). A
+comment-only change that moves no line leaves every binary the same and reruns
+nothing; a comment that adds or removes a line changes the line numbers compiled
+into its package, and so reruns it and everything that imports it.
 
 ## spike
 
@@ -202,11 +211,24 @@ tiers, and `mise run ci` runs both:
   It sets `TOPOSHIFT_RAPID_CHECKS` to 40; a `-rapid.checks` on the command line wins.
 - `bench:test:race` is `go test -race -short`: the tests that start goroutines (the
   concurrent-read check, which is the only goroutine code outside tests), the scripted
-  and unit tests, and one workload per candidate. `conformance.Trimmed` and
+  and unit tests, and one workload per candidate. The concurrent-read check runs on
+  the variants whose code it reaches differently: layout M's primary and
+  `crdb1+filter` (the time filter off and on, which is what its own code branches on;
+  the key schema is chosen inside Pebble) and layout L's primary (checkpoints on) and
+  its piecewise-retention test (checkpoints off). The other variants run it in
+  `bench:test` and, under the race detector, in `bench:test:deep`; leaving them out
+  here cuts this tier by about two fifths (about 65 s to 37 s and a third less CPU time, with
+  `GOMAXPROCS=4` on 10 cores). `conformance.Trimmed` and
   `conformance.SkipWhenTrimmed` are the one place that decides what `-short` drops, and
   a test that starts goroutines must not call the latter.
-- `bench:test:deep` is the whole matrix under the race detector, in random order. It
-  runs on every push to `main` and nightly, through `mise run ci:deep`.
+- `bench:test:deep` is the whole matrix under the race detector, in random order and
+  never reused from an earlier run. It runs on every push to `main` and nightly,
+  through `mise run ci:deep`.
+
+CI runs `mise run ci` as three jobs on each architecture: `ci:static` (formatting,
+lint, spelling, vulnerabilities, workflows, secrets), `ci:bench` (`bench:test`,
+`bench:purego`) and `ci:race` (the root tests and `bench:test:race`). The required
+checks `ci (ubuntu-24.04)` and `ci (ubuntu-24.04-arm)` pass only when all six passed.
 
 Without the environment variable the packages run `rapid` at their own defaults: 25 in
 the conformance package, whose tests run the oracle and about fifty deliberately

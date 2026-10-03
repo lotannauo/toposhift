@@ -4,16 +4,37 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Nightly on main: the deep run, with new random workloads and new schedules of
+  # the concurrency checks, and the vulnerability scans against that day's
+  # database. The shards run too, from the caches the last push to main saved.
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # A newer push to a pull request cancels its older run; runs on main are never
+  # cancelled. The event is in the group so the nightly run neither waits behind
+  # a push to main nor replaces one that is waiting.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # What the Go cache holds: the Go build and module caches and the linter's
+  # cache. actions/cache versions an entry by this list, so an entry saved with
+  # one list is never restored with another: every cache step uses this one.
+  GO_CACHE_PATHS: |
+    ~/.cache/go-build
+    ~/go/pkg/mod
+    ~/.cache/golangci-lint
+
 jobs:
-  ci:
-    name: ci (${{ matrix.os }})
+  # mise run ci is three shards (see mise.toml), and each runs here as its own job
+  # on each architecture. These names must not start with "ci (": those are the
+  # required checks, which the ci job below reports for all the shards together.
+  shard:
+    name: ${{ matrix.shard }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -23,6 +44,9 @@ jobs:
       matrix:
         # x86-64 and arm64; arm64 is the Oracle A1 production target.
         os: [ubuntu-24.04, ubuntu-24.04-arm]
+        # check:ci-shards reads this line and fails unless it lists exactly the
+        # shards mise run ci depends on.
+        shard: [static, bench, race]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -32,50 +56,57 @@ jobs:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # gitleaks scans history
+          # The whole history for static, where gitleaks scans it; the last
+          # commit elsewhere. (Written this way round because 0 is false in an
+          # expression: "static && 0 || 1" would always give 1.)
+          fetch-depth: ${{ matrix.shard != 'static' && 1 || 0 }}
           persist-credentials: false
 
+      # Not cached: the tools install in about 4 s, and a cached copy took about
+      # 160 MB of the repository's 10 GB of cache per architecture for every edit
+      # of mise.toml.
       - name: Install pinned tools
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install: true
-          cache: true
-          # Only a push to main writes the tool cache: a pull request that edits
-          # mise.toml would otherwise store a whole new copy under its own key.
-          cache_save: ${{ github.event_name == 'push' }}
+          cache: false
 
-      # The Go build and module caches and the linter's cache, so the instrumented
-      # Pebble builds, the linters and govulncheck do not start cold on every run.
-      # The Go build cache is content-addressed (an entry is looked up by a hash of
-      # its inputs), so a stale or foreign entry is never used for different code.
-      # A pull request only restores (the newest entry for the same dependencies,
-      # else the newest for this platform); a push to main saves a new entry named
-      # by its commit, because an exact key that already exists is never saved
-      # again and the cache would stop following the code.
+      # Each shard keeps its own entry, so the instrumented Pebble builds, the
+      # linters and govulncheck do not start cold on every run, and go test can
+      # reuse the result of a package that has not changed. The Go build cache is
+      # content-addressed (an entry is looked up by a hash of its inputs), so a
+      # stale or foreign entry is never used for different code. A pull request
+      # only restores: the newest entry of this shard for the same dependencies,
+      # else the newest of any shard (the modules at least are the same), else the
+      # newest for this platform. A push to main saves a new entry named by its
+      # commit, because an exact key that already exists is never saved again and
+      # the cache would stop following the code.
       - name: Restore Go builds and modules
         id: gocache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-            ~/.cache/golangci-lint
-          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ github.sha }}
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ matrix.shard }}-${{ github.sha }}
           restore-keys: |
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ matrix.shard }}-
             go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
             go-v2-${{ runner.os }}-${{ runner.arch }}-
 
-      - name: Run the same tasks as local development
+      - name: Run the shard, as local development does
         env:
+          SHARD: ${{ matrix.shard }}
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+          # Nightly, every test runs again instead of reusing an earlier result,
+          # so the random workloads get new seeds even when nothing changed.
+          GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
         run: |
           mkdir -p "$TEST_REPORT_DIR"
-          mise run ci
+          mise run "ci:${SHARD}"
 
       # What was slow, from the test reports the run wrote, so a test that grows
       # shows up in the job summary before the job as a whole does.
       - name: Report the slowest tests
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
         run: |
@@ -99,7 +130,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rapid-failures-${{ matrix.os }}
+          name: rapid-failures-${{ matrix.shard }}-${{ matrix.os }}
           path: "**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14
@@ -108,20 +139,48 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-            ~/.cache/golangci-lint
+          path: ${{ env.GO_CACHE_PATHS }}
           key: ${{ steps.gocache.outputs.cache-primary-key }}
 
-  # The whole of every test under the race detector, in random order, after every
-  # push to main. A pull request runs the race detector on the part of the tests
-  # that starts goroutines and everything else with Pebble's invariant checks on
-  # (mise run ci). This is not a required check: it reports a race the day it is
-  # merged, not before.
+  # The required checks, ci (ubuntu-24.04) and ci (ubuntu-24.04-arm): each passes
+  # only when every shard passed. A skipped required check counts as passing, so
+  # this runs whatever happened to the shards (always(), which also runs it when
+  # the run is cancelled) and fails unless their result is success: a shard that
+  # failed, was cancelled, timed out or was skipped fails it. A matrix job has one
+  # result for all of its legs, so a shard failing on one architecture fails both
+  # checks. It only reads that result, so it runs on x86-64 for both names.
+  ci:
+    name: ci (${{ matrix.os }})
+    if: always()
+    needs: shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Check that every shard passed
+        env:
+          RESULT: ${{ needs.shard.result }}
+        run: |
+          if [ "$RESULT" != success ]; then
+            echo "the shards finished with result '${RESULT}', not success" >&2
+            exit 1
+          fi
+          echo "every shard passed"
+
+  # The whole of every test under the race detector, in random order and never
+  # reused from an earlier run, after every push to main and nightly. A pull
+  # request runs the race detector on the part of the tests that starts goroutines
+  # and everything else with Pebble's invariant checks on (mise run ci). This is
+  # not a required check: it reports a race the day it is merged, not before. It
+  # builds what the race shard builds (-short changes what a test does, not the
+  # build), so it starts from that shard's cache.
   deep:
     name: deep (${{ matrix.os }})
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     permissions:
@@ -145,22 +204,51 @@ jobs:
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install: true
-          cache: true
-          cache_save: false
+          cache: false
 
       - name: Restore Go builds and modules
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ github.sha }}
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-race-${{ github.sha }}
           restore-keys: |
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-race-
             go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
             go-v2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run every test under the race detector
-        run: mise run ci:deep
+        env:
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          mkdir -p "$TEST_REPORT_DIR"
+          mise run ci:deep
+
+      - name: Report the slowest tests
+        if: ${{ !cancelled() }}
+        env:
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          # As in the shards: to a file first, then cut.
+          slowest="$RUNNER_TEMP/slowest.txt"
+          for report in "$TEST_REPORT_DIR"/*.json; do
+            [ -e "$report" ] || continue
+            mise exec -- gotestsum tool slowest --jsonfile "$report" --threshold 3s > "$slowest"
+            {
+              echo "### Slowest tests: $(basename "$report" .json)"
+              echo '```'
+              head -n 15 "$slowest"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-deep-${{ matrix.os }}
+          path: "**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
 
   # After every push to main, install the pushed commit exactly the way a user
   # would: `go install pkg@version`. That form ignores the checkout's go.mod and
@@ -191,8 +279,6 @@ jobs:
         with:
           install: true
           install_args: go
-          # Off so this go-only install never shares a cache entry with the
-          # ci job, which installs every tool.
           cache: false
 
       - name: Install the pushed commit and check its version

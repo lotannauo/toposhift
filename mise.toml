@@ -49,16 +49,23 @@ run = "golangci-lint run --allow-parallel-runners"
 # is also how toposhift is built, and the race detector runs in bench:test:race on
 # the part of the tests that starts goroutines. bench:test:deep is the whole
 # matrix under the race detector, for pushes to main and the nightly run.
+#
+# bench:test, bench:test:race and test let go test reuse a package's result when
+# neither the test binary nor an input it records (a file it opened, an
+# environment variable it read) has changed since a passing run, so a change
+# that touches no Go code reruns no test. A reused result is not a new run: the
+# random workloads keep the seeds they had, and the concurrency checks are not
+# scheduled anew. The deep run always runs everything (-count=1) in random order.
 [tasks."bench:test"]
 description = "Run the bench module's full tests with Pebble's invariant checks on, cgo off"
 dir = "bench"
 env = { CGO_ENABLED = "0", TOPOSHIFT_REQUIRE_INVARIANTS = "1", TOPOSHIFT_RAPID_CHECKS = "40" }
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test.json"} -- -tags invariants -count=1 ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test.json"} -- -tags invariants ./...'
 
 [tasks."bench:test:race"]
 description = "Run the bench module's trimmed tests with the race detector"
 dir = "bench"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short -count=1 ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short ./...'
 
 [tasks."bench:test:deep"]
 description = "Run the bench module's full tests with the race detector, in random order"
@@ -111,11 +118,46 @@ run = [
 description = "Check spelling in code and docs"
 run = "typos"
 
-# Both test tasks write a JSON report when TEST_REPORT_DIR is set (CI does, to show
+# The test tasks write a JSON report when TEST_REPORT_DIR is set (CI does, to show
 # the slowest tests in the job summary); otherwise they only print.
 [tasks.test]
 description = "Run tests with the race detector"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race -count=1 ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race ./...'
+
+[tasks."test:deep"]
+description = "Run every test with the race detector, in random order"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-deep.json"} -- -race -shuffle=on -count=1 ./...'
+
+# The edit loop. check is the formatters, the linters and test:fast, which is both
+# modules' tests without the race detector, the bench module in its invariant
+# tier exactly as bench:test runs it. Neither is part of ci: run check between
+# edits, ci before committing, and ci:deep for what a push to main runs.
+#
+# go test reuses a package's result unless its test binary or an input it
+# records changed, so after an edit only the packages that edit reaches rerun. A
+# change that leaves every binary the same (a comment that moves no line, a
+# Markdown file) reruns nothing; a comment that adds or removes a line changes the
+# line numbers compiled into its package and reruns the packages that import it.
+[tasks.check]
+description = "Formatting, lint and the tests without the race detector, reusing unchanged results"
+depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "test:fast"]
+
+[tasks."test:fast"]
+description = "Both modules' tests without the race detector, the bench module with Pebble's invariant checks on"
+depends = ["test:fast:root", "test:fast:bench"]
+
+[tasks."test:fast:root"]
+description = "The root module's tests without the race detector"
+hide = true
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-fast.json"} -- ./...'
+
+# The same command, flags and environment as bench:test, so the two share results.
+[tasks."test:fast:bench"]
+description = "The bench module's full tests with Pebble's invariant checks on, cgo off"
+hide = true
+dir = "bench"
+env = { CGO_ENABLED = "0", TOPOSHIFT_REQUIRE_INVARIANTS = "1", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-fast.json"} -- -tags invariants ./...'
 
 [tasks.vuln]
 description = "Scan dependencies for known vulnerabilities"
@@ -138,15 +180,54 @@ fi
 description = "Build the toposhift binary into ./bin"
 run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
+# ci is exactly three shards, and CI runs each shard as its own job on both
+# architectures, so the shards build and test side by side on separate runners
+# instead of all of them sharing one. A job named ci (<runner>) passes only when
+# every shard passed on both. check and test:fast are not shards and not part of
+# ci. check:ci-shards fails if ci depends on anything but the shards, or if the
+# workflow's list of shards differs from them, so a task added to ci directly,
+# or a shard the workflow does not run, cannot pass locally and be missed by CI.
 [tasks.ci]
-description = "Everything CI runs, in the same order"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "bench:test:race", "bench:purego", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+description = "Everything CI runs on a pull request"
+depends = ["ci:static", "ci:bench", "ci:race"]
+
+[tasks."ci:static"]
+description = "CI shard: formatting, lint, spelling, vulnerabilities, workflows and secrets"
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:ci-shards", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+
+[tasks."ci:bench"]
+description = "CI shard: the bench module's full tests and its cgo-free build"
+depends = ["bench:test", "bench:purego"]
+
+[tasks."ci:race"]
+description = "CI shard: the tests under the race detector"
+depends = ["test", "bench:test:race"]
+
+[tasks."check:ci-shards"]
+description = "Fail if ci is not exactly the shards the CI workflow runs"
+run = '''
+set -eu
+info="$(mise tasks info ci --json)"
+mine="$(printf '%s\n' "$info" | jq -r '.depends[]' | sort)"
+# The workflow lists its shards on one line, `shard: [a, b, c]`, as ci:a, ci:b, ci:c.
+line="$(grep -E '^ +shard: \[[a-z, ]+\]$' .github/workflows/ci.yml || true)"
+if [ "$(printf '%s\n' "$line" | grep -c .)" != 1 ]; then
+  echo "check:ci-shards: expected exactly one 'shard: [...]' line in .github/workflows/ci.yml" >&2
+  exit 1
+fi
+theirs="$(printf '%s\n' "$line" | sed -E 's/.*\[(.*)\]/\1/' | tr ',' '\n' | sed -E 's/^ *//; s/ *$//; s/^/ci:/' | sort)"
+if [ -z "$mine" ] || [ "$mine" != "$theirs" ]; then
+  echo "check:ci-shards: ci depends on [$(echo $mine)] but the workflow runs [$(echo $theirs)]" >&2
+  exit 1
+fi
+'''
 
 # What runs on every push to main and nightly: the whole of every test under the
-# race detector, which a pull request only runs in part.
+# race detector, in random order and never reused from an earlier run, which a
+# pull request only runs in part.
 [tasks."ci:deep"]
 description = "The full race-detector run of every test, in random order"
-depends = ["test", "bench:test:deep"]
+depends = ["test:deep", "bench:test:deep"]
 
 [tasks.hooks]
 description = "Install the git hooks"
