@@ -15,3 +15,13 @@ pre-commit:
     format:
       glob: "*.go"
       run: mise exec -- golangci-lint fmt --diff && cd bench && mise exec -- golangci-lint fmt --diff
+
+# Everything CI runs on a pull request, before a push. go test reuses the result
+# of every package that has not changed since it last passed, so after a passing
+# mise run ci this takes a few seconds; after a change it costs what the change
+# reaches (a minute for one that reaches every Pebble package). It checks the
+# working tree, which can hold changes the pushed commits do not.
+pre-push:
+  commands:
+    ci:
+      run: mise run ci

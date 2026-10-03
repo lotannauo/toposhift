@@ -67,9 +67,10 @@ func onDisk(opts pebblemvcc.Options) conformance.Factory {
 // ([conformance.Run]). The others pass the part of it that exercises what they
 // change: three of the fixed workloads (ordinary churn, watch mode across 2^32,
 // and coalesced runs with lateness) with and without retention, the scripted
-// checks, and the check that reads running beside writes see whole batches. The
-// long skewed workload is left out because it tests the engine's handling of huge
-// sequence numbers and long histories, not a schema or a filter. One variant,
+// checks, and the check that reads running beside writes see whole batches (in a
+// trimmed run, only on the variants in raced). The long skewed workload is left
+// out because it tests the engine's handling of huge sequence numbers and long
+// histories, not a schema or a filter. One variant,
 // default with the filter, also reopens from real files. Under the race detector
 // Pebble runs its own invariant checks, which make each workload cost seconds, so
 // running every check on every variant would cost more than a schema or a filter
@@ -83,14 +84,34 @@ func TestConforms(t *testing.T) {
 				conformance.Run(t, inMemory(opts))
 				return
 			}
-			conformsPartly(t, inMemory(opts))
+			conformsPartly(t, inMemory(opts), raced[name] || !conformance.Trimmed())
 		})
 	}
 }
 
 const primary = "crdb1"
 
-func conformsPartly(t *testing.T, f conformance.Factory) {
+// raced are the variants besides the primary that run the concurrent-read check
+// in a trimmed run (-short, the tier the race detector runs on every pull
+// request): with the primary, the time filter off and on, which is the option
+// this package's own code branches on. The key schema only chooses how Pebble
+// lays out a table's keys, so the default schema's two variants run the check in
+// the full tier and in the deep run, where the race detector sees every variant.
+var raced = map[string]bool{"crdb1+filter": true}
+
+// A name in raced that matched no variant, or one with the filter off, would
+// quietly leave the filter out of the trimmed run.
+func TestTheRacedVariantsHaveTheFilterOn(t *testing.T) {
+	t.Parallel()
+	vs := variants()
+	for name := range raced {
+		if v, ok := vs[name]; !ok || !v.TimeFilter {
+			t.Fatalf("raced names %q, which is %+v, %v: it must be a variant with the time filter on", name, v, ok)
+		}
+	}
+}
+
+func conformsPartly(t *testing.T, f conformance.Factory, concurrent bool) {
 	t.Helper()
 	cfgs := conformance.Configs()
 	workloads := []int{0, 2, 5}
@@ -109,15 +130,18 @@ func conformsPartly(t *testing.T, f conformance.Factory) {
 			})
 		}
 	}
-	for name, check := range map[string]func(engine.Engine) error{
-		"write contract":   conformance.CheckWriteContract,
-		"read contract":    conformance.CheckReadContract,
-		"instant":          conformance.CheckInstant,
-		"producers":        conformance.CheckProducers,
-		"relations":        conformance.CheckRelations,
-		"extremes":         conformance.CheckExtremes,
-		"concurrent reads": conformance.CheckConcurrentReads,
-	} {
+	checks := map[string]func(engine.Engine) error{
+		"write contract": conformance.CheckWriteContract,
+		"read contract":  conformance.CheckReadContract,
+		"instant":        conformance.CheckInstant,
+		"producers":      conformance.CheckProducers,
+		"relations":      conformance.CheckRelations,
+		"extremes":       conformance.CheckExtremes,
+	}
+	if concurrent {
+		checks["concurrent reads"] = conformance.CheckConcurrentReads
+	}
+	for name, check := range checks {
 		t.Run(name, func(t *testing.T) {
 			if err := check(open(t, f)); err != nil {
 				t.Fatal(err)

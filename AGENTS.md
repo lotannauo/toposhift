@@ -6,12 +6,15 @@ toposhift is a temporal topology graph for infrastructure. Read `README.md` for 
 
 ```sh
 mise install        # install pinned tools
-mise run ci         # everything CI runs on a pull request
-mise run ci:deep    # the full race-detector run CI does after a push to main
+mise run check      # between edits: format and lint checks, tests without the race detector
+mise run ci         # before committing: everything CI runs on a pull request
+mise run ci:deep    # the full race-detector run CI does after a push to main and nightly
 mise run fmt        # format Go code
 mise run test       # go test -race
 mise run hooks      # install git hooks
 ```
+
+`check` and `ci` reuse a package's test result unless its test binary or an input the test read changed, so they rerun only what an edit reaches. A comment-only change that moves no line leaves every binary the same and reruns no test; one that adds or removes a line changes the line numbers compiled into its package and reruns the packages that import it. `ci:deep` always reruns everything. CI runs `ci` as three shards (`ci:static`, `ci:bench`, `ci:race`); add a new check to a shard, never to `ci` itself (`check:ci-shards` fails otherwise).
 
 ## Rules most likely to be broken by a locally sensible change
 

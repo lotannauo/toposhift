@@ -98,9 +98,9 @@ func TestThePrimaryVariantRunsWithCheckpoints(t *testing.T) {
 // since its last) passes the whole conformance test ([conformance.Run]) on an
 // in-memory file system. The others pass the part of it that exercises what they
 // change: a fixed workload or two with and without retention, the scripted checks,
-// and for two of them the check that reads running beside writes see whole
-// batches. Under the race detector Pebble runs its own invariant checks, which
-// make each workload cost seconds.
+// and for stress the check that reads running beside writes see whole batches
+// (not in a trimmed run; see conformsPartly). Under the race detector Pebble runs
+// its own invariant checks, which make each workload cost seconds.
 func TestConforms(t *testing.T) {
 	t.Parallel()
 	for name, v := range variants() {
@@ -171,7 +171,12 @@ func conformsPartly(t *testing.T, f conformance.Factory, v variant) {
 		"relations":      conformance.CheckRelations,
 		"extremes":       conformance.CheckExtremes,
 	}
-	if v.concurrent {
+	// A trimmed run (-short, the tier the race detector runs on every pull
+	// request) races the concurrent-read check with checkpoints on in the primary,
+	// through conformance.Run, and with them off in
+	// TestConcurrentReadsDuringPiecewiseRetention. The other variants run it in the
+	// full tier and in the deep run, where the race detector sees every variant.
+	if v.concurrent && !conformance.Trimmed() {
 		checks["concurrent reads"] = conformance.CheckConcurrentReads
 	}
 	for name, check := range checks {
