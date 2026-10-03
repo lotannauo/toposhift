@@ -38,6 +38,9 @@ const (
 	kindCheckpoint = 1
 	kindBaseline   = 2
 
+	// metaCheckpoints is the meta key that says a checkpoint was ever written.
+	metaCheckpoints = "checkpoints"
+
 	// metaLead starts a meta key. Data keys start with a layer, 1 to 4.
 	metaLead = 0x00
 

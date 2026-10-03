@@ -42,6 +42,7 @@ type stored struct {
 	ns      int64
 	seq     uint64
 	entries string
+	w       uint64 // of a checkpoint or the baseline
 }
 
 func (s stored) String() string {
@@ -76,6 +77,7 @@ func dump(t *testing.T, e *Engine) []stored {
 			if err != nil {
 				t.Fatal(err)
 			}
+			s.w = st.W
 			var names []string
 			for _, en := range st.Entries {
 				names = append(names, fmt.Sprintf("%s@%d", producerOf(s.dir, en.Ref), en.EventNs))
@@ -221,11 +223,11 @@ func TestRecordsAtOneInstantAreAllKept(t *testing.T) {
 	}
 	ns := t0.UnixNano()
 	want := []stored{
-		{1, kindRecord, ns + 1e9, 5, "kubelet"},
-		{1, kindRecord, ns, 4, "other"},
-		{1, kindRecord, ns, 3, "kubelet"},
-		{1, kindRecord, ns, 2, "kubelet"},
-		{1, kindRecord, ns, 1, "kubelet"},
+		{1, kindRecord, ns + 1e9, 5, "kubelet", 0},
+		{1, kindRecord, ns, 4, "other", 0},
+		{1, kindRecord, ns, 3, "kubelet", 0},
+		{1, kindRecord, ns, 2, "kubelet", 0},
+		{1, kindRecord, ns, 1, "kubelet", 0},
 	}
 	if got := forward(dump(t, e)); !slices.Equal(got, want) {
 		t.Fatalf("stored under the forward prefix:\n got %v\nwant %v", got, want)
@@ -478,7 +480,7 @@ func TestSecondRetentionSupersedesTheFirstBaseline(t *testing.T) {
 	p.retain(min(20))
 	got := forward(dump(t, p.e))
 	ns := func(n int) int64 { return min(n).UnixNano() }
-	want := []stored{{1, kindBaseline, ns(20), 0, fmt.Sprintf("open@%d,replaced@%d", ns(1), ns(11))}}
+	want := []stored{{1, kindBaseline, ns(20), 0, fmt.Sprintf("open@%d,replaced@%d", ns(1), ns(11)), 0}}
 	// "replaced" is by its newer record, and not by the baseline's entry for it.
 	if len(got) != 1 || got[0].kind != kindBaseline || got[0].ns != want[0].ns {
 		t.Fatalf("after the second retention: %v", got)
@@ -651,12 +653,20 @@ func compareToOracle(t *testing.T, e engine.Engine, ora *oracle.Oracle, entities
 // retention finishes the work.
 func TestARetentionThatStopsHalfwayLeavesCorrectAnswers(t *testing.T) {
 	t.Parallel()
-	for _, stopAfter := range []int{1, 2, 5} {
-		t.Run(fmt.Sprintf("after %d commits", stopAfter), func(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stopAfter   int
+		checkpoints CheckpointOptions
+	}{
+		"after 1 commit, no checkpoints":    {1, CheckpointOptions{}},
+		"after 2 commits, no checkpoints":   {2, CheckpointOptions{}},
+		"after 4 commits, with checkpoints": {4, CheckpointOptions{On: true, KMin: 2, Lag: 5 * time.Second}},
+	} {
+		stopAfter := tc.stopAfter
+		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			fs := vfs.NewMem()
 			cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: fs}
-			e, err := Open("db", Options{Config: cfg, retainBatchBytes: 1, retainStopAfter: stopAfter})
+			e, err := Open("db", Options{Config: cfg, Checkpoints: tc.checkpoints, retainBatchBytes: 1, retainStopAfter: stopAfter})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -677,12 +687,15 @@ func TestARetentionThatStopsHalfwayLeavesCorrectAnswers(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if last.Sub(first) > 3*time.Minute {
+				if last.Sub(first) > 90*time.Second {
 					break
 				}
 			}
 			h := first.Add(last.Sub(first) / 2)
 			before := dump(t, e)
+			if tc.checkpoints.On && len(slices.DeleteFunc(slices.Clone(before), func(s stored) bool { return s.kind != kindCheckpoint })) == 0 {
+				t.Fatal("no checkpoint was written before the retention")
+			}
 			if err := e.Retain(h); !errors.Is(err, errInjected) {
 				t.Fatalf("Retain = %v, want the injected failure", err)
 			}
@@ -694,7 +707,7 @@ func TestARetentionThatStopsHalfwayLeavesCorrectAnswers(t *testing.T) {
 			if err := e.Close(); err != nil {
 				t.Fatal(err)
 			}
-			e, err = Open("db", Options{Config: cfg})
+			e, err = Open("db", Options{Config: cfg, Checkpoints: tc.checkpoints})
 			if err != nil {
 				t.Fatal(err)
 			}

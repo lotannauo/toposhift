@@ -34,8 +34,8 @@ mise run ci            # includes the bench tasks
   (see its package documentation for the key layout, the read and the retention).
 - `spike/pebblelog`: layout L, a log per entity, direction and layer in Pebble's
   bytewise key order, newest first, with the retention baseline (see its package
-  documentation). It has no checkpoints yet: a read replays the history older than
-  the instant.
+  documentation). With checkpoints off a read replays the history older than the
+  instant; with them on, interleaved checkpoints let it stop early.
 
 ### Adding a candidate
 
@@ -120,7 +120,11 @@ between them, then a retention at that very instant; sequence numbers that
 cross 2^32), `CheckProducers` (a reference belongs to the producer that made it:
 one producer's delete does not end another's), `CheckRelations` (two relations
 between one pair of entities are two edges, and a self-loop is read from both
-sides; no random workload builds either), `CheckExtremes` (records,
+sides; no random workload builds either), `CheckCheckpoint` (for an engine that
+implements `engine.Checkpointer`: it writes checkpoints at instants of its own
+choosing, which a workload on whole seconds never reaches, and probes records a
+nanosecond before, at and after them, what a checkpoint depends on, a checkpoint
+built on another, and a retention exactly at one), `CheckExtremes` (records,
 deadlines and runs at both ends of the time range), `CheckReadContract` and
 `CheckWriteContract`.
 
@@ -138,6 +142,13 @@ by the check written for it, and by the random workloads too unless it says only
 scripted check can reach it. An honest engine that really discards history
 (keeping everything at or after the horizon, and for each producer's reference
 the newest record before it if still live) must pass.
+
+Layout L's checkpoints are tested at the boundaries a whole-second workload never
+reaches: variants with a lag of one nanosecond (the checkpoint instant lands on a
+record's) and of whole seconds, a checkpoint after every write, and a scripted
+check that writes them at chosen instants. Checkpoints are never pruned in this
+spike (only a late record or a retention deletes one), so a prefix's checkpoints grow with the
+policy's spacing; choosing the spacing and pruning is a measurement question.
 
 Results written under `bench/results/` are git-ignored. Numbers measured on a
 laptop or a VM choose between designs and are never published; published
