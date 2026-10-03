@@ -56,10 +56,38 @@ func (g *Generator) coalesce(r engine.Record) (engine.Record, bool) {
 		return r, true
 	}
 	st.last = r.EventTime
-	if g.cfg.ExtendEvery > 0 && st.last.Sub(st.recorded) < g.cfg.ExtendEvery {
+	if every := g.extendEvery(st.ttl); every > 0 && st.last.Sub(st.recorded) < every {
 		return engine.Record{}, false // absorbed: the run is not re-asserted yet
 	}
 	st.recorded = st.last
 	r.EventTime, r.Through = st.start, st.recorded
 	return r, true
+}
+
+// pruneEvery is how many records pass between sweeps of runs that have ended.
+const pruneEvery = 1 << 14
+
+// pruneRuns forgets the runs whose deadline has passed the time of the next event
+// (FreshIdentities only). With fresh identities there is a new subject for every
+// pod created, so a map that never forgets one grows with the length of the
+// simulation. The next refresh of a forgotten run would have started a new run
+// anyway, because it came after the deadline; only a record that arrives late
+// enough to have continued the run is passed through instead, and passing a
+// record through is always valid.
+func (g *Generator) pruneRuns() {
+	now := g.frontier()
+	for k, st := range g.runs {
+		if st.last.Add(st.ttl).Before(now) {
+			delete(g.runs, k)
+		}
+	}
+}
+
+// extendEvery is how close to its last extension a run with this TTL may be
+// refreshed without a new record.
+func (g *Generator) extendEvery(ttl time.Duration) time.Duration {
+	if g.cfg.ExtendTTLFraction > 0 {
+		return time.Duration(g.cfg.ExtendTTLFraction * float64(ttl))
+	}
+	return g.cfg.ExtendEvery
 }

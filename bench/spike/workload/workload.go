@@ -38,6 +38,7 @@ const (
 	ProducerNodeCollector lifecycle.Producer = "node-collector" // heartbeats
 	ProducerTraces        lifecycle.Producer = "traces"         // service dependency rollups
 	ProducerKubelet       lifecycle.Producer = "kubelet"        // a second opinion on pod placement
+	ProducerPodHeartbeat  lifecycle.Producer = "k8s-cluster"    // heartbeats of every pod's placement
 )
 
 // Config describes a workload. [New] validates it and fills in nothing, so a
@@ -101,10 +102,55 @@ type Config struct {
 	// on every refresh, which loses nothing.
 	ExtendEvery time.Duration
 
+	// ExtendTTLFraction is ExtendEvery as a share of each run's own TTL: with 0.5
+	// a run is re-asserted at most once per half its TTL, which is the rule the
+	// design gives a store (a run whose TTL is four minutes at most every two,
+	// one whose TTL is twenty at most every ten). It needs CoalesceRuns, is in
+	// [0, 1], and is exclusive with ExtendEvery. Zero is off.
+	ExtendTTLFraction float64
+
 	// LateProbability is the chance a record arrives late, by an exponentially
 	// distributed delay with mean LateMeanDelay.
 	LateProbability float64
 	LateMeanDelay   time.Duration
+
+	// BacklogEvery, with BacklogMeanDelay and BacklogSpan, is the other model of
+	// lateness: a producer's pipeline backs up. On average every BacklogEvery
+	// (of event time, from the end of the last one) a producer starts an episode
+	// that lasts BacklogSpan, during which each of its records arrives
+	// late by the episode's delay (exponentially distributed with mean
+	// BacklogMeanDelay, drawn once per episode). A producer's records still arrive
+	// in the order they happened: a backlog delays a span of them together and
+	// then drains in order, which is what a queue does and what independent
+	// per-record lateness (LateProbability) does not, because that reorders one
+	// producer's own records. The two models are exclusive. Zero is off.
+	BacklogEvery, BacklogMeanDelay, BacklogSpan time.Duration
+
+	// FreshIdentities gives a pod, its service instance and its containers a new
+	// identity every time the pod is created, as Kubernetes does (a pod is never
+	// moved or restarted under its old UID), and makes a reschedule a deletion
+	// followed by the creation of a new pod on the new node. Without it a pod
+	// slot keeps one identity for ever, so a hot node only ever sees as many
+	// distinct peers as there are pod slots, which is far from real churn, and
+	// that is expected to favour a layout that keeps one key per peer. The entities that have
+	// existed so far are all in [Generator.Entities]. Runs that have expired are
+	// dropped from the coalescer so its memory stays bounded.
+	FreshIdentities bool
+
+	// MaxPodsPerNode caps the pods on one node (Kubernetes' default is 110): a
+	// pod that would land on a full node goes to the next one with room. Zero
+	// is no cap. With a Zipf-skewed choice of node the busiest node would
+	// otherwise hold a fifth or more of all pods.
+	MaxPodsPerNode int
+
+	// PodHeartbeatInterval, if above zero, has the producer ProducerPodHeartbeat
+	// (the cluster-level collector that refreshes every pod) re-assert each live
+	// pod's placement every interval, with a TTL of HeartbeatTTLFactor times the
+	// interval. Nothing withdraws it when the pod moves or goes: it expires. So
+	// the busiest node's reverse prefix holds a live run for each of its pods,
+	// each extended on every refresh, which is what a layout that stores an
+	// extension as a record at the run's start pays for.
+	PodHeartbeatInterval time.Duration
 
 	// PayloadMin and PayloadMax bound the random payload of each record.
 	PayloadMin, PayloadMax int
@@ -170,7 +216,16 @@ func (c Config) valid() error {
 		return bad("intervals must not be negative")
 	case c.HeartbeatInterval%time.Second != 0 || c.RollupInterval%time.Second != 0 || c.Duration%time.Second != 0:
 		return bad("Duration and the intervals must be whole seconds: event times have one-second resolution")
-	case (c.HeartbeatInterval > 0 || c.RollupInterval > 0) && c.HeartbeatTTLFactor < 1:
+	case c.PodHeartbeatInterval < 0 || c.PodHeartbeatInterval%time.Second != 0:
+		return bad("PodHeartbeatInterval must be whole seconds and not negative")
+	case c.MaxPodsPerNode < 0 || (c.MaxPodsPerNode > 0 && c.Hosts*c.MaxPodsPerNode < c.Pods):
+		return bad("MaxPodsPerNode must not be negative, and %d hosts of at most %d pods cannot hold %d pods", c.Hosts, c.MaxPodsPerNode, c.Pods)
+	case c.BacklogEvery < 0 || c.BacklogMeanDelay < 0 || c.BacklogSpan < 0 ||
+		(c.BacklogEvery > 0 && (c.BacklogMeanDelay <= 0 || c.BacklogSpan <= 0 || c.BacklogSpan%time.Second != 0)):
+		return bad("BacklogEvery needs a positive BacklogMeanDelay and a BacklogSpan of whole seconds, and none may be negative")
+	case c.BacklogEvery > 0 && c.LateProbability > 0:
+		return bad("BacklogEvery and LateProbability are two models of lateness: use one")
+	case (c.HeartbeatInterval > 0 || c.RollupInterval > 0 || c.PodHeartbeatInterval > 0) && c.HeartbeatTTLFactor < 1:
 		return bad("HeartbeatTTLFactor must be at least 1 when anything refreshes")
 	case c.OutageProbability < 0 || c.OutageProbability > 1 || (c.OutageProbability > 0 && c.OutageLength <= 0):
 		return bad("OutageProbability must be in [0, 1], with a positive OutageLength if above 0")
@@ -180,6 +235,10 @@ func (c Config) valid() error {
 		return bad("payload bounds are %d to %d", c.PayloadMin, c.PayloadMax)
 	case c.ExtendEvery < 0 || (c.ExtendEvery > 0 && !c.CoalesceRuns):
 		return bad("ExtendEvery needs CoalesceRuns and must not be negative")
+	case c.ExtendTTLFraction < 0 || c.ExtendTTLFraction > 1 || (c.ExtendTTLFraction > 0 && !c.CoalesceRuns):
+		return bad("ExtendTTLFraction must be in [0, 1] and needs CoalesceRuns")
+	case c.ExtendTTLFraction > 0 && c.ExtendEvery > 0:
+		return bad("ExtendEvery and ExtendTTLFraction are two ways to bound extension: use one")
 	}
 	return nil
 }
@@ -199,6 +258,9 @@ type Generator struct {
 
 	end                                  time.Time
 	nextChurn, nextHeartbeat, nextRollup time.Time
+	nextPodHeartbeat                     time.Time
+	backlogs                             map[lifecycle.Producer]*backlog
+	records                              uint64    // records returned so far, to pace pruning
 	churnClock                           time.Time // continuous time behind nextChurn
 	exhausted                            bool
 
@@ -219,6 +281,9 @@ func New(cfg Config) (*Generator, error) {
 		runs: make(map[runKey]*run),
 		seq:  cfg.FirstSeq - 1,
 	}
+	if cfg.BacklogEvery > 0 {
+		g.backlogs = make(map[lifecycle.Producer]*backlog)
+	}
 	g.podZipf = rand.NewZipf(g.rng, cfg.PodSkew, 1, uint64(cfg.Pods-1))
 	g.nodeZipf = rand.NewZipf(g.rng, cfg.NodeSkew, 1, uint64(cfg.Hosts-1))
 
@@ -234,6 +299,10 @@ func New(cfg Config) (*Generator, error) {
 	}
 	if cfg.RollupInterval <= 0 {
 		g.nextRollup = g.end.Add(time.Hour)
+	}
+	g.nextPodHeartbeat = g.end.Add(time.Hour)
+	if cfg.PodHeartbeatInterval > 0 {
+		g.nextPodHeartbeat = cfg.Start.Add(cfg.PodHeartbeatInterval)
 	}
 	if cfg.EventsPerSecond <= 0 {
 		g.nextChurn = g.end.Add(time.Hour)
@@ -257,6 +326,9 @@ func (g *Generator) Next() (engine.Record, bool) {
 		}
 		g.seq++
 		rec.Seq = g.seq
+		if g.records++; g.cfg.FreshIdentities && g.records%pruneEvery == 0 {
+			g.pruneRuns()
+		}
 		return rec, true
 	}
 }
@@ -301,10 +373,20 @@ func (g *Generator) All() []engine.Record {
 }
 
 // Entities returns every entity fingerprint in the cluster, in a fixed order,
-// for choosing what to query.
+// for choosing what to query. With FreshIdentities it grows as pods are created
+// and lists every pod, service instance and container that has existed so far,
+// dead ones included; otherwise the list never changes.
 func (g *Generator) Entities() []identity.Fingerprint {
 	cl := &g.cl
 	var out []identity.Fingerprint
+	if g.cfg.FreshIdentities {
+		// Every pod, instance and container that has existed, in the order they
+		// first did, after the entities that never change.
+		for _, group := range [][]identity.Fingerprint{cl.racks, cl.hosts, cl.nodes, cl.services, cl.minted} {
+			out = append(out, group...)
+		}
+		return out
+	}
 	for _, group := range [][]identity.Fingerprint{cl.racks, cl.hosts, cl.nodes, cl.services, cl.pods, cl.instances} {
 		out = append(out, group...)
 	}
@@ -342,6 +424,9 @@ func (g *Generator) frontier() time.Time {
 	if g.nextRollup.Before(at) {
 		at = g.nextRollup
 	}
+	if g.nextPodHeartbeat.Before(at) {
+		at = g.nextPodHeartbeat
+	}
 	return at
 }
 
@@ -359,6 +444,9 @@ func (g *Generator) advance() {
 	case at.Equal(g.nextRollup):
 		g.rollup(at)
 		g.nextRollup = at.Add(g.cfg.RollupInterval)
+	case at.Equal(g.nextPodHeartbeat):
+		g.podHeartbeat(at)
+		g.nextPodHeartbeat = at.Add(g.cfg.PodHeartbeatInterval)
 	default:
 		g.churn(at)
 		g.nextChurn = g.scheduleChurn()
