@@ -53,7 +53,7 @@ func TestOpenWriteReadReopen(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			kv, err := pebblekv.Open(dir, cfg)
+			kv, err := pebblekv.Open(dir, pebblekv.CockroachLayout, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestOpenWriteReadReopen(t *testing.T) {
 			if err := kv.Close(); err != nil {
 				t.Fatal(err)
 			}
-			kv, err = pebblekv.Open(dir, cfg)
+			kv, err = pebblekv.Open(dir, pebblekv.CockroachLayout, cfg)
 			if err != nil {
 				t.Fatalf("reopening: %v", err)
 			}
@@ -115,14 +115,14 @@ func TestOpenWriteReadReopen(t *testing.T) {
 
 func TestOpenRefusesUnknownSchema(t *testing.T) {
 	t.Parallel()
-	if _, err := pebblekv.Open(t.TempDir(), pebblekv.Config{Schema: 9}); err == nil {
+	if _, err := pebblekv.Open(t.TempDir(), pebblekv.CockroachLayout, pebblekv.Config{Schema: 9}); err == nil {
 		t.Fatal("an unknown schema opened")
 	}
 }
 
 func TestMetaRoundTrips(t *testing.T) {
 	t.Parallel()
-	kv, err := pebblekv.Open(t.TempDir(), pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: pebblekv.TinyTuning()})
+	kv, err := pebblekv.Open(t.TempDir(), pebblekv.CockroachLayout, pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: pebblekv.TinyTuning()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestVariantsAreInEffect(t *testing.T) {
 	for name, cfg := range configs() {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			kv, err := pebblekv.Open(t.TempDir(), cfg)
+			kv, err := pebblekv.Open(t.TempDir(), pebblekv.CockroachLayout, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -242,7 +242,7 @@ func TestReopenUnderAnotherSchema(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	write := func(schema pebblekv.Schema, wall uint64) {
-		kv, err := pebblekv.Open(dir, pebblekv.Config{Schema: schema, Tuning: pebblekv.TinyTuning()})
+		kv, err := pebblekv.Open(dir, pebblekv.CockroachLayout, pebblekv.Config{Schema: schema, Tuning: pebblekv.TinyTuning()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +256,7 @@ func TestReopenUnderAnotherSchema(t *testing.T) {
 	}
 	write(pebblekv.SchemaCRDB, 1)
 	write(pebblekv.SchemaDefault, 2)
-	kv, err := pebblekv.Open(dir, pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: pebblekv.TinyTuning()})
+	kv, err := pebblekv.Open(dir, pebblekv.CockroachLayout, pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: pebblekv.TinyTuning()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,5 +272,82 @@ func TestReopenUnderAnotherSchema(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("read %d keys, want 2", n)
+	}
+}
+
+func TestBytewiseLayout(t *testing.T) {
+	t.Parallel()
+	tiny := pebblekv.TinyTuning()
+	for name, cfg := range map[string]pebblekv.Config{
+		"the crdb1 schema":  {Schema: pebblekv.SchemaCRDB, Tuning: tiny},
+		"no schema":         {Tuning: tiny},
+		"a time filter":     {Schema: pebblekv.SchemaDefault, TimeFilter: true, Tuning: tiny},
+		"a nonsense schema": {Schema: 9, Tuning: tiny},
+	} {
+		if _, err := pebblekv.Open(t.TempDir(), pebblekv.BytewiseLayout, cfg); err == nil {
+			t.Errorf("the bytewise layout opened with %s", name)
+		}
+	}
+
+	dir := t.TempDir()
+	kv, err := pebblekv.Open(dir, pebblekv.BytewiseLayout, pebblekv.Config{Schema: pebblekv.SchemaDefault, Tuning: tiny})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keys come back in byte order, whatever the order they were written in.
+	want := [][]byte{{0}, {1}, {1, 0}, {1, 0, 0xFF}, {1, 1}, {2}, {0xFF, 0xFF}}
+	for _, i := range []int{3, 0, 6, 2, 5, 1, 4} {
+		if err := kv.Set(want[i], []byte{byte(i)}, kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := kv.Settle(); err != nil {
+		t.Fatal(err)
+	}
+	props, err := kv.TableProperties()
+	if err != nil || len(props) == 0 {
+		t.Fatalf("TableProperties = %d tables, %v", len(props), err)
+	}
+	for _, p := range props {
+		if p.KeySchemaName != "DefaultKeySchema(leveldb.BytewiseComparator,16)" {
+			t.Errorf("key schema %q", p.KeySchemaName)
+		}
+	}
+	it, err := kv.NewIter(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]byte
+	for ok := it.First(); ok; ok = it.Next() {
+		got = append(got, bytes.Clone(it.Key()))
+	}
+	_ = it.Close()
+	if !equalAll(got, want) {
+		t.Errorf("keys in order = %x, want %x", got, want)
+	}
+	if err := kv.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A database written under one layout's comparer is refused by the other
+	// as an error from Open, not a panic later.
+	if _, err := pebblekv.Open(dir, pebblekv.CockroachLayout, pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: tiny}); err == nil {
+		t.Error("a bytewise database opened under the cockroachkvs comparer")
+	}
+}
+
+// The refusal is the same the other way round.
+func TestCockroachDatabaseIsRefusedByTheBytewiseLayout(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	kv, err := pebblekv.Open(dir, pebblekv.CockroachLayout, pebblekv.Config{Schema: pebblekv.SchemaCRDB, Tuning: pebblekv.TinyTuning()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pebblekv.Open(dir, pebblekv.BytewiseLayout, pebblekv.Config{Schema: pebblekv.SchemaDefault, Tuning: pebblekv.TinyTuning()}); err == nil {
+		t.Error("a cockroachkvs database opened under the bytewise comparer")
 	}
 }
