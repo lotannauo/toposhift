@@ -3,8 +3,10 @@ package engine
 import (
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/identity"
 )
 
 // The optional parts of an engine. None is required to pass conformance; they
@@ -118,4 +120,24 @@ type Part struct {
 // hot path.
 type Breakdowner interface {
 	Breakdown() (map[Part]int64, error)
+}
+
+// Checkpointer is implemented by an engine that keeps checkpoints, derived
+// summaries of one entity's history before an instant that let a read stop early.
+// They are written by the engine's own policy, at instants it chooses, which a
+// workload whose event times fall on whole seconds never makes land on the
+// boundaries that matter (a record exactly at a checkpoint's instant, a read
+// exactly at it, a retention horizon exactly at it). This lets a scripted check
+// write one at an instant of its own choosing and then probe around it.
+//
+// A checkpoint at c covers the records with event time strictly before c. An
+// engine refuses one it cannot place correctly (at or below its retention
+// horizon, or outside the representable range) with [ErrInvalid]; whether it
+// refuses or writes one anywhere else, every answer must stay the oracle's.
+type Checkpointer interface {
+	// CheckpointEdges writes a checkpoint at c for the edges of fp in one layer
+	// and direction.
+	CheckpointEdges(layer catalog.Layer, fp identity.Fingerprint, dir Direction, c time.Time) error
+	// CheckpointEntity writes a checkpoint at c for the existence of fp.
+	CheckpointEntity(layer catalog.Layer, fp identity.Fingerprint, c time.Time) error
 }

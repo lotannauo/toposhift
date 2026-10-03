@@ -41,6 +41,21 @@ jobs:
           install: true
           cache: true
 
+      # The Go build and module caches, so the race-instrumented Pebble build, the
+      # linters and govulncheck do not start cold on every run. The Go build cache is
+      # content-addressed (an entry is looked up by a hash of its inputs), so a stale
+      # or foreign entry is never used for different code; the key follows the
+      # dependencies, and a partial hit still restores what is unchanged.
+      - name: Cache Go builds and modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Run the same tasks as local development
         run: mise run ci
 

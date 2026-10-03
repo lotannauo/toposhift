@@ -20,10 +20,18 @@
 // one prefix and walks toward older ones. For each reference (peer, relation,
 // producer) the first record the token sees decides it ([pebblekv.Value.Holds]);
 // a subject is alive if any producer's reference holds. The walk ends at the
-// retention baseline, which stands for everything before the horizon. A read is
-// therefore as long as the history older than t in its prefix. That is the cost
-// this layout pays, and the one interleaved checkpoints exist to cut; this
-// version of the layout has none, and answers every read by replaying.
+// retention baseline, which stands for everything before the horizon. With no
+// checkpoints a read is as long as the history older than t in its prefix.
+//
+// # Checkpoints
+//
+// Interleaved checkpoints (see checkpoint.go) are derived summaries of a prefix's
+// history before an instant. A read that reaches a usable one (built by this fold
+// logic, and depending only on records its token can see) takes its entries for
+// the references nothing newer decided and stops. They are written by a policy
+// ([CheckpointOptions]), deleted in the same commit as any later record that
+// makes them untrue, never written at or below the retention horizon, and never
+// written back as facts: losing one is harmless.
 //
 // # Retention
 //
@@ -58,17 +66,32 @@ type Options struct {
 	// Recorder receives the engine's counts. Nil discards them. The names are
 	// "write.records", "read.records_stepped", "retain.prefixes_visited",
 	// "retain.prefixes_replayed", "retain.records_replayed",
-	// "retain.baselines_written", "retain.range_deletes" and "retain.seeks".
+	// "retain.baselines_written", "retain.range_deletes", "retain.seeks", and for
+	// checkpoints "checkpoint.written", "checkpoint.invalidated",
+	// "checkpoint.errors", "checkpoint.loads", "checkpoint.load_keys",
+	// "checkpoint.build_records_walked", "read.checkpoint_hits",
+	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version".
 	Recorder engine.Recorder
+	// Checkpoints says when interleaved checkpoints are written; the zero value
+	// writes none, and the layout then answers every read by replaying.
+	Checkpoints CheckpointOptions
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes], and retainStopAfter
 	// makes a retention fail after that many commits of its work: both for tests.
 	retainBatchBytes int
 	retainStopAfter  int
+	// afterCheckpointApply runs after a checkpoint commit has landed; an error it
+	// returns stands for a commit that failed but is already visible.
+	afterCheckpointApply func() error
+	// beforeCheckpointApply returns an error in place of a checkpoint commit, and
+	// beforeRecordApply in place of a record commit: a commit that failed without
+	// landing.
+	beforeCheckpointApply func() error
+	beforeRecordApply     func() error
 }
 
-// Engine is layout L without checkpoints. It implements [engine.Engine] and
-// [engine.Settler].
+// Engine is layout L. It implements [engine.Engine], [engine.Settler] and
+// [engine.Checkpointer].
 type Engine struct {
 	kv  *pebblekv.KV
 	ids *pebblekv.IDs
@@ -77,11 +100,23 @@ type Engine struct {
 	lastSeq     atomic.Uint64
 	retainBytes int
 	stopAfter   int
+	ckpt        CheckpointOptions
+
+	afterCheckpointApply, beforeCheckpointApply, beforeRecordApply func() error
 
 	// mu serializes Write and Retain, which the caller is already required to
 	// do; it keeps the horizon coherent if a caller forgets.
 	mu      sync.Mutex
 	horizon time.Time
+	// states is what the writer remembers of each prefix (see checkpoint.go).
+	// anyCkpt says a checkpoint may be in the database (one was, or a commit that
+	// reported failure may have landed), in which case a prefix first touched is
+	// read for the checkpoints it holds. flagOnDisk says the meta key that records
+	// it is durably there; until a commit carrying it succeeds, every checkpoint
+	// batch carries it (see applyCheckpoints).
+	states     map[string]*prefixState
+	anyCkpt    bool
+	flagOnDisk bool
 }
 
 var (
@@ -100,6 +135,9 @@ var errInjected = errors.New("pebblelog: injected failure")
 // Open opens the engine under dir, new or as an earlier one left it: its
 // records, its last sequence number and its retention horizon.
 func Open(dir string, opts Options) (*Engine, error) {
+	if o := opts.Checkpoints; o.KMin < 0 || o.Alpha < 0 || o.Lag < 0 || math.IsNaN(o.Alpha) || math.IsInf(o.Alpha, 0) {
+		return nil, fmt.Errorf("pebblelog: checkpoint options %+v must be finite and not negative", o)
+	}
 	cfg := opts.Config
 	if cfg.Schema == 0 {
 		cfg.Schema = pebblekv.SchemaDefault
@@ -108,7 +146,7 @@ func Open(dir string, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter}
+	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter, ckpt: opts.Checkpoints, afterCheckpointApply: opts.afterCheckpointApply, beforeCheckpointApply: opts.beforeCheckpointApply, beforeRecordApply: opts.beforeRecordApply, states: map[string]*prefixState{}}
 	if e.rec == nil {
 		e.rec = engine.NopRecorder{}
 	}
@@ -137,6 +175,11 @@ func Open(dir string, opts Options) (*Engine, error) {
 	if e.horizon, err = pebblekv.DecodeHorizon(raw); err != nil {
 		return fail(err)
 	}
+	if raw, err = kv.GetMeta(metaKey(metaCheckpoints)); err != nil {
+		return fail(err)
+	}
+	e.anyCkpt = raw != nil
+	e.flagOnDisk = e.anyCkpt
 	return e, nil
 }
 
@@ -158,7 +201,10 @@ func (e *Engine) Write(batch []engine.Record) error {
 	defer e.mu.Unlock()
 
 	// Everything that can refuse the batch happens before anything is stored.
-	type put struct{ key, value []byte }
+	type put struct {
+		prefix, key, value []byte
+		ns                 int64
+	}
 	seq := e.lastSeq.Load()
 	var puts []put
 	for _, r := range batch {
@@ -179,7 +225,7 @@ func (e *Engine) Write(batch []engine.Record) error {
 		v := pebblekv.FromRecord(r)
 		ns := r.EventTime.UnixNano()
 		for _, s := range sides {
-			puts = append(puts, put{recordKey(s.prefix, ns, r.Seq), appendRecordValue(nil, s.ref, v)})
+			puts = append(puts, put{s.prefix, recordKey(s.prefix, ns, r.Seq), appendRecordValue(nil, s.ref, v), ns})
 		}
 	}
 	if len(puts) == 0 {
@@ -187,19 +233,51 @@ func (e *Engine) Write(batch []engine.Record) error {
 	}
 	b := e.kv.NewBatch()
 	defer func() { _ = b.Close() }()
+	// A record with an event time before a checkpoint's makes that checkpoint
+	// untrue, so it is deleted in the same commit as the record. If anything fails
+	// from here the list in memory may be ahead of the database, and is dropped.
+	touched := map[string]struct{}{}
+	fail := func(err error) error {
+		e.states = map[string]*prefixState{}
+		return err
+	}
+	// Nothing is remembered, and nothing can need invalidating, in a database that
+	// has no checkpoints and is not writing any.
+	track := e.ckpt.On || e.anyCkpt
 	for _, p := range puts {
+		if track {
+			st, err := e.state(p.prefix)
+			if err != nil {
+				return fail(err)
+			}
+			if err := e.invalidate(b, p.prefix, st, p.ns); err != nil {
+				return fail(err)
+			}
+			st.latest = max(st.latest, p.ns)
+			st.since++
+			st.sinceBytes += len(p.value)
+			touched[string(p.prefix)] = struct{}{}
+		}
 		if err := b.Set(p.key, p.value, nil); err != nil {
-			return err
+			return fail(err)
 		}
 	}
 	if err := b.Set(metaKey(pebblekv.MetaLastSeq), pebblekv.EncodeSeq(seq), nil); err != nil {
-		return err
+		return fail(err)
+	}
+	if e.beforeRecordApply != nil {
+		if err := e.beforeRecordApply(); err != nil {
+			return fail(err) // tests: a commit that failed without landing
+		}
 	}
 	if err := e.kv.Apply(b, e.kv.WriteOptions()); err != nil {
-		return err
+		return fail(err)
 	}
 	e.lastSeq.Store(seq)
 	e.rec.Count("write.records", int64(len(puts)))
+	// The second commit: the checkpoints this write made due. It finishes before
+	// Write returns, and its failure is counted, never returned.
+	e.writeCheckpoints(touched)
 	return nil
 }
 
@@ -224,6 +302,8 @@ func (e *Engine) Retain(horizon time.Time) error {
 		return err
 	}
 	e.horizon = horizon
+	// What was remembered of each prefix is about to be out of date.
+	e.states = map[string]*prefixState{}
 
 	hNs, where := pebblekv.Locate(horizon)
 	if where == pebblekv.Before || (where == pebblekv.Inside && hNs == 0) {
@@ -327,6 +407,16 @@ func (e *Engine) Retain(horizon time.Time) error {
 			return err
 		}
 		deletes++
+		if e.anyCkpt && where == pebblekv.Inside {
+			// A checkpoint exactly at the horizon would sort before the baseline.
+			// It is true (and in a prefix with nothing older, or one this
+			// retention did not reach, one may remain, harmlessly: there is no
+			// baseline for it to hide). The writer never writes one at or below
+			// the horizon, and the ones in the prefixes this retention rewrites go.
+			if err := b.Delete(stampKey(prefix, hNs, kindCheckpoint), nil); err != nil {
+				return err
+			}
+		}
 		if len(entries) > 0 {
 			val, err := appendStamp(nil, Stamp{Kind: kindBaseline, FoldVersion: FoldVersion, Through: last, W: last, Horizon: horizon, Entries: entries})
 			if err != nil {
