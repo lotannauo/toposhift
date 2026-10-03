@@ -11,7 +11,9 @@ based `internal/` visibility still lets it use the root module's `internal/`
 packages. There is no committed `go.work`.
 
 ```sh
-mise run bench:test    # tests with the race detector
+mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
+mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
+mise run bench:test:deep   # the full tests under the race detector, in random order
 mise run bench:lint    # lint
 mise run bench:vuln    # govulncheck on this module's dependencies
 mise run bench:purego  # the Pebble code builds and runs with CGO disabled
@@ -130,13 +132,31 @@ deadlines and runs at both ends of the time range), `CheckReadContract` and
 
 The random workloads include a second producer that confirms pod placements
 (`ConfirmProbability`), sequence numbers that start just below 2^32 and 2^63
-(`FirstSeq`), late records and retention. The conformance package's own tests
-run `rapid` for 25 checks (a `-rapid.checks` on the command line wins), because
-they run it against the oracle and about fifty deliberately broken engines under
-the race detector. A candidate's package sets its own default: Pebble runs its own
-invariant checks in race builds, which costs seconds per workload, so the Pebble
-layouts run 4 and the fixed workloads carry the coverage; a deeper run is
-`go test ./spike/pebblemvcc -rapid.checks=100`. The
+(`FirstSeq`), late records and retention.
+
+### Test tiers
+
+Pebble turns its own invariant checks on with the build tags `invariants` or `race`,
+and it is the race detector, not the checks, that makes the tests slow (about 20 s
+with the checks and 190 s with the race detector, on 10 cores). So there are two
+tiers, and `mise run ci` runs both:
+
+- `bench:test` is the full matrix with the checks on and cgo off (how `toposhift` is
+  built): every workload and retention schedule, the random workloads, the reopen
+  checks from real files. A guard test fails it if the checks are not compiled in.
+  It sets `TOPOSHIFT_RAPID_CHECKS` to 40; a `-rapid.checks` on the command line wins.
+- `bench:test:race` is `go test -race -short`: the tests that start goroutines (the
+  concurrent-read check, which is the only goroutine code outside tests), the scripted
+  and unit tests, and one workload per candidate. `conformance.Trimmed` and
+  `conformance.SkipWhenTrimmed` are the one place that decides what `-short` drops, and
+  a test that starts goroutines must not call the latter.
+- `bench:test:deep` is the whole matrix under the race detector, in random order. It
+  runs on every push to `main` and nightly, through `mise run ci:deep`.
+
+Without the environment variable the packages run `rapid` at their own defaults: 25 in
+the conformance package, whose tests run the oracle and about fifty deliberately
+broken engines, and 4 in the Pebble layouts, where each workload costs seconds under
+the race detector; a deeper run is `go test ./spike/pebblemvcc -rapid.checks=100`. The
 broken engines are the evidence that each check can fail: every one must be caught
 by the check written for it, and by the random workloads too unless it says only a
 scripted check can reach it. An honest engine that really discards history

@@ -431,6 +431,7 @@ func TestSettleAndSize(t *testing.T) {
 // piece: readers run while it works, so a half-finished retention must already be
 // right for the instants and tokens it promises.
 func TestRetentionInManyPiecesKeepsAnswers(t *testing.T) {
+	conformance.SkipWhenTrimmed(t)
 	t.Parallel()
 	whole := openMem(t, Options{})
 	pieces := openMem(t, Options{retainBatchBytes: 1}) // every key is its own commit

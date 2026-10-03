@@ -20,13 +20,13 @@ import (
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
 
-// TestMain lowers the number of random workloads rapid runs in this package,
-// which is where the harness is tested against engines that are not real: the
-// oracle and its mutants, under the race detector. A candidate's own package
-// keeps rapid's default. A -rapid.checks given on the command line still wins,
-// because it is parsed after this.
+// TestMain sets the number of random workloads rapid runs in this package, which
+// is where the harness is tested against engines that are not real: the oracle
+// and its mutants. A candidate's own package sets its own. The fast tier sets
+// TOPOSHIFT_RAPID_CHECKS higher, and a -rapid.checks given on the command line
+// still wins, because it is parsed after this.
 func TestMain(m *testing.M) {
-	if err := flag.Set("rapid.checks", "25"); err != nil {
+	if err := flag.Set("rapid.checks", conformance.RapidChecks("25")); err != nil {
 		panic(err)
 	}
 	os.Exit(m.Run())

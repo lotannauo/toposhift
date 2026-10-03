@@ -11,6 +11,7 @@ actionlint = "1.7.12"
 zizmor = "1.30.1"
 shellcheck = "0.11.0"
 jq = "1.8.2"
+gotestsum = "1.13.0"
 
 [tasks.fmt]
 description = "Format Go code in place, including the bench module"
@@ -41,10 +42,28 @@ description = "Lint the bench module"
 dir = "bench"
 run = "golangci-lint run --allow-parallel-runners"
 
+# The bench tests run in two tiers. Pebble turns its own invariant checks on with
+# the build tags invariants or race, and it is the race detector, not the checks,
+# that makes the tests slow (about 20 s with the checks and 190 s with the race
+# detector). So the full matrix runs here with the checks on and cgo off, which
+# is also how toposhift is built, and the race detector runs in bench:test:race on
+# the part of the tests that starts goroutines. bench:test:deep is the whole
+# matrix under the race detector, for pushes to main and the nightly run.
 [tasks."bench:test"]
-description = "Run the bench module's tests with the race detector"
+description = "Run the bench module's full tests with Pebble's invariant checks on, cgo off"
 dir = "bench"
-run = "go test -race -count=1 ./..."
+env = { CGO_ENABLED = "0", TOPOSHIFT_REQUIRE_INVARIANTS = "1", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test.json"} -- -tags invariants -count=1 ./...'
+
+[tasks."bench:test:race"]
+description = "Run the bench module's trimmed tests with the race detector"
+dir = "bench"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short -count=1 ./...'
+
+[tasks."bench:test:deep"]
+description = "Run the bench module's full tests with the race detector, in random order"
+dir = "bench"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 ./...'
 
 [tasks."bench:vuln"]
 description = "Scan the bench module's dependencies for known vulnerabilities"
@@ -53,19 +72,16 @@ run = "go tool govulncheck ./..."
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the
-# cgo DataDog/zstd otherwise. This builds and runs the Pebble code with cgo off
-# (the ordinary bench:test runs with the race detector, which needs cgo on Linux), and checks
-# that neither way of asking for pure Go leaves the cgo library in the build.
+# cgo DataDog/zstd otherwise. The tests run with cgo off in bench:test, so this
+# builds the bench module with cgo off and checks that neither way of asking for
+# pure Go leaves the cgo library in the build.
 [tasks."bench:purego"]
-description = "Build and run the Pebble code with CGO disabled and check no cgo zstd is linked"
+description = "Build the bench module with CGO disabled and check no cgo zstd is linked"
 dir = "bench"
 run = '''
 set -eu
 export CGO_ENABLED=0
 go build ./...
-go test -count=1 ./spike/pebblekv
-go test -count=1 ./spike/pebblemvcc -rapid.checks=2 -run 'TestConforms/crdb1/(instant|extremes|producers|write_contract|read_contract|config_0_retain_\[0.3_0.7\]|reopen)|TestVersions|TestRetention'
-go test -count=1 ./spike/pebblelog -rapid.checks=2 -run 'TestConforms/k8/(instant|extremes|producers|relations|write_contract|read_contract|config_0_retain_\[0.3_0.7\]|reopen)|TestRecords|TestRetention|TestSecondRetention|TestARetention|TestAToken|TestCheckpointCheck|TestNoCheckpoint|TestACheckpointBuilt|TestRandomCheckpoint'
 # The check below must be able to fail: with cgo on and no tag, Pebble does link
 # the cgo zstd. The package list is captured first, so a failing go list stops
 # the task (a pipeline into grep -q would hide it, and grep -q closing the pipe
@@ -95,9 +111,11 @@ run = [
 description = "Check spelling in code and docs"
 run = "typos"
 
+# Both test tasks write a JSON report when TEST_REPORT_DIR is set (CI does, to show
+# the slowest tests in the job summary); otherwise they only print.
 [tasks.test]
 description = "Run tests with the race detector"
-run = "go test -race -count=1 ./..."
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race -count=1 ./...'
 
 [tasks.vuln]
 description = "Scan dependencies for known vulnerabilities"
@@ -122,7 +140,13 @@ run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
 [tasks.ci]
 description = "Everything CI runs, in the same order"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "bench:purego", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "test", "bench:fmt:check", "bench:lint", "bench:test", "bench:test:race", "bench:purego", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+
+# What runs on every push to main and nightly: the whole of every test under the
+# race detector, which a pull request only runs in part.
+[tasks."ci:deep"]
+description = "The full race-detector run of every test, in random order"
+depends = ["test", "bench:test:deep"]
 
 [tasks.hooks]
 description = "Install the git hooks"

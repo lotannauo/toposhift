@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/pebble/v2/vfs"
 
+	"github.com/lotannauo/toposhift/bench/spike/conformance"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/bench/spike/oracle"
 	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
@@ -28,6 +29,7 @@ import (
 // sometimes stop halfway, and is read at sampled instants and tokens (the
 // retention's last Seq and up) after every step.
 func TestRandomCheckpointHistories(t *testing.T) {
+	conformance.SkipWhenTrimmed(t)
 	t.Parallel()
 	for seed := int64(0); seed < 10; seed++ {
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {

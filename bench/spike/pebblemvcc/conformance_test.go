@@ -15,17 +15,16 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/pebblemvcc"
 )
 
-// TestMain lowers how many random workloads rapid runs in each variant. Under
-// the race detector Pebble also runs its own invariant checks (it enables them
-// for race builds), which makes each workload cost seconds, and the six fixed
-// workloads, the scripted checks and the reopen and concurrency checks already
-// give every variant its coverage. A deeper run is a flag away:
+// TestMain sets how many random workloads rapid runs. The default is low because
+// under the race detector Pebble's invariant checks make each workload cost
+// seconds; the fast tier (bench:test, with the checks on and no race detector)
+// sets TOPOSHIFT_RAPID_CHECKS higher, and a deeper run is a flag away:
 //
 //	go test ./spike/pebblemvcc -rapid.checks=100
 //
 // A -rapid.checks on the command line wins, because it is parsed after this.
 func TestMain(m *testing.M) {
-	if err := flag.Set("rapid.checks", "4"); err != nil {
+	if err := flag.Set("rapid.checks", conformance.RapidChecks("4")); err != nil {
 		panic(err)
 	}
 	os.Exit(m.Run())
@@ -94,7 +93,11 @@ const primary = "crdb1"
 func conformsPartly(t *testing.T, f conformance.Factory) {
 	t.Helper()
 	cfgs := conformance.Configs()
-	for _, i := range []int{0, 2, 5} {
+	workloads := []int{0, 2, 5}
+	if conformance.Trimmed() {
+		workloads = nil // the full tier runs them; a trimmed run keeps the scripted and concurrent checks
+	}
+	for _, i := range workloads {
 		for _, retain := range [][]float64{nil, {0.3, 0.7}} {
 			if retain == nil && i != 0 && i != 5 {
 				continue
@@ -137,6 +140,9 @@ func open(t *testing.T, f conformance.Factory) engine.Engine {
 // tables are reopened, and a closed engine comes back with everything.
 func TestReopensFromRealFiles(t *testing.T) {
 	t.Parallel()
+	if conformance.Trimmed() {
+		t.Skip("trimmed run: this check syncs real files and runs in the full tier")
+	}
 	opts := variants()["default+filter"]
 	if err := conformance.CheckReopen(onDisk(opts)); err != nil {
 		t.Fatal(err)

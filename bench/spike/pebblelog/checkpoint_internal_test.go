@@ -522,6 +522,7 @@ func TestTheHookRefusesWhatCannotBePlaced(t *testing.T) {
 // invalidate them, in the conformance workloads: otherwise the variants would
 // prove nothing about them.
 func TestTheWorkloadsExerciseCheckpoints(t *testing.T) {
+	conformance.SkipWhenTrimmed(t)
 	t.Parallel()
 	for name, c := range map[string]CheckpointOptions{
 		"stress": stress(0), "lag 1ns": stress(time.Nanosecond), "lag 2s": {On: true, KMin: 3, Alpha: 1, Lag: 2 * time.Second},

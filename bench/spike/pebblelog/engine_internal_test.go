@@ -570,6 +570,7 @@ func TestRetentionAtTheEpoch(t *testing.T) {
 // Retention committed in many pieces leaves the same data as one commit, and
 // every answer is the oracle's, at the end.
 func TestRetentionInManyPiecesKeepsAnswers(t *testing.T) {
+	conformance.SkipWhenTrimmed(t)
 	t.Parallel()
 	whole := openMem(t, Options{})
 	pieces := openMem(t, Options{retainBatchBytes: 1}) // every prefix is its own commit
@@ -652,6 +653,7 @@ func compareToOracle(t *testing.T, e engine.Engine, ora *oracle.Oracle, entities
 // the horizon is still the oracle's, also after a reopening, and a later
 // retention finishes the work.
 func TestARetentionThatStopsHalfwayLeavesCorrectAnswers(t *testing.T) {
+	conformance.SkipWhenTrimmed(t)
 	t.Parallel()
 	for name, tc := range map[string]struct {
 		stopAfter   int

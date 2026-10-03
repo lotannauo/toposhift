@@ -40,24 +40,127 @@ jobs:
         with:
           install: true
           cache: true
+          # Only a push to main writes the tool cache: a pull request that edits
+          # mise.toml would otherwise store a whole new copy under its own key.
+          cache_save: ${{ github.event_name == 'push' }}
 
-      # The Go build and module caches, so the race-instrumented Pebble build, the
-      # linters and govulncheck do not start cold on every run. The Go build cache is
-      # content-addressed (an entry is looked up by a hash of its inputs), so a stale
-      # or foreign entry is never used for different code; the key follows the
-      # dependencies, and a partial hit still restores what is unchanged.
-      - name: Cache Go builds and modules
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The Go build and module caches and the linter's cache, so the instrumented
+      # Pebble builds, the linters and govulncheck do not start cold on every run.
+      # The Go build cache is content-addressed (an entry is looked up by a hash of
+      # its inputs), so a stale or foreign entry is never used for different code.
+      # A pull request only restores (the newest entry for the same dependencies,
+      # else the newest for this platform); a push to main saves a new entry named
+      # by its commit, because an exact key that already exists is never saved
+      # again and the cache would stop following the code.
+      - name: Restore Go builds and modules
+        id: gocache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}
+            ~/.cache/golangci-lint
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-${{ runner.os }}-${{ runner.arch }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run the same tasks as local development
-        run: mise run ci
+        env:
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          mkdir -p "$TEST_REPORT_DIR"
+          mise run ci
+
+      # What was slow, from the test reports the run wrote, so a test that grows
+      # shows up in the job summary before the job as a whole does.
+      - name: Report the slowest tests
+        if: always()
+        env:
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          # The list goes to a file and is cut afterwards: the runner's shell stops
+          # on a failed pipe, and head closing the pipe would fail this step.
+          slowest="$RUNNER_TEMP/slowest.txt"
+          for report in "$TEST_REPORT_DIR"/*.json; do
+            [ -e "$report" ] || continue
+            mise exec -- gotestsum tool slowest --jsonfile "$report" --threshold 3s > "$slowest"
+            {
+              echo "### Slowest tests: $(basename "$report" .json)"
+              echo '```'
+              head -n 15 "$slowest"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # rapid writes the inputs that made a property fail under testdata/rapid; a
+      # failure on a runner is otherwise one nobody can replay.
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-${{ matrix.os }}
+          path: "**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save Go builds and modules
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cache/golangci-lint
+          key: ${{ steps.gocache.outputs.cache-primary-key }}
+
+  # The whole of every test under the race detector, in random order, after every
+  # push to main. A pull request runs the race detector on the part of the tests
+  # that starts goroutines and everything else with Pebble's invariant checks on
+  # (mise run ci). This is not a required check: it reports a race the day it is
+  # merged, not before.
+  deep:
+    name: deep (${{ matrix.os }})
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: true
+          cache_save: false
+
+      - name: Restore Go builds and modules
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run every test under the race detector
+        run: mise run ci:deep
 
   # After every push to main, install the pushed commit exactly the way a user
   # would: `go install pkg@version`. That form ignores the checkout's go.mod and

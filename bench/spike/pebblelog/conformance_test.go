@@ -18,16 +18,16 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
 )
 
-// TestMain lowers how many random workloads rapid runs. Under the race detector
-// Pebble also runs its own invariant checks, which makes each workload cost
-// seconds, and the six fixed workloads, the scripted checks and the reopen and
-// concurrency checks carry the coverage. A deeper run is a flag away:
+// TestMain sets how many random workloads rapid runs. The default is low because
+// under the race detector Pebble's invariant checks make each workload cost
+// seconds; the fast tier (bench:test, with the checks on and no race detector)
+// sets TOPOSHIFT_RAPID_CHECKS higher, and a deeper run is a flag away:
 //
 //	go test ./spike/pebblelog -rapid.checks=100
 //
 // A -rapid.checks on the command line wins, because it is parsed after this.
 func TestMain(m *testing.M) {
-	if err := flag.Set("rapid.checks", "4"); err != nil {
+	if err := flag.Set("rapid.checks", conformance.RapidChecks("4")); err != nil {
 		panic(err)
 	}
 	os.Exit(m.Run())
@@ -150,7 +150,11 @@ func TestCheckpointCheck(t *testing.T) {
 func conformsPartly(t *testing.T, f conformance.Factory, v variant) {
 	t.Helper()
 	cfgs := conformance.Configs()
-	for _, i := range v.configs {
+	workloads := v.configs
+	if conformance.Trimmed() {
+		workloads = nil // the full tier runs them; a trimmed run keeps the scripted and concurrent checks
+	}
+	for _, i := range workloads {
 		for _, retain := range v.retains {
 			t.Run(fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
 				if err := conformance.Check(open(t, f), cfgs[i], conformance.Options{RetainAt: retain}); err != nil {
@@ -194,6 +198,9 @@ func open(t *testing.T, f conformance.Factory) engine.Engine {
 // checkpoints in the database whose list the writer must read back.
 func TestReopensFromRealFiles(t *testing.T) {
 	t.Parallel()
+	if conformance.Trimmed() {
+		t.Skip("trimmed run: this check syncs real files and runs in the full tier")
+	}
 	if err := conformance.CheckReopen(onDisk(options(variants()[primary].checkpoints))); err != nil {
 		t.Fatal(err)
 	}
