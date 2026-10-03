@@ -104,7 +104,7 @@ const defaultRetainBatchBytes = 4 << 20
 // Open opens the engine under dir, new or as an earlier one left it: its
 // records, its last sequence number and its retention horizon.
 func Open(dir string, opts Options) (*Engine, error) {
-	kv, err := pebblekv.Open(dir, opts.Config)
+	kv, err := pebblekv.Open(dir, pebblekv.CockroachLayout, opts.Config)
 	if err != nil {
 		return nil, err
 	}

@@ -32,6 +32,10 @@ mise run ci            # includes the bench tasks
   and the liveness rule applied to the versions a read finds.
 - `spike/pebblemvcc`: layout M, per-edge MVCC versions on Pebble's `cockroachkvs`
   (see its package documentation for the key layout, the read and the retention).
+- `spike/pebblelog`: layout L, a log per entity, direction and layer in Pebble's
+  bytewise key order, newest first, with the retention baseline (see its package
+  documentation). It has no checkpoints yet: a read replays the history older than
+  the instant.
 
 ### Adding a candidate
 

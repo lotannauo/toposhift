@@ -65,6 +65,7 @@ export CGO_ENABLED=0
 go build ./...
 go test -count=1 ./spike/pebblekv
 go test -count=1 ./spike/pebblemvcc -rapid.checks=2 -run 'TestConforms/crdb1/(instant|extremes|producers|write_contract|read_contract|config_0_retain_\[0.3_0.7\]|reopen)|TestVersions|TestRetention'
+go test -count=1 ./spike/pebblelog -rapid.checks=2 -run 'TestConforms/(instant|extremes|producers|relations|write_contract|read_contract|config_0_retain_\[0.3_0.7\]|reopen)|TestRecords|TestRetention|TestSecondRetention|TestARetention|TestAToken'
 # The check below must be able to fail: with cgo on and no tag, Pebble does link
 # the cgo zstd. The package list is captured first, so a failing go list stops
 # the task (a pipeline into grep -q would hide it, and grep -q closing the pipe

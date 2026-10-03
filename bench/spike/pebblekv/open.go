@@ -77,16 +77,57 @@ func BenchTuning() Tuning {
 	}
 }
 
+// Layout is what a layout's keys need from Pebble: the comparer that orders
+// them, the key schemas its tables may be written in, and the block-property
+// collectors it can use. The layout's own package passes it to [Open]; it is not
+// part of [Config], because a layout opened with another's comparer would sort
+// its keys wrongly (Pebble only checks the comparer's name against a database
+// that already exists).
+type Layout struct {
+	// Name is the comparer's name, for messages.
+	Name     string
+	Comparer *pebble.Comparer
+	schemas  map[Schema]*colblk.KeySchema
+	// collectors are installed when [Config.TimeFilter] is set; none means the
+	// layout has no filter to offer.
+	collectors []func() pebble.BlockPropertyCollector
+}
+
+// CockroachLayout is layout M's: cockroachkvs's comparer, versions as MVCC
+// timestamps, either key schema, and the MVCC time-interval collector.
+var CockroachLayout = func() Layout {
+	def := colblk.DefaultKeySchema(&cockroachkvs.Comparer, 16)
+	return Layout{
+		Name:       cockroachkvs.Comparer.Name,
+		Comparer:   &cockroachkvs.Comparer,
+		schemas:    map[Schema]*colblk.KeySchema{SchemaCRDB: &cockroachkvs.KeySchema, SchemaDefault: &def},
+		collectors: cockroachkvs.BlockPropertyCollectors,
+	}
+}()
+
+// BytewiseLayout is layout L's: Pebble's default comparer, which orders keys by
+// their bytes, and its default columnar key schema over it. It offers no
+// block-property filter.
+var BytewiseLayout = func() Layout {
+	def := colblk.DefaultKeySchema(pebble.DefaultComparer, 16)
+	return Layout{
+		Name:     pebble.DefaultComparer.Name,
+		Comparer: pebble.DefaultComparer,
+		schemas:  map[Schema]*colblk.KeySchema{SchemaDefault: &def},
+	}
+}()
+
 // Config says how a database is opened. Every database is opened at
-// [pebble.FormatNewest] with the cockroachkvs comparer: the format is a one-way
-// decision (a database written at it cannot be read by an older Pebble), and
-// crdb1 needs a version that supports columnar blocks, which Pebble's default
-// does not.
+// [pebble.FormatNewest]: the format is a one-way decision (a database written at
+// it cannot be read by an older Pebble), and crdb1 needs a version that
+// supports columnar blocks, which Pebble's default does not.
 type Config struct {
+	// Schema is the key schema new tables are written in; the layout says which
+	// it supports.
 	Schema Schema
-	// TimeFilter installs the MVCC time-interval block-property collector, so
+	// TimeFilter installs the layout's time-interval block-property collector, so
 	// every table records the span of wall times in each block, and says a layout
-	// may use it to skip blocks it does not need.
+	// may use it to skip blocks it does not need. A layout with none refuses it.
 	TimeFilter bool
 	Tuning     Tuning
 	// Sync makes every commit wait for the log to reach the disk. Off, a commit
@@ -116,7 +157,7 @@ type KV struct {
 }
 
 // Open opens the database under dir, creating it if there is none.
-func Open(dir string, cfg Config) (*KV, error) {
+func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 	t := cfg.Tuning
 	if t == (Tuning{}) {
 		t = BenchTuning() // a forgotten setting must not measure a toy
@@ -125,8 +166,20 @@ func Open(dir string, cfg Config) (*KV, error) {
 	cache := pebble.NewCache(t.CacheBytes)
 	defer cache.Unref() // the database holds its own reference
 
+	// Every schema the layout has is registered, and the config only chooses which
+	// one new tables are written in: a table written under one can be read by a
+	// database opened under the other. (An unregistered schema is a panic inside
+	// Pebble when the first such table is read, not an error from Open.)
+	chosen, ok := layout.schemas[cfg.Schema]
+	if !ok {
+		return nil, fmt.Errorf("pebblekv: layout %s has no %s key schema", layout.Name, cfg.Schema)
+	}
+	all := make([]*colblk.KeySchema, 0, len(layout.schemas))
+	for _, s := range layout.schemas {
+		all = append(all, s)
+	}
 	opts := &pebble.Options{
-		Comparer:                    &cockroachkvs.Comparer,
+		Comparer:                    layout.Comparer,
 		FormatMajorVersion:          pebble.FormatNewest,
 		Cache:                       cache,
 		Logger:                      quietLogger{},
@@ -135,26 +188,17 @@ func Open(dir string, cfg Config) (*KV, error) {
 		L0CompactionThreshold:       t.L0CompactionThreshold,
 		LBaseMaxBytes:               t.LBaseMaxBytes,
 		FS:                          cfg.FS,
+		KeySchema:                   chosen.Name,
+		KeySchemas:                  sstable.MakeKeySchemas(all...),
 	}
 	opts.Levels[0].BlockSize = t.BlockSize
 	opts.Levels[0].IndexBlockSize = t.BlockSize
 	opts.TargetFileSizes[0] = t.TargetFileSize
-	// Both schemas are always registered, and the config only chooses which one
-	// new tables are written in: a table written under one can be read by a
-	// database opened under the other. (An unregistered schema is a panic inside
-	// Pebble when the first such table is read, not an error from Open.)
-	defaultSchema := colblk.DefaultKeySchema(&cockroachkvs.Comparer, 16)
-	opts.KeySchemas = sstable.MakeKeySchemas(&cockroachkvs.KeySchema, &defaultSchema)
-	switch cfg.Schema {
-	case SchemaCRDB:
-		opts.KeySchema = cockroachkvs.KeySchema.Name
-	case SchemaDefault:
-		opts.KeySchema = defaultSchema.Name
-	default:
-		return nil, fmt.Errorf("pebblekv: %s", cfg.Schema)
-	}
 	if cfg.TimeFilter {
-		opts.BlockPropertyCollectors = cockroachkvs.BlockPropertyCollectors
+		if layout.collectors == nil {
+			return nil, fmt.Errorf("pebblekv: layout %s has no time-interval filter", layout.Name)
+		}
+		opts.BlockPropertyCollectors = layout.collectors
 	}
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
