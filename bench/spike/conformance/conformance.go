@@ -273,6 +273,38 @@ func Configs() []workload.Config {
 	return out
 }
 
+// RapidChecks is how many random workloads a package's TestMain should ask rapid
+// for: the environment variable TOPOSHIFT_RAPID_CHECKS if it is set, otherwise
+// def. A -rapid.checks on the command line still wins, because it is parsed
+// after TestMain. The fast test tier sets the variable higher than the defaults,
+// which were chosen for the race detector.
+func RapidChecks(def string) string {
+	if v := os.Getenv("TOPOSHIFT_RAPID_CHECKS"); v != "" {
+		return v
+	}
+	return def
+}
+
+// Trimmed reports whether the heavy part of the conformance test is left out, as
+// it is under `go test -short`. The full tier (Pebble's invariant checks on, every
+// workload and retention schedule, the random workloads, the reopen check) is what
+// decides whether a candidate conforms; the trimmed tier exists so the same code
+// can also run under the race detector, which makes each workload cost seconds,
+// with one workload (the coalesced one with lateness) and the concurrency checks,
+// which are the only code here that starts goroutines. It is the one place that
+// decides what a short run drops.
+func Trimmed() bool { return testing.Short() }
+
+// SkipWhenTrimmed skips a test that starts no goroutine of its own and is heavy
+// under the race detector, in a trimmed run. A test that does start goroutines
+// must not call it: those are what the race detector is for.
+func SkipWhenTrimmed(t testing.TB) {
+	t.Helper()
+	if Trimmed() {
+		t.Skip("trimmed run (-short): a single-goroutine test, it runs in the full tier")
+	}
+}
+
 // Run checks a candidate against the oracle on every config, with and without a
 // mid-stream retention, and runs the scripted checks, the check that it comes
 // back from being closed and reopened, and the check that reads running
@@ -293,6 +325,9 @@ func Run(t *testing.T, newEngine Factory) {
 	// the workloads and scripted checks, which are independent of one another and
 	// each own an engine, then run side by side.
 	t.Run("reopen", func(t *testing.T) {
+		if Trimmed() {
+			t.Skip("trimmed run: the reopen check runs in the full tier")
+		}
 		if err := CheckReopen(newEngine); err != nil {
 			t.Fatal(err)
 		}
@@ -335,8 +370,16 @@ func runChecks(t *testing.T, newEngine Factory, parallel bool) {
 			f(t)
 		})
 	}
-	for i, cfg := range Configs() {
-		for _, retain := range [][]float64{nil, {0.5}, {0.3, 0.7}} {
+	retains := [][]float64{nil, {0.5}, {0.3, 0.7}}
+	if Trimmed() {
+		retains = [][]float64{{0.3, 0.7}}
+	}
+	configs := Configs()
+	for i, cfg := range configs {
+		if Trimmed() && i != len(configs)-1 {
+			continue // one workload (the coalesced one with lateness) stays, as a smoke test
+		}
+		for _, retain := range retains {
 			sub(t, fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
 				if err := Check(open(t, newEngine), cfg, Options{RetainAt: retain}); err != nil {
 					t.Fatal(err)
@@ -359,6 +402,9 @@ func runChecks(t *testing.T, newEngine Factory, parallel bool) {
 		})
 	}
 	sub(t, "random workloads", func(t *testing.T) {
+		if Trimmed() {
+			t.Skip("trimmed run: the random workloads run in the full tier")
+		}
 		rapid.Check(t, func(rt *rapid.T) {
 			cfg := workload.Tiny()
 			cfg.Seed = rapid.Uint64Range(1, 1<<40).Draw(rt, "seed")

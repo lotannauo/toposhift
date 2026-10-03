@@ -6,7 +6,8 @@ toposhift is a temporal topology graph for infrastructure. Read `README.md` for 
 
 ```sh
 mise install        # install pinned tools
-mise run ci         # everything CI runs
+mise run ci         # everything CI runs on a pull request
+mise run ci:deep    # the full race-detector run CI does after a push to main
 mise run fmt        # format Go code
 mise run test       # go test -race
 mise run hooks      # install git hooks
