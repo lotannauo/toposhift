@@ -314,6 +314,31 @@ func TestRejectsBadConfigs(t *testing.T) {
 		"confirm without a TTL":     func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 0.5, 0 },
 		"confirm over one":          func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 1.5, time.Minute },
 		"fractional confirm TTL":    func(c *workload.Config) { c.ConfirmProbability, c.ConfirmTTL = 0.5, 1500*time.Millisecond },
+		"negative capacity":         func(c *workload.Config) { c.MaxPodsPerNode = -1 },
+		"capacity below the pods":   func(c *workload.Config) { c.MaxPodsPerNode = 1 }, // 8 hosts, 40 pods
+		"fractional pod heartbeat":  func(c *workload.Config) { c.PodHeartbeatInterval = 1500 * time.Millisecond },
+		"negative pod heartbeat":    func(c *workload.Config) { c.PodHeartbeatInterval = -time.Minute },
+		"pod heartbeat no factor":   func(c *workload.Config) { c.PodHeartbeatInterval, c.HeartbeatTTLFactor = time.Minute, 0 },
+		"backlog without a delay": func(c *workload.Config) {
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = time.Hour, 0, time.Minute
+		},
+		"backlog without a span": func(c *workload.Config) {
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = time.Hour, time.Minute, 0
+		},
+		"backlog fractional span": func(c *workload.Config) {
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = time.Hour, time.Minute, 1500*time.Millisecond
+		},
+		"backlog and independent lateness": func(c *workload.Config) {
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = time.Hour, time.Minute, time.Minute
+			c.LateProbability, c.LateMeanDelay = 0.1, time.Minute
+		},
+		"negative backlog":            func(c *workload.Config) { c.BacklogEvery = -time.Hour },
+		"fraction without coalescing": func(c *workload.Config) { c.ExtendTTLFraction = 0.5 },
+		"fraction over one":           func(c *workload.Config) { c.CoalesceRuns, c.ExtendTTLFraction = true, 1.5 },
+		"negative fraction":           func(c *workload.Config) { c.CoalesceRuns, c.ExtendTTLFraction = true, -0.5 },
+		"fraction and an interval": func(c *workload.Config) {
+			c.CoalesceRuns, c.ExtendTTLFraction, c.ExtendEvery = true, 0.5, time.Minute
+		},
 	} {
 		c := workload.Tiny()
 		mod(&c)

@@ -133,6 +133,10 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 	nextReopen := 0       // the next entry of reopens to apply
 	batches := 0
 	state := func() probeState {
+		if cfg.FreshIdentities {
+			// Pods keep appearing: probe the ones that have long been gone too.
+			entities = g.Entities()
+		}
 		return probeState{entities: entities, stranger: stranger, written: written, horizon: horizon, tokenFloor: tokenFloor}
 	}
 
@@ -236,8 +240,9 @@ func cloneRecords(rs []engine.Record) []engine.Record {
 
 // Configs returns the workloads Run uses: ordinary churn with a second producer
 // confirming placements, heavy lateness, watch mode only with sequence numbers
-// that cross 2^32, many outages, heavy skew with sequence numbers near 2^63, and
-// coalesced runs with lateness.
+// that cross 2^32, many outages, heavy skew with sequence numbers near 2^63,
+// coalesced runs with lateness, and fresh pod identities with pod heartbeats and
+// a backlog.
 func Configs() []workload.Config {
 	base := workload.Tiny()
 	var out []workload.Config
@@ -262,6 +267,18 @@ func Configs() []workload.Config {
 		},
 		func(c *workload.Config) {
 			c.CoalesceRuns, c.LateProbability, c.OutageProbability = true, 0.3, 0.05
+			c.ConfirmProbability, c.ConfirmTTL = 0.4, 4*time.Minute
+		},
+		// Every pod is a new identity, nodes have a capacity, a cluster-level
+		// collector refreshes every placement, a producer's pipeline backs up in
+		// order, and refreshes are coalesced and absorbed: the shapes of real churn
+		// that the others do not have. The trimmed run keeps this one.
+		func(c *workload.Config) {
+			c.FreshIdentities, c.MaxPodsPerNode = true, 8
+			c.PodHeartbeatInterval, c.HeartbeatTTLFactor = 2*time.Minute, 3
+			c.LateProbability = 0
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = 5*time.Minute, time.Minute, 2*time.Minute
+			c.CoalesceRuns, c.ExtendEvery = true, 90*time.Second
 			c.ConfirmProbability, c.ConfirmTTL = 0.4, 4*time.Minute
 		},
 	} {
@@ -290,7 +307,7 @@ func RapidChecks(def string) string {
 // workload and retention schedule, the random workloads, the reopen check) is what
 // decides whether a candidate conforms; the trimmed tier exists so the same code
 // can also run under the race detector, which makes each workload cost seconds,
-// with one workload (the coalesced one with lateness) and the concurrency checks,
+// with one workload (the last config) and the concurrency checks,
 // which are the only code here that starts goroutines. It is the one place that
 // decides what a short run drops.
 func Trimmed() bool { return testing.Short() }
@@ -377,7 +394,7 @@ func runChecks(t *testing.T, newEngine Factory, parallel bool) {
 	configs := Configs()
 	for i, cfg := range configs {
 		if Trimmed() && i != len(configs)-1 {
-			continue // one workload (the coalesced one with lateness) stays, as a smoke test
+			continue // one workload (the last, with fresh identities and a backlog) stays, as a smoke test
 		}
 		for _, retain := range retains {
 			sub(t, fmt.Sprintf("config %d retain %v", i, retain), func(t *testing.T) {
@@ -415,6 +432,23 @@ func runChecks(t *testing.T, newEngine Factory, parallel bool) {
 			cfg.ConfirmTTL = time.Duration(rapid.IntRange(1, 6).Draw(rt, "confirmMinutes")) * time.Minute
 			cfg.FirstSeq = rapid.SampledFrom([]uint64{1, 1<<32 - 300, 1<<63 - 300}).Draw(rt, "firstSeq")
 			retain := rapid.SampledFrom([][]float64{nil, {0.3}, {0.6}, {0.25, 0.6}}).Draw(rt, "retain")
+
+			// The shapes of real churn, sometimes: fresh identities, a node capacity,
+			// pod heartbeats, a producer's backlog instead of independent lateness,
+			// and coalescing bounded by each run's TTL.
+			cfg.FreshIdentities = rapid.Bool().Draw(rt, "fresh")
+			cfg.MaxPodsPerNode = rapid.SampledFrom([]int{0, 0, 8, 12}).Draw(rt, "capacity")
+			cfg.PodHeartbeatInterval = rapid.SampledFrom([]time.Duration{0, 0, time.Minute, 3 * time.Minute}).Draw(rt, "podHeartbeat")
+			if rapid.Bool().Draw(rt, "backlog") {
+				cfg.LateProbability = 0
+				cfg.BacklogEvery = time.Duration(rapid.IntRange(2, 8).Draw(rt, "backlogEvery")) * time.Minute
+				cfg.BacklogMeanDelay = time.Duration(rapid.IntRange(1, 90).Draw(rt, "backlogDelay")) * time.Second
+				cfg.BacklogSpan = time.Duration(rapid.IntRange(1, 5).Draw(rt, "backlogSpan")) * time.Minute
+			}
+			if rapid.Bool().Draw(rt, "coalesce") {
+				cfg.CoalesceRuns = true
+				cfg.ExtendTTLFraction = rapid.SampledFrom([]float64{0, 0.5, 1}).Draw(rt, "extendFraction")
+			}
 
 			// Each iteration gets, and removes, its own directory: iterations
 			// are many, and a disk-backed candidate is not small.

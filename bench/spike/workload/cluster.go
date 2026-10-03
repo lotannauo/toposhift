@@ -24,6 +24,11 @@ type cluster struct {
 	nodeOutageUntil               []time.Time
 	nodePayload, rollupPayload    [][]byte
 	depends                       [][2]int
+
+	nodeCount   []int                  // pods on each node
+	incarnation []int                  // how many times the pod in each slot has been replaced (FreshIdentities)
+	minted      []identity.Fingerprint // every pod, instance and container created (FreshIdentities)
+	podPayload  [][]byte               // what the pod heartbeat says about the pod in each slot (PodHeartbeatInterval)
 }
 
 func (g *Generator) fingerprint(t catalog.EntityType, attrs ...identity.Attr) identity.Fingerprint {
@@ -53,7 +58,17 @@ func (g *Generator) buildCluster() {
 	for i := range c.Services {
 		cl.services = append(cl.services, g.fingerprint(catalog.Service, attr(catalog.ServiceName, "svc-%d", i)))
 	}
+	cl.nodeCount = make([]int, c.Hosts)
+	cl.incarnation = make([]int, c.Pods)
+	cl.podPayload = make([][]byte, c.Pods)
 	for i := range c.Pods {
+		if c.FreshIdentities {
+			cl.pods = append(cl.pods, identity.Fingerprint{})
+			cl.instances = append(cl.instances, identity.Fingerprint{})
+			cl.containers = append(cl.containers, nil)
+			g.mint(i)
+			continue
+		}
 		cl.pods = append(cl.pods, g.fingerprint(catalog.K8sPod, attr(catalog.K8sPodUID, "pod-%d", i)))
 		cl.instances = append(cl.instances, g.fingerprint(catalog.ServiceInstance,
 			attr(catalog.ServiceName, "svc-%d", i%c.Services), attr(catalog.ServiceInstanceID, "pod-%d", i)))
@@ -67,7 +82,8 @@ func (g *Generator) buildCluster() {
 	cl.confirmed = make([]bool, c.Pods)
 	cl.podNode = make([]int, c.Pods)
 	for i := range cl.podNode {
-		cl.podNode[i] = int(g.nodeZipf.Uint64())
+		cl.podNode[i] = g.drawNode(-1)
+		cl.nodeCount[cl.podNode[i]]++
 	}
 	for s := range c.Services {
 		for d := 1; d <= c.DependsPerService && d < c.Services; d++ {
@@ -75,6 +91,47 @@ func (g *Generator) buildCluster() {
 			cl.rollupPayload = append(cl.rollupPayload, g.payload())
 		}
 	}
+}
+
+// mint gives the pod slot p a new pod, service instance and containers, with
+// identities no earlier pod had (FreshIdentities). The first call for a slot
+// makes its first incarnation.
+func (g *Generator) mint(p int) {
+	cl := &g.cl
+	inc := cl.incarnation[p]
+	if cl.pods[p] != (identity.Fingerprint{}) {
+		inc++
+		cl.incarnation[p] = inc
+	}
+	cl.pods[p] = g.fingerprint(catalog.K8sPod, attr(catalog.K8sPodUID, "pod-%d.%d", p, inc))
+	cl.instances[p] = g.fingerprint(catalog.ServiceInstance,
+		attr(catalog.ServiceName, "svc-%d", p%g.cfg.Services), attr(catalog.ServiceInstanceID, "pod-%d.%d", p, inc))
+	n := 1 + g.rng.IntN(g.cfg.ContainersPerPod)
+	cs := make([]identity.Fingerprint, 0, n)
+	for j := range n {
+		cs = append(cs, g.fingerprint(catalog.Container, attr(catalog.ContainerID, "ctr-%d.%d-%d", p, inc, j)))
+	}
+	cl.containers[p] = cs
+	cl.minted = append(cl.minted, cl.pods[p], cl.instances[p])
+	cl.minted = append(cl.minted, cs...)
+}
+
+// drawNode chooses a node for a pod by the Zipf skew, never the node avoid (if
+// not negative), and, when nodes have a capacity, one with room if there is one.
+func (g *Generator) drawNode(avoid int) int {
+	node := int(g.nodeZipf.Uint64())
+	if node == avoid {
+		node = (node + 1) % g.cfg.Hosts
+	}
+	if g.cfg.MaxPodsPerNode > 0 {
+		for range g.cfg.Hosts {
+			if node != avoid && g.cl.nodeCount[node] < g.cfg.MaxPodsPerNode {
+				break
+			}
+			node = (node + 1) % g.cfg.Hosts
+		}
+	}
+	return node
 }
 
 func (g *Generator) payload() []byte {
@@ -152,6 +209,9 @@ func (g *Generator) emit(r engine.Record) {
 	if g.cfg.LateProbability > 0 && g.rng.Float64() < g.cfg.LateProbability {
 		arrival = arrival.Add(time.Duration(g.rng.ExpFloat64() * float64(g.cfg.LateMeanDelay)))
 	}
+	if g.cfg.BacklogEvery > 0 {
+		arrival = g.backlogArrival(r)
+	}
 	g.tick++
 	heap.Push(&g.queue, arrivalItem{arrival: arrival, tick: g.tick, rec: r})
 }
@@ -168,4 +228,47 @@ func (g *Generator) rollupTTL() time.Duration {
 		return 0
 	}
 	return time.Duration(g.cfg.HeartbeatTTLFactor) * g.cfg.RollupInterval
+}
+
+// backlog is one producer's pipeline: when its next episode of delay starts, how
+// long the current one lasts and delays records by, and when the last record it
+// delivered arrived.
+type backlog struct {
+	nextStart, until time.Time
+	delay            time.Duration
+	last             time.Time
+
+	episodes int           // started so far, for the tests of the rate
+	delaySum time.Duration // their delays added up
+}
+
+// backlogArrival is when r arrives under the backlog model (BacklogEvery). The
+// producer's records arrive in the order they happened: a delay never lets a
+// later record overtake an earlier one.
+func (g *Generator) backlogArrival(r engine.Record) time.Time {
+	b := g.backlogs[r.Producer]
+	if b == nil {
+		b = &backlog{nextStart: g.cfg.Start.Add(g.backlogGap())}
+		g.backlogs[r.Producer] = b
+	}
+	if !r.EventTime.Before(b.until) && !r.EventTime.Before(b.nextStart) {
+		b.delay = time.Duration(g.rng.ExpFloat64() * float64(g.cfg.BacklogMeanDelay))
+		b.episodes++
+		b.delaySum += b.delay
+		b.until = r.EventTime.Add(g.cfg.BacklogSpan)
+		b.nextStart = b.until.Add(g.backlogGap())
+	}
+	arrival := r.EventTime
+	if r.EventTime.Before(b.until) {
+		arrival = arrival.Add(b.delay)
+	}
+	if arrival.Before(b.last) {
+		arrival = b.last
+	}
+	b.last = arrival
+	return arrival
+}
+
+func (g *Generator) backlogGap() time.Duration {
+	return time.Duration(g.rng.ExpFloat64() * float64(g.cfg.BacklogEvery))
 }

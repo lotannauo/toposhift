@@ -25,7 +25,8 @@ mise run ci            # includes the bench tasks
 - `spike/engine`: the narrow interface a storage candidate implements, and the
   record it stores. Not the product's `Store`.
 - `spike/workload`: a deterministic generator of churn (late records, same-second
-  ties, outages, heartbeat runs, incompressible payloads).
+  ties, outages, heartbeat runs, incompressible payloads), with options for the shapes
+  of real churn and presets of cluster size (see below).
 - `spike/oracle`: the reference engine, built on the lifecycle specification.
 - `spike/conformance`: the conformance test every candidate must pass, which
   checks a candidate against the oracle on generated workloads.
@@ -38,6 +39,60 @@ mise run ci            # includes the bench tasks
   bytewise key order, newest first, with the retention baseline (see its package
   documentation). With checkpoints off a read replays the history older than the
   instant; with them on, interleaved checkpoints let it stop early.
+
+### The workload's shapes of real churn
+
+A store is judged on the stream it is given, so the generator has options for what
+the small test streams leave out. Each is off by default, and a config that does
+not set it gets exactly the stream it always got (a golden digest per config in
+`workload/golden_test.go` fails if it changes):
+
+- `FreshIdentities`: every pod, service instance and container is a new identity each
+  time the pod is created, and a reschedule is a deletion and a creation on the new
+  node (Kubernetes never moves a pod). Without it a pod slot keeps one identity for
+  ever, so a busy node only ever meets as many distinct peers as there are slots,
+  which favours any layout that keeps one key per peer. `Generator.Entities` lists
+  every entity that has ever existed, and the conformance test probes the dead ones
+  too.
+- `MaxPodsPerNode`: at most that many pods on a node (Kubernetes' default is 110).
+  With a Zipf-skewed choice of node the busiest holds a fifth or more of all pods
+  otherwise.
+- `PodHeartbeatInterval`: the cluster-level collector re-asserts every live pod's
+  placement each interval, and nothing withdraws it when the pod moves, so it expires.
+  The busiest node's reverse prefix then holds a live run for each pod, each extended
+  on every refresh, and each extension is a record in the past that invalidates any
+  checkpoint written after the run began.
+- `BacklogEvery`, `BacklogMeanDelay`, `BacklogSpan`: a producer's pipeline backs up
+  for a span and drains in order. Independent per-record lateness (`LateProbability`)
+  reorders one producer's own records, which real lateness does not; the two models
+  are exclusive.
+- `ExtendTTLFraction`: a run is re-asserted at most once per that share of its own
+  TTL (the design's rule is half), where `ExtendEvery` is one interval for every run.
+
+`workload.CI()`, `Week()` and `Month()` (three, ten and thirty-one days of
+`workload.Cluster`) put these together for a cluster of about 400 nodes and 20,000
+pods at about 2.6 million records a day. They are starting points, not
+measurements of a real cluster. Before measuring anything on them, look at what they
+amount to:
+
+```sh
+cd bench && go run ./cmd/streamstats -preset ci
+```
+
+It prints records a day by kind, the share that arrives late, how many dead entities
+sit behind each live one, and for each kind of prefix (a layer, an entity type and a
+side) how many distinct peers it meets, how many it holds at the end, how many records
+it holds within the last 2, 7 and 14 days (over the prefixes that hold any), and how many of its records are in the past
+of the newest in it (what invalidates a later checkpoint). Three days take about 15 s
+and 1 GB (measured). It keeps a small entry per prefix and fresh identities make
+millions of prefixes, so expect memory to grow about in proportion to the days: roughly
+3 GB for ten days and 10 GB for a month. Its live degree and its late share are
+approximate under independent lateness (a record more than an hour late can revive an
+edge).
+
+Not yet modeled: heartbeats still fire for every node on the same second (a burst a
+timed write test would want spread out), and an outage ending does not release a burst
+of backed-up records.
 
 ### Adding a candidate
 

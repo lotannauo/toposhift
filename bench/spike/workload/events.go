@@ -37,6 +37,9 @@ func (g *Generator) emitInitial() {
 func (g *Generator) createPod(at time.Time, p, node int) {
 	cl := &g.cl
 	cl.podNode[p] = node
+	if g.cfg.PodHeartbeatInterval > 0 {
+		cl.podPayload[p] = g.payload()
+	}
 	g.entityRecord(at, ProducerK8sObjects, cl.pods[p], lifecycle.Observe, 0, g.payload())
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Observe, 0, g.payload())
 	g.confirm(at, p, node)
@@ -60,18 +63,27 @@ func (g *Generator) deletePod(at time.Time, p int) {
 		g.edgeRecord(at, ProducerK8sObjects, c, cl.pods[p], catalog.PartOf, lifecycle.Delete, 0, nil)
 		g.entityRecord(at, ProducerK8sObjects, c, lifecycle.Delete, 0, nil)
 	}
+	cl.nodeCount[cl.podNode[p]]--
 	cl.podNode[p] = -1
 }
 
 func (g *Generator) reschedule(at time.Time, p int) {
 	cl := &g.cl
 	old := cl.podNode[p]
-	node := int(g.nodeZipf.Uint64())
-	if node == old {
-		node = (node + 1) % g.cfg.Hosts
+	node := g.drawNode(old)
+	if g.cfg.FreshIdentities {
+		// Kubernetes does not move a pod: the old one goes and a new one, with
+		// new containers and a new service instance, is created on the new node.
+		g.deletePod(at, p)
+		g.mint(p)
+		cl.nodeCount[node]++
+		g.createPod(at, p, node)
+		return
 	}
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[old], catalog.ScheduledOn, lifecycle.Delete, 0, nil)
 	g.unconfirm(at, p, old)
+	cl.nodeCount[old]--
+	cl.nodeCount[node]++
 	cl.podNode[p] = node
 	g.edgeRecord(at, ProducerK8sObjects, cl.pods[p], cl.nodes[node], catalog.ScheduledOn, lifecycle.Observe, 0, g.payload())
 	g.confirm(at, p, node)
@@ -131,7 +143,12 @@ func (g *Generator) churn(at time.Time) {
 	p := int(g.podZipf.Uint64())
 	switch roll := g.rng.Float64(); {
 	case g.cl.podNode[p] < 0:
-		g.createPod(at, p, int(g.nodeZipf.Uint64()))
+		node := g.drawNode(-1)
+		if g.cfg.FreshIdentities {
+			g.mint(p)
+		}
+		g.cl.nodeCount[node]++
+		g.createPod(at, p, node)
 	case roll < 0.62:
 		g.reschedule(at, p)
 	case roll < 0.77:
@@ -160,5 +177,19 @@ func (g *Generator) rollup(at time.Time) {
 	cl := &g.cl
 	for i, d := range cl.depends {
 		g.edgeRecord(at, ProducerTraces, cl.services[d[0]], cl.services[d[1]], catalog.DependsOn, lifecycle.Observe, g.rollupTTL(), cl.rollupPayload[i])
+	}
+}
+
+// podHeartbeat has the cluster-level collector re-assert every live pod's
+// placement. Nothing withdraws it: when a pod moves or goes, the assertion
+// expires after its TTL.
+func (g *Generator) podHeartbeat(at time.Time) {
+	cl := &g.cl
+	ttl := time.Duration(g.cfg.HeartbeatTTLFactor) * g.cfg.PodHeartbeatInterval
+	for p := range cl.pods {
+		if cl.podNode[p] < 0 {
+			continue
+		}
+		g.edgeRecord(at, ProducerPodHeartbeat, cl.pods[p], cl.nodes[cl.podNode[p]], catalog.ScheduledOn, lifecycle.Observe, ttl, cl.podPayload[p])
 	}
 }
