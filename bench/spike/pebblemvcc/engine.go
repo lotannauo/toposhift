@@ -67,7 +67,10 @@ type Options struct {
 	// names are "write.versions", "read.versions_stepped", "retain.keys_visited"
 	// (keys that had history before the horizon), "retain.seeks" (the seeks made
 	// to reach them, one per key whose newest version is at or after the horizon
-	// as well), "retain.baselines_kept" and "retain.range_deletes".
+	// as well), "retain.baselines_kept" and "retain.range_deletes". Every read
+	// also samples Pebble's iterator statistics under "read.<op>.<name>" (see
+	// [pebblekv.RecordIter]); those are in the same unit for every layout, which
+	// "read.versions_stepped" is not.
 	Recorder engine.Recorder
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes], for the test that

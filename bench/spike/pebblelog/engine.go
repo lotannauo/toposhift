@@ -70,7 +70,10 @@ type Options struct {
 	// checkpoints "checkpoint.written", "checkpoint.invalidated",
 	// "checkpoint.errors", "checkpoint.loads", "checkpoint.load_keys",
 	// "checkpoint.build_records_walked", "read.checkpoint_hits",
-	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version".
+	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version". Every
+	// read also samples Pebble's iterator statistics under "read.<op>.<name>" (see
+	// [pebblekv.RecordIter]); those are in the same unit for every layout, which
+	// "read.records_stepped" is not.
 	Recorder engine.Recorder
 	// Checkpoints says when interleaved checkpoints are written; the zero value
 	// writes none, and the layout then answers every read by replaying.

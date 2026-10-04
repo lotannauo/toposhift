@@ -44,6 +44,12 @@ into its package, and so reruns it and everything that imports it.
   and the liveness rule applied to the versions a read finds.
 - `spike/pebblemvcc`: layout M, per-edge MVCC versions on Pebble's `cockroachkvs`
   (see its package documentation for the key layout, the read and the retention).
+- `spike/candidates`: the list of variants a measurement runs, each with the name it goes
+  by in results (`M/crdb1`, `M/crdb1+filter`, `M/default`, `M/default+filter`, `L/off`,
+  `L/k64a4`, and any other checkpoint policy as `L/k<K>a<alpha>[l<lag>]`), so that the
+  variant measured is the variant checked: every one of them passes the conformance
+  checks at the benchmark settings, and a name is checked to be what it says in the
+  tables it writes.
 - `spike/pebblelog`: layout L, a log per entity, direction and layer in Pebble's
   bytewise key order, newest first, with the retention baseline (see its package
   documentation). With checkpoints off a read replays the history older than the
@@ -102,6 +108,52 @@ edge).
 Not yet modeled: heartbeats still fire for every node on the same second (a burst a
 timed write test would want spread out), and an outage ending does not release a burst
 of backed-up records.
+
+### What a measurement reads
+
+An engine reports what it does through the optional parts of `engine/hooks.go`, so a
+runner can read it without knowing Pebble:
+
+- **Per read**, to the `Recorder`, under `read.<op>.<name>` for each of `neighbors`,
+  `batch`, `alive` and `window`, from the statistics Pebble keeps on the iterator
+  (`pebblekv.RecordIter`): `reads` (a count) and samples of `block_bytes`,
+  `block_bytes_cached`, `block_read_ns`, `points`, `key_bytes`, `value_bytes`, `seeks`,
+  `steps`, `internal_seeks`, `internal_steps`, `covered_by_tombstones`,
+  `separated_values` and `separated_value_bytes_fetched`. They are in one unit for every
+  layout; the layouts' own counters (versions or records stepped over) are not, because
+  each means something different by a step. The number that matters most is
+  `internal_steps` against `steps`: the iterator steps over every stored version of a key
+  to show the caller one, so five versions of each of a hundred keys is 100 steps and 500
+  inner steps. Block bytes depend on what has been compacted when, so they are only
+  comparable after `CompactAll`.
+- **`Quiescer`**: `Quiesce` waits until nothing is flushing or compacting, the estimates
+  of every table's garbage are collected, no file is marked for compaction (unless
+  automatic compactions are off) and all of that has held for a second; `CompactAll`
+  compacts everything into as few tables as Pebble will and then waits for rest. `Settle`
+  is the quick version the conformance test uses between rounds.
+- **`Statser`**: flat counters from `pebblekv.Snapshot`: flushes, compactions, read
+  compactions, tables and bytes per level, read amplification, the garbage point and range
+  tombstones still hold, cache hits and misses, and the bytes written in, flushed and
+  compacted (write amplification is `(bytes_flushed + bytes_compacted) / bytes_in`).
+  `Size` is the bytes on disk including the log and files not yet deleted; the size to
+  compare is `live_table_bytes` after `CompactAll`.
+- **`LayerSizer`** and **`Breakdowner`**: Pebble's estimate of the table bytes of each
+  layer, and a scan that divides the logical bytes of every data key and value into
+  parts that add up to all of them: `observe`, `extension` (a run re-asserted with a
+  later Through) and `delete`, each without its payload; the payload by the direction it
+  is stored under (`payload forward`, `payload reverse`, `payload entity`); and for layout
+  L `checkpoint` and `baseline`. The payload parts are checked against the payloads of the
+  stream that was written.
+- **`Describer`**: the settings the engine was opened with and, read back from its tables,
+  the key schema and block-property collectors they were written with (every table also
+  carries Pebble's own `obsolete-key` one), so a result says what it was measured on.
+
+A measurement of a built database opens it with `Config.DisableAutoCompactions` and
+`Config.DisableReadCompactions`, so the tables do not change under the reads being timed;
+the first is checked by its effect and the second by the options it comes to (read-triggered
+compactions do not fire at the scale of a test). `KV.CloseClean` flushes before closing, and
+`KV.RecoveredBytes` is what opening wrote to tables from the log, which a measurement
+refuses to be anything but zero.
 
 ### Adding a candidate
 

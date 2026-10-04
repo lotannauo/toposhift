@@ -45,20 +45,22 @@ func instant(t time.Time) (wall uint64, ns int64, empty bool) {
 // stepped over.
 type reader struct {
 	e       *Engine
+	op      string // what the read is for, which names its iterator statistics
 	it      *pebble.Iterator
 	stepped int64
 }
 
-func (e *Engine) newReader(opts *pebble.IterOptions) (*reader, error) {
+func (e *Engine) newReader(op string, opts *pebble.IterOptions) (*reader, error) {
 	it, err := e.kv.NewIter(opts)
 	if err != nil {
 		return nil, err
 	}
-	return &reader{e: e, it: it}, nil
+	return &reader{e: e, op: op, it: it}, nil
 }
 
 func (r *reader) close() {
 	r.e.rec.Count("read.versions_stepped", r.stepped)
+	pebblekv.RecordIter(r.e.rec, r.op, r.it)
 	_ = r.it.Close()
 }
 
@@ -159,7 +161,7 @@ func (e *Engine) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time
 	if empty {
 		return nil, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("neighbors", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +184,7 @@ func (e *Engine) NeighborsBatch(fps []identity.Fingerprint, dir engine.Direction
 	if empty || len(fps) == 0 {
 		return out, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("batch", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +210,7 @@ func (e *Engine) Alive(fp identity.Fingerprint, t time.Time, s engine.Scope) (bo
 	if !ok {
 		return false, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("alive", nil)
 	if err != nil {
 		return false, err
 	}
@@ -258,7 +260,7 @@ func (e *Engine) Window(fp identity.Fingerprint, dir engine.Direction, from, to 
 	if e.kv.Config().TimeFilter {
 		opts.PointKeyFilters = []sstable.BlockPropertyFilter{cockroachkvs.NewMVCCTimeIntervalFilter(wallLo, wallHi)}
 	}
-	r, err := e.newReader(opts)
+	r, err := e.newReader("window", opts)
 	if err != nil {
 		return nil, err
 	}

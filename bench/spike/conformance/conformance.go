@@ -17,6 +17,7 @@
 package conformance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -65,6 +66,10 @@ type Options struct {
 	// the candidate is closed and opened again with Reopen, and then must have
 	// every answer, its token and its horizon as it was. Empty disables it.
 	ReopenAt []float64
+	// CompactAtEnd, for an engine that is a [engine.Quiescer], compacts everything
+	// it holds before the last round of comparisons, so the answers are checked
+	// against files that compaction has merged, and against whatever it dropped.
+	CompactAtEnd bool
 	// Reopen closes old, which the caller no longer owns afterwards, and returns
 	// the candidate opened over what it left. Required with ReopenAt.
 	Reopen func(old engine.Engine) (engine.Engine, error)
@@ -212,6 +217,13 @@ func Check(cand engine.Engine, cfg workload.Config, opts Options) error {
 			}
 		}
 	}
+	if q, ok := cand.(engine.Quiescer); ok && opts.CompactAtEnd {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := q.CompactAll(ctx); err != nil {
+			return fmt.Errorf("compacting the candidate: %w", err)
+		}
+	}
 	if err := compare(cand, ora, rng, opts, state()); err != nil {
 		return fmt.Errorf("at the end (%d records): %w", len(written), err)
 	}
@@ -355,6 +367,45 @@ func Run(t *testing.T, newEngine Factory) {
 		}
 	})
 	runChecks(t, newEngine, true)
+}
+
+// RunPartial is the part of [Run] that exercises what an engine's configuration
+// changes, for a configuration that is not the primary: the fixed workloads with
+// the new shapes of churn and a retention, and the scripted checks, each on an
+// engine of its own, one after another. It leaves out the reopen, concurrency and
+// random-workload checks, which are about the engine and not the configuration.
+// A trimmed run keeps the scripted checks and one workload.
+func RunPartial(t *testing.T, newEngine Factory) {
+	t.Helper()
+	cfgs := Configs()
+	workloads := []int{0, 5, len(cfgs) - 1}
+	if Trimmed() {
+		workloads = workloads[2:]
+	}
+	for _, i := range workloads {
+		t.Run(fmt.Sprintf("config %d retain [0.3 0.7]", i), func(t *testing.T) {
+			if err := Check(open(t, newEngine), cfgs[i], Options{RetainAt: []float64{0.3, 0.7}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, c := range []struct {
+		name  string
+		check func(engine.Engine) error
+	}{
+		{"write contract", CheckWriteContract},
+		{"read contract", CheckReadContract},
+		{"instant", CheckInstant},
+		{"producers", CheckProducers},
+		{"relations", CheckRelations},
+		{"extremes", CheckExtremes},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.check(open(t, newEngine)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 // RunSerial is [Run] without the reopen check and the concurrent-read check.

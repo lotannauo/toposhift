@@ -172,3 +172,42 @@ func TestReopensFromRealFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// What the engine says about the bytes it holds is true: the payload parts add up
+// to the payloads of the stream, direction by direction, the extension part is
+// there exactly when the stream has run extensions, and the layers it reports are
+// the ones written to.
+func TestMeasurementHooksTellTheTruth(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t) // starts no goroutine of its own; the full tier runs it
+	f := inMemory(variants()[primary])
+	t.Run("with run extensions", func(t *testing.T) {
+		t.Parallel()
+		if err := conformance.CheckMeasurement(open(t, f)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("without", func(t *testing.T) {
+		t.Parallel()
+		if err := conformance.CheckMeasurementPlain(open(t, f)); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// Compacting everything keeps every answer: it merges files and drops what a
+// retention deleted, and must not drop a version a read needs.
+func TestAnswersSurviveCompactingEverything(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t) // starts no goroutine of its own; the full tier runs it
+	cfgs := conformance.Configs()
+	for _, i := range []int{1, 5, 6} {
+		t.Run(fmt.Sprintf("config %d", i), func(t *testing.T) {
+			t.Parallel()
+			f := inMemory(variants()[primary])
+			if err := conformance.Check(open(t, f), cfgs[i], conformance.Options{RetainAt: []float64{0.3, 0.7}, CompactAtEnd: true}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

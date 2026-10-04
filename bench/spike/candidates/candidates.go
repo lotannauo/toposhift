@@ -1,0 +1,160 @@
+// Package candidates is the list of storage candidates the spike measures, each
+// with the name it goes by in results, so that the variant a measurement runs is
+// the variant the conformance test ran. A name says everything that distinguishes
+// the candidate:
+//
+//	M/crdb1             layout M on cockroachkvs's columnar key schema
+//	M/crdb1+filter      the same with the MVCC time-interval block filter
+//	M/default           layout M on Pebble's default key schema
+//	M/default+filter    the same with the filter
+//	L/off               layout L (a log per entity) with no checkpoints
+//	L/k64a4             layout L with checkpoints due after 64 records, scaled by 4
+//	L/k64a4l2s          the same with a checkpoint instant 2 s behind the newest
+//
+// The settings a runner or a test chooses, not the candidate's own, are in
+// [Options].
+package candidates
+
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/cockroachdb/pebble/v2/vfs"
+
+	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
+	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
+	"github.com/lotannauo/toposhift/bench/spike/pebblemvcc"
+)
+
+// Options are the settings of a run, as opposed to the candidate.
+type Options struct {
+	// Tuning sizes Pebble. The zero value is [pebblekv.BenchTuning].
+	Tuning pebblekv.Tuning
+	// CacheBytes, if above zero, replaces the tuning's block cache size. A
+	// comparison gives every candidate the same absolute size.
+	CacheBytes int64
+	// FS is the file system; nil is the real one.
+	FS vfs.FS
+	// Recorder receives the engine's counts and samples; nil discards them.
+	Recorder engine.Recorder
+	// Sync makes every commit wait for the log to reach the disk.
+	Sync bool
+	// DisableAutoCompactions and DisableReadCompactions hold the shape of the
+	// tables still under a measurement; see [pebblekv.Config].
+	DisableAutoCompactions, DisableReadCompactions bool
+}
+
+func (o Options) config() pebblekv.Config {
+	t := o.Tuning
+	if t == (pebblekv.Tuning{}) {
+		t = pebblekv.BenchTuning()
+	}
+	if o.CacheBytes > 0 {
+		t.CacheBytes = o.CacheBytes
+	}
+	return pebblekv.Config{
+		Tuning: t, FS: o.FS, Sync: o.Sync,
+		DisableAutoCompactions: o.DisableAutoCompactions, DisableReadCompactions: o.DisableReadCompactions,
+	}
+}
+
+// Variant is one candidate.
+type Variant struct {
+	// Name is the name results go by.
+	Name string
+	// Layout is "M" or "L".
+	Layout string
+	open   func(dir string, o Options) (engine.Engine, error)
+}
+
+// Open opens the candidate under dir.
+func (v Variant) Open(dir string, o Options) (engine.Engine, error) { return v.open(dir, o) }
+
+func layoutM(schema pebblekv.Schema, filter bool) Variant {
+	name := "M/" + schema.String()
+	if filter {
+		name += "+filter"
+	}
+	return Variant{Name: name, Layout: "M", open: func(dir string, o Options) (engine.Engine, error) {
+		cfg := o.config()
+		cfg.Schema, cfg.TimeFilter = schema, filter
+		return pebblemvcc.Open(dir, pebblemvcc.Options{Config: cfg, Recorder: o.Recorder})
+	}}
+}
+
+// LNoCheckpoints is layout L with no checkpoints.
+func LNoCheckpoints() Variant {
+	return Variant{Name: "L/off", Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+		return pebblelog.Open(dir, pebblelog.Options{Config: o.config(), Recorder: o.Recorder})
+	}}
+}
+
+// LCheckpoints is layout L with checkpoints due when a prefix has had kMin
+// records since its last, scaled by alpha, with the instant lag behind the newest
+// (see [pebblelog.CheckpointOptions]).
+func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
+	name := fmt.Sprintf("L/k%da%s", kMin, strconv.FormatFloat(alpha, 'g', -1, 64))
+	if lag != 0 {
+		name += "l" + lag.String()
+	}
+	return Variant{Name: name, Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+		return pebblelog.Open(dir, pebblelog.Options{
+			Config: o.config(), Recorder: o.Recorder,
+			Checkpoints: pebblelog.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
+		})
+	}}
+}
+
+// All is the set a measurement runs by default: the four layout M variants, layout
+// L without checkpoints and layout L with the design's defaults (K_min 64, alpha 4).
+func All() []Variant {
+	return []Variant{
+		layoutM(pebblekv.SchemaCRDB, false), layoutM(pebblekv.SchemaCRDB, true),
+		layoutM(pebblekv.SchemaDefault, false), layoutM(pebblekv.SchemaDefault, true),
+		LNoCheckpoints(), LCheckpoints(64, 4, 0),
+	}
+}
+
+// Names are the names of [All].
+func Names() []string {
+	var out []string
+	for _, v := range All() {
+		out = append(out, v.Name)
+	}
+	return out
+}
+
+var checkpointName = regexp.MustCompile(`^L/k([0-9]+)a([0-9.]+)(?:l(.+))?$`)
+
+// Lookup finds a variant by name. Besides the names in [All] it accepts any
+// checkpoint policy of layout L (L/k32a2, L/k128a0.5l1ns), which is how a sweep
+// names the points it runs.
+func Lookup(name string) (Variant, error) {
+	for _, v := range All() {
+		if v.Name == name {
+			return v, nil
+		}
+	}
+	if m := checkpointName.FindStringSubmatch(name); m != nil {
+		k, err := strconv.Atoi(m[1])
+		alpha, err2 := strconv.ParseFloat(m[2], 64)
+		var lag time.Duration
+		var err3 error
+		if m[3] != "" {
+			lag, err3 = time.ParseDuration(m[3])
+		}
+		if err != nil || err2 != nil || err3 != nil || k < 1 || alpha <= 0 || lag < 0 {
+			return Variant{}, fmt.Errorf("candidates: %q is not a checkpoint policy (K at least 1, alpha above 0, lag not negative)", name)
+		}
+		v := LCheckpoints(k, alpha, lag)
+		if v.Name != name { // a spelling that is not the canonical one would name the same point twice
+			return Variant{}, fmt.Errorf("candidates: write %q as %q", name, v.Name)
+		}
+		return v, nil
+	}
+	return Variant{}, fmt.Errorf("candidates: no variant %q (have %s)", name, strings.Join(Names(), ", "))
+}

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"slices"
 	"sync"
 	"time"
@@ -48,7 +49,9 @@ func (NopRecorder) Count(string, int64) {}
 func (NopRecorder) Sample(string, int64) {}
 
 // MemRecorder keeps everything it is given, for tests and for a benchmark that
-// reads the result at the end. It is safe for concurrent use.
+// reads the result at the end. It is safe for concurrent use. It keeps every
+// sample, and an engine reports a dozen per read, so a run of millions of reads
+// wants a recorder that summarizes instead.
 type MemRecorder struct {
 	mu      sync.Mutex
 	counts  map[string]int64
@@ -140,4 +143,35 @@ type Checkpointer interface {
 	CheckpointEdges(layer catalog.Layer, fp identity.Fingerprint, dir Direction, c time.Time) error
 	// CheckpointEntity writes a checkpoint at c for the existence of fp.
 	CheckpointEntity(layer catalog.Layer, fp identity.Fingerprint, c time.Time) error
+}
+
+// Quiescer is implemented by an engine that can be brought to rest: no flush or
+// compaction running, nothing left in memory that a read would find in a file.
+// A size or a read latency measured against a database that is still working is
+// measured against whatever the background work had reached, which differs from
+// run to run.
+type Quiescer interface {
+	// Quiesce waits until the engine is at rest, or ctx is done.
+	Quiesce(ctx context.Context) error
+	// CompactAll compacts everything the engine holds into as few files as it
+	// will, then waits for rest. What it does to the shape of the files is the
+	// point: bytes on disk become repeatable.
+	CompactAll(ctx context.Context) error
+}
+
+// Statser is implemented by an engine that can say what its storage has done:
+// flushes, compactions, files and bytes per level, cache hits and misses. The
+// names are the engine's own and are flat counters, so a runner can print the
+// difference of two readings without knowing the engine.
+type Statser interface {
+	Stats() map[string]int64
+}
+
+// Describer is implemented by an engine that can say how it is set up and what
+// that amounts to in the files it has written, as names and values: the settings
+// it was opened with, and the schema and collectors its tables really carry. A
+// measurement records it next to its numbers, so a result says what it was
+// measured on, and a variant that was asked for but is not in effect shows.
+type Describer interface {
+	Describe() (map[string]string, error)
 }
