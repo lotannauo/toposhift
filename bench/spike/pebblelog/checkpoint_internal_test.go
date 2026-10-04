@@ -645,3 +645,47 @@ func TestAFailedRecordCommitDoesNotLoseTheCheckpointList(t *testing.T) {
 	}
 	p.same([]identity.Fingerprint{podFP, a, b}, []time.Time{sec(1), sec(7), sec(12), sec(60)}, []uint64{0, 1, 2, 3, engine.Latest})
 }
+
+// A read counts the entries it decodes from a checkpoint, and from the baseline,
+// including those of a checkpoint it then skips: meeting one costs its decoding.
+func TestReadsCountTheEntriesTheyDecode(t *testing.T) {
+	t.Parallel()
+	rec := &engine.MemRecorder{}
+	p := newPair(t, Options{Checkpoints: stress(0), Recorder: rec})
+	p.write(
+		edgeRecord(1, "p", sec(10), lifecycle.Observe, 0),
+		edgeRecord(2, "q", sec(12), lifecycle.Observe, 0),
+	)
+	read := func(tok uint64) {
+		t.Helper()
+		ns, err := p.e.Neighbors(podFP, engine.Forward, sec(60), engine.Scope{Layer: catalog.L2, AsOf: tok})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ns) != 1 { // two producers refer to the same edge
+			t.Fatalf("token %d: %d neighbors, want 1", tok, len(ns))
+		}
+	}
+	read(engine.Latest)
+	used := rec.Counter("read.checkpoint_entries_decoded")
+	if rec.Counter("read.checkpoint_hits") != 1 || used < 1 {
+		t.Fatalf("a read that used a checkpoint: %d hits, %d entries decoded", rec.Counter("read.checkpoint_hits"), used)
+	}
+	read(1) // below the checkpoint's W: skipped, but decoded
+	if rec.Counter("read.checkpoint_skipped_w") != 1 || rec.Counter("read.checkpoint_entries_decoded") != 2*used {
+		t.Fatalf("a skipped checkpoint: skipped %d, entries decoded %d", rec.Counter("read.checkpoint_skipped_w"), rec.Counter("read.checkpoint_entries_decoded"))
+	}
+	if rec.Counter("read.baseline_entries_decoded") != 0 {
+		t.Fatal("entries of a baseline were counted before there was one")
+	}
+	if err := p.e.Retain(sec(30)); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.e.Retain(sec(30)); err != nil {
+		t.Fatal(err)
+	}
+	read(engine.Latest)
+	if rec.Counter("read.baseline_entries_decoded") == 0 {
+		t.Fatal("a read that reached the baseline decoded none of its entries")
+	}
+}

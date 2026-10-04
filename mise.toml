@@ -193,7 +193,7 @@ depends = ["ci:static", "ci:bench", "ci:race"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, workflows and secrets"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "check:ci-shards", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
 
 [tasks."ci:bench"]
 description = "CI shard: the bench module's full tests and its cgo-free build"
@@ -202,6 +202,19 @@ depends = ["bench:test", "bench:purego"]
 [tasks."ci:race"]
 description = "CI shard: the tests under the race detector"
 depends = ["test", "bench:test:race"]
+
+[tasks."check:no-results"]
+description = "Fail if measurement output is tracked: numbers from a laptop or a VM are never published"
+run = '''
+set -eu
+files="$(git ls-files -- bench/results ':(glob)bench/**/*.jsonl' ':(glob)bench/**/plan.json' ':(glob)bench/**/manifest.json' ':(glob)bench/**/results.json' ':(glob)bench/**/report.txt')"
+found="$(printf '%s\n' "$files" | head -5)"
+if [ -n "$found" ]; then
+  echo "check:no-results: measurement output is tracked, remove it from the index:" >&2
+  echo "$found" >&2
+  exit 1
+fi
+'''
 
 [tasks."check:ci-shards"]
 description = "Fail if ci is not exactly the shards the CI workflow runs"

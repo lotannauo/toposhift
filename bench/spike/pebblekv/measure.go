@@ -322,6 +322,8 @@ func (k *KV) Describe() (map[string]string, error) {
 		"auto_compactions":        fmt.Sprint(!k.cfg.DisableAutoCompactions),
 		"read_compactions":        fmt.Sprint(!k.cfg.DisableReadCompactions),
 		"time_filter_asked":       fmt.Sprint(k.cfg.TimeFilter),
+		"recovered_bytes":         fmt.Sprint(k.recovered),
+		"pebble_options":          k.options,
 	}
 	props, err := k.TableProperties()
 	if err != nil {

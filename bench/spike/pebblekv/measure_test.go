@@ -3,6 +3,7 @@ package pebblekv_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -364,3 +365,57 @@ func TestRecordIterNamesArePinned(t *testing.T) {
 }
 
 func newMemFS() vfs.FS { return vfs.NewMem() }
+
+// Describe says how many bytes opening wrote to tables from the log, and the
+// full options the database runs under, so a measurement can refuse a database
+// that did work when it was opened and can compare the options of two builds.
+func TestDescribeSaysWhatOpeningDidAndWhatItRunsUnder(t *testing.T) {
+	t.Parallel()
+
+	fs := vfs.NewMem()
+	kv := bytewise(t, fs, "db", pebblekv.Config{})
+	fill(t, kv, 20, 5)
+	b := kv.NewBatch()
+	if err := b.Set([]byte("unflushed"), make([]byte, 100), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(kv.WriteOptions()); err != nil {
+		t.Fatal(err)
+	}
+	d, err := kv.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d["recovered_bytes"] != "0" {
+		t.Errorf("a new database recovered %s bytes", d["recovered_bytes"])
+	}
+	for _, want := range []string{"[Options]", "block_size=512", "mem_table_size=32768", "comparer=leveldb.BytewiseComparator", "read_sampling_multiplier=16"} {
+		if !strings.Contains(d["pebble_options"], want) {
+			t.Errorf("the options text lacks %q:\n%s", want, d["pebble_options"])
+		}
+	}
+	// Closed without flushing, the log is replayed into a table when it is opened again.
+	if err := kv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := bytewise(t, fs, "db", pebblekv.Config{DisableReadCompactions: true})
+	d, err = again.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d["recovered_bytes"] == "0" || d["recovered_bytes"] == "" {
+		t.Errorf("opening a database with a log to replay recovered %q bytes", d["recovered_bytes"])
+	}
+	if !strings.Contains(d["pebble_options"], "read_sampling_multiplier=-1") {
+		t.Errorf("the options text does not show that read compactions are off:\n%s", d["pebble_options"])
+	}
+	// Flushed before it was closed, it recovers nothing.
+	if err := again.CloseClean(); err != nil {
+		t.Fatal(err)
+	}
+	clean := bytewise(t, fs, "db", pebblekv.Config{})
+	defer func() { _ = clean.Close() }()
+	if d, err = clean.Describe(); err != nil || d["recovered_bytes"] != "0" {
+		t.Errorf("a database closed clean recovered %q bytes (%v)", d["recovered_bytes"], err)
+	}
+}

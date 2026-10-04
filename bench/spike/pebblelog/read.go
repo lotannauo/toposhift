@@ -31,6 +31,9 @@ type reader struct {
 	// checkpoints met: used, skipped for a token below its W, skipped for another
 	// fold version.
 	hits, skippedW, skippedVersion int64
+	// entries decoded from the checkpoints and the baseline met, whether or not a
+	// checkpoint was then used: decoding is the cost of meeting one.
+	ckptEntries, baselineEntries int64
 }
 
 func (e *Engine) newReader(op string, opts *pebble.IterOptions) (*reader, error) {
@@ -47,6 +50,12 @@ func (r *reader) close() {
 		r.e.rec.Count("read.checkpoint_hits", r.hits)
 		r.e.rec.Count("read.checkpoint_skipped_w", r.skippedW)
 		r.e.rec.Count("read.checkpoint_skipped_version", r.skippedVersion)
+	}
+	if r.ckptEntries > 0 {
+		r.e.rec.Count("read.checkpoint_entries_decoded", r.ckptEntries)
+	}
+	if r.baselineEntries > 0 {
+		r.e.rec.Count("read.baseline_entries_decoded", r.baselineEntries)
 	}
 	pebblekv.RecordIter(r.e.rec, r.op, r.it)
 	_ = r.it.Close()
@@ -95,6 +104,7 @@ func (r *reader) decide(prefix []byte, tNs int64, asOf uint64, fn func(ref []byt
 			if st.Kind != kindCheckpoint {
 				return fmt.Errorf("pebblelog: a checkpoint key holds a stamp of kind %d", st.Kind)
 			}
+			r.ckptEntries += int64(len(st.Entries))
 			// Use it only if it was built by this fold logic and every record it
 			// depends on is visible to the token; otherwise walk on to an older
 			// one, or to the baseline.
@@ -125,6 +135,7 @@ func (r *reader) decide(prefix []byte, tNs int64, asOf uint64, fn func(ref []byt
 			if st.Kind != kindBaseline {
 				return fmt.Errorf("pebblelog: a baseline key holds a stamp of kind %d", st.Kind)
 			}
+			r.baselineEntries += int64(len(st.Entries))
 			for _, en := range st.Entries {
 				if _, done := decided[string(en.Ref)]; done {
 					continue
