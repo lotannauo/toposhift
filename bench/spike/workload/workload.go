@@ -98,8 +98,13 @@ type Config struct {
 	// ExtendEvery, with CoalesceRuns, limits how often a run is re-asserted: a
 	// refresh closer than this to the last extension is absorbed without a
 	// record. The run then understates how long its producer was seen by less
-	// than ExtendEvery, so existence can end early but never late. Zero extends
-	// on every refresh, which loses nothing.
+	// than ExtendEvery, so existence can end early but never late, and only the
+	// end of an interval moves. When a run is replaced by another (its
+	// description changes, or a retention means it can no longer be extended),
+	// the store is first given what its deadline lacks to reach the new run, so
+	// an interval of existence has no gap the producer did not have, apart from
+	// one before the horizon, which the store no longer keeps.
+	// Zero extends on every refresh, which loses nothing.
 	ExtendEvery time.Duration
 
 	// ExtendTTLFraction is ExtendEvery as a share of each run's own TTL: with 0.5
@@ -265,7 +270,9 @@ type Generator struct {
 	exhausted                            bool
 
 	runs    map[runKey]*run
-	horizon time.Time // the store's retention horizon, once told
+	ready   []engine.Record // what the coalescer wrote for the arrival last taken, not yet returned
+	head    int             // the next of ready to return
+	horizon time.Time       // the store's retention horizon, once told
 }
 
 // New builds a generator for a valid Config.
@@ -313,24 +320,26 @@ func New(cfg Config) (*Generator, error) {
 // Next returns the next record in arrival order, assigning its Seq, or false
 // when the stream is over.
 func (g *Generator) Next() (engine.Record, bool) {
-	for {
+	for g.head == len(g.ready) {
+		g.ready, g.head = g.ready[:0], 0
 		rec, ok := g.nextArrival()
 		if !ok {
 			return engine.Record{}, false
 		}
 		if g.cfg.CoalesceRuns {
-			var emit bool
-			if rec, emit = g.coalesce(rec); !emit {
-				continue
-			}
+			g.ready = g.coalesce(rec, g.ready)
+		} else {
+			g.ready = append(g.ready, rec)
 		}
-		g.seq++
-		rec.Seq = g.seq
-		if g.records++; g.cfg.FreshIdentities && g.records%pruneEvery == 0 {
-			g.pruneRuns()
-		}
-		return rec, true
 	}
+	rec := g.ready[g.head]
+	g.head++
+	g.seq++
+	rec.Seq = g.seq
+	if g.records++; g.cfg.FreshIdentities && g.records%pruneEvery == 0 {
+		g.pruneRuns()
+	}
+	return rec, true
 }
 
 // nextArrival pops the next record in arrival order, generating events as
@@ -399,9 +408,10 @@ func (g *Generator) Entities() []identity.Fingerprint {
 // SetHorizon tells the generator the store has retained everything before h, so
 // it will refuse a record with an earlier event time. A run of refreshes that
 // started before h is then continued by a new run rather than extended at its
-// start (see the coalescer). It only moves forward, and it changes nothing
-// unless CoalesceRuns is set. Call it after each retention, before drawing the
-// next record.
+// start (see the coalescer), preceded where the old run's deadline falls short by
+// a record that carries it to the new run, which is never before h. It only moves
+// forward, and it changes nothing unless CoalesceRuns is set. Call it after each
+// retention, before drawing the next record.
 func (g *Generator) SetHorizon(h time.Time) {
 	if h.After(g.horizon) {
 		g.horizon = h

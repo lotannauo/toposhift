@@ -291,7 +291,13 @@ After a retention the workload generator is told the horizon (`SetHorizon`): a
 heartbeating run that began before it is continued by a new run at the refresh's
 own event time, not extended at its start. Extending at the start is what the
 coalescer did, and a store that has retained past that start refuses it, so every
-long-lived heartbeat would silently die at its deadline.
+long-lived heartbeat would silently die at its deadline. Where the extension
+interval had absorbed refreshes that the old run's stored deadline does not reach
+past, the new run is preceded by a record that carries the old one to it (the same
+for a run that is replaced because its description changed), so a retention does
+not split an interval of existence that the refreshes did not split. A run that
+ends in a real silence still ends at its stored deadline, early by less than the
+extension interval.
 
 Beyond the random workloads, `Run` runs scripted checks on a fresh engine:
 `CheckInstant` (several records of one producer at one instant, every token
