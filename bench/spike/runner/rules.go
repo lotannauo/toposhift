@@ -7,7 +7,7 @@ import (
 )
 
 // RulesVersion is bumped when a rule changes its meaning.
-const RulesVersion = 1
+const RulesVersion = 2
 
 // Rules are the constants of the decision between the layouts, fixed before the
 // measurements that decide (the retained-window builds and the timing on CI
@@ -36,13 +36,14 @@ const RulesVersion = 1
 //
 // How counters are combined. A counter orders two candidates in a cell (a query
 // group at an age) if the larger value is above the counter's floor and more than
-// OrderTolerance times the smaller. A cell is ordered if some counter orders it and
+// OrderTolerance times the smaller, where a candidate's value in a cell is its mean
+// over the queries of the cell (CellValue). A cell is ordered if some counter orders it and
 // none orders it the other way; it is mixed if counters order it in opposite
 // directions (the usual case: one layout seeks to every key, the other walks a run);
 // it is tied on counters if none orders it. Counters decide wherever they order a
-// cell. The report will list the mixed cells (it does not yet: that is for the
-// change that adds the counters below), and that list is fixed before any timing is
-// collected. Timing settles only the mixed cells, never reverses a counter
+// cell. The report lists the mixed cells for every pair of candidates, with a digest
+// of the list; the list is a function of the counters alone, and it is fixed before
+// any timing is collected. Timing settles only the mixed cells, never reverses a counter
 // verdict, and a timing that contradicts one beyond the floor is a defect to explain
 // (a missing counter, allocation, collection) and not a result. A mixed cell is
 // settled by warm timing on CI hardware when the sign is the same in every job of
@@ -61,8 +62,14 @@ const RulesVersion = 1
 // (every load, a cached block too, again at each seek that reloads it) are
 // diagnostics and are never decided on.
 //
-// Some counters the rules name are not recorded yet: block_loads, cold_block_bytes
-// and allocs are for the next change, and a decision cannot be read before they are.
+// The counters the rules name that are not Pebble's iterator statistics are
+// recorded by the read step. block_loads and cold_block_bytes are what a read has
+// to bring in with the block cache emptied and the tables open: the blocks it
+// misses in the cache and the compressed bytes of the index, filter and data blocks
+// among them, asked twice and required to agree. allocs is the fewest allocations
+// of three runs of the read after two to fill the pools, with the collector off; it
+// depends on the process, is never required to repeat, and is a mean over many reads
+// before it is read against its floor.
 //
 // Log of what was set after the first look at results (2026-10-04, after the
 // untimed three-day runs): the combination rule (counters decide, timing settles
@@ -72,6 +79,12 @@ const RulesVersion = 1
 // snapshot instant were also changed after the first runs, because the reads a day
 // back and of the old snapshot had been aligned with the retention instant or
 // emptied by it.
+//
+// Log (2026-10-04, with the counters above and the list of mixed cells, before any
+// build at a retained window and before any timing): the value of a candidate in a
+// cell is its mean over the queries of the cell (CellValue), the unit the report
+// already printed; block_loads, cold_block_bytes and allocs are defined as above;
+// RulesVersion is 2. Nothing else was changed.
 //
 // Fields in Placeholders are values nobody has chosen yet: they are here so the
 // runner and its report can be written, and the owner sets them before a result
@@ -100,6 +113,8 @@ type Rules struct {
 	OrderCounters  []string
 	OrderTolerance float64
 	CounterFloors  map[string]int64
+	// CellValue says what a candidate's value in a cell is.
+	CellValue string
 	// SlopeDiffForTarget: see above.
 	SlopeDiffForTarget float64
 	// The timing that settles an unordered cell: warm cache with no misses, a
@@ -170,6 +185,7 @@ func DefaultRules() Rules {
 		G1Counters:     []string{"seeks", "internal_steps+checkpoint_entries_decoded+baseline_entries_decoded", "block_loads", "cold_block_bytes"},
 		OrderCounters:  []string{"seeks", "internal_steps+checkpoint_entries_decoded+baseline_entries_decoded", "block_loads", "cold_block_bytes", "value_bytes", "allocs"},
 		OrderTolerance: 1.10,
+		CellValue:      "the mean over the queries of the cell",
 		CounterFloors: map[string]int64{
 			"seeks": 8, "internal_steps+checkpoint_entries_decoded+baseline_entries_decoded": 256, "block_loads": 8, "cold_block_bytes": 64 << 10, "value_bytes": 16 << 10, "allocs": 64,
 		},

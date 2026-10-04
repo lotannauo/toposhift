@@ -301,7 +301,7 @@ func dist(xs []uint32) Dist {
 }
 
 // History windows, in days, whose retained history is reported.
-var historyDays = []int{2, 7, 14}
+var historyDays = []int{2, 7, 14, 30}
 
 // ClassStats are the numbers for one [Class].
 type ClassStats struct {

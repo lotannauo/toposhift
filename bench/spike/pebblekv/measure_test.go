@@ -480,3 +480,95 @@ func TestCompactAllReachesTombstonesOutsideTheLiveKeys(t *testing.T) {
 		t.Errorf("%d tombstones left after compacting everything, and %d bytes of tables", s.TombstoneCount, s.LiveTableBytes)
 	}
 }
+
+// A read-only database is read and not written, does nothing in the background,
+// and is at rest as soon as it is open.
+func TestAReadOnlyDatabaseReadsAndCannotBeWritten(t *testing.T) {
+	t.Parallel()
+	fs := vfs.NewMem()
+	kv := bytewise(t, fs, "db", pebblekv.Config{Tuning: pebblekv.TinyTuning()})
+	fill(t, kv, 100, 25)
+	if err := kv.CloseClean(); err != nil {
+		t.Fatal(err)
+	}
+
+	ro := bytewise(t, fs, "db", pebblekv.Config{Tuning: pebblekv.TinyTuning(), ReadOnly: true})
+	t.Cleanup(func() { _ = ro.Close() })
+	if got := scan(t, ro, engine.NopRecorder{}, "x"); got != 100 {
+		t.Errorf("read %d keys of 100", got)
+	}
+	if err := ro.Set([]byte("zz"), []byte("v"), ro.WriteOptions()); err == nil {
+		t.Error("a write to a read-only database succeeded")
+	}
+	if err := ro.Flush(); err == nil {
+		t.Error("a flush of a read-only database succeeded")
+	}
+	start := time.Now()
+	if err := ro.Quiesce(context.Background()); err != nil {
+		t.Fatalf("a read-only database is not at rest: %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Errorf("Quiesce waited %s for a database with nothing running", time.Since(start))
+	}
+	if d, err := ro.Describe(); err != nil || d["read_only"] != "true" {
+		t.Errorf("Describe says read_only=%q (%v)", d["read_only"], err)
+	}
+	if s := ro.Snapshot(); s.Flushes != 0 || s.Compactions != 0 {
+		t.Errorf("a read-only database has flushed %d and compacted %d", s.Flushes, s.Compactions)
+	}
+	// Opening it again for writing is still possible: nothing was left locked or half-written.
+	if err := ro.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ro.Close(); err != nil {
+		t.Errorf("a second Close: %v", err)
+	}
+	rw := bytewise(t, fs, "db", pebblekv.Config{Tuning: pebblekv.TinyTuning()})
+	defer rw.Close()
+	if rw.RecoveredBytes() != 0 {
+		t.Errorf("the read-only open left %d bytes to recover", rw.RecoveredBytes())
+	}
+}
+
+// ColdStart empties the block cache and leaves the tables open: the read that
+// follows loads every block it needs again, as many bytes as the first read of the
+// database did, and a read after that loads none.
+func TestColdStartMakesTheNextReadLoadItsBlocksAgain(t *testing.T) {
+	t.Parallel()
+	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), DisableAutoCompactions: true}
+	cfg.Tuning.CacheBytes = 64 << 20
+	kv := bytewise(t, vfs.NewMem(), "db", cfg)
+	t.Cleanup(func() { _ = kv.Close() })
+	fill(t, kv, 300, 100)
+	if err := kv.Settle(); err != nil {
+		t.Fatal(err)
+	}
+
+	cold := func() (loaded, fromCache int64, misses int64) {
+		rec := &engine.MemRecorder{}
+		before := kv.Snapshot().CacheMisses
+		scan(t, kv, rec, "x")
+		return rec.Samples("read.x.block_bytes")[0], rec.Samples("read.x.block_bytes_cached")[0], kv.Snapshot().CacheMisses - before
+	}
+	scan(t, kv, engine.NopRecorder{}, "open") // opens the tables, whose first reads miss for their own sake
+	kv.ColdStart()
+	l1, c1, m1 := cold()
+	if l1 == 0 || c1 != 0 || m1 == 0 {
+		t.Fatalf("a read after ColdStart loaded %d bytes of which %d from the cache, %d misses", l1, c1, m1)
+	}
+	if _, c, m := cold(); c == 0 || m != 0 {
+		t.Errorf("a second read loaded from the cache %d bytes and missed %d times: the cache holds nothing", c, m)
+	}
+	kv.ColdStart()
+	l2, c2, m2 := cold()
+	if l2 != l1 || c2 != 0 || m2 != m1 {
+		t.Errorf("after another ColdStart: %d bytes loaded, %d cached, %d misses; the first time %d, 0, %d", l2, c2, m2, l1, m1)
+	}
+	if size := kv.Snapshot().CacheSize; size == 0 {
+		t.Error("the cache holds nothing after a read")
+	}
+	kv.ColdStart()
+	if size := kv.Snapshot().CacheSize; size != 0 {
+		t.Errorf("the cache holds %d bytes after ColdStart", size)
+	}
+}

@@ -46,6 +46,9 @@ type Options struct {
 	// DisableAutoCompactions and DisableReadCompactions hold the shape of the
 	// tables still under a measurement; see [pebblekv.Config].
 	DisableAutoCompactions, DisableReadCompactions bool
+	// ReadOnly opens the existing database for reading only; see
+	// [pebblekv.Config].
+	ReadOnly bool
 }
 
 func (o Options) config() pebblekv.Config {
@@ -59,6 +62,7 @@ func (o Options) config() pebblekv.Config {
 	return pebblekv.Config{
 		Tuning: t, FS: o.FS, Sync: o.Sync,
 		DisableAutoCompactions: o.DisableAutoCompactions, DisableReadCompactions: o.DisableReadCompactions,
+		ReadOnly: o.ReadOnly,
 	}
 }
 

@@ -3,8 +3,10 @@ package runner
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 )
@@ -16,7 +18,9 @@ type QueryResult struct {
 	Size   int
 	// Counters are what the read cost, summed over the iterators it made, from the
 	// first pass over the queries: Pebble's own statistics under
-	// "read.<op>.<name>" and the layout's counters.
+	// "read.<op>.<name>" and the layout's counters; and, from the passes after
+	// it, the cold counters (block_loads, cold_block_bytes, cold_cache_bytes) and
+	// the allocations (allocs, alloc_bytes) under their own names.
 	Counters map[string]int64
 	// Warm are the counters that depend on the block cache (bytes served from it)
 	// and on time, from the second pass.
@@ -36,7 +40,8 @@ type Results struct {
 	// Queries is parallel to the plan's queries.
 	Queries []QueryResult
 	// Mismatches names the queries whose answer is not the reference engine's, and
-	// Unstable those whose counters differed between the two passes.
+	// Unstable those whose counters differed between the two passes or between
+	// the two cold reads (their names end in "(cold)").
 	Mismatches, Unstable []string
 	// StatsBefore and StatsAfter are the database's counters around the passes;
 	// the flushes and compactions among them are equal, or the read is refused.
@@ -52,10 +57,13 @@ var stable = []string{
 	"block_bytes", "memtable_bytes", "target_file_bytes", "l_base_max_bytes", "l0_compaction_threshold", "cache_bytes", "sync",
 }
 
-// Read opens the database built under dir in a fresh engine, with the compactions
-// held still, asks every query of the plan twice and records the answer and the
-// cost of each. A database that is not the plan's, or that did work when opened,
-// or that compacts while being read, is refused.
+// Read opens the database built under dir in a fresh engine, read-only, and puts
+// every query of the plan to it: twice as it comes, for the answer and for the
+// counters of Pebble's iterator, which must repeat; twice more with the block cache
+// emptied, for the blocks a first read needs; and a few times more for its
+// allocations. It records the answer and the cost of each. A database that is not
+// the plan's, whose tables are not the ones the build left, or that works while it
+// is being read, is refused.
 func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress) (*Results, error) {
 	if err := g.Check(); err != nil {
 		return nil, err
@@ -77,7 +85,7 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 
 	rec := NewCapture()
 	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{
-		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true,
+		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true, ReadOnly: true,
 	})
 	if err != nil {
 		return nil, err
@@ -93,22 +101,27 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	if err != nil {
 		return nil, err
 	}
-	if desc["recovered_bytes"] != "0" {
-		return nil, fmt.Errorf("runner: opening %s wrote %s bytes of tables from the log: the build did not end clean", dir, desc["recovered_bytes"])
-	}
 	for _, k := range stable {
 		if desc[k] != m.Describe[k] {
 			return nil, fmt.Errorf("runner: %s is not what it was built as: %s is %q, was %q: %w", v.Name, k, desc[k], m.Describe[k], errMismatch)
+		}
+	}
+	// A read-only database does nothing when it is opened, so what it holds must be
+	// what the build left: the same tables, in the same levels.
+	have := e.Stats()
+	for k, want := range m.StatsCompacted {
+		if (k == "live_table_bytes" || strings.HasPrefix(k, "tables_l")) && have[k] != want {
+			return nil, fmt.Errorf("runner: %s is not what the build left: %s is %d, was %d: %w", v.Name, k, have[k], want, errMismatch)
 		}
 	}
 	if got := e.LastSeq(); got != plan.Stream.LastSeq {
 		return nil, fmt.Errorf("runner: %s opens at seq %d, the plan at %d: %w", v.Name, got, plan.Stream.LastSeq, errMismatch)
 	}
 
-	// Pebble reads the tables it has just opened in the background to estimate
-	// what their deletions hold. Until it is done, the blocks it loads and the
-	// iterators it uses compete with the first queries, and what a query reports
-	// depends on who got there first.
+	// A database that is not read-only reads the tables it has just opened in the
+	// background, to estimate what their deletions hold, and until it is done the
+	// blocks it loads compete with the first queries. A read-only one has nothing
+	// running, and a candidate that opens read-write (a test double) waits.
 	if err := e.Quiesce(ctx); err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
@@ -152,6 +165,34 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 				res.Queries[i].Warm[name] = n
 			}
 		}
+	}
+	say.say("read %s: cold and allocation passes", v.Name)
+	for i, q := range plan.Queries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		first, c1, err := coldAsk(e, rec, q)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s: %s (cold): %w", v.Name, q.Name(), err)
+		}
+		second, c2, err := coldAsk(e, rec, q)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s: %s (cold, again): %w", v.Name, q.Name(), err)
+		}
+		if first.Digest != res.Queries[i].Digest || second.Digest != res.Queries[i].Digest || !sameValues(c1, c2) {
+			res.Unstable = append(res.Unstable, q.Name()+" (cold)")
+		}
+		maps.Copy(res.Queries[i].Counters, c1)
+	}
+	for i, q := range plan.Queries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		allocs, err := allocAsk(e, rec, q)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s: %s (allocations): %w", v.Name, q.Name(), err)
+		}
+		maps.Copy(res.Queries[i].Counters, allocs)
 	}
 	res.StatsAfter = e.Stats()
 	for _, k := range []string{"flushes", "compactions", "read_compactions"} {

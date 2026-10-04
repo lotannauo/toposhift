@@ -62,8 +62,9 @@ func (c *Capture) Totals() map[string]int64 {
 // for the batched reads, the number of points Pebble reports with a value in a
 // value block, which has been seen to differ by a few from one pass to the next
 // for layout M (an observed fact, not explained; the steps, points and block
-// bytes of the same reads are identical). It is narrowed to that read: the same
-// counter drifting anywhere else is a difference.
+// bytes of the same reads are identical). The last is narrowed to that read: the
+// same counter drifting anywhere else is a difference. (The allocations of a read
+// are not compared between passes at all: they depend on the process.)
 func volatile(name string) bool {
 	return strings.HasSuffix(name, ".block_bytes_cached") || strings.HasSuffix(name, ".block_read_ns") ||
 		name == "read.batch.separated_values"

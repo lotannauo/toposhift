@@ -12,9 +12,11 @@
 //   - [Build] writes the planned stream to one candidate, refusing a candidate
 //     whose written records are not the planned ones, compacts everything and
 //     records what the database holds.
-//   - [Read] opens the built database in a fresh process with the compactions
-//     held still, asks every query twice, and checks every answer against the
-//     plan. It records what each query cost in Pebble's own unit.
+//   - [Read] opens the built database read-only in a fresh process, asks every
+//     query twice and checks every answer against the plan, asks it twice more
+//     with the block cache empty for the blocks a first read needs, and counts
+//     its allocations. It records what each query cost, in Pebble's own unit
+//     for the reads and in blocks and bytes for the cold ones.
 //   - [Report] sets the results of the candidates side by side.
 //
 // Nothing here times anything. A counter is the same on every run and every

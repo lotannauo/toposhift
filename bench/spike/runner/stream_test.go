@@ -221,7 +221,7 @@ func TestFrozenDigests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "0899d52465fca604036c6c330cc238827fa0bd34931e952e0b0f3c59d4e8b037"; rules != want {
+	if want := "8c7fea0dcf663e3d1013f803c1cfe0fb91e50884a494e6d4c62d71497ddda925"; rules != want {
 		t.Errorf("decision rules digest %s, frozen at %s", rules, want)
 	}
 	for name, w := range map[string]workload.Config{"ci": workload.CI(), "week": workload.Week(), "month": workload.Month()} {

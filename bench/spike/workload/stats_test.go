@@ -461,3 +461,49 @@ func TestAnalyzerRanksByWhatARetentionLeaves(t *testing.T) {
 		t.Errorf("by extensions held: %+v", kept.ByExtensions)
 	}
 }
+
+// The retained history is reported for 2, 7, 14 and 30 days, 30 being the window the
+// design plan's second layer is measured at, and only for a stream long enough to
+// hold the window.
+func TestHistoryIsReportedForThirtyDays(t *testing.T) {
+	t.Parallel()
+
+	node := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	edge := func(day int) engine.Record {
+		return engine.Record{
+			Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "a",
+			EventTime: start.Add(time.Duration(day)*24*time.Hour + time.Hour), Kind: lifecycle.Observe, Payload: make([]byte, 10),
+		}
+	}
+	history := func(days int) workload.ClassStats {
+		a := workload.NewAnalyzer(start, time.Duration(days)*24*time.Hour)
+		a.Add(edge(0))
+		a.Add(edge(days - 1))
+		c, ok := classOf(a.Report(), catalog.L2, catalog.K8sNode, workload.SideReverse)
+		if !ok {
+			t.Fatal("no class for the node's reverse prefix")
+		}
+		return c
+	}
+	// Thirty-one days: the record on the first day is outside the last thirty.
+	if c := history(31); c.History[30].Max != 1 || c.HistoryActive[30] != 1 || c.History[14].Max != 1 {
+		t.Errorf("31 days: 30-day history %+v over %d prefixes, 14-day %+v; want one record in each", c.History[30], c.HistoryActive[30], c.History[14])
+	}
+	// Thirty days exactly: both records are within it.
+	if c := history(30); c.History[30].Max != 2 {
+		t.Errorf("30 days: 30-day history %+v, want both records", c.History[30])
+	}
+	// Twenty-nine days is not long enough for the window.
+	if c := history(29); c.History[30].Max != 0 || c.HistoryActive[30] != 0 || c.History[14].Max != 1 {
+		t.Errorf("29 days: 30-day history %+v over %d prefixes, want none", c.History[30], c.HistoryActive[30])
+	}
+	var out strings.Builder
+	a := workload.NewAnalyzer(start, 31*24*time.Hour)
+	a.Add(edge(0))
+	a.Report().Write(&out)
+	if !strings.Contains(out.String(), "30d prefixes") {
+		t.Errorf("the report has no column for 30 days:\n%s", out.String())
+	}
+}
