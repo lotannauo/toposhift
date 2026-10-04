@@ -155,6 +155,67 @@ compactions do not fire at the scale of a test). `KV.CloseClean` flushes before 
 `KV.RecoveredBytes` is what opening wrote to tables from the log, which a measurement
 refuses to be anything but zero.
 
+### Comparing candidates: spikebench
+
+`cmd/spikebench` builds the candidates on one stream, asks each the same questions and
+sets what the reads cost side by side. It reads **counters, not clocks**: Pebble's
+iterator statistics for every read, the bytes each layout holds, what retention did. A
+counter repeats from one run to the next (every query is asked twice and one whose cost
+differs is flagged), so it can choose a design locally; a timing is only a confirmation
+and comes later, from CI hardware. Two counters are known not to repeat and are never
+decided on: the bytes a read was served from the block cache, and, for the batched reads
+of layout M, the number of points Pebble reports with a value in a value block (a few
+more or fewer from one pass to the next; unexplained).
+
+```sh
+cd bench && CGO_ENABLED=0 go build -o ~/spikebench/bin/spikebench ./cmd/spikebench
+~/spikebench/bin/spikebench run -preset ci -out ~/spikebench/ci   # plan; build and read each candidate; report
+```
+
+The steps are separate processes so that one engine's heap and block cache never share a
+process with another's, and each can be run alone:
+
+| Step | What it does |
+| --- | --- |
+| `plan -preset P -out D` | Reads the workload twice with no store. The first pass finds the prefixes to ask about (the busiest of each class by records and by run extensions, and some around the middle, among those that exist at the end); the second feeds the reference engine only the records that touch them and records its answer to every query. `D/plan.json` holds the stream's digest, the queries and the answers, and nothing about the machine, so one spec makes one plan. A group of queries whose answers are mostly empty is an error: candidates would agree on nothing. |
+| `build -candidate C -out D` | Writes the planned stream to `C` in batches of the planned size, dropping the records before the horizon as a store would refuse them, moving the horizon as planned, and checks the token after every batch. It compacts everything and records what the database holds in `D/<C>/manifest.json`. A build that does not come to the planned stream, fails a write or a retention, or counts a failed checkpoint writes no manifest, so it cannot be read; its directory is left as it was and has to be removed before the candidate is built again. |
+| `read -candidate C -out D` | Opens the built database in a new process, with the compactions held still and the same absolute block cache for every candidate, refuses one that did any work when opened, asks every query twice, compares each answer with the reference engine's, and writes the cost of each query to `D/<C>/results.json`. A candidate that flushes or compacts while being read is refused, and one that answers anything differently from the reference engine fails the step (its results are written all the same). |
+| `report -out D` | Sets the candidates side by side (all that have been read, or the ones named), and fails if they cannot be compared; the full tables are always in `D/report.txt`. The first lines say whether the results can be compared at all: one plan, one stream, one binary, the same Pebble options (apart from the comparer, key schema and collectors, which are what a candidate is), every answer the reference engine's. If not, it says so first. |
+
+What is asked: forward and reverse neighbors and `Alive` as of now, an hour back, a day
+back, and an old snapshot (read at the instant of its token, with only what it saw); windows of the last hour and the last day; and a batch of
+the chosen prefixes together. The queries are chosen from the stream, not from any
+candidate, and are asked of live prefixes only. Reads that would be empty by
+construction are left out: a refreshed edge is one run, and all its refreshes carry the
+instant it started, so the window of a heartbeat prefix is empty for an old run and measures the restart for a new one.
+
+The rules the counters will be read against (the gates, the slope that separates bounded
+from linear growth, the factors) are in `runner.Rules`, with their digest pinned in
+`runner/stream_test.go` next to the digests of each preset's spec; a change to either is
+made on purpose. The values nobody has chosen yet are listed in `Rules.Placeholders`; setting one
+changes the rules' digest and nothing built or read, because the rules are applied to the counters
+afterwards, so no plan is stale for it.
+
+**A binary that a result may come from** is built with `CGO_ENABLED=0` (the block cache is
+then on the Go heap, as `toposhift` ships), without `-race` or the `invariants` tag, from
+a clean tree of the repository with its version control stamp (a binary built with
+`-buildvcs=false` has none, and cannot be told from one built from a dirty tree). `spikebench` refuses to build or read otherwise; `-untimed` allows it for a
+validation run (an instrumented build of a full-size stream, say) and its results are
+marked, and the report refuses to compare them. The output directory must be outside the
+repository: `bench/results/` and `*.jsonl` under `bench/` are ignored, and `check:no-results` fails if any of
+them, or a `plan.json`, `manifest.json`, `results.json` or `report.txt` under `bench/`, is tracked.
+
+Size: the three-day `ci` preset is 7.9 million records and about 300 MB of tables per candidate (a database directory is larger while it holds a log and files not yet deleted), so about 1.8 GB for the six. The analyzer of the first pass keeps every prefix of the stream, about 1 GB for three days, more for `week` and `month`. How long a build takes is not a result and is not recorded.
+
+**What the counters do not tell you yet.** The report prints every counter and chooses none, because they disagree:
+
+- A layout that seeks to every key (M) and one that walks a run (L) are each cheap in the unit the other pays in. On a busy node's prefix a day back, M made many seeks to L's one, and loaded far more block bytes, while making fewer steps. "Steps" alone, or "block bytes" alone, would pick a different winner.
+- `block bytes` counts every block load, a cached block too, and again at every seek that reloads it. Two key schemas of M made the same seeks and steps and loaded block bytes two orders of magnitude apart for the same reads, so it measures how the iterator is repositioned as much as the data a read needs. A count of distinct blocks is the number to add before a rule rests on it.
+- `steps` counts the calls the layout made. A skip with `NextPrefix` is one step in the layout and many underneath, in a counter nobody exposes.
+- Everything is read after `CompactAll`, which leaves a few large tables: range deletions, tombstones and L0 are not in the picture, and an iterator crosses fewer levels than in a running store.
+- One seed and one retention: how a read grows with retained history is not in a single build. The default spec retains once, half a day before the end, and a refreshed prefix's current run is as old as the last retention, so what L pays on one is the run's extensions since then (and of every run that began after the horizon). The prefixes asked about are ranked by the records a store still holds after the final retention, not by the whole stream: on a heartbeat prefix the busiest over the whole stream is the one with an unbroken run, which a retention folds into the baseline. The sweep over retained windows is a separate build per window.
+- The workload is synthetic and every default of it is provisional until the Alibaba and kwok replays exist.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

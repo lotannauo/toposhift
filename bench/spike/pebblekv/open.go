@@ -172,6 +172,9 @@ type KV struct {
 	// recovered is what opening wrote to tables from the log of a database that
 	// was not closed clean.
 	recovered uint64
+	// options is the full text of the options the database was opened with, once
+	// Pebble had filled in its defaults.
+	options string
 }
 
 // Open opens the database under dir, creating it if there is none.
@@ -198,6 +201,9 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 	}
 	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name}
 	kv.recovered = db.Metrics().Total().TableBytesFlushed
+	full := opts.Clone() // Open filled in the defaults on a copy of its own
+	full.EnsureDefaults()
+	kv.options = full.String()
 	return kv, nil
 }
 

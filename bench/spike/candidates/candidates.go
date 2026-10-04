@@ -109,6 +109,24 @@ func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 	}}
 }
 
+// Wrap is v with the engine it opens passed through wrap, under another name: a
+// variant that is not a candidate, for a test of a runner that needs an engine
+// that misbehaves. It is not in [All] and [Lookup] does not find it.
+func Wrap(v Variant, name string, wrap func(engine.Engine, Options) (engine.Engine, error)) Variant {
+	return Variant{Name: name, Layout: v.Layout, open: func(dir string, o Options) (engine.Engine, error) {
+		e, err := v.open(dir, o)
+		if err != nil {
+			return nil, err
+		}
+		w, err := wrap(e, o)
+		if err != nil {
+			_ = e.Close()
+			return nil, err
+		}
+		return w, nil
+	}}
+}
+
 // All is the set a measurement runs by default: the four layout M variants, layout
 // L without checkpoints and layout L with the design's defaults (K_min 64, alpha 4).
 func All() []Variant {

@@ -29,6 +29,7 @@ credentials*.json
 # Local benchmark output. Numbers from a laptop or a VM are for choosing a
 # design, never for publishing; published numbers come from CI hardware only.
 /bench/results/
+/bench/**/*.jsonl
 
 # Python (bench/raphtory harness)
 __pycache__/

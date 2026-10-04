@@ -2,6 +2,7 @@ package workload_test
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -242,5 +243,221 @@ func TestAnalyzerCountsEntitiesAliveAtTheEnd(t *testing.T) {
 	pods, ok := classOf(rep, catalog.L2, catalog.K8sPod, workload.SideForward)
 	if !ok || pods.LiveDegree.Max != 1 {
 		t.Errorf("a placed pod has %d live peers, want 1 (%+v)", pods.LiveDegree.Max, pods)
+	}
+}
+
+// Pick takes the busiest prefixes of a class by records and by extensions, and
+// the ones in the middle, in an order that does not depend on map iteration.
+func TestAnalyzerPicksPrefixesByHistory(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	node := func(i int) identity.Fingerprint {
+		return fp(t, catalog.K8sNode, catalog.K8sNodeUID, string(rune('a'+i)))
+	}
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	a := workload.NewAnalyzer(start, 24*time.Hour)
+	seq := uint64(0)
+	add := func(n int, records, extensions int) {
+		for i := range records {
+			r := engine.Record{
+				Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node(n), catalog.ScheduledOn), Producer: "a",
+				EventTime: start.Add(time.Duration(i) * time.Second), Kind: lifecycle.Observe, Seq: seq,
+			}
+			if i < extensions {
+				r.Through = r.EventTime.Add(time.Second)
+			}
+			seq++
+			a.Add(r)
+		}
+	}
+	// Records per node: 9, 7, 5, 3, 1; extensions per node: 0, 7, 0, 3, 1.
+	for n, rs := range []int{9, 7, 5, 3, 1} {
+		add(n, rs, []int{0, 7, 0, 3, 1}[n])
+	}
+	c := workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}
+	p := a.Pick(c, 2, 3, false)
+	counts := func(ps []workload.PrefixTop, f func(workload.PrefixTop) uint32) []uint32 {
+		var out []uint32
+		for _, x := range ps {
+			out = append(out, f(x))
+		}
+		return out
+	}
+	rec := func(x workload.PrefixTop) uint32 { return x.Records }
+	ext := func(x workload.PrefixTop) uint32 { return x.Extensions }
+	if p.Prefixes != 5 {
+		t.Errorf("prefixes = %d, want 5", p.Prefixes)
+	}
+	if got := counts(p.ByRecords, rec); !slices.Equal(got, []uint32{9, 7}) {
+		t.Errorf("by records = %v, want [9 7]", got)
+	}
+	if got := counts(p.ByExtensions, ext); !slices.Equal(got, []uint32{7, 3}) {
+		t.Errorf("by extensions = %v, want [7 3]", got)
+	}
+	if got := counts(p.Median, rec); !slices.Equal(got, []uint32{7, 5, 3}) {
+		t.Errorf("median = %v, want [7 5 3]", got)
+	}
+	// Asking for more than there is returns what there is, and for none returns none.
+	if q := a.Pick(c, 50, 50, false); len(q.ByRecords) != 5 || len(q.Median) != 5 || len(q.ByExtensions) != 3 {
+		t.Errorf("greedy pick = %d, %d, %d", len(q.ByRecords), len(q.Median), len(q.ByExtensions))
+	}
+	if q := a.Pick(c, 0, 0, false); len(q.ByRecords)+len(q.Median)+len(q.ByExtensions) != 0 {
+		t.Errorf("empty pick = %+v", q)
+	}
+	if q := a.Pick(workload.Class{Layer: catalog.L3, Owner: catalog.Service, Side: workload.SideForward}, 3, 3, false); q.Prefixes != 0 || len(q.Median) != 0 {
+		t.Errorf("a class with no prefixes picked %+v", q)
+	}
+}
+
+// Picking live prefixes leaves out the ones nothing refers to at the end of the
+// stream: an edge that was deleted, an entity that was deleted.
+func TestAnalyzerPicksOnlyWhatExistsAtTheEnd(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	node := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	pods := []identity.Fingerprint{
+		fp(t, catalog.K8sPod, catalog.K8sPodUID, "kept"),
+		fp(t, catalog.K8sPod, catalog.K8sPodUID, "deleted"),
+		fp(t, catalog.K8sPod, catalog.K8sPodUID, "expired"),
+	}
+	a := workload.NewAnalyzer(start, time.Hour)
+	var seq uint64
+	add := func(pod identity.Fingerprint, kind lifecycle.Kind, sec int, ttl time.Duration) {
+		seq++
+		base := engine.Record{Layer: catalog.L2, Producer: "p", EventTime: start.Add(time.Duration(sec) * time.Second), Seq: seq, Kind: kind, TTL: ttl}
+		edge := base
+		edge.Subject = engine.EdgeSubject(pod, node, catalog.ScheduledOn)
+		a.Add(edge)
+		ent := base
+		ent.Subject = engine.EntitySubject(pod)
+		a.Add(ent)
+	}
+	add(pods[0], lifecycle.Observe, 1, 0)
+	add(pods[1], lifecycle.Observe, 2, 0)
+	add(pods[1], lifecycle.Delete, 3, 0)
+	add(pods[2], lifecycle.Observe, 4, time.Minute) // ran out long before the end
+	for _, c := range []workload.Class{
+		{Layer: catalog.L2, Owner: catalog.K8sPod, Side: workload.SideForward},
+		{Layer: catalog.L2, Owner: catalog.K8sPod, Side: workload.SideExistence},
+	} {
+		if all := a.Pick(c, 10, 10, false); all.Prefixes != 3 {
+			t.Fatalf("%s: %d prefixes, want 3", c, all.Prefixes)
+		}
+		live := a.Pick(c, 10, 10, true)
+		if live.Prefixes != 1 || len(live.ByRecords) != 1 || live.ByRecords[0].Fingerprint != pods[0] || len(live.Median) != 1 {
+			t.Errorf("%s: live picks %+v, want only the kept pod", c, live)
+		}
+	}
+	// The node's reverse prefix has a live peer.
+	if p := a.Pick(workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}, 1, 1, true); p.Prefixes != 1 {
+		t.Errorf("the node's reverse prefix is not live: %+v", p)
+	}
+}
+
+// Prefixes with equal counts are ordered by fingerprint, so the choice does not
+// depend on the order a map was walked in.
+func TestAnalyzerPickBreaksTiesByFingerprint(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	a := workload.NewAnalyzer(start, time.Hour)
+	var nodes []identity.Fingerprint
+	for i := range 6 {
+		n := fp(t, catalog.K8sNode, catalog.K8sNodeUID, string(rune('a'+i)))
+		nodes = append(nodes, n)
+		a.Add(engine.Record{
+			Layer: catalog.L2, Subject: engine.EdgeSubject(pod, n, catalog.ScheduledOn), Producer: "p",
+			EventTime: start, Seq: uint64(i + 1), Kind: lifecycle.Observe,
+		})
+	}
+	slices.SortFunc(nodes, engine.CompareFingerprints)
+	c := workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}
+	for range 5 {
+		got := a.Pick(c, 3, 6, false)
+		for i, p := range got.ByRecords {
+			if p.Fingerprint != nodes[i] {
+				t.Fatalf("hot prefix %d is %s, want %s", i, p.Fingerprint, nodes[i])
+			}
+		}
+		for i, p := range got.Median {
+			if p.Fingerprint != nodes[i] {
+				t.Fatalf("median prefix %d is %s, want %s", i, p.Fingerprint, nodes[i])
+			}
+		}
+	}
+}
+
+// What is live at the end is worked out again after more records are added: a
+// pick made earlier does not stand for the stream as it is now.
+func TestAnalyzerLiveSetFollowsTheStream(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	node := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	a := workload.NewAnalyzer(start, time.Hour)
+	add := func(seq uint64, kind lifecycle.Kind) {
+		a.Add(engine.Record{
+			Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "p",
+			EventTime: start.Add(time.Duration(seq) * time.Second), Seq: seq, Kind: kind,
+		})
+	}
+	c := workload.Class{Layer: catalog.L2, Owner: catalog.K8sPod, Side: workload.SideForward}
+	add(1, lifecycle.Observe)
+	if p := a.Pick(c, 5, 5, true); p.Prefixes != 1 {
+		t.Fatalf("a placed pod is not live: %+v", p)
+	}
+	add(2, lifecycle.Delete)
+	if p := a.Pick(c, 5, 5, true); p.Prefixes != 0 {
+		t.Errorf("a pod that was deleted since is still live: %+v", p)
+	}
+}
+
+// Prefixes are ranked by what a store holds in them after the final retention,
+// not by the whole stream: the prefix with the most records before the horizon, all
+// of which a retention folds into the baseline, is not the busiest after it.
+func TestAnalyzerRanksByWhatARetentionLeaves(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	horizon := start.Add(30 * time.Minute)
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	old, fresh := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "old"), fp(t, catalog.K8sNode, catalog.K8sNodeUID, "fresh")
+	build := func(from bool) workload.Picks {
+		a := workload.NewAnalyzer(start, time.Hour)
+		if from {
+			a.SetRetainedFrom(horizon)
+		}
+		var seq uint64
+		add := func(node identity.Fingerprint, minute, extensions int) {
+			for i := range extensions + 1 {
+				seq++
+				r := engine.Record{
+					Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "p",
+					EventTime: start.Add(time.Duration(minute) * time.Minute), Seq: seq, Kind: lifecycle.Observe, TTL: time.Minute,
+				}
+				if i > 0 {
+					r.Through = r.EventTime.Add(time.Duration(i) * time.Second)
+				}
+				a.Add(r)
+			}
+		}
+		add(old, 5, 40)   // an unbroken run from before the horizon: 41 records, none kept
+		add(fresh, 40, 5) // a run since: 6 records, all kept
+		return a.Pick(workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}, 2, 2, false)
+	}
+	whole := build(false)
+	if whole.ByRecords[0].Fingerprint != old || whole.ByExtensions[0].Fingerprint != old {
+		t.Errorf("over the whole stream the unbroken run is busiest: %+v", whole.ByRecords)
+	}
+	kept := build(true)
+	if kept.ByRecords[0].Fingerprint != fresh || kept.ByRecords[0].Kept != 6 || kept.ByRecords[1].Kept != 0 {
+		t.Errorf("after the retention the new run is busiest, with 6 records kept and 0 for the old: %+v", kept.ByRecords)
+	}
+	if len(kept.ByExtensions) != 1 || kept.ByExtensions[0].Fingerprint != fresh || kept.ByExtensions[0].KeptExtensions != 5 {
+		t.Errorf("by extensions held: %+v", kept.ByExtensions)
 	}
 }

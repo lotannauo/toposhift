@@ -247,3 +247,50 @@ func TestQuiesceAndCompactAllAreThereThroughTheInterface(t *testing.T) {
 }
 
 func tiny() pebblekv.Tuning { return pebblekv.TinyTuning() }
+
+// Wrap opens the candidate it wraps, under another name that is not in the
+// registry, with whatever the wrapper makes of the engine, and closes the engine
+// if the wrapper refuses it.
+func TestWrapIsNotACandidate(t *testing.T) {
+	t.Parallel()
+
+	base, err := candidates.Lookup("L/off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen candidates.Options
+	w := candidates.Wrap(base, "L/wrapped", func(e engine.Engine, o candidates.Options) (engine.Engine, error) {
+		seen = o
+		return e, nil
+	})
+	if w.Name != "L/wrapped" || w.Layout != "L" {
+		t.Errorf("wrapped variant is %s (layout %s)", w.Name, w.Layout)
+	}
+	e, err := w.Open("db", candidates.Options{FS: vfs.NewMem(), Sync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seen.Sync {
+		t.Error("the wrapper did not get the run's options")
+	}
+	if err := e.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := candidates.Lookup("L/wrapped"); err == nil {
+		t.Error("a wrapped variant is in the registry")
+	}
+
+	refused := candidates.Wrap(base, "L/refused", func(engine.Engine, candidates.Options) (engine.Engine, error) {
+		return nil, context.Canceled
+	})
+	fs := vfs.NewMem()
+	if _, err := refused.Open("db", candidates.Options{FS: fs}); err == nil {
+		t.Error("a refusing wrapper opened an engine")
+	}
+	// The engine it refused is closed, so the directory can be opened again.
+	again, err := base.Open("db", candidates.Options{FS: fs})
+	if err != nil {
+		t.Fatalf("the refused engine was left open: %v", err)
+	}
+	_ = again.Close()
+}

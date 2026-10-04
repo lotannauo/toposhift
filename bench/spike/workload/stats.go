@@ -1,6 +1,7 @@
 package workload
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"math/bits"
@@ -69,11 +70,15 @@ type prefixKey struct {
 // identities there are millions.
 type prefixStat struct {
 	observes, extensions, deletes uint32
-	behind                        uint32 // records older than the newest already in the prefix
-	ties                          uint32 // records at exactly the newest instant
-	maxEvent                      int64
-	days                          []uint32
-	peers                         map[identity.Fingerprint]struct{} // hubs only
+	// kept and keptExt are the records, and of them the run extensions, with an event
+	// time at or after the retained-from instant: what a store that has retained up
+	// to it still holds in the prefix.
+	kept, keptExt uint32
+	behind        uint32 // records older than the newest already in the prefix
+	ties          uint32 // records at exactly the newest instant
+	maxEvent      int64
+	days          []uint32
+	peers         map[identity.Fingerprint]struct{} // hubs only
 }
 
 func (p *prefixStat) records() uint32 { return p.observes + p.extensions + p.deletes }
@@ -111,6 +116,15 @@ type Analyzer struct {
 	late                                   uint64
 	lateness                               logHist
 	lastPrune                              int64
+
+	// retainedFrom is the instant before which a store discards history, if it was
+	// told (see SetRetainedFrom).
+	retainedFrom    int64
+	hasRetainedFrom bool
+
+	// what is live at the end, worked out when asked and kept until the next record
+	liveEdges map[prefixKey]map[identity.Fingerprint]struct{}
+	liveEnts  map[identity.Fingerprint]bool
 }
 
 // NewAnalyzer is for a stream that starts at start and lasts about duration;
@@ -140,8 +154,19 @@ func (a *Analyzer) prefix(k prefixKey, peer identity.Fingerprint, hub bool) *pre
 	return p
 }
 
+// SetRetainedFrom tells the analyzer the instant before which a store will have
+// discarded history by the end of the stream (the last retention horizon), so that
+// [Analyzer.Pick] can rank prefixes by what a store still holds in them and not by
+// the whole stream: a prefix with one unbroken run that a retention folds into its
+// baseline is the busiest over the whole stream and the cheapest to read after it.
+// Call it before the first record.
+func (a *Analyzer) SetRetainedFrom(t time.Time) {
+	a.retainedFrom, a.hasRetainedFrom = t.UnixNano(), true
+}
+
 // Add counts one record.
 func (a *Analyzer) Add(r engine.Record) {
+	a.liveEdges, a.liveEnts = nil, nil
 	a.records++
 	a.payloadBytes += uint64(len(r.Payload))
 	if int(r.Layer) < len(a.perLayer) {
@@ -188,6 +213,12 @@ func (a *Analyzer) Add(r engine.Record) {
 				p.behind++
 			case ev == p.maxEvent:
 				p.ties++
+			}
+		}
+		if !a.hasRetainedFrom || ev >= a.retainedFrom {
+			p.kept++
+			if extension {
+				p.keptExt++
 			}
 		}
 		p.maxEvent = max(p.maxEvent, ev)
@@ -298,6 +329,10 @@ type PrefixTop struct {
 	Records     uint32
 	Extensions  uint32
 	Behind      uint32
+	// Kept and KeptExtensions are the records, and the run extensions among them,
+	// that a store holds after the final retention (all of them if the analyzer was
+	// not told one).
+	Kept, KeptExtensions uint32
 }
 
 // Report is what an [Analyzer] found.
@@ -320,12 +355,14 @@ type Report struct {
 	DeadlineIndexBytesPerDay float64
 }
 
-// Report summarizes the stream seen so far. The live degree takes the end of
-// the stream as now.
-func (a *Analyzer) Report() Report {
+// liveAtEnd takes the end of the stream as now and returns, per prefix, the
+// peers with a live reference (a peer held up by two producers counts once), and
+// the entities that exist.
+func (a *Analyzer) liveAtEnd() (map[prefixKey]map[identity.Fingerprint]struct{}, map[identity.Fingerprint]bool) {
+	if a.liveEdges != nil {
+		return a.liveEdges, a.liveEnts
+	}
 	end := a.start.Add(a.duration).UnixNano()
-	// The peers with a live reference at the end, per prefix: a peer held up by
-	// two producers counts once.
 	live := map[prefixKey]map[identity.Fingerprint]struct{}{}
 	for k, st := range a.edges {
 		if k.rel == "" || st.dead || (st.deadline != 0 && st.deadline <= end) {
@@ -341,6 +378,20 @@ func (a *Analyzer) Report() Report {
 			live[pk.key][pk.peer] = struct{}{}
 		}
 	}
+	alive := map[identity.Fingerprint]bool{}
+	for k, st := range a.edges {
+		if k.rel == "" && !st.dead && (st.deadline == 0 || st.deadline > end) {
+			alive[k.a] = true
+		}
+	}
+	a.liveEdges, a.liveEnts = live, alive
+	return live, alive
+}
+
+// Report summarizes the stream seen so far. The live degree takes the end of
+// the stream as now.
+func (a *Analyzer) Report() Report {
+	live, aliveEntity := a.liveAtEnd()
 
 	rep := Report{
 		Duration: a.duration, Records: a.records, Observes: a.observes, Extensions: a.extensions, Deletes: a.deletes,
@@ -350,12 +401,6 @@ func (a *Analyzer) Report() Report {
 	}
 	if a.records > 0 {
 		rep.LateShare = float64(a.late) / float64(a.records)
-	}
-	aliveEntity := map[identity.Fingerprint]bool{}
-	for k, st := range a.edges {
-		if k.rel == "" && !st.dead && (st.deadline == 0 || st.deadline > end) {
-			aliveEntity[k.a] = true
-		}
 	}
 	rep.EntitiesAlive = len(aliveEntity)
 	if d := a.duration.Hours() / 24; d > 0 {
@@ -428,10 +473,63 @@ func (a *Analyzer) Report() Report {
 	return rep
 }
 
+// Picks are prefixes of one class chosen by how much history they hold, for a
+// measurement that has to read the same prefixes in every store.
+type Picks struct {
+	// Prefixes is how many prefixes the class has.
+	Prefixes int
+	// ByRecords are the busiest by records held after the retention set with
+	// SetRetainedFrom (all of them if none), most first; ByExtensions the busiest
+	// by run extensions held (only prefixes with any), most first. Median are the
+	// prefixes around the middle of the class when ranked by records held, busiest
+	// first. Equal counts are ordered by fingerprint, so the choice is the same on
+	// every run.
+	ByRecords, ByExtensions, Median []PrefixTop
+}
+
+// Pick chooses up to hot prefixes of the class by records and by extensions, and
+// median prefixes around the middle by records. With live set, only prefixes that
+// exist at the end of the stream are considered: an edge prefix with a live peer,
+// an entity that is alive.
+func (a *Analyzer) Pick(c Class, hot, median int, live bool) Picks {
+	var peers map[prefixKey]map[identity.Fingerprint]struct{}
+	var alive map[identity.Fingerprint]bool
+	if live {
+		peers, alive = a.liveAtEnd()
+	}
+	var all []PrefixTop
+	for k, p := range a.prefixes {
+		if k.layer == c.Layer && k.fp.Type() == c.Owner && k.side == c.Side {
+			if live && ((k.side == SideExistence && !alive[k.fp]) || (k.side != SideExistence && len(peers[k]) == 0)) {
+				continue
+			}
+			all = append(all, PrefixTop{Class: c, Fingerprint: k.fp, Records: p.records(), Extensions: p.extensions, Behind: p.behind, Kept: p.kept, KeptExtensions: p.keptExt})
+		}
+	}
+	rank := func(key func(PrefixTop) uint32) func(x, y PrefixTop) int {
+		return func(x, y PrefixTop) int {
+			if d := cmp.Compare(key(y), key(x)); d != 0 {
+				return d
+			}
+			return engine.CompareFingerprints(x.Fingerprint, y.Fingerprint)
+		}
+	}
+	slices.SortFunc(all, rank(func(p PrefixTop) uint32 { return p.Kept }))
+	out := Picks{Prefixes: len(all), ByRecords: slices.Clone(all[:min(hot, len(all))])}
+	if m := min(median, len(all)); m > 0 {
+		from := min(max(len(all)/2-m/2, 0), len(all)-m)
+		out.Median = slices.Clone(all[from : from+m])
+	}
+	withExt := slices.DeleteFunc(slices.Clone(all), func(p PrefixTop) bool { return p.KeptExtensions == 0 })
+	slices.SortFunc(withExt, rank(func(p PrefixTop) uint32 { return p.KeptExtensions }))
+	out.ByExtensions = withExt[:min(hot, len(withExt))]
+	return out
+}
+
 // consider keeps the busiest prefixes as it goes, in two lists that are trimmed
 // to ten when they pass a hundred.
 func (r *Report) consider(c Class, fp identity.Fingerprint, p *prefixStat) {
-	t := PrefixTop{Class: c, Fingerprint: fp, Records: p.records(), Extensions: p.extensions, Behind: p.behind}
+	t := PrefixTop{Class: c, Fingerprint: fp, Records: p.records(), Extensions: p.extensions, Behind: p.behind, Kept: p.kept, KeptExtensions: p.keptExt}
 	r.TopByRecords = append(r.TopByRecords, t)
 	if len(r.TopByRecords) > 100 {
 		r.TopByRecords = topN(r.TopByRecords, func(p PrefixTop) uint32 { return p.Records })

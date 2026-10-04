@@ -3,6 +3,7 @@ package pebblekv_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -364,3 +365,118 @@ func TestRecordIterNamesArePinned(t *testing.T) {
 }
 
 func newMemFS() vfs.FS { return vfs.NewMem() }
+
+// Describe says how many bytes opening wrote to tables from the log, and the
+// full options the database runs under, so a measurement can refuse a database
+// that did work when it was opened and can compare the options of two builds.
+func TestDescribeSaysWhatOpeningDidAndWhatItRunsUnder(t *testing.T) {
+	t.Parallel()
+
+	fs := vfs.NewMem()
+	kv := bytewise(t, fs, "db", pebblekv.Config{})
+	fill(t, kv, 20, 5)
+	b := kv.NewBatch()
+	if err := b.Set([]byte("unflushed"), make([]byte, 100), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Commit(kv.WriteOptions()); err != nil {
+		t.Fatal(err)
+	}
+	d, err := kv.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d["recovered_bytes"] != "0" {
+		t.Errorf("a new database recovered %s bytes", d["recovered_bytes"])
+	}
+	for _, want := range []string{"[Options]", "block_size=512", "mem_table_size=32768", "comparer=leveldb.BytewiseComparator", "read_sampling_multiplier=16"} {
+		if !strings.Contains(d["pebble_options"], want) {
+			t.Errorf("the options text lacks %q:\n%s", want, d["pebble_options"])
+		}
+	}
+	// Closed without flushing, the log is replayed into a table when it is opened again.
+	if err := kv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again := bytewise(t, fs, "db", pebblekv.Config{DisableReadCompactions: true})
+	d, err = again.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d["recovered_bytes"] == "0" || d["recovered_bytes"] == "" {
+		t.Errorf("opening a database with a log to replay recovered %q bytes", d["recovered_bytes"])
+	}
+	if !strings.Contains(d["pebble_options"], "read_sampling_multiplier=-1") {
+		t.Errorf("the options text does not show that read compactions are off:\n%s", d["pebble_options"])
+	}
+	// Flushed before it was closed, it recovers nothing.
+	if err := again.CloseClean(); err != nil {
+		t.Fatal(err)
+	}
+	clean := bytewise(t, fs, "db", pebblekv.Config{})
+	defer func() { _ = clean.Close() }()
+	if d, err = clean.Describe(); err != nil || d["recovered_bytes"] != "0" {
+		t.Errorf("a database closed clean recovered %q bytes (%v)", d["recovered_bytes"], err)
+	}
+}
+
+// Compacting everything leaves no tombstone behind, even for keys deleted outside
+// the span of the keys that are still alive: the compaction covers the tables, not
+// only the live keys, because an iterator does not show a deleted key and a span
+// taken from it would leave the tombstones at either end where they were.
+func TestCompactAllReachesTombstonesOutsideTheLiveKeys(t *testing.T) {
+	t.Parallel()
+
+	kv := bytewise(t, vfs.NewMem(), "db", pebblekv.Config{DisableAutoCompactions: true})
+	defer func() { _ = kv.Close() }()
+	val := make([]byte, 200)
+	put := func(prefix string, n int) {
+		b := kv.NewBatch()
+		for i := range n {
+			if err := b.Set(fmt.Appendf(nil, "%s%05d", prefix, i), val, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := b.Commit(kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	del := func(prefix string, n int) {
+		b := kv.NewBatch()
+		for i := range n {
+			if err := b.Delete(fmt.Appendf(nil, "%s%05d", prefix, i), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := b.Commit(kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	put("a", 3000)
+	put("m", 50)
+	put("z", 3000)
+	// Everything to the bottom, in many small tables.
+	if err := kv.CompactAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Delete what lies on both sides of the keys that stay, and keep the tombstones
+	// in tables of their own.
+	del("a", 3000)
+	if err := kv.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	del("z", 3000)
+	if err := kv.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if s := kv.Snapshot(); s.TombstoneCount == 0 {
+		t.Fatal("the test has no tombstones to leave behind")
+	}
+	if err := kv.CompactAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := kv.Snapshot(); s.TombstoneCount != 0 {
+		t.Errorf("%d tombstones left after compacting everything, and %d bytes of tables", s.TombstoneCount, s.LiveTableBytes)
+	}
+}
