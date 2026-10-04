@@ -159,6 +159,14 @@ type Quiescer interface {
 	CompactAll(ctx context.Context) error
 }
 
+// ColdStarter is implemented by an engine that can empty its block cache while
+// staying open, so that a read can be measured as the first read of a process
+// that has been running (its files open, none of its blocks in memory). It is
+// called between reads, never during one.
+type ColdStarter interface {
+	ColdStart()
+}
+
 // Statser is implemented by an engine that can say what its storage has done:
 // flushes, compactions, files and bytes per level, cache hits and misses. The
 // names are the engine's own and are flat counters, so a runner can print the

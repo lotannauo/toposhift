@@ -64,6 +64,7 @@ func partKey(p engine.Part) string { return fmt.Sprintf("%s/%s", p.Layer, p.Kind
 type measurable interface {
 	engine.Engine
 	engine.Quiescer
+	engine.ColdStarter
 	engine.Statser
 	engine.Describer
 	engine.Breakdowner

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -269,6 +270,7 @@ func TestEveryKindOfReadIsAskedAndAgreed(t *testing.T) {
 type fullEngine interface {
 	engine.Engine
 	engine.Quiescer
+	engine.ColdStarter
 	engine.Statser
 	engine.Describer
 	engine.Breakdowner
@@ -288,6 +290,25 @@ type faulty struct {
 	onRead    func(f *faulty)
 	// again makes every neighbors read twice, which is a slower engine.
 	again bool
+	// stats changes what the engine says it has done.
+	stats func(map[string]int64) map[string]int64
+	// onCold is called when the engine's cache is emptied.
+	onCold func(f *faulty)
+}
+
+func (f *faulty) ColdStart() {
+	f.fullEngine.ColdStart()
+	if f.onCold != nil {
+		f.onCold(f)
+	}
+}
+
+func (f *faulty) Stats() map[string]int64 {
+	s := f.fullEngine.Stats()
+	if f.stats != nil {
+		s = f.stats(s)
+	}
+	return s
 }
 
 func (f *faulty) Neighbors(fp identity.Fingerprint, d engine.Direction, t time.Time, s engine.Scope) ([]engine.Neighbor, error) {
@@ -565,10 +586,10 @@ func TestBuildAndReadRefuseWhatTheyShould(t *testing.T) {
 	}
 }
 
-// A database that was not closed clean does work when it is opened: its log is
-// written to a table. A read refuses it, because the shape of its tables is no
-// longer the one the build compacted.
-func TestReadRefusesADatabaseThatWorksWhenOpened(t *testing.T) {
+// A database that was not closed clean has a log to replay. A read opens it
+// without writing anything, so the replay is held in memory, and the read refuses
+// it because it holds a record the plan does not.
+func TestReadRefusesADatabaseThatHasALogToReplay(t *testing.T) {
 	t.Parallel()
 	conformance.SkipWhenTrimmed(t)
 
@@ -595,7 +616,7 @@ func TestReadRefusesADatabaseThatWorksWhenOpened(t *testing.T) {
 	if err := e.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "from the log") {
+	if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "opens at seq") {
 		t.Errorf("a database with a log to replay: %v", err)
 	}
 }
@@ -607,27 +628,14 @@ func TestReadRefusesADatabaseThatFlushesWhileBeingRead(t *testing.T) {
 
 	plan := mustPlan(t, tinySpec())
 	dir, _, _ := run(t, plan, lookup(t, "M/crdb1"))
-	rack, err := identity.NewResolver(catalog.Default()).Resolve(catalog.Rack, []identity.Attr{{Key: catalog.RackID, Value: "late"}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	flushing := breaking(t, "M/crdb1", func(f *faulty) {
-		done := false
-		f.onRead = func(f *faulty) {
-			if done {
-				return
+		worked := false
+		f.onRead = func(*faulty) { worked = true }
+		f.stats = func(s map[string]int64) map[string]int64 {
+			if worked { // a database that is read-only cannot flush, so the engine says it did
+				s["flushes"]++
 			}
-			done = true
-			rec := engine.Record{
-				Layer: catalog.L0, Subject: engine.EntitySubject(rack.Fingerprint()), Producer: "x",
-				EventTime: plan.Stream.End, Seq: f.LastSeq() + 1, Kind: 1, Payload: []byte("x"),
-			}
-			if err := f.fullEngine.Write([]engine.Record{rec}); err != nil {
-				t.Error(err)
-			}
-			if err := f.Quiesce(context.Background()); err != nil { // flushes
-				t.Error(err)
-			}
+			return s
 		}
 	})
 	if _, err := runner.Read(context.Background(), plan, flushing, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "did work while being read") {
@@ -986,6 +994,7 @@ func TestReportShowsWhatEachCandidateHolds(t *testing.T) {
 		"table bytes", "table bytes per record", "L2 table bytes", "baseline (logical)", "checkpoint (logical)", "payload reverse (logical)",
 		"write amplification built (depends on when compactions ran)", "retain.records_replayed", "retain.keys_visited", "checkpoint.written", "steps (Next calls the layout made", "seeks (calls that position the iterator)", "key bytes of the points iterated", "value bytes of the points iterated", "What a read cost is all of the tables below together",
 		"internal steps", "block bytes loaded", "points iterated", "node<- hot-records neighbors now", "node<- hot-records batch now",
+		"blocks loaded with the cache empty", "compressed bytes of the index, filter and data blocks loaded with the cache empty", "allocations of a read once the pools are full", "How the counters of the rules", "(counters disagree)",
 		"records stepped over (layout L", "versions stepped over (layout M", "checkpoints used (layout L)", "checkpoint entries decoded", "points a range tombstone covered", "bytes fetched from value blocks",
 	} {
 		if !strings.Contains(text, want) {
@@ -1180,7 +1189,8 @@ func TestTwoBuildsOfACandidateAreTheSame(t *testing.T) {
 		stable := func(m map[string]int64) map[string]int64 {
 			out := map[string]int64{}
 			for k, v := range m {
-				if !strings.HasSuffix(k, ".block_bytes_cached") && !strings.HasSuffix(k, ".block_read_ns") && k != "read.batch.separated_values" {
+				if !strings.HasSuffix(k, ".block_bytes_cached") && !strings.HasSuffix(k, ".block_read_ns") && k != "read.batch.separated_values" &&
+					k != runner.CounterAllocs && k != runner.CounterAllocBytes {
 					out[k] = v
 				}
 			}
@@ -1430,5 +1440,274 @@ func TestAReadStopsWhenToldTo(t *testing.T) {
 	}
 	if calls > 11 {
 		t.Errorf("the read went on for %d more queries after it was told to stop", calls-10)
+	}
+}
+
+// treeState lists every file under dir with its size and modification time.
+func treeState(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || filepath.Base(path) == runner.ResultsFile || strings.HasSuffix(path, ".tmp") || filepath.Base(path) == "LOCK" {
+			return nil // the results are what a read writes, and taking the lock touches the lock file
+		}
+		rel, _ := filepath.Rel(dir, path)
+		out = append(out, fmt.Sprintf("%s %s %d", rel, info.ModTime().Format(time.RFC3339Nano), info.Size()))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// A read opens the database it is given without the right to change it, so the
+// built directory is what it was: no file is added, removed or touched, and
+// reading it again gives the same counters.
+func TestAReadLeavesTheBuiltDatabaseAsItWas(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	for _, name := range []string{"M/crdb1", "L/k64a4"} {
+		v := lookup(t, name)
+		dir := runner.CandidateDir(t.TempDir(), v.Name)
+		if _, err := runner.Build(context.Background(), plan, v, dir, clean, nil); err != nil {
+			t.Fatal(err)
+		}
+		before := treeState(t, dir)
+		first, err := runner.Read(context.Background(), plan, v, dir, clean, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := runner.Read(context.Background(), plan, v, dir, clean, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after := treeState(t, dir); !slices.Equal(before, after) {
+			t.Errorf("%s: reading changed the directory:\nbefore %v\nafter  %v", name, before, after)
+		}
+		if first.Describe["read_only"] != "true" {
+			t.Errorf("%s: the database was not opened read-only: %q", name, first.Describe["read_only"])
+		}
+		for i := range first.Queries {
+			for _, k := range []string{runner.CounterBlockLoads, runner.CounterColdBlockBytes, runner.CounterColdCacheBytes} {
+				if first.Queries[i].Counters[k] != second.Queries[i].Counters[k] {
+					t.Errorf("%s: %s: %s is %d, then %d on a second read", name, plan.Queries[i].Name(), k, first.Queries[i].Counters[k], second.Queries[i].Counters[k])
+				}
+			}
+		}
+	}
+}
+
+// The counters of a cold read are there for every query, are what a first read
+// needs and no more than the iterator loaded in all, and a read that loads no
+// block costs nothing cold.
+func TestColdCountersAreRecordedForEveryQuery(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, hourSpec())
+	for _, name := range []string{"M/crdb1", "L/off"} {
+		_, _, res := run(t, plan, lookup(t, name))
+		loads, narrower := 0, 0
+		for i, q := range res.Queries {
+			c := q.Counters
+			for _, k := range []string{runner.CounterBlockLoads, runner.CounterColdBlockBytes, runner.CounterColdCacheBytes, runner.CounterAllocs, runner.CounterAllocBytes} {
+				if _, ok := c[k]; !ok {
+					t.Fatalf("%s: %s lacks %s", name, plan.Queries[i].Name(), k)
+				}
+			}
+			var gross int64
+			for k, v := range c {
+				if strings.HasSuffix(k, ".block_bytes") {
+					gross += v
+				}
+			}
+			switch {
+			case c[runner.CounterColdBlockBytes] > gross:
+				t.Errorf("%s: %s loaded %d bytes cold and %d in all", name, plan.Queries[i].Name(), c[runner.CounterColdBlockBytes], gross)
+			case c[runner.CounterColdBlockBytes] < gross:
+				narrower++
+			}
+			if c[runner.CounterBlockLoads] == 0 && c[runner.CounterColdBlockBytes] != 0 {
+				t.Errorf("%s: %s loaded bytes and no blocks", name, plan.Queries[i].Name())
+			}
+			if c[runner.CounterBlockLoads] > 0 {
+				loads++
+			}
+			if c[runner.CounterBlockLoads] > 0 && c[runner.CounterColdCacheBytes] <= 0 {
+				t.Errorf("%s: %s loaded blocks and the cache holds nothing afterwards", name, plan.Queries[i].Name())
+			}
+			if c[runner.CounterAllocBytes] < 8*c[runner.CounterAllocs] {
+				t.Errorf("%s: %s allocated %d bytes in %d allocations", name, plan.Queries[i].Name(), c[runner.CounterAllocBytes], c[runner.CounterAllocs])
+			}
+			if c[runner.CounterAllocs] <= 0 || c[runner.CounterAllocBytes] <= 0 {
+				t.Errorf("%s: %s allocated nothing", name, plan.Queries[i].Name())
+			}
+		}
+		if loads == 0 {
+			t.Errorf("%s: no query loaded a block", name)
+		}
+		t.Logf("%s: %d of %d queries load blocks, %d of them fewer bytes cold than in all", name, loads, len(res.Queries), narrower)
+	}
+}
+
+// A database whose tables are not the ones the build left, even if everything else
+// about it is right, is refused.
+func TestReadRefusesTablesThatAreNotWhatTheBuildLeft(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	v := lookup(t, "L/off")
+	dir := runner.CandidateDir(t.TempDir(), v.Name)
+	m, err := runner.Build(context.Background(), plan, v, dir, clean, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, runner.ManifestFile)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The manifest has the figures twice, as built and as compacted; the second is the one a read holds the tables to.
+	key := `"live_table_bytes": `
+	at := strings.LastIndex(string(b), key)
+	if m.StatsCompacted["live_table_bytes"] == 0 || at < 0 {
+		t.Fatalf("the manifest has no %q", key)
+	}
+	end := at + len(key) + len(strings.TrimRight(strings.SplitN(string(b[at+len(key):]), "\n", 2)[0], ","))
+	if err := os.WriteFile(path, []byte(string(b[:at])+key+"1"+string(b[end:])), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "not what the build left") {
+		t.Errorf("tables other than the manifest's: %v", err)
+	}
+}
+
+// An engine whose cold cost differs from one cold read to the next is flagged, as
+// the cost of the other passes is.
+func TestAnEngineWhoseColdCostsDriftIsFlaggedUnstable(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	n := int64(0)
+	drifting := breaking(t, "M/crdb1", func(f *faulty) {
+		f.stats = func(s map[string]int64) map[string]int64 {
+			n++
+			s["cache_misses"] += n * n // each reading of the cache is further on than the pace of the reads
+			return s
+		}
+	})
+	dir := runner.CandidateDir(t.TempDir(), "M_crdb1")
+	if _, err := runner.Build(context.Background(), plan, drifting, dir, clean, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.Read(context.Background(), plan, drifting, dir, clean, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cold := 0
+	for _, name := range res.Unstable {
+		if strings.HasSuffix(name, "(cold)") {
+			cold++
+		}
+	}
+	if cold == 0 {
+		t.Error("cold counters that differ between two cold reads were not flagged")
+	}
+}
+
+// What the cold counters report is what the engine said its cache did and what the
+// iterator said it loaded: the blocks missed during the read, the compressed bytes
+// not served from the cache, and what the cache holds after.
+func TestColdCountersAreWhatTheEngineReported(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	_, _, honest := run(t, plan, lookup(t, "M/crdb1")) // what the same reads cost without the engine's help
+	misses, size := int64(0), int64(0)
+	reporting := breaking(t, "M/crdb1", func(f *faulty) {
+		f.onCold = func(*faulty) { size = 0 }
+		f.onRead = func(f *faulty) {
+			misses += 7
+			size = 4096
+			f.rec.Count("read.neighbors.block_bytes", 1000)
+			f.rec.Count("read.neighbors.block_bytes_cached", 300)
+		}
+		f.stats = func(s map[string]int64) map[string]int64 {
+			s["cache_misses"], s["cache_size"] = misses, size
+			return s
+		}
+	})
+	dir := runner.CandidateDir(t.TempDir(), "M_crdb1")
+	if _, err := runner.Build(context.Background(), plan, reporting, dir, clean, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.Read(context.Background(), plan, reporting, dir, clean, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for i, q := range res.Queries {
+		if plan.Queries[i].Op != runner.OpNeighbors {
+			continue
+		}
+		n++
+		c := q.Counters
+		// the engine reports 7 misses and 700 uncached bytes more than the reads really made
+		wantBytes := honest.Queries[i].Counters[runner.CounterColdBlockBytes] + 700
+		if c[runner.CounterBlockLoads] != 7 || c[runner.CounterColdBlockBytes] != wantBytes || c[runner.CounterColdCacheBytes] != 4096 {
+			t.Fatalf("%s: loads %d, cold bytes %d, cache bytes %d; want 7, %d and 4096", plan.Queries[i].Name(), c[runner.CounterBlockLoads], c[runner.CounterColdBlockBytes], c[runner.CounterColdCacheBytes], wantBytes)
+		}
+	}
+	if n == 0 {
+		t.Fatal("no neighbors query in the plan")
+	}
+}
+
+// An engine that answers wrongly only on a cold read is found by the cold reads,
+// whichever of the two it gets wrong, and not by the first passes: each cold answer
+// is compared with the first pass's.
+func TestAWrongAnswerFromAColdCacheIsFlagged(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	for name, wrongOn := range map[string]int{"the first cold read": 1, "the second cold read": 0} {
+		plan := mustPlan(t, tinySpec())
+		colds := 0
+		wrong := breaking(t, "M/crdb1", func(f *faulty) {
+			f.onCold = func(*faulty) { colds++ }
+			f.neighbors = func(ns []engine.Neighbor) []engine.Neighbor {
+				if colds > 0 && colds%2 == wrongOn && len(ns) > 0 {
+					return ns[1:]
+				}
+				return ns
+			}
+		})
+		dir := runner.CandidateDir(t.TempDir(), "M_crdb1")
+		if _, err := runner.Build(context.Background(), plan, wrong, dir, clean, nil); err != nil {
+			t.Fatal(err)
+		}
+		res, err := runner.Read(context.Background(), plan, wrong, dir, clean, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flagged := 0
+		for _, q := range res.Unstable {
+			if strings.HasSuffix(q, "(cold)") {
+				flagged++
+			}
+		}
+		if flagged == 0 || len(res.Mismatches) != 0 {
+			t.Errorf("wrong on %s: %d cold reads flagged, %d mismatches; want flagged cold reads and none of the first passes wrong", name, flagged, len(res.Mismatches))
+		}
 	}
 }

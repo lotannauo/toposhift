@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -145,6 +146,12 @@ type Config struct {
 	// reads, which are on by default and would rewrite tables in the middle of a
 	// measurement of reads.
 	DisableReadCompactions bool
+	// ReadOnly opens an existing database without the ability to write to it: no
+	// log is created, nothing is flushed or compacted, no background statistics
+	// are collected, and a write is an error. A measurement of reads opens the
+	// database it built this way, so the database cannot have worked while being
+	// read, and nothing runs behind a read.
+	ReadOnly bool
 	// FS is the file system the database lives on. Nil is the real one. A test
 	// that runs many small databases passes [vfs.NewMem]: the tables, the log and
 	// the compactions are the same code, without the cost of a disk's flush.
@@ -175,6 +182,29 @@ type KV struct {
 	// options is the full text of the options the database was opened with, once
 	// Pebble had filled in its defaults.
 	options string
+	// cache is the block cache the database uses; this holds a reference to it so
+	// that [KV.ColdStart] can empty it.
+	cache     *pebble.Cache
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// Close closes the database and releases the block cache.
+func (k *KV) Close() error {
+	k.closeOnce.Do(func() {
+		k.closeErr = k.DB.Close()
+		k.cache.Unref()
+	})
+	return k.closeErr
+}
+
+// ColdStart empties the block cache, so that the next read finds none of the
+// blocks it needs in it. The tables stay open, which is what a database that has
+// been running for a while has, and what is measured is then the blocks a read
+// has to bring in, not the opening of files. It must not be called while a read
+// is in progress, whose blocks are held and are not evicted.
+func (k *KV) ColdStart() {
+	k.cache.Reserve(int(k.cfg.Tuning.CacheBytes))()
 }
 
 // Open opens the database under dir, creating it if there is none.
@@ -184,22 +214,23 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 		t = BenchTuning() // a forgotten setting must not measure a toy
 		cfg.Tuning = t
 	}
-	cache := pebble.NewCache(t.CacheBytes)
-	defer cache.Unref() // the database holds its own reference
+	cache := pebble.NewCache(t.CacheBytes) // this reference is the KV's, released by Close
 
 	opts, err := buildOptions(layout, cfg, cache)
 	if err != nil {
+		cache.Unref()
 		return nil, err
 	}
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
+		cache.Unref()
 		return nil, fmt.Errorf("pebblekv: opening %s: %w", dir, err)
 	}
 	wo := pebble.NoSync
 	if cfg.Sync {
 		wo = pebble.Sync
 	}
-	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name}
+	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name, cache: cache}
 	kv.recovered = db.Metrics().Total().TableBytesFlushed
 	full := opts.Clone() // Open filled in the defaults on a copy of its own
 	full.EnsureDefaults()
@@ -236,6 +267,7 @@ func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Optio
 		KeySchemas:                  sstable.MakeKeySchemas(all...),
 	}
 	opts.DisableAutomaticCompactions = cfg.DisableAutoCompactions
+	opts.ReadOnly = cfg.ReadOnly
 	if cfg.DisableReadCompactions {
 		opts.Experimental.ReadSamplingMultiplier = -1
 	}

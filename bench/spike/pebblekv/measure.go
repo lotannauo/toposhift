@@ -38,6 +38,8 @@ type Snapshot struct {
 	PointTombstoneGarbage, RangeTombstoneGarbage uint64
 
 	CacheHits, CacheMisses int64
+	// CacheSize is the bytes the block cache holds (uncompressed, as it holds them).
+	CacheSize int64
 
 	// BytesIn is what was written to the database, BytesFlushed and
 	// BytesCompacted what Pebble wrote to tables on account of it (summed over
@@ -63,7 +65,7 @@ func (k *KV) Snapshot() Snapshot {
 		TombstoneCount:        m.Keys.TombstoneCount,
 		PointTombstoneGarbage: m.Table.Garbage.PointDeletionsBytesEstimate,
 		RangeTombstoneGarbage: m.Table.Garbage.RangeDeletionsBytesEstimate,
-		CacheHits:             m.BlockCache.Hits, CacheMisses: m.BlockCache.Misses,
+		CacheHits:             m.BlockCache.Hits, CacheMisses: m.BlockCache.Misses, CacheSize: m.BlockCache.Size,
 		MarkedFiles:   m.Compact.MarkedFiles,
 		StatsComplete: m.Table.InitialStatsCollectionComplete && m.Table.PendingStatsCollectionCount == 0,
 	}
@@ -86,7 +88,7 @@ func (s Snapshot) Flat() map[string]int64 {
 		"live_table_bytes": int64(s.LiveTableBytes), "obsolete_bytes": int64(s.ObsoleteBytes), "zombie_bytes": int64(s.ZombieBytes),
 		"tombstones": int64(s.TombstoneCount), "point_tombstone_garbage": int64(s.PointTombstoneGarbage),
 		"range_tombstone_garbage": int64(s.RangeTombstoneGarbage),
-		"cache_hits":              s.CacheHits, "cache_misses": s.CacheMisses,
+		"cache_hits":              s.CacheHits, "cache_misses": s.CacheMisses, "cache_size": s.CacheSize,
 		"bytes_in": int64(s.BytesIn), "bytes_flushed": int64(s.BytesFlushed), "bytes_compacted": int64(s.BytesCompacted),
 		"marked_files": int64(s.MarkedFiles),
 	}
@@ -109,6 +111,9 @@ func (s Snapshot) Flat() map[string]int64 {
 // It returns when ctx is done with its error, so the caller sets the patience:
 // minutes are right for a gigabyte.
 func (k *KV) Quiesce(ctx context.Context) error {
+	if k.cfg.ReadOnly {
+		return ctx.Err() // nothing runs in a read-only database, and nothing is left in memory
+	}
 	if err := k.Flush(); err != nil {
 		return err
 	}
@@ -347,6 +352,7 @@ func (k *KV) Describe() (map[string]string, error) {
 		"cache_bytes":             fmt.Sprint(t.CacheBytes),
 		"sync":                    fmt.Sprint(k.cfg.Sync),
 		"auto_compactions":        fmt.Sprint(!k.cfg.DisableAutoCompactions),
+		"read_only":               fmt.Sprint(k.cfg.ReadOnly),
 		"read_compactions":        fmt.Sprint(!k.cfg.DisableReadCompactions),
 		"time_filter_asked":       fmt.Sprint(k.cfg.TimeFilter),
 		"recovered_bytes":         fmt.Sprint(k.recovered),

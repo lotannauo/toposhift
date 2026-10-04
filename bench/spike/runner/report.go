@@ -146,6 +146,11 @@ var metrics = []metricSpec{
 	{"key bytes of the points iterated", "key_bytes", true},
 	{"value bytes of the points iterated", "value_bytes", true},
 	{"block bytes loaded (every load counts, a cached block too, and again at each seek that reloads it)", "block_bytes", true},
+	{"blocks loaded with the cache empty and the tables open (the distinct blocks a read needs; a reload within it is a hit)", CounterBlockLoads, false},
+	{"compressed bytes of the index, filter and data blocks loaded with the cache empty", CounterColdBlockBytes, false},
+	{"bytes the cache holds after a read from empty (uncompressed, values included; a diagnostic: near the cache size, loads were repeated)", CounterColdCacheBytes, false},
+	{"allocations of a read once the pools are full (it counts what the runner does with the answer; depends on the process)", CounterAllocs, false},
+	{"bytes allocated by a read, the same way", CounterAllocBytes, false},
 	{"points a range tombstone covered", "covered_by_tombstones", true},
 	{"values Pebble reports in value blocks (a diagnostic: it drifts for the batched reads of layout M)", "separated_values", true},
 	{"bytes fetched from value blocks", "separated_value_bytes_fetched", true},
@@ -228,6 +233,63 @@ func Write(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
 		}
 		fmt.Fprintf(w, "\n%s, mean per query (ratio to the smallest in brackets):\n", m.title)
 		writeMetric(w, plan, cs, m, full)
+	}
+	writeColdCacheWarning(w, plan, cs)
+	writeVerdicts(w, plan, cs, full)
+}
+
+// writeColdCacheWarning says when a read from an empty cache filled more than half
+// of it: the cache was then too small for the read to count every block once, and
+// its cold counts may include blocks loaded twice.
+func writeColdCacheWarning(w io.Writer, plan *Plan, cs []*Candidate) {
+	for _, c := range cs {
+		n := 0
+		for _, q := range c.Results.Queries {
+			if 2*q.Counters[CounterColdCacheBytes] > plan.CacheBytes {
+				n++
+			}
+		}
+		if n > 0 {
+			fmt.Fprintf(w, "\nWARNING: %s: %d queries filled more than half of the %d MiB cache from empty; their cold counts may include blocks loaded twice.\n", c.Results.Candidate, n, plan.CacheBytes>>20)
+		}
+	}
+}
+
+// writeVerdicts says how the counters of the decision rules put the candidates in
+// order, cell by cell, and lists the cells in which they disagree: the ones that
+// timing on CI hardware settles. The list is a function of the counters, so it can
+// be fixed (it has a digest) before anything is timed.
+func writeVerdicts(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
+	if len(cs) < 2 {
+		return
+	}
+	rules := DefaultRules()
+	vs := Verdicts(plan, cs, rules)
+	mixed := MixedCells(vs)
+	ordered := 0
+	for _, v := range vs {
+		if v.Ordered() {
+			ordered++
+		}
+	}
+	fmt.Fprintf(w, "\nHow the counters of the rules (%s; a counter orders two candidates in a cell if the larger mean is above its floor and more than x%.2f the smaller) put the candidates in order, over %d pairs of candidates in %d cells:\n",
+		strings.Join(rules.OrderCounters, ", "), rules.OrderTolerance, len(vs), len(vs)/max(len(cs)*(len(cs)-1)/2, 1))
+	fmt.Fprintf(w, "  ordered %d, mixed %d (counters disagree), tied on counters %d\n", ordered, len(mixed), len(vs)-ordered-len(mixed))
+	if len(mixed) == 0 {
+		return
+	}
+	rulesDigest, _ := rules.Digest()
+	fmt.Fprintf(w, "The mixed cells are the ones timing settles; their list has digest %.16s under rules %.12s.\n", MixedDigest(mixed), rulesDigest)
+	shown := 0
+	for _, v := range mixed {
+		if !full && !headline[v.Cell[strings.LastIndexByte(v.Cell, ' ')+1:]] {
+			continue
+		}
+		shown++
+		fmt.Fprintf(w, "  %s: %s costs less in %s; %s costs less in %s\n", v.Cell, v.A, strings.Join(v.BetterA, ", "), v.B, strings.Join(v.BetterB, ", "))
+	}
+	if shown < len(mixed) {
+		fmt.Fprintf(w, "  (%d more at the other ages, in the full report)\n", len(mixed)-shown)
 	}
 }
 

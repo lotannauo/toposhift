@@ -13,6 +13,7 @@ import (
 
 var (
 	_ engine.Quiescer    = (*Engine)(nil)
+	_ engine.ColdStarter = (*Engine)(nil)
 	_ engine.Statser     = (*Engine)(nil)
 	_ engine.LayerSizer  = (*Engine)(nil)
 	_ engine.Describer   = (*Engine)(nil)
@@ -21,6 +22,9 @@ var (
 
 // Quiesce implements [engine.Quiescer].
 func (e *Engine) Quiesce(ctx context.Context) error { return e.kv.Quiesce(ctx) }
+
+// ColdStart implements [engine.ColdStarter].
+func (e *Engine) ColdStart() { e.kv.ColdStart() }
 
 // CompactAll implements [engine.Quiescer].
 func (e *Engine) CompactAll(ctx context.Context) error { return e.kv.CompactAll(ctx) }
