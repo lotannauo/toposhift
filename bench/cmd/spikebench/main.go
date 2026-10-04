@@ -449,7 +449,8 @@ func diskState(dir, planDigest, executable string, untimed bool) candidateState 
 		return st
 	}
 	st.built = true
-	if cand, err := runner.LoadCandidate(dir); err == nil && cand.Results.PlanDigest == planDigest && cand.Results.Untimed == untimed {
+	// (LoadCandidate refuses results read from another manifest than this one.)
+	if cand, err := runner.LoadCandidate(dir); err == nil && cand.Results.Untimed == untimed {
 		st.done = true
 	}
 	return st

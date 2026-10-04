@@ -419,3 +419,64 @@ func TestDescribeSaysWhatOpeningDidAndWhatItRunsUnder(t *testing.T) {
 		t.Errorf("a database closed clean recovered %q bytes (%v)", d["recovered_bytes"], err)
 	}
 }
+
+// Compacting everything leaves no tombstone behind, even for keys deleted outside
+// the span of the keys that are still alive: the compaction covers the tables, not
+// only the live keys, because an iterator does not show a deleted key and a span
+// taken from it would leave the tombstones at either end where they were.
+func TestCompactAllReachesTombstonesOutsideTheLiveKeys(t *testing.T) {
+	t.Parallel()
+
+	kv := bytewise(t, vfs.NewMem(), "db", pebblekv.Config{DisableAutoCompactions: true})
+	defer func() { _ = kv.Close() }()
+	val := make([]byte, 200)
+	put := func(prefix string, n int) {
+		b := kv.NewBatch()
+		for i := range n {
+			if err := b.Set(fmt.Appendf(nil, "%s%05d", prefix, i), val, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := b.Commit(kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	del := func(prefix string, n int) {
+		b := kv.NewBatch()
+		for i := range n {
+			if err := b.Delete(fmt.Appendf(nil, "%s%05d", prefix, i), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := b.Commit(kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	put("a", 3000)
+	put("m", 50)
+	put("z", 3000)
+	// Everything to the bottom, in many small tables.
+	if err := kv.CompactAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Delete what lies on both sides of the keys that stay, and keep the tombstones
+	// in tables of their own.
+	del("a", 3000)
+	if err := kv.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	del("z", 3000)
+	if err := kv.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if s := kv.Snapshot(); s.TombstoneCount == 0 {
+		t.Fatal("the test has no tombstones to leave behind")
+	}
+	if err := kv.CompactAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if s := kv.Snapshot(); s.TombstoneCount != 0 {
+		t.Errorf("%d tombstones left after compacting everything, and %d bytes of tables", s.TombstoneCount, s.LiveTableBytes)
+	}
+}

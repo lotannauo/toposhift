@@ -143,38 +143,65 @@ func (k *KV) Quiesce(ctx context.Context) error {
 // into as few tables as it will, then waits for rest. It is what makes the size
 // of a database repeatable: how many tables and levels the data lies in
 // otherwise depends on when compactions happened to run.
+//
+// It compacts the span of the tables, tombstones included, and not the span of
+// the keys that are alive: an iterator does not show a deleted key, so the tombstones
+// of keys deleted before the first live key or after the last would be left where a
+// background compaction happened not to have reached them. And it goes on until a
+// round changes nothing, because a background compaction that was running when one
+// round started can leave work for the next.
 func (k *KV) CompactAll(ctx context.Context) error {
 	if err := k.Flush(); err != nil {
 		return err
 	}
-	lo, hi, err := k.keySpan()
-	if err != nil {
-		return err
-	}
-	if lo != nil && k.cmp(lo, hi) < 0 { // one key needs no compacting
-		if err := k.Compact(ctx, lo, hi, true); err != nil {
-			return fmt.Errorf("pebblekv: compacting: %w", err)
+	var last Snapshot
+	for round := range maxCompactRounds {
+		lo, hi, err := k.tableSpan()
+		if err != nil {
+			return err
 		}
+		if lo != nil && k.cmp(lo, hi) < 0 { // one key needs no compacting
+			if err := k.Compact(ctx, lo, hi, true); err != nil {
+				return fmt.Errorf("pebblekv: compacting: %w", err)
+			}
+		}
+		if err := k.Quiesce(ctx); err != nil {
+			return err
+		}
+		s := k.Snapshot()
+		if s.TombstoneCount == 0 { // nothing left for another round to drop
+			return nil
+		}
+		if round > 0 && s.TombstoneCount == last.TombstoneCount && s.LiveTableBytes == last.LiveTableBytes && s.TablesPerLevel == last.TablesPerLevel {
+			return nil
+		}
+		last = s
 	}
-	return k.Quiesce(ctx)
+	return nil
 }
 
-// keySpan is the first and last key in the database, or nil if it holds none.
-// Both are keys the database holds, so they are valid for its comparer.
-func (k *KV) keySpan() (lo, hi []byte, err error) {
-	it, err := k.NewIter(nil)
+// maxCompactRounds bounds how often CompactAll compacts again.
+const maxCompactRounds = 6
+
+// tableSpan is the smallest and largest user key of any table, deletions
+// included, or nil if there is none. The largest key of a table of range
+// deletions is where the last one ends, which is a key the comparer accepts.
+func (k *KV) tableSpan() (lo, hi []byte, err error) {
+	levels, err := k.SSTables()
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() { _ = it.Close() }()
-	if !it.First() {
-		return nil, nil, it.Error()
+	for _, level := range levels {
+		for _, t := range level {
+			if s := t.Smallest.UserKey; lo == nil || k.cmp(s, lo) < 0 {
+				lo = append([]byte(nil), s...)
+			}
+			if l := t.Largest.UserKey; hi == nil || k.cmp(l, hi) > 0 {
+				hi = append([]byte(nil), l...)
+			}
+		}
 	}
-	lo = append([]byte(nil), it.Key()...)
-	if !it.Last() {
-		return nil, nil, it.Error()
-	}
-	return lo, append([]byte(nil), it.Key()...), nil
+	return lo, hi, nil
 }
 
 // CloseClean flushes the memtable and closes the database, so that opening it
