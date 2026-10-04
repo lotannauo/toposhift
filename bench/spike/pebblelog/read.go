@@ -25,6 +25,7 @@ func checkDir(dir engine.Direction) error {
 // stepped over.
 type reader struct {
 	e       *Engine
+	op      string // what the read is for, which names its iterator statistics
 	it      *pebble.Iterator
 	stepped int64
 	// checkpoints met: used, skipped for a token below its W, skipped for another
@@ -32,12 +33,12 @@ type reader struct {
 	hits, skippedW, skippedVersion int64
 }
 
-func (e *Engine) newReader(opts *pebble.IterOptions) (*reader, error) {
+func (e *Engine) newReader(op string, opts *pebble.IterOptions) (*reader, error) {
 	it, err := e.kv.NewIter(opts)
 	if err != nil {
 		return nil, err
 	}
-	return &reader{e: e, it: it}, nil
+	return &reader{e: e, op: op, it: it}, nil
 }
 
 func (r *reader) close() {
@@ -47,6 +48,7 @@ func (r *reader) close() {
 		r.e.rec.Count("read.checkpoint_skipped_w", r.skippedW)
 		r.e.rec.Count("read.checkpoint_skipped_version", r.skippedVersion)
 	}
+	pebblekv.RecordIter(r.e.rec, r.op, r.it)
 	_ = r.it.Close()
 }
 
@@ -189,7 +191,7 @@ func (e *Engine) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time
 	if empty {
 		return nil, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("neighbors", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +213,7 @@ func (e *Engine) NeighborsBatch(fps []identity.Fingerprint, dir engine.Direction
 	if empty || len(fps) == 0 {
 		return out, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("batch", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +239,7 @@ func (e *Engine) Alive(fp identity.Fingerprint, t time.Time, s engine.Scope) (bo
 	if !ok {
 		return false, nil
 	}
-	r, err := e.newReader(nil)
+	r, err := e.newReader("alive", nil)
 	if err != nil {
 		return false, err
 	}
@@ -284,7 +286,7 @@ func (e *Engine) Window(fp identity.Fingerprint, dir engine.Direction, from, to 
 		return nil, nil
 	}
 	lowerBound, upperBound := prefixBounds(prefix)
-	r, err := e.newReader(&pebble.IterOptions{LowerBound: lowerBound, UpperBound: upperBound})
+	r, err := e.newReader("window", &pebble.IterOptions{LowerBound: lowerBound, UpperBound: upperBound})
 	if err != nil {
 		return nil, err
 	}

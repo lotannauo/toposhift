@@ -63,9 +63,12 @@ func TinyTuning() Tuning {
 	}
 }
 
-// BenchTuning is for measurement: Pebble's own defaults for block and table
-// sizes, a larger memtable and a cache that holds a small working set. The
-// numbers are placeholders until the measurement stage chooses them.
+// BenchTuning is for measurement: 32 KB blocks (CockroachDB's choice; Pebble's
+// default is 4 KB, and larger blocks favour a layout that reads a long run of
+// keys, so the block size is a variable to measure and not a given), 64 MB tables
+// and a 256 MB level base (Pebble's defaults are 2 MB and 64 MB), a larger
+// memtable than its 4 MB, and a cache that holds a small working set. The numbers
+// are placeholders until the measurement stage chooses them.
 func BenchTuning() Tuning {
 	return Tuning{
 		MemTableSize:          64 << 20,
@@ -133,6 +136,15 @@ type Config struct {
 	// Sync makes every commit wait for the log to reach the disk. Off, a commit
 	// survives a closed process but not a crashed machine.
 	Sync bool
+	// DisableAutoCompactions turns off the compactions Pebble schedules on its
+	// own (a flush still happens, and so does CompactAll). A measurement opens a
+	// built database with it, so the shape of the tables does not change under
+	// the reads being timed.
+	DisableAutoCompactions bool
+	// DisableReadCompactions turns off the compactions Pebble triggers by sampling
+	// reads, which are on by default and would rewrite tables in the middle of a
+	// measurement of reads.
+	DisableReadCompactions bool
 	// FS is the file system the database lives on. Nil is the real one. A test
 	// that runs many small databases passes [vfs.NewMem]: the tables, the log and
 	// the compactions are the same code, without the cost of a disk's flush.
@@ -154,6 +166,12 @@ type KV struct {
 	*pebble.DB
 	cfg Config
 	wo  *pebble.WriteOptions
+	cmp func(a, b []byte) int
+	// layoutName is the comparer's name, for [KV.Describe].
+	layoutName string
+	// recovered is what opening wrote to tables from the log of a database that
+	// was not closed clean.
+	recovered uint64
 }
 
 // Open opens the database under dir, creating it if there is none.
@@ -166,6 +184,26 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 	cache := pebble.NewCache(t.CacheBytes)
 	defer cache.Unref() // the database holds its own reference
 
+	opts, err := buildOptions(layout, cfg, cache)
+	if err != nil {
+		return nil, err
+	}
+	db, err := pebble.Open(dir, opts)
+	if err != nil {
+		return nil, fmt.Errorf("pebblekv: opening %s: %w", dir, err)
+	}
+	wo := pebble.NoSync
+	if cfg.Sync {
+		wo = pebble.Sync
+	}
+	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name}
+	kv.recovered = db.Metrics().Total().TableBytesFlushed
+	return kv, nil
+}
+
+// buildOptions is the Pebble options a layout and a config come to.
+func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Options, error) {
+	t := cfg.Tuning
 	// Every schema the layout has is registered, and the config only chooses which
 	// one new tables are written in: a table written under one can be read by a
 	// database opened under the other. (An unregistered schema is a panic inside
@@ -191,6 +229,10 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 		KeySchema:                   chosen.Name,
 		KeySchemas:                  sstable.MakeKeySchemas(all...),
 	}
+	opts.DisableAutomaticCompactions = cfg.DisableAutoCompactions
+	if cfg.DisableReadCompactions {
+		opts.Experimental.ReadSamplingMultiplier = -1
+	}
 	opts.Levels[0].BlockSize = t.BlockSize
 	opts.Levels[0].IndexBlockSize = t.BlockSize
 	opts.TargetFileSizes[0] = t.TargetFileSize
@@ -200,15 +242,7 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 		}
 		opts.BlockPropertyCollectors = layout.collectors
 	}
-	db, err := pebble.Open(dir, opts)
-	if err != nil {
-		return nil, fmt.Errorf("pebblekv: opening %s: %w", dir, err)
-	}
-	wo := pebble.NoSync
-	if cfg.Sync {
-		wo = pebble.Sync
-	}
-	return &KV{DB: db, cfg: cfg, wo: wo}, nil
+	return opts, nil
 }
 
 // Config returns the settings the database was opened with.
@@ -227,7 +261,7 @@ func (k *KV) WriteOptions() *pebble.WriteOptions { return k.wo }
 // coverage of the compacted paths and never correctness. (Pebble's estimate of
 // compaction debt is no use here: with small tables it can stay above zero
 // forever, because no compaction is worth picking.) A measurement that needs a
-// settled size should not rely on this.
+// settled size uses [KV.Quiesce] or [KV.CompactAll].
 func (k *KV) Settle() error {
 	if err := k.Flush(); err != nil {
 		return err
