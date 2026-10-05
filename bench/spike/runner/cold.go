@@ -73,7 +73,7 @@ const allocReps = 3
 // allocate several more than the time before (a sync.Pool is kept per processor,
 // and a read that moves to another one misses it), so the smallest of the counts
 // is reported, and nothing is held to be steady: the counters the rules decide on are above a floor that this noise does
-// not reach, and are means over many reads.
+// not reach.
 func allocAsk(e measurable, rec *Capture, q Query) (map[string]int64, error) {
 	runtime.GC()
 	defer debug.SetGCPercent(debug.SetGCPercent(-1))

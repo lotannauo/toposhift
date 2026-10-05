@@ -24,12 +24,44 @@ type Oracle struct {
 	mu      sync.Mutex
 	lastSeq uint64
 	horizon time.Time
-	recs    []engine.Record
 
-	bySubject map[engine.Subject][]int           // subject -> indexes into recs, ascending Seq
+	bySubject map[engine.Subject][]stored        // subject -> its records, ascending Seq
 	layers    map[engine.Subject]catalog.Layer   // the one layer each subject is stored in
 	incident  [3]map[identity.Fingerprint][]edge // by direction: entity -> its edges
 	folds     map[engine.Subject]map[int]lifecycle.Timeline
+}
+
+// stored is a record as the oracle keeps it, without what its subject says (the
+// subject and its layer are kept once, not in every record), and with its times as
+// Unix nanoseconds: about a third of the memory of an [engine.Record], which is what
+// lets the reference engine hold a month of a busy prefix.
+type stored struct {
+	producer       lifecycle.Producer
+	seq            uint64
+	event, through int64 // Unix nanoseconds; through is zero for a record that is not a run
+	ttl            time.Duration
+	payload        []byte
+	kind           lifecycle.Kind
+}
+
+func keep(r engine.Record) stored {
+	st := stored{producer: r.Producer, seq: r.Seq, event: r.EventTime.UnixNano(), ttl: r.TTL, payload: r.Payload, kind: r.Kind}
+	if !r.Through.IsZero() {
+		st.through = r.Through.UnixNano()
+	}
+	return st
+}
+
+// record is the [engine.Record] of a stored one of the subject, whose layer is layer.
+func (st stored) record(s engine.Subject, layer catalog.Layer) engine.Record {
+	r := engine.Record{
+		Layer: layer, Subject: s, Producer: st.producer, EventTime: time.Unix(0, st.event).UTC(),
+		Seq: st.seq, Kind: st.kind, TTL: st.ttl, Payload: st.payload,
+	}
+	if st.through != 0 {
+		r.Through = time.Unix(0, st.through).UTC()
+	}
+	return r
 }
 
 // maxCachedFolds bounds the folds kept per subject, so probing many tokens
@@ -46,7 +78,7 @@ var _ engine.Engine = (*Oracle)(nil)
 // New returns an empty oracle.
 func New() *Oracle {
 	o := &Oracle{
-		bySubject: make(map[engine.Subject][]int),
+		bySubject: make(map[engine.Subject][]stored),
 		layers:    make(map[engine.Subject]catalog.Layer),
 		folds:     make(map[engine.Subject]map[int]lifecycle.Timeline),
 	}
@@ -93,8 +125,7 @@ func (o *Oracle) Write(batch []engine.Record) error {
 				o.incident[engine.Reverse][r.Subject.B] = append(o.incident[engine.Reverse][r.Subject.B], edge{r.Subject, r.Subject.A})
 			}
 		}
-		o.bySubject[r.Subject] = append(o.bySubject[r.Subject], len(o.recs))
-		o.recs = append(o.recs, r)
+		o.bySubject[r.Subject] = append(o.bySubject[r.Subject], keep(r))
 	}
 	o.lastSeq = seq
 	return nil
@@ -133,8 +164,8 @@ func (o *Oracle) Layers(fp identity.Fingerprint) []catalog.Layer {
 
 // visible is how many of a subject's records a token sees. The records are in
 // ascending Seq, so they are a prefix.
-func (o *Oracle) visible(idx []int, asOf uint64) int {
-	return sort.Search(len(idx), func(i int) bool { return o.recs[idx[i]].Seq > asOf })
+func (o *Oracle) visible(recs []stored, asOf uint64) int {
+	return sort.Search(len(recs), func(i int) bool { return recs[i].seq > asOf })
 }
 
 // timeline folds the first n records of a subject: what a token that sees n of
@@ -147,10 +178,10 @@ func (o *Oracle) timeline(s engine.Subject, n int) (lifecycle.Timeline, error) {
 	if tl, ok := o.folds[s][n]; ok {
 		return tl, nil
 	}
-	idx := o.bySubject[s][:n]
+	recs := o.bySubject[s][:n]
 	as := make([]lifecycle.Assertion, n)
-	for i, j := range idx {
-		as[i] = o.recs[j].Assertion()
+	for i, st := range recs {
+		as[i] = st.record(s, o.layers[s]).Assertion()
 	}
 	tl, err := lifecycle.Fold(as, lifecycle.Policy{})
 	if err != nil {
@@ -236,9 +267,9 @@ func (o *Oracle) Window(fp identity.Fingerprint, dir engine.Direction, from, to 
 		if o.layers[e.subject] != sc.Layer {
 			continue
 		}
-		idx := o.bySubject[e.subject]
-		for _, j := range idx[:o.visible(idx, sc.AsOf)] {
-			r := o.recs[j]
+		recs := o.bySubject[e.subject]
+		for _, st := range recs[:o.visible(recs, sc.AsOf)] {
+			r := st.record(e.subject, o.layers[e.subject])
 			if !r.EventTime.Before(from) && r.EventTime.Before(to) {
 				r.Payload = slices.Clone(r.Payload)
 				out = append(out, r)
@@ -267,8 +298,10 @@ func (o *Oracle) Size() (int64, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var n int64
-	for _, r := range o.recs {
-		n += int64(len(r.Payload)) + 96
+	for _, recs := range o.bySubject {
+		for _, st := range recs {
+			n += int64(len(st.payload)) + 96
+		}
 	}
 	return n, nil
 }

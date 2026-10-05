@@ -6,6 +6,9 @@
 //	spikebench read   -out DIR -candidate L/off      ask the queries of a built candidate
 //	spikebench report -out DIR                       set the candidates side by side
 //	spikebench run    -preset ci -out DIR            all of the above, a process per step
+//	spikebench pins   -preset ci -window 2 -out DIR  choose the prefixes the windows are read at
+//	spikebench windows -preset ci -out DIR           run over windows of 2, 7, 14 and 30 days of retained history
+//	spikebench g1     -out DIR                       judge G1 from the windows
 //
 // Build with CGO_ENABLED=0 and without -race or the invariants tag, from a clean
 // tree; the program refuses to produce a result otherwise (-untimed allows it
@@ -15,12 +18,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -66,6 +71,12 @@ func main() {
 		err = doReport(args)
 	case "run":
 		err = doRun(ctx, args)
+	case "pins":
+		err = doPins(ctx, args)
+	case "windows":
+		err = doWindows(ctx, args)
+	case "g1":
+		err = doG1(args)
 	default:
 		usage()
 	}
@@ -76,7 +87,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1 [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 
@@ -115,6 +126,13 @@ type planFlags struct {
 	retain        string
 	hot, median   int
 	cacheFraction float64
+	cacheMB       int
+	window        int
+	pins          string
+	rate          float64
+	extend        string
+	podHeartbeat  string
+	runMaxAge     string
 	minNonEmpty   float64
 }
 
@@ -126,7 +144,14 @@ func (p *planFlags) flags(fs *flag.FlagSet) {
 	fs.StringVar(&p.retain, "retain", "", "retentions as at/keep durations, for example 48h/24h,72h/24h (default: the spec's; \"none\" for none)")
 	fs.IntVar(&p.hot, "hot", 0, "busiest prefixes queried per class (default: the spec's)")
 	fs.IntVar(&p.median, "median", 0, "prefixes around the middle queried per class (default: the spec's)")
-	fs.Float64Var(&p.cacheFraction, "cache-fraction", 0, "block cache as a share of the stream's payload bytes (default: the spec's)")
+	fs.Float64Var(&p.cacheFraction, "cache-fraction", 0, "block cache as a share of the stream's payload bytes, instead of an absolute size (default: the spec's absolute size)")
+	fs.Float64Var(&p.rate, "events-per-second", 0, "override the rate of churn events of the preset")
+	fs.StringVar(&p.extend, "extend", "", "how often a refreshed run is re-asserted: \"every\" refresh (the control) or a share of its TTL such as 0.5 (default: the preset's)")
+	fs.StringVar(&p.podHeartbeat, "pod-heartbeat", "", "how often the cluster collector refreshes every pod's placement, such as 5m, or \"off\" (default: the preset's)")
+	fs.StringVar(&p.runMaxAge, "run-max-age", "", "the greatest age of a run of refreshes before the ingest coalescer continues it with a new one, such as 2h, or \"off\" (default: the preset's, none)")
+	fs.IntVar(&p.window, "window", 0, "run over a window of this many days of retained history: a stream of 2R + 1.5 days with a daily retention that keeps R (see runner.WindowSpec)")
+	fs.StringVar(&p.pins, "pins", "", "the pinned prefixes of a family of windows, as made by `pins` (needs -window; only the records that touch them are written)")
+	fs.IntVar(&p.cacheMB, "cache-mb", 0, "block cache in MiB, the same for every run (default: the spec's)")
 	fs.Float64Var(&p.minNonEmpty, "min-non-empty", -1, "least share of each group of queries with a non-empty answer (default: the spec's)")
 }
 
@@ -155,6 +180,27 @@ func (p planFlags) args() []string {
 	}
 	if p.cacheFraction != 0 {
 		add("cache-fraction", fmt.Sprint(p.cacheFraction))
+	}
+	if p.cacheMB != 0 {
+		add("cache-mb", fmt.Sprint(p.cacheMB))
+	}
+	if p.rate != 0 {
+		add("events-per-second", fmt.Sprint(p.rate))
+	}
+	if p.extend != "" {
+		add("extend", p.extend)
+	}
+	if p.podHeartbeat != "" {
+		add("pod-heartbeat", p.podHeartbeat)
+	}
+	if p.runMaxAge != "" {
+		add("run-max-age", p.runMaxAge)
+	}
+	if p.window != 0 {
+		add("window", fmt.Sprint(p.window))
+	}
+	if p.pins != "" {
+		add("pins", p.pins)
 	}
 	if p.minNonEmpty >= 0 {
 		add("min-non-empty", fmt.Sprint(p.minNonEmpty))
@@ -187,6 +233,45 @@ func (p planFlags) spec() (runner.Spec, error) {
 	if p.seed > 0 {
 		w.Seed = p.seed
 	}
+	if p.rate < 0 {
+		return runner.Spec{}, fmt.Errorf("-events-per-second cannot be negative")
+	}
+	if p.rate > 0 {
+		w.EventsPerSecond = p.rate
+	}
+	switch p.extend {
+	case "":
+	case "every":
+		w.CoalesceRuns, w.ExtendTTLFraction, w.ExtendEvery = true, 0, 0
+	default:
+		f, err := strconv.ParseFloat(p.extend, 64)
+		if err != nil || f <= 0 || f > 1 {
+			return runner.Spec{}, fmt.Errorf("-extend: %q is not \"every\" or a share of the TTL in (0, 1]", p.extend)
+		}
+		w.CoalesceRuns, w.ExtendTTLFraction, w.ExtendEvery = true, f, 0
+	}
+	switch p.podHeartbeat {
+	case "":
+	case "off":
+		w.PodHeartbeatInterval = 0
+	default:
+		d, err := time.ParseDuration(p.podHeartbeat)
+		if err != nil || d <= 0 {
+			return runner.Spec{}, fmt.Errorf("-pod-heartbeat: %q is not \"off\" or a duration such as 5m", p.podHeartbeat)
+		}
+		w.PodHeartbeatInterval = d
+	}
+	switch p.runMaxAge {
+	case "":
+	case "off":
+		w.RunMaxAge = 0
+	default:
+		d, err := time.ParseDuration(p.runMaxAge)
+		if err != nil || d < time.Minute {
+			return runner.Spec{}, fmt.Errorf("-run-max-age: %q is not \"off\" or a duration of at least a minute such as 2h", p.runMaxAge)
+		}
+		w.CoalesceRuns, w.RunMaxAge = true, d
+	}
 	s := runner.DefaultSpec(w)
 	if p.batch > 0 {
 		s.BatchSize = p.batch
@@ -216,14 +301,40 @@ func (p planFlags) spec() (runner.Spec, error) {
 	if p.median > 0 {
 		s.Median = p.median
 	}
+	if p.cacheFraction > 0 && p.cacheMB > 0 {
+		return runner.Spec{}, fmt.Errorf("-cache-fraction and -cache-mb are two ways to size the cache: use one")
+	}
+	if p.cacheMB > 0 {
+		s.CacheBytes, s.CacheFraction = int64(p.cacheMB)<<20, 0
+	}
 	if p.cacheFraction > 0 {
-		s.CacheFraction = p.cacheFraction
+		s.CacheFraction, s.CacheBytes = p.cacheFraction, 0
 	}
 	if p.minNonEmpty >= 0 {
 		s.MinNonEmpty = p.minNonEmpty
 	}
-	if (p.minNonEmpty < 0 && p.minNonEmpty != -1) || p.cacheFraction < 0 || p.days < 0 || p.batch < 0 || p.hot < 0 || p.median < 0 {
-		return runner.Spec{}, fmt.Errorf("-days, -batch, -hot, -median, -min-non-empty and -cache-fraction cannot be negative (leave a flag out, or 0, for the spec's own value)")
+	if p.window > 0 {
+		if p.days > 0 || p.retain != "" {
+			return runner.Spec{}, fmt.Errorf("-window sets the length of the stream and its retentions: not with -days or -retain")
+		}
+		s = runner.WindowSpec(s, p.window)
+	}
+	if p.pins != "" {
+		if p.window <= 0 {
+			return runner.Spec{}, fmt.Errorf("-pins is for a window: give -window as well")
+		}
+		b, err := os.ReadFile(p.pins)
+		if err != nil {
+			return runner.Spec{}, err
+		}
+		var pins runner.Pins
+		if err := json.Unmarshal(b, &pins); err != nil {
+			return runner.Spec{}, fmt.Errorf("%s: %w", p.pins, err)
+		}
+		s.Pins = &pins
+	}
+	if (p.minNonEmpty < 0 && p.minNonEmpty != -1) || p.cacheFraction < 0 || p.cacheMB < 0 || p.window < 0 || p.days < 0 || p.batch < 0 || p.hot < 0 || p.median < 0 {
+		return runner.Spec{}, fmt.Errorf("-days, -batch, -hot, -median, -min-non-empty, -cache-fraction and -cache-mb cannot be negative (leave a flag out, or 0, for the spec's own value)")
 	}
 	return s, s.Validate()
 }
@@ -325,25 +436,23 @@ func doReport(args []string) error {
 	if err != nil {
 		return err
 	}
-	list := candidates.Names()
-	if names != "" {
-		list = strings.Split(names, ",")
-	}
 	var cs []*runner.Candidate
-	for _, n := range list {
-		v, err := candidates.Lookup(n)
-		if err != nil {
+	if names == "" { // every candidate that has been read, whatever its name
+		if cs, err = runner.LoadAllCandidates(c.out); err != nil {
 			return err
 		}
-		dir := runner.CandidateDir(c.out, v.Name)
-		if _, err := os.Stat(filepath.Join(dir, runner.ResultsFile)); names == "" && err != nil {
-			continue // not asked for by name, and not run
+	} else {
+		for _, n := range strings.Split(names, ",") {
+			v, err := candidates.Lookup(n)
+			if err != nil {
+				return err
+			}
+			cand, err := runner.LoadCandidate(runner.CandidateDir(c.out, v.Name))
+			if err != nil {
+				return err
+			}
+			cs = append(cs, cand)
 		}
-		cand, err := runner.LoadCandidate(dir)
-		if err != nil {
-			return err
-		}
-		cs = append(cs, cand)
 	}
 	if len(cs) == 0 {
 		return fmt.Errorf("no candidate under %s has been read", c.out)
@@ -379,7 +488,7 @@ func doRun(ctx context.Context, args []string) error {
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "min-non-empty":
+		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age":
 			planFlagSet = true
 		}
 	})
@@ -395,13 +504,7 @@ func doRun(ctx context.Context, args []string) error {
 		if c.untimed {
 			argv = append(argv, "-untimed")
 		}
-		cm := exec.CommandContext(ctx, self, argv...)
-		// A step is asked to stop, not killed: it stops between batches and queries.
-		cm.Cancel = func() error { return cm.Process.Signal(syscall.SIGTERM) }
-		cm.WaitDelay = time.Minute
-		cm.Env = append(os.Environ(), childEnv+"=1")
-		cm.Stdout, cm.Stderr = os.Stdout, os.Stderr
-		return cm.Run()
+		return selfStep(ctx, self, argv...)
 	}
 	if _, err := os.Stat(filepath.Join(c.out, planFile)); err != nil {
 		if err := step("plan", p.args()...); err != nil {
@@ -410,7 +513,7 @@ func doRun(ctx context.Context, args []string) error {
 	} else if planFlagSet {
 		// A plan is made once and every build is checked against it: flags that
 		// would make another plan are not quietly dropped.
-		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, min-non-empty) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
+		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
 	}
 	plan, err := loadPlan(c)
 	if err != nil {
@@ -498,4 +601,206 @@ func runCandidates(ctx context.Context, names []string, step func(cmd string, ex
 		}
 	}
 	return ran, failed
+}
+
+// selfStep runs a step of this program in a process of its own: asked to stop, not
+// killed, so that it stops between batches and queries.
+func selfStep(ctx context.Context, self string, argv ...string) error {
+	cm := exec.CommandContext(ctx, self, argv...)
+	cm.Cancel = func() error { return cm.Process.Signal(syscall.SIGTERM) }
+	cm.WaitDelay = time.Minute
+	cm.Env = append(os.Environ(), childEnv+"=1")
+	cm.Stdout, cm.Stderr = os.Stdout, os.Stderr
+	return cm.Run()
+}
+
+// parseWindows reads a list of days such as 2,7,14,30, which must be increasing.
+func parseWindows(list string) ([]int, error) {
+	var out []int
+	for _, part := range strings.Split(list, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || n < 1 || (len(out) > 0 && n <= out[len(out)-1]) {
+			return nil, fmt.Errorf("-windows: %q is not an increasing list of days", list)
+		}
+		out = append(out, n)
+	}
+	if len(out) < 3 {
+		return nil, fmt.Errorf("-windows: G1 needs at least three windows")
+	}
+	return out, nil
+}
+
+// doPins chooses the pinned prefixes from the stream of the shortest window and
+// writes them where every window will find them.
+func doPins(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("pins", flag.ExitOnError)
+	var c common
+	var p planFlags
+	c.flags(fs)
+	p.flags(fs)
+	_ = fs.Parse(args)
+	if err := c.require(); err != nil {
+		return err
+	}
+	if p.window < 1 || p.pins != "" {
+		return fmt.Errorf("pins: give -window (the shortest window, whose stream the prefixes are chosen from) and not -pins")
+	}
+	spec, err := p.spec()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(c.out, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(c.out, runner.PinsFile)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s exists: the pins of a family of windows are chosen once; use another -out", path)
+	}
+	progress("pins: choosing the prefixes from a stream of %s", spec.Workload.Duration)
+	pins, err := runner.MakePins(ctx, spec)
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(pins, "", " ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	n := 0
+	for _, pc := range pins.Classes {
+		n += len(pc.Records) + len(pc.Extensions) + len(pc.Median)
+	}
+	progress("pins written to %s: %d prefixes in %d classes", path, n, len(pins.Classes))
+	return nil
+}
+
+// doWindows runs the candidates over each window of retained history, a process per
+// step, from pins chosen once, and then judges G1 from them.
+func doWindows(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("windows", flag.ExitOnError)
+	var c common
+	var p planFlags
+	var names, windows string
+	c.flags(fs)
+	p.flags(fs)
+	fs.StringVar(&windows, "windows", "2,7,14,30", "the windows of retained history to run, in days")
+	fs.StringVar(&names, "candidates", strings.Join(candidates.Names(), ","), "the candidates to run")
+	_ = fs.Parse(args)
+	if err := c.require(); err != nil {
+		return err
+	}
+	if p.window != 0 || p.pins != "" {
+		return fmt.Errorf("windows: -window and -pins are set for each window, from -windows")
+	}
+	days, err := parseWindows(windows)
+	if err != nil {
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	pinsPath := filepath.Join(c.out, runner.PinsFile)
+	if _, err := os.Stat(pinsPath); err != nil {
+		argv := append([]string{"pins", "-out", c.out, "-window", strconv.Itoa(days[0])}, p.args()...)
+		if c.untimed {
+			argv = append(argv, "-untimed")
+		}
+		if err := selfStep(ctx, self, argv...); err != nil {
+			return fmt.Errorf("choosing the pins: %w", err)
+		}
+	}
+	for _, d := range days {
+		if ctx.Err() != nil {
+			return fmt.Errorf("stopped before the window of %d days", d)
+		}
+		progress("windows: %d days of retained history", d)
+		// What this window would be planned as, from the flags and the pins: a check that
+		// the pins are of this scenario before anything runs, and the thing a plan from an
+		// earlier, stopped run must be.
+		wp := p
+		wp.window, wp.pins = d, pinsPath
+		spec, err := wp.spec()
+		if err != nil {
+			return fmt.Errorf("the window of %d days: %w", d, err)
+		}
+		want, err := spec.Digest()
+		if err != nil {
+			return err
+		}
+		dir := runner.WindowDir(c.out, d)
+		argv := []string{"run", "-out", dir, "-candidates", names}
+		if _, statErr := os.Stat(filepath.Join(dir, planFile)); statErr != nil {
+			argv = append(argv, "-window", strconv.Itoa(d), "-pins", pinsPath)
+			argv = append(argv, p.args()...)
+		} else if have, err := runner.LoadPlan(filepath.Join(dir, planFile)); err != nil {
+			return err
+		} else if have.SpecDigest != want { // a run that stopped is resumed on its own plan, if the flags still make it
+			return fmt.Errorf("the plan in %s is not the one these flags make (the pins or the binary changed since): use another -out", dir)
+		}
+		if c.untimed {
+			argv = append(argv, "-untimed")
+		}
+		if err := selfStep(ctx, self, argv...); err != nil {
+			return fmt.Errorf("the window of %d days: %w", d, err)
+		}
+	}
+	g1 := []string{"g1", "-out", c.out, "-windows", windows}
+	if c.untimed {
+		g1 = append(g1, "-untimed")
+	}
+	return selfStep(ctx, self, g1...)
+}
+
+// doG1 judges G1 from the windows under -out and writes the verdicts to g1.txt.
+func doG1(args []string) error {
+	fs := flag.NewFlagSet("g1", flag.ExitOnError)
+	var c common
+	var windows string
+	c.flags(fs)
+	fs.StringVar(&windows, "windows", "", "the windows to judge over, in days (default: the rules')")
+	_ = fs.Parse(args)
+	if err := c.require(); err != nil {
+		return err
+	}
+	rules := runner.DefaultRules()
+	if windows != "" {
+		days, err := parseWindows(windows)
+		if err != nil {
+			return err
+		}
+		rules.Windows, rules.TargetWindow = days, days[len(days)-1]
+	}
+	ws, err := runner.LoadWindows(c.out)
+	if err != nil {
+		return err
+	}
+	var text strings.Builder
+	problems := runner.CheckWindows(ws, c.untimed)
+	if len(problems) > 0 {
+		text.WriteString("THESE WINDOWS ARE NOT TO BE JUDGED TOGETHER:\n")
+		for _, p := range problems {
+			text.WriteString("  - " + p + "\n")
+		}
+	}
+	cells, gerr := runner.G1(ws, rules)
+	var shown strings.Builder
+	shown.WriteString(text.String())
+	if gerr == nil {
+		runner.WriteG1(&text, cells, rules, 0) // the file has every cell
+		runner.WriteG1(&shown, cells, rules, 25)
+	}
+	if err := os.WriteFile(filepath.Join(c.out, "g1.txt"), []byte(text.String()), 0o644); err != nil {
+		return err
+	}
+	fmt.Print(shown.String())
+	if gerr != nil {
+		return gerr
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("these windows cannot be judged together (%d reasons, listed above): %s", len(problems), problems[0])
+	}
+	return nil
 }

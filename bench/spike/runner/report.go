@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 )
 
 // Candidate is a built and read candidate: its manifest and its results.
@@ -63,6 +64,9 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		}
 		if n := len(c.Results.Mismatches); n > 0 {
 			out = append(out, fmt.Sprintf("%s: %d answers differ from the reference engine's, first: %s", name, n, c.Results.Mismatches[0]))
+		}
+		if n := len(c.Manifest.UncompactedWrong); n > 0 {
+			out = append(out, fmt.Sprintf("%s: %d answers differ from the reference engine's before the build was compacted, first: %s", name, n, c.Manifest.UncompactedWrong[0]))
 		}
 		if n := len(c.Results.Unstable); n > 0 {
 			out = append(out, fmt.Sprintf("%s: %d queries cost something different on the second pass, first: %s", name, n, c.Results.Unstable[0]))
@@ -225,6 +229,7 @@ func Write(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
 		}
 	}
 	_ = tw.Flush()
+	writeTiming(w, cs)
 
 	fmt.Fprintln(w, "\nWhat a read cost is all of the tables below together, not any one: they count different things and can disagree in direction.")
 	for _, m := range metrics {
@@ -235,7 +240,140 @@ func Write(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
 		writeMetric(w, plan, cs, m, full)
 	}
 	writeColdCacheWarning(w, plan, cs)
+	writeUncompacted(w, plan, cs)
+	if plan.Spec.Pins != nil {
+		fmt.Fprintln(w, "\nA stream of pins is a projection of the full one: only G0 is judged here; the stall, commit, bytes and checkpoint gates are those of a full build, and the block counters (which a projection has fewer index blocks in) are not a basis for choosing between candidates in the verdicts below.")
+	}
+	WriteGates(w, GatesOf(plan, cs, DefaultRules()))
 	writeVerdicts(w, plan, cs, full)
+}
+
+// writeTiming prints how long the writes of each build took. It is informational:
+// a timing off a laptop says where the time goes and chooses nothing.
+func writeTiming(w io.Writer, cs []*Candidate) {
+	any := false
+	for _, c := range cs {
+		if c.Manifest.Timing.Writes.Count > 0 {
+			any = true
+		}
+	}
+	if !any {
+		return
+	}
+	fmt.Fprintln(w, "\nhow long the writes of the build took (timing on the machine that built it: informational, not a result):")
+	tw := tabwriter.NewWriter(w, 2, 0, 2, ' ', tabwriter.AlignRight)
+	fmt.Fprint(tw, "")
+	for _, c := range cs {
+		fmt.Fprint(tw, "\t", c.Results.Candidate)
+	}
+	fmt.Fprintln(tw, "\t")
+	row := func(label string, f func(t Timing) string) {
+		fmt.Fprint(tw, label)
+		for _, c := range cs {
+			fmt.Fprint(tw, "\t", f(c.Manifest.Timing))
+		}
+		fmt.Fprintln(tw, "\t")
+	}
+	dur := func(ns int64) string { return time.Duration(ns).Round(time.Microsecond).String() }
+	row("batches written", func(t Timing) string { return fmt.Sprint(t.Writes.Count) })
+	row("a batch: median (bucket bound)", func(t Timing) string { return dur(t.Writes.Quantile(0.5)) })
+	row("a batch: 99th percentile (bucket bound)", func(t Timing) string { return dur(t.Writes.Quantile(0.99)) })
+	row("a batch: longest", func(t Timing) string { return dur(t.Writes.MaxNs) })
+	row("a batch: mean", func(t Timing) string {
+		if t.Writes.Count == 0 {
+			return "-"
+		}
+		return dur(t.Writes.TotalNs / t.Writes.Count)
+	})
+	row("retentions: longest", func(t Timing) string {
+		if len(t.Retains) == 0 {
+			return "-"
+		}
+		return dur(slices.Max(t.Retains))
+	})
+	row("retentions: total", func(t Timing) string {
+		var n int64
+		for _, r := range t.Retains {
+			n += r
+		}
+		return dur(n)
+	})
+	row("the first batch after a retention: longest", func(t Timing) string {
+		if len(t.AfterRetention) == 0 {
+			return "-"
+		}
+		return dur(slices.Max(t.AfterRetention))
+	})
+	_ = tw.Flush()
+}
+
+// writeUncompacted compares, for the cells of reads of "now", what a read cost at the
+// end of the build before anything was compacted and what it cost after: the tables as
+// the stream left them (the memtable, level 0, the tombstones of retention) against
+// the few large ones a compaction makes. These are labelled cells, kept out of the
+// verdicts and of the mixed cells, because the shape of the tables at the end of a build
+// depends on when compactions happened to run.
+func writeUncompacted(w io.Writer, plan *Plan, cs []*Candidate) {
+	type sums struct{ before, after [3]float64 }
+	exprs := [3]string{"seeks", "internal_steps+checkpoint_entries_decoded+baseline_entries_decoded", "block_bytes"}
+	rows := map[string][]sums{}
+	counts := map[string][]int{}
+	var order []string
+	byName := make([]map[string]int, len(cs))
+	for j, c := range cs {
+		byName[j] = map[string]int{}
+		for i, u := range c.Manifest.Uncompacted {
+			byName[j][u.Query] = i
+		}
+	}
+	for i, q := range plan.Queries {
+		if q.Age != AgeNow {
+			continue
+		}
+		key := q.Group
+		for j, c := range cs {
+			ui, ok := byName[j][q.Name()]
+			if !ok || i >= len(c.Results.Queries) {
+				continue
+			}
+			if _, ok := rows[key]; !ok {
+				rows[key], counts[key] = make([]sums, len(cs)), make([]int, len(cs))
+				order = append(order, key)
+			}
+			u := UncompactedRead{Query: q.Name(), Counters: c.Manifest.Uncompacted[ui].Counters}
+			for k, e := range exprs {
+				rows[key][j].before[k] += float64(counterValue(QueryResult{Counters: u.Counters}, q, e))
+				rows[key][j].after[k] += float64(counterValue(c.Results.Queries[i], q, e))
+			}
+			counts[key][j]++
+		}
+	}
+	if len(order) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nreads of \"now\" before and after the compaction, mean per query (seeks / steps + decoded entries / gross block bytes), a labelled cell outside the verdicts: the tables as the stream left them, then as everything was compacted into few:")
+	tw := tabwriter.NewWriter(w, 2, 0, 2, ' ', tabwriter.AlignRight)
+	for _, c := range cs {
+		fmt.Fprint(tw, "\t", c.Results.Candidate)
+	}
+	fmt.Fprintln(tw, "\t")
+	for _, key := range order {
+		fmt.Fprint(tw, key)
+		for j := range cs {
+			n := float64(counts[key][j])
+			if n == 0 {
+				fmt.Fprint(tw, "\t-")
+				continue
+			}
+			var parts []string
+			for k := range exprs {
+				parts = append(parts, fmt.Sprintf("%.0f>%.0f", rows[key][j].before[k]/n, rows[key][j].after[k]/n))
+			}
+			fmt.Fprint(tw, "\t", strings.Join(parts, " "))
+		}
+		fmt.Fprintln(tw, "\t")
+	}
+	_ = tw.Flush()
 }
 
 // writeColdCacheWarning says when a read from an empty cache filled more than half
@@ -286,7 +424,8 @@ func writeVerdicts(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
 			continue
 		}
 		shown++
-		fmt.Fprintf(w, "  %s: %s costs less in %s; %s costs less in %s\n", v.Cell, v.A, strings.Join(v.BetterA, ", "), v.B, strings.Join(v.BetterB, ", "))
+		fmt.Fprintf(w, "  %s: %s costs less in %s; %s costs less in %s (of %d queries: %d put %s first, %d put %s first, %d mixed)\n",
+			v.Cell, v.A, strings.Join(v.BetterA, ", "), v.B, strings.Join(v.BetterB, ", "), v.Queries, v.AheadA, v.A, v.AheadB, v.B, v.MixedQueries)
 	}
 	if shown < len(mixed) {
 		fmt.Fprintf(w, "  (%d more at the other ages, in the full report)\n", len(mixed)-shown)

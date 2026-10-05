@@ -46,7 +46,7 @@ into its package, and so reruns it and everything that imports it.
   (see its package documentation for the key layout, the read and the retention).
 - `spike/candidates`: the list of variants a measurement runs, each with the name it goes
   by in results (`M/crdb1`, `M/crdb1+filter`, `M/default`, `M/default+filter`, `L/off`,
-  `L/k64a4`, and any other checkpoint policy as `L/k<K>a<alpha>[l<lag>]`), so that the
+  `L/k64a4l1ns`, and any other checkpoint policy as `L/k<K>a<alpha>[l<lag>]`), so that the
   variant measured is the variant checked: every one of them passes the conformance
   checks at the benchmark settings, and a name is checked to be what it says in the
   tables it writes.
@@ -163,7 +163,7 @@ iterator statistics for every read, the bytes each layout holds, what retention 
 counter repeats from one run to the next (every query is asked twice and one whose cost
 differs is flagged), so it can choose a design locally; a timing is only a confirmation
 and comes later, from CI hardware. Three counters are known not to repeat and are never
-decided on as they are: the bytes a read was served from the block cache; the allocations of a read, which depend on the process (they are the fewest of three runs after two to fill the pools, and a mean over many reads before they are read against their floor); and, for the batched reads
+decided on as they are: the bytes a read was served from the block cache; the allocations of a read, which depend on the process (they are the fewest of three runs after two to fill the pools, never required to repeat, and read only above their floor); and, for the batched reads
 of layout M, the number of points Pebble reports with a value in a value block (a few
 more or fewer from one pass to the next; unexplained).
 
@@ -183,7 +183,7 @@ process with another's, and each can be run alone:
 | `report -out D` | Sets the candidates side by side (all that have been read, or the ones named), and fails if they cannot be compared; the full tables are always in `D/report.txt`. The first lines say whether the results can be compared at all: one plan, one stream, one binary, the same Pebble options (apart from the comparer, key schema and collectors, which are what a candidate is), every answer the reference engine's. If not, it says so first. |
 
 What is asked: forward and reverse neighbors and `Alive` as of now, an hour back, a day
-back, and an old snapshot (read at the instant of its token, with only what it saw); windows of the last hour and the last day; and a batch of
+back, and an old snapshot (read at the instant of its token, which is before any record from the token on takes effect, so that a pipeline backed up at the token does not make every heartbeat prefix look lapsed; with only what it saw); windows of the last hour and the last day; and a batch of
 the chosen prefixes together. The queries are chosen from the stream, not from any
 candidate, and are asked of live prefixes only. Reads that would be empty by
 construction are left out: a refreshed edge is one run, and all its refreshes carry the
@@ -197,6 +197,65 @@ from linear growth, the factors) are in `runner.Rules`, with their digest pinned
 made on purpose. The values nobody has chosen yet are listed in `Rules.Placeholders`; setting one
 changes the rules' digest and nothing built or read, because the rules are applied to the counters
 afterwards, so no plan is stale for it.
+
+#### Windows of retained history: G1
+
+G1 asks whether the work of a read on the busiest prefixes stays within a budget as the
+history a prefix retains grows, and whether it still would if the retention were doubled.
+A store that has been shrunk to a window flatters layout L (shrinking folds a long run's
+extensions into the baseline), so every window is a store that has **always** held it:
+
+```sh
+~/spikebench/bin/spikebench windows -preset ci -windows 2,7,14,30 \
+    -candidates L/off,L/k64a4l1ns,M/crdb1 -out ~/spikebench/g1   # pins; each window; G1
+~/spikebench/bin/spikebench g1 -out ~/spikebench/g1              # judge G1 again from what is there
+```
+
+- `pins` chooses once, from the stream of the shortest window, the busiest and the median hub
+  prefixes of each class (a node's, a service's, a host's: entities that exist from the start and
+  are never replaced; a pod's own prefix is not pinned, because a pod that exists at the end of a
+  short stream does not exist in a longer one). `pins.json` holds them with a digest that every plan
+  records, so every window asks the same questions of the same prefixes.
+- A window of R days (`-window R`, `runner.WindowSpec`) is a stream of 2R + 1.5 days with a daily
+  retention that keeps R from day R + 1 on; the stream ends twelve hours after the last. The
+  long-lived runs, which all begin together at the start, then restart every R + 1 days, so at the end
+  the oldest are R + 0.5 days old in every window: the worst case, and the same phase for every R.
+- With `-pins` the stream of a run is the **projection** of the full one on the pins: only the records
+  that touch a pinned entity are written to a store, in the same order and with the same sequence
+  numbers, and the retention moves when the whole batch says (so the coalescer restarts runs at the
+  same instants as in the full stream). A test checks that a projected store gives the answers, and the
+  logical counters (seeks, steps, entries decoded), of a store given the whole stream. The block
+  counters of a projection depend on the depth of an index that is shallower than a full store's,
+  in level and in slope, and differ from a full store's in either direction: the cells of G1 on them
+  are reported and not decided (marked ?) until the offset against a full build is recorded.
+  The other gates (stall, commit, bytes per record, checkpoint share) are those of a full build and
+  are not judged on a projection; only G0, the answers, is.
+- The plan of a window generates the stream twice and holds the reference engine's records of the
+  pinned entities in memory: at the `ci` preset a window of 14 days takes about 3 minutes and 6 GB, and
+  one of 30 days about 8 minutes and 11 GB (measured on a Mac; the builds themselves are small).
+- `g1` applies the rule in `runner.Rules` to every pinned query at the instants of the rules: the
+  budget (per entity read, and per item of the reference answer; cold bytes in blocks of the run) at the
+  target window, multiplied by the headroom raised to the growth over the last two windows. A population
+  passes if its largest (the median, for the median population) projected ratio is at most 1, and a
+  candidate passes G1 if every population of every class does. The slope between the first and third
+  windows, the class it gives and a fit over every window are printed as diagnostics.
+
+Scenario flags, all of which leave the presets unchanged unless given: `-extend every` (every refresh
+re-asserted, the control) or `-extend 0.5` (a share of the TTL), `-pod-heartbeat 5m` or `off`,
+`-run-max-age 2h` (the ingest coalescer continues a run that reaches this age with a new one, for every
+refreshed run whatever its layer: a bound on how far a layout that keeps an extension at its run's start
+has to walk back), `-events-per-second` and `-cache-mb` (the block cache is the same absolute size in every
+run, 64 MiB unless given).
+
+What a build records besides the tables: how long each batch, each retention and the first batch after
+each took (informational: a timing of the machine that built it), the reads of "now" at the end of the build
+before anything was compacted (a labelled cell, outside the verdicts, with each answer checked), and, for
+layout L with checkpoints, the bytes of checkpoints written. The report prints the other gates (G0 answers,
+G2 stall, G3 commit, G4 bytes per record) and the share of the bytes written that went to checkpoints.
+
+`streamstats` prints three models of what a deadline index would cost: every extension rewriting its
+entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
+or moves its deadline into another bucket.
 
 **A binary that a result may come from** is built with `CGO_ENABLED=0` (the block cache is
 then on the Go heap, as `toposhift` ships), without `-race` or the `invariants` tag, from
@@ -214,8 +273,8 @@ Size: the three-day `ci` preset is 7.9 million records and about 300 MB of table
 - A layout that seeks to every key (M) and one that walks a run (L) are each cheap in the unit the other pays in. On a busy node's prefix a day back, M made many seeks to L's one, and loaded far more block bytes, while making fewer steps. "Steps" alone, or "block bytes" alone, would pick a different winner.
 - `block bytes` counts every block load, a cached block too, and again at every seek that reloads it, so for a layout that repositions the iterator at every key it measures the repositioning more than the data. Measured against the distinct blocks a read needs (`block_loads` and `cold_block_bytes`), layout M's gross block bytes on a busy node's prefix were about ten times its distinct bytes, which is what put it two orders of magnitude above layout L in gross bytes and about one in distinct ones; layout L's were the same in both. That was measured on a one-day run, where the read "a day back" is made at the first instant of the stream, before most runs have a history, so it shows how the two count blocks and not yet how a read grows with history; it is to be measured again on a run of two days or more. `block_loads` and `cold_block_bytes` are therefore the numbers a rule rests on: with the block cache emptied and the tables open, the blocks the read misses (index, filter, data and value blocks) and the compressed bytes of the index, filter and data blocks among them, so a block is counted once however often the iterator comes back to it.
 - `steps` counts the calls the layout made. A skip with `NextPrefix` is one step in the layout and many underneath, in a counter nobody exposes.
-- Everything is read after `CompactAll`, which leaves a few large tables: range deletions, tombstones and L0 are not in the picture, and an iterator crosses fewer levels than in a running store.
-- One seed and one retention: how a read grows with retained history is not in a single build. The default spec retains once, half a day before the end, and a refreshed prefix's current run is as old as the last retention, so what L pays on one is the run's extensions since then (and of every run that began after the horizon). The prefixes asked about are ranked by the records a store still holds after the final retention, not by the whole stream: on a heartbeat prefix the busiest over the whole stream is the one with an unbroken run, which a retention folds into the baseline. The sweep over retained windows is a separate build per window.
+- Everything is read after `CompactAll`, which leaves a few large tables: range deletions, tombstones and L0 are not in the picture, and an iterator crosses fewer levels than in a running store. The reads of "now" at the end of the build, before anything is compacted, are recorded and printed beside them (a labelled cell outside the verdicts); the block bytes right after a retention are not measured.
+- One seed, until `-seed` is varied: a family of windows is one seed and one scenario: the pins record the scenario they were chosen from (the hubs are the same entities in every seed, so the pins of another seed would otherwise be taken for its busiest prefixes), and a plan with the pins of another scenario is refused. How a read grows with retained history is what the windows measure (see above); a window of R days is a stream of 2R + 1.5 days, and the projection that makes the long ones cheap has a shallower index than a full store, so its block counters are lower. The prefixes asked about are ranked by the records a store still holds after the final retention, not by the whole stream: on a heartbeat prefix the busiest over the whole stream is the one with an unbroken run, which a retention folds into the baseline.
 - The workload is synthetic and every default of it is provisional until the Alibaba and kwok replays exist.
 
 ### Adding a candidate

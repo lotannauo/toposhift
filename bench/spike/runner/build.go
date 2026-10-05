@@ -42,6 +42,23 @@ type Manifest struct {
 	// the compaction. Size is the bytes of the directory as the engine counts it.
 	Breakdown, SizeByLayer map[string]int64
 	Size                   int64
+	// Timing is how long the writes took; see [Timing].
+	Timing Timing
+	// Uncompacted is what the reads of "now" cost at the end of the build, before
+	// anything was compacted on purpose: the shape the stream left the tables in,
+	// with the memtable and level 0 in it, which the reads after the compaction do not
+	// see. Each answer was checked against the plan's, and UncompactedWrong names the
+	// queries whose answer was not (a layout that answers wrongly only from the
+	// tables as the stream left them): the report refuses to compare such a candidate,
+	// as it does one that answers wrongly after the compaction.
+	Uncompacted      []UncompactedRead
+	UncompactedWrong []string
+}
+
+// UncompactedRead is what one read cost at the end of a build.
+type UncompactedRead struct {
+	Query    string
+	Counters map[string]int64
 }
 
 // ManifestFile and ResultsFile are the names of the files in a candidate's
@@ -73,10 +90,23 @@ type measurable interface {
 
 // buildSink writes the stream to a candidate, and stops the build at the first
 // thing that is not as planned.
-type buildSink struct{ e measurable }
+type buildSink struct {
+	e measurable
+	t *Timing
+	// afterRetention is set by a retention and cleared by the next write.
+	afterRetention *bool
+}
 
 func (s buildSink) Write(batch []engine.Record) error {
-	if err := s.e.Write(batch); err != nil {
+	start := time.Now()
+	err := s.e.Write(batch)
+	d := time.Since(start)
+	s.t.Writes.Add(d)
+	if *s.afterRetention {
+		*s.afterRetention = false
+		s.t.AfterRetention = append(s.t.AfterRetention, int64(d))
+	}
+	if err != nil {
 		return err
 	}
 	if got, want := s.e.LastSeq(), batch[len(batch)-1].Seq; got != want {
@@ -85,7 +115,13 @@ func (s buildSink) Write(batch []engine.Record) error {
 	return nil
 }
 
-func (s buildSink) Retain(h time.Time) error { return s.e.Retain(h) }
+func (s buildSink) Retain(h time.Time) error {
+	start := time.Now()
+	err := s.e.Retain(h)
+	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
+	*s.afterRetention = true
+	return err
+}
 
 // Build writes the plan's stream to the candidate under dir, compacts
 // everything, and records what the database holds in dir's manifest. The
@@ -126,7 +162,9 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 	}()
 
 	say.say("build %s: writing %d records in batches of %d", v.Name, plan.Stream.Records, plan.Spec.BatchSize)
-	info, err := Drive(ctx, plan.Spec, buildSink{e})
+	var timing Timing
+	after := false
+	info, err := Drive(ctx, plan.Spec, buildSink{e: e, t: &timing, afterRetention: &after})
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
@@ -139,7 +177,11 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 	}
 	m := &Manifest{
 		Candidate: v.Name, Layout: v.Layout, PlanDigest: planDigest, Stream: info,
-		Build: g.Info, Untimed: g.Untimed, Counters: totals, StatsBuilt: e.Stats(),
+		Build: g.Info, Untimed: g.Untimed, Counters: totals, StatsBuilt: e.Stats(), Timing: timing,
+	}
+	say.say("build %s: reading what the stream left, before compacting", v.Name)
+	if m.Uncompacted, m.UncompactedWrong, err = readUncompacted(e, rec, plan, v.Name); err != nil {
+		return nil, err
 	}
 
 	say.say("build %s: compacting everything", v.Name)
@@ -239,4 +281,26 @@ func readManifest(dir string) (*Manifest, string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return &m, hex.EncodeToString(sum[:]), nil
+}
+
+// readUncompacted asks the queries of "now" of the plan once, at the end of the
+// build and before anything is compacted, and records what each cost and which
+// answers are not the plan's: a layout that answers wrongly only from the tables as
+// the stream left them is not one a read after the compaction would find.
+func readUncompacted(e measurable, rec *Capture, plan *Plan, name string) (reads []UncompactedRead, wrong []string, err error) {
+	rec.Take()
+	for _, q := range plan.Queries {
+		if q.Age != AgeNow {
+			continue
+		}
+		a, err := Ask(e, q)
+		if err != nil {
+			return nil, nil, fmt.Errorf("runner: %s: %s before compaction: %w", name, q.Name(), err)
+		}
+		reads = append(reads, UncompactedRead{Query: q.Name(), Counters: rec.Take()})
+		if a.Digest != q.Expect {
+			wrong = append(wrong, q.Name())
+		}
+	}
+	return reads, wrong, nil
 }

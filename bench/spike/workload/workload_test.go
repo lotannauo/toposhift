@@ -415,6 +415,52 @@ func TestCoalescedStreamAnswersLikeTheRawOne(t *testing.T) {
 	}
 }
 
+// A bound on the age of a run changes how existence is stored and not what exists:
+// with every refresh recorded, the stream with the bound gives the oracle the same
+// answers as the raw one, whatever lateness the records have.
+func TestRunMaxAgeAnswersLikeTheRawStream(t *testing.T) {
+	t.Parallel()
+
+	raw := workload.Tiny()
+	raw.LateProbability, raw.OutageProbability = 0.3, 0.1
+	bounded := raw
+	bounded.CoalesceRuns, bounded.RunMaxAge = true, 6*time.Minute
+	unbounded := raw
+	unbounded.CoalesceRuns = true
+
+	a, b, c := generate(t, raw), generate(t, bounded), generate(t, unbounded)
+	if len(b) <= len(c) || len(b) >= len(a) {
+		t.Fatalf("%d records raw, %d coalesced, %d coalesced with the bound: the bound must write more than none and fewer than the raw stream", len(a), len(c), len(b))
+	}
+	oa, ob := oracle.New(), oracle.New()
+	if err := oa.Write(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := ob.Write(b); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := workload.New(raw)
+	for _, fp := range g.Entities() {
+		for off := time.Duration(0); off <= raw.Duration+10*time.Minute; off += 90 * time.Second {
+			at := raw.Start.Add(off)
+			for _, dir := range []engine.Direction{engine.Forward, engine.Reverse} {
+				for _, layer := range allLayers {
+					x, _ := oa.Neighbors(fp, dir, at, engine.Current(layer))
+					y, _ := ob.Neighbors(fp, dir, at, engine.Current(layer))
+					if !slices.Equal(x, y) {
+						t.Fatalf("%s %s %s at +%s: raw %v, bounded %v", fp, dir, layer, off, x, y)
+					}
+				}
+			}
+			x, _ := oa.Alive(fp, at, entityScope(fp))
+			y, _ := ob.Alive(fp, at, entityScope(fp))
+			if x != y {
+				t.Fatalf("Alive(%s) at +%s: raw %v, bounded %v", fp, off, x, y)
+			}
+		}
+	}
+}
+
 // TestBoundedExtensionOnlyEndsExistenceEarly checks the lossy write-rate knob:
 // re-asserting a run less often writes far fewer records, and can only
 // understate how long something existed, never overstate it.

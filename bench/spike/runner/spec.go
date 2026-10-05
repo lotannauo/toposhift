@@ -49,7 +49,7 @@ func (r Retention) Horizon(start time.Time) time.Time { return start.Add(r.At - 
 // SpecVersion is bumped when the meaning of a spec field, or the way the
 // queries are chosen from it, changes, so that digests of different meanings
 // cannot be equal.
-const SpecVersion = 1
+const SpecVersion = 2
 
 // Spec is everything that must be identical for every candidate. Its digest is
 // recorded in the plan and in every manifest.
@@ -63,21 +63,51 @@ type Spec struct {
 	// Hot is how many of the busiest prefixes of each class are queried, by
 	// records and by run extensions, and Median how many around the middle.
 	Hot, Median int
-	// CacheFraction sizes the block cache as a share of the payload bytes of the
-	// stream, so every candidate gets the same absolute cache and a bigger stream
-	// gets a bigger one.
+	// CacheBytes is the block cache every candidate gets, the same absolute size in
+	// every run, so that runs of different lengths and windows are read under the
+	// same eviction. If it is zero, CacheFraction sizes the cache instead, as a share
+	// of the payload bytes of the stream; exactly one of them is set.
+	CacheBytes    int64
 	CacheFraction float64
 	// MinNonEmpty is the least share of each group of queries that must have a
 	// non-empty answer: an empty answer agrees between candidates trivially.
 	MinNonEmpty float64
+	// Pins, if set, are the prefixes the stream is read at and the only ones it is
+	// written for: the records that touch none of them are not written to any store.
+	// The queries are the pins', not chosen from the stream.
+	Pins *Pins `json:",omitempty"`
 }
+
+// WindowSpec is the spec of a run that has always held days days of history, from
+// the spec of the workload it is a window of: the stream is 2R + 1.5 days long,
+// the retention keeps R days and runs every day from R + 1 days on, and the stream
+// ends twelve hours after the last. The runs that began at the start, which are
+// all of the long-lived ones and begin together, then restart every R + 1 days, so
+// at the end the oldest are R + 0.5 days old whatever R is, the same phase in every
+// window, and the store has held R days since the first retention and has been
+// through R + 1 daily retentions that each kept R.
+func WindowSpec(base Spec, days int) Spec {
+	r := time.Duration(days) * 24 * time.Hour
+	s := base
+	s.Workload.Duration = 2*r + 36*time.Hour
+	s.Retentions = nil
+	for k := 0; k <= days; k++ {
+		s.Retentions = append(s.Retentions, Retention{At: r + 24*time.Hour + time.Duration(k)*24*time.Hour, Keep: r})
+	}
+	return s
+}
+
+// DefaultCacheBytes is the block cache of a default spec: large enough that one
+// read from empty fills a small part of it (the report warns above a half), small
+// enough to hold in a laptop's memory next to the stream.
+const DefaultCacheBytes = 64 << 20
 
 // DefaultSpec is the spec of a workload: the starting point of the options, and
 // not a decision about any of them.
 func DefaultSpec(w workload.Config) Spec {
 	s := Spec{
 		Version: SpecVersion, Workload: w, BatchSize: 1000,
-		Hot: 10, Median: 5, CacheFraction: 0.25, MinNonEmpty: 0.25,
+		Hot: 10, Median: 5, CacheBytes: DefaultCacheBytes, MinNonEmpty: 0.25,
 	}
 	// Retain half a day before the end, keeping a day and a half: a day back is
 	// then in the middle of the retained history and not on the instant every run
@@ -99,13 +129,25 @@ func (s Spec) Validate() error {
 		return bad("BatchSize must be at least 1")
 	case s.Hot < 1 || s.Median < 1:
 		return bad("Hot and Median must be at least 1")
-	case s.CacheFraction <= 0:
-		return bad("CacheFraction must be above 0")
+	case s.CacheBytes < 0 || s.CacheFraction < 0 || (s.CacheBytes > 0) == (s.CacheFraction > 0):
+		return bad("exactly one of CacheBytes and CacheFraction must be set, and neither is negative")
 	case s.MinNonEmpty < 0 || s.MinNonEmpty > 1:
 		return bad("MinNonEmpty is a share")
 	}
 	if _, err := workload.New(s.Workload); err != nil {
 		return bad("workload: %w", err)
+	}
+	if s.Pins != nil {
+		if err := s.Pins.Verify(); err != nil {
+			return bad("%w", err)
+		}
+		// The hubs are the same entities in every seed and every scenario, so the pins
+		// of another stream would be accepted and no longer be its busiest prefixes.
+		if d, err := s.ScenarioDigest(); err != nil {
+			return err
+		} else if d != s.Pins.Source {
+			return bad("the pins were chosen from a stream of another scenario (%.12s, not %.12s)", s.Pins.Source, d)
+		}
 	}
 	var prevAt, prevHorizon time.Duration
 	for i, r := range s.Retentions {
@@ -122,6 +164,22 @@ func (s Spec) Validate() error {
 		prevAt, prevHorizon = r.At, r.At-r.Keep
 	}
 	return nil
+}
+
+// cache is the block cache of a stream with the given payload bytes.
+func (s Spec) cache(payload uint64) int64 {
+	if s.CacheBytes > 0 {
+		return s.CacheBytes
+	}
+	return cacheBytes(payload, s.CacheFraction)
+}
+
+// ScenarioDigest is the SHA-256 of the spec without the window it is a stream of: its
+// workload and its options, but not its length, its retentions or its pins. The
+// windows of one family have the same, and the pins are chosen from a stream of it.
+func (s Spec) ScenarioDigest() (string, error) {
+	s.Pins, s.Retentions, s.Workload.Duration = nil, nil, 0
+	return s.Digest()
 }
 
 // Digest is the SHA-256 of the spec, as hex.

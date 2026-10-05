@@ -24,7 +24,7 @@ func factory(v candidates.Variant, o candidates.Options) conformance.Factory {
 }
 
 // Policies of layout L that a sweep names besides the default.
-var sweepPoints = []string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a4l2s"}
+var sweepPoints = append([]string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a4l2s"}, candidates.SweepGrid()...)
 
 func everyVariant(t *testing.T) []candidates.Variant {
 	t.Helper()
@@ -115,6 +115,7 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 		"M/default+filter": {"layout": "M", "key_schema_in_tables": "DefaultKeySchema(cockroach_comparator,16)", "collectors_in_tables": "MVCCTimeInterval,obsolete-key"},
 		"L/off":            {"layout": "L", "checkpoints": "off", "collectors_in_tables": "obsolete-key"},
 		"L/k64a4":          {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=0s"},
+		"L/k64a4l1ns":      {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1ns"},
 		"L/k128a0.5l1ns":   {"layout": "L", "checkpoints": "kmin=128 alpha=0.5 lag=1ns"},
 	}
 	for name, props := range want {

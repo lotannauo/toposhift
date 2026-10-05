@@ -294,6 +294,18 @@ type faulty struct {
 	stats func(map[string]int64) map[string]int64
 	// onCold is called when the engine's cache is emptied.
 	onCold func(f *faulty)
+	// compacted is set once the engine has been compacted on purpose, and onCompact is
+	// called then.
+	compacted bool
+	onCompact func()
+}
+
+func (f *faulty) CompactAll(ctx context.Context) error {
+	f.compacted = true
+	if f.onCompact != nil {
+		f.onCompact()
+	}
+	return f.fullEngine.CompactAll(ctx)
 }
 
 func (f *faulty) ColdStart() {
@@ -818,7 +830,10 @@ func TestQueriesAreAskedAtTheirAges(t *testing.T) {
 		}
 	}
 	// The cache is the share of the payload bytes asked for, in whole megabytes, at least one.
-	want := max(int64(float64(info.PayloadBytes)*plan.Spec.CacheFraction)>>20<<20, 1<<20)
+	want := plan.Spec.CacheBytes // an absolute size, the same whatever the stream
+	if want == 0 {
+		want = max(int64(float64(info.PayloadBytes)*plan.Spec.CacheFraction)>>20<<20, 1<<20)
+	}
 	if plan.CacheBytes != want {
 		t.Errorf("cache %d, want %d", plan.CacheBytes, want)
 	}
@@ -994,7 +1009,7 @@ func TestReportShowsWhatEachCandidateHolds(t *testing.T) {
 		"table bytes", "table bytes per record", "L2 table bytes", "baseline (logical)", "checkpoint (logical)", "payload reverse (logical)",
 		"write amplification built (depends on when compactions ran)", "retain.records_replayed", "retain.keys_visited", "checkpoint.written", "steps (Next calls the layout made", "seeks (calls that position the iterator)", "key bytes of the points iterated", "value bytes of the points iterated", "What a read cost is all of the tables below together",
 		"internal steps", "block bytes loaded", "points iterated", "node<- hot-records neighbors now", "node<- hot-records batch now",
-		"blocks loaded with the cache empty", "compressed bytes of the index, filter and data blocks loaded with the cache empty", "allocations of a read once the pools are full", "How the counters of the rules", "(counters disagree)",
+		"the other gates (G0 answers", "how long the writes of the build took", "the first batch after a retention: longest", "reads of \"now\" before and after the compaction", "blocks loaded with the cache empty", "compressed bytes of the index, filter and data blocks loaded with the cache empty", "allocations of a read once the pools are full", "How the counters of the rules", "(counters disagree)",
 		"records stepped over (layout L", "versions stepped over (layout M", "checkpoints used (layout L)", "checkpoint entries decoded", "points a range tombstone covered", "bytes fetched from value blocks",
 	} {
 		if !strings.Contains(text, want) {
@@ -1021,15 +1036,15 @@ func TestReadBuildInfoSeesTheTagsItWasBuiltWith(t *testing.T) {
 	}
 }
 
-// Over more than a day the reads a day back and the windows of a day are asked,
+// Over more than two days the reads a day back and the windows of a day are asked,
 // at the instants they say.
 func TestQueriesADayBack(t *testing.T) {
 	t.Parallel()
 
 	spec := tinySpec()
-	spec.Workload.Duration = 26 * time.Hour
+	spec.Workload.Duration = 50 * time.Hour // a day back needs a day of history behind it
 	spec.Workload.EventsPerSecond = 0.05
-	spec.Retentions = []runner.Retention{{At: 25 * time.Hour, Keep: 24 * time.Hour}}
+	spec.Retentions = []runner.Retention{{At: 49 * time.Hour, Keep: 24 * time.Hour}}
 	plan := mustPlan(t, spec)
 	end := plan.Stream.End
 	var day, window int
@@ -1205,16 +1220,16 @@ func TestTwoBuildsOfACandidateAreTheSame(t *testing.T) {
 	}
 }
 
-// Over more than a day, the reads a day back and the windows of a day are asked
+// Over more than two days, the reads a day back and the windows of a day are asked
 // of the candidates too, and agree with the reference.
 func TestReadsADayBackAreAgreedOn(t *testing.T) {
 	t.Parallel()
 	conformance.SkipWhenTrimmed(t)
 
 	spec := tinySpec()
-	spec.Workload.Duration = 26 * time.Hour
+	spec.Workload.Duration = 50 * time.Hour // a day back needs a day of history behind it
 	spec.Workload.EventsPerSecond = 0.05
-	spec.Retentions = []runner.Retention{{At: 25 * time.Hour, Keep: 24 * time.Hour}}
+	spec.Retentions = []runner.Retention{{At: 49 * time.Hour, Keep: 24 * time.Hour}}
 	spec.MinNonEmpty = 0.25 // every age of every group, the old snapshot included, must have an answer
 	plan := mustPlan(t, spec)
 	ages := map[string]bool{}
@@ -1253,8 +1268,10 @@ func TestOldSnapshotsAreReadWhereTheyWereTaken(t *testing.T) {
 		if retentions != nil {
 			want = info.Start.Add(50 * time.Minute)
 		}
-		if !info.OldAt.Equal(want) || info.OldToken < info.TokenFloor {
-			t.Errorf("%s: the old snapshot is read at %s with token %d (floor %d), want %s", name, info.OldAt, info.OldToken, info.TokenFloor, want)
+		// before the nominal instant, by the lateness of the records that arrive after
+		// the token (a few minutes in the small cluster's mean, and its tail in an hour)
+		if info.OldAt.After(want) || info.OldAt.Before(want.Add(-30*time.Minute)) || info.OldToken < info.TokenFloor {
+			t.Errorf("%s: the old snapshot is read at %s with token %d (floor %d), want within half an hour before %s", name, info.OldAt, info.OldToken, info.TokenFloor, want)
 		}
 		n := 0
 		for _, q := range plan.Queries {
@@ -1311,11 +1328,11 @@ func TestFilesKeepTheirFields(t *testing.T) {
 		want string
 	}{
 		"Plan":         {runner.Plan{}, "Spec,SpecDigest,RulesDigest,Stream,Queries,QueriesDigest,Groups,CacheBytes,Shadow"},
-		"Spec":         {runner.Spec{}, "Version,Workload,BatchSize,Retentions,Hot,Median,CacheFraction,MinNonEmpty"},
+		"Spec":         {runner.Spec{}, "Version,Workload,BatchSize,Retentions,Hot,Median,CacheBytes,CacheFraction,MinNonEmpty,Pins"},
 		"Query":        {runner.Query{}, "Group,Rank,Op,Layer,Dir,Fps,Age,At,From,To,AsOf,Expect,Size"},
 		"Stream":       {runner.StreamInfo{}, "Digest,Records,Dropped,LastSeq,PayloadBytes,Retentions,TokenFloor,OldToken,OldAt,Start,End,Horizon"},
 		"Group":        {runner.GroupInfo{}, "Group,Age,Queries,NonEmpty"},
-		"Manifest":     {runner.Manifest{}, "Candidate,Layout,PlanDigest,Stream,Build,Untimed,Describe,Counters,StatsBuilt,StatsCompacted,Breakdown,SizeByLayer,Size"},
+		"Manifest":     {runner.Manifest{}, "Candidate,Layout,PlanDigest,Stream,Build,Untimed,Describe,Counters,StatsBuilt,StatsCompacted,Breakdown,SizeByLayer,Size,Timing,Uncompacted,UncompactedWrong"},
 		"Results":      {runner.Results{}, "Candidate,PlanDigest,ManifestDigest,Build,Untimed,Describe,Queries,Mismatches,Unstable,StatsBefore,StatsAfter"},
 		"Query result": {runner.QueryResult{}, "Digest,Size,Counters,Warm"},
 		"Build":        {runner.BuildInfo{}, "GoVersion,GOOS,GOARCH,CGO,Race,Invariants,Tags,Unoptimized,Revision,Modified,Executable"},
@@ -1378,7 +1395,7 @@ func TestFilesKeepTheirNestedKeys(t *testing.T) {
 		Stream: runner.StreamInfo{Retentions: []runner.AppliedRetention{{}}},
 		Spec:   runner.Spec{Retentions: []runner.Retention{{}}},
 	})
-	const want = "CacheBytes Groups Groups.Age Groups.Group Groups.NonEmpty Groups.Queries Queries Queries.Age Queries.AsOf Queries.At Queries.Dir Queries.Expect Queries.Fps Queries.From Queries.Group Queries.Layer Queries.Op Queries.Rank Queries.Size Queries.To QueriesDigest RulesDigest Shadow Spec Spec.BatchSize Spec.CacheFraction Spec.Hot Spec.Median Spec.MinNonEmpty Spec.Retentions Spec.Retentions.At Spec.Retentions.Keep Spec.Version Spec.Workload SpecDigest Stream Stream.Digest Stream.Dropped Stream.End Stream.Horizon Stream.LastSeq Stream.OldAt Stream.OldToken Stream.PayloadBytes Stream.Records Stream.Retentions Stream.Retentions.AfterRecords Stream.Retentions.Horizon Stream.Retentions.LastSeq Stream.Start Stream.TokenFloor"
+	const want = "CacheBytes Groups Groups.Age Groups.Group Groups.NonEmpty Groups.Queries Queries Queries.Age Queries.AsOf Queries.At Queries.Dir Queries.Expect Queries.Fps Queries.From Queries.Group Queries.Layer Queries.Op Queries.Rank Queries.Size Queries.To QueriesDigest RulesDigest Shadow Spec Spec.BatchSize Spec.CacheBytes Spec.CacheFraction Spec.Hot Spec.Median Spec.MinNonEmpty Spec.Retentions Spec.Retentions.At Spec.Retentions.Keep Spec.Version Spec.Workload SpecDigest Stream Stream.Digest Stream.Dropped Stream.End Stream.Horizon Stream.LastSeq Stream.OldAt Stream.OldToken Stream.PayloadBytes Stream.Records Stream.Retentions Stream.Retentions.AfterRecords Stream.Retentions.Horizon Stream.Retentions.LastSeq Stream.Start Stream.TokenFloor"
 	if got != want {
 		t.Errorf("the plan file has keys\n%s\nwant\n%s", got, want)
 	}
@@ -1709,5 +1726,276 @@ func TestAWrongAnswerFromAColdCacheIsFlagged(t *testing.T) {
 		if flagged == 0 || len(res.Mismatches) != 0 {
 			t.Errorf("wrong on %s: %d cold reads flagged, %d mismatches; want flagged cold reads and none of the first passes wrong", name, flagged, len(res.Mismatches))
 		}
+	}
+}
+
+// Every term of every counter the rules order by or judge G1 on is something a
+// real build and read emits: a counter that is renamed in a layout, or that a layout
+// stops emitting, would otherwise count as zero in a rule and every test would pass.
+func TestEveryTermOfTheRulesIsEmittedByARealRead(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	seen := map[string]bool{}                                    // the terms found, over streams, candidates and queries
+	for _, spec := range []runner.Spec{hourSpec(), tinySpec()} { // the second has a retention, so a baseline
+		plan := mustPlan(t, spec)
+		for _, name := range []string{"L/k64a4", "M/crdb1"} {
+			_, _, res := run(t, plan, lookup(t, name))
+			for i, q := range res.Queries {
+				for k, v := range q.Counters {
+					if v <= 0 {
+						continue
+					}
+					op := string(plan.Queries[i].Op)
+					switch {
+					case strings.HasPrefix(k, "read."+op+"."):
+						seen[strings.TrimPrefix(k, "read."+op+".")] = true
+					case strings.HasPrefix(k, "read."):
+						seen[strings.TrimPrefix(k, "read.")] = true
+					default:
+						seen[k] = true
+					}
+				}
+			}
+		}
+	}
+	rules := runner.DefaultRules()
+	for _, counter := range append(slices.Clone(rules.OrderCounters), rules.G1Counters...) {
+		for _, term := range strings.Split(counter, "+") {
+			if !seen[term] {
+				t.Errorf("no read of any candidate emitted %q (a term of %q): it would count as zero in a rule", term, counter)
+			}
+		}
+	}
+}
+
+// A read a day back needs a day of history behind it: in a stream of a day it
+// would be made at the first instant, and in one of 26 hours two hours into it,
+// before most runs have a history. They are asked from two days of stream on; the
+// windows of a day, which cover the whole stream, are asked from a day on.
+func TestAReadADayBackNeedsADayOfHistoryBehindIt(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	for _, c := range []struct {
+		duration            time.Duration
+		dayBack, dayWindows bool
+	}{
+		{24 * time.Hour, false, true},
+		{26 * time.Hour, false, true},
+		{47 * time.Hour, false, true},
+		{48 * time.Hour, true, true},
+	} {
+		spec := tinySpec()
+		spec.Workload.Duration = c.duration
+		spec.Workload.EventsPerSecond = 0.02
+		spec.Retentions = nil
+		spec.MinNonEmpty = 0
+		plan := mustPlan(t, spec)
+		ages := map[string]bool{}
+		for _, q := range plan.Queries {
+			ages[q.Age] = true
+		}
+		if ages[runner.Age1d] != c.dayBack || ages[runner.AgeWindow1d] != c.dayWindows {
+			t.Errorf("%s: reads a day back %v and windows of a day %v, want %v and %v", c.duration, ages[runner.Age1d], ages[runner.AgeWindow1d], c.dayBack, c.dayWindows)
+		}
+	}
+}
+
+// The block cache is the same absolute size whatever the stream (so runs of
+// different lengths are read under the same eviction), or, if the spec asks for a
+// share, a share of the payload bytes of the stream in whole megabytes, at least one.
+func TestTheCacheIsAbsoluteOrAShareOfThePayload(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	short, long := tinySpec(), tinySpec()
+	long.Workload.Duration = 2 * short.Workload.Duration
+	long.Retentions = nil
+	for _, spec := range []runner.Spec{short, long} {
+		if got := mustPlan(t, spec).CacheBytes; got != runner.DefaultCacheBytes {
+			t.Errorf("a default spec of %s has cache %d, want %d", spec.Workload.Duration, got, runner.DefaultCacheBytes)
+		}
+	}
+	share := tinySpec()
+	share.CacheBytes, share.CacheFraction = 0, 0.5
+	plan := mustPlan(t, share)
+	want := max(int64(float64(plan.Stream.PayloadBytes)*0.5)>>20<<20, 1<<20)
+	if plan.CacheBytes != want {
+		t.Errorf("a share of 0.5 gave cache %d, want %d", plan.CacheBytes, want)
+	}
+}
+
+// engineSink writes a stream to an engine, as the build does.
+type engineSink struct{ e engine.Engine }
+
+func (s engineSink) Write(b []engine.Record) error { return s.e.Write(b) }
+func (s engineSink) Retain(h time.Time) error      { return s.e.Retain(h) }
+
+// A run with pins is the projection of the full stream on them: every pinned read
+// has the answer, and costs the logical counters, that the same read has in a store
+// that was given the whole stream. The reference engine of a pinned plan is fed
+// through the same filter as the projection, so it cannot show a mistake in the
+// filter; a full store can.
+func TestAProjectedStreamReadsLikeTheFullOne(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	// The presets coalesce their refreshes and back a producer's pipeline up: a stream
+	// that does both, with the outages of the tiny cluster, is projected as well.
+	for variant, mod := range map[string]func(c *workload.Config){
+		"plain": func(*workload.Config) {},
+		"coalesced and backed up": func(c *workload.Config) {
+			c.CoalesceRuns, c.ExtendTTLFraction = true, 0.5
+			c.LateProbability, c.LateMeanDelay = 0, 0
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = 3*time.Minute, 90*time.Second, 2*time.Minute
+		},
+	} {
+		spec := tinySpec()
+		mod(&spec.Workload)
+		t.Run(variant, func(t *testing.T) {
+			t.Parallel()
+			checkProjection(t, spec)
+		})
+	}
+}
+
+func checkProjection(t *testing.T, spec runner.Spec) {
+	t.Helper()
+	pins, err := runner.MakePins(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := spec
+	pinned.Pins = pins
+	plan := mustPlan(t, pinned)
+	full := mustPlan(t, spec)
+	if plan.Stream.Records >= full.Stream.Records {
+		t.Fatalf("the projection holds %d records of %d: it projects nothing", plan.Stream.Records, full.Stream.Records)
+	}
+
+	for _, name := range []string{"L/off", "L/k64a4", "M/crdb1"} {
+		v := lookup(t, name)
+		_, _, got := run(t, plan, v) // the projected store
+
+		// The whole stream, in a store of its own.
+		rec := runner.NewCapture()
+		e, err := v.Open(filepath.Join(t.TempDir(), "db"), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runner.Drive(context.Background(), spec, engineSink{e}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.(engine.Quiescer).CompactAll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		rec.Take()
+		for i, q := range plan.Queries {
+			a, err := runner.Ask(e, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Digest != q.Expect {
+				t.Errorf("%s: %s: the full store's answer is not the projection's", name, q.Name())
+			}
+			counters := rec.Take()
+			for _, k := range []string{"seeks", "steps"} {
+				full, proj := counters["read."+string(q.Op)+"."+k], got.Queries[i].Counters["read."+string(q.Op)+"."+k]
+				if full != proj {
+					t.Errorf("%s: %s: %s is %d in the full store and %d in the projection", name, q.Name(), k, full, proj)
+				}
+			}
+			for _, k := range []string{"read.checkpoint_entries_decoded", "read.baseline_entries_decoded", "read.records_stepped", "read.versions_stepped"} {
+				if counters[k] != got.Queries[i].Counters[k] {
+					t.Errorf("%s: %s: %s is %d in the full store and %d in the projection", name, q.Name(), k, counters[k], got.Queries[i].Counters[k])
+				}
+			}
+		}
+		_ = e.Close()
+	}
+}
+
+// What a build records of its writes: how long each batch took, how long each
+// retention took and the first batch after it, and what the reads of "now" cost
+// before anything was compacted, each of them with the plan's answer.
+func TestABuildRecordsItsTimingAndReadsBeforeCompacting(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	for _, name := range []string{"L/off", "M/crdb1"} {
+		_, m, res := run(t, plan, lookup(t, name))
+		batches := int64((plan.Stream.Records + uint64(plan.Spec.BatchSize) - 1) / uint64(plan.Spec.BatchSize))
+		if m.Timing.Writes.Count != batches {
+			t.Errorf("%s: %d batches timed, the stream is %d", name, m.Timing.Writes.Count, batches)
+		}
+		if got, want := len(m.Timing.Retains), len(plan.Stream.Retentions); got != want || want == 0 {
+			t.Errorf("%s: %d retentions timed, the stream has %d", name, got, want)
+		}
+		if len(m.Timing.AfterRetention) != len(plan.Stream.Retentions) {
+			t.Errorf("%s: %d batches after a retention timed, want one for each of %d", name, len(m.Timing.AfterRetention), len(plan.Stream.Retentions))
+		}
+		if m.Timing.Writes.TotalNs <= 0 || m.Timing.Writes.MaxNs <= 0 || m.Timing.Writes.Quantile(0.5) == 0 {
+			t.Errorf("%s: no time was recorded for the writes: %+v", name, m.Timing.Writes)
+		}
+		now := 0
+		for _, q := range plan.Queries {
+			if q.Age == runner.AgeNow {
+				now++
+			}
+		}
+		if now == 0 || len(m.Uncompacted) != now {
+			t.Errorf("%s: %d reads before compacting, the plan has %d of now", name, len(m.Uncompacted), now)
+		}
+		for _, u := range m.Uncompacted {
+			if len(u.Counters) == 0 {
+				t.Errorf("%s: %s cost nothing before compacting", name, u.Query)
+			}
+		}
+		_ = res
+	}
+}
+
+// An engine that answers wrongly only from the tables as the stream left them, and
+// right once they are compacted, is found by the reads before the compaction: the
+// build still finishes and writes its manifest, which names the queries, and the
+// report refuses to compare it.
+func TestABuildChecksTheAnswersBeforeCompacting(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	compacted := false // across the engines the build and the read open
+	wrong := breaking(t, "M/crdb1", func(f *faulty) {
+		f.onCompact = func() { compacted = true }
+		f.neighbors = func(ns []engine.Neighbor) []engine.Neighbor {
+			if !compacted && len(ns) > 0 {
+				return ns[1:]
+			}
+			return ns
+		}
+	})
+	dir := runner.CandidateDir(t.TempDir(), "M_crdb1")
+	m, err := runner.Build(context.Background(), plan, wrong, dir, clean, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.UncompactedWrong) == 0 {
+		t.Fatal("answers that are wrong before compaction were not found")
+	}
+	res, err := runner.Read(context.Background(), plan, wrong, dir, clean, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Mismatches) != 0 {
+		t.Errorf("the answers after compaction are right, and %d are marked wrong", len(res.Mismatches))
+	}
+	cand, err := runner.LoadCandidate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if problems := strings.Join(runner.Check(plan, []*runner.Candidate{cand}, false), "\n"); !strings.Contains(problems, "before the build was compacted") {
+		t.Errorf("the report would compare it all the same: %s", problems)
 	}
 }
