@@ -70,7 +70,7 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 [tasks."bench:test:deep"]
 description = "Run the bench module's full tests with the race detector, in random order"
 dir = "bench"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 -timeout 25m ./...'
 
 [tasks."bench:vuln"]
 description = "Scan the bench module's dependencies for known vulnerabilities"
@@ -126,7 +126,7 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 
 [tasks."test:deep"]
 description = "Run every test with the race detector, in random order"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-deep.json"} -- -race -shuffle=on -count=1 ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-deep.json"} -- -race -shuffle=on -count=1 -timeout 25m ./...'
 
 # The edit loop. check is the formatters, the linters and test:fast, which is both
 # modules' tests without the race detector, the bench module in its invariant

@@ -470,6 +470,12 @@ func TestCompactAllReachesTombstonesOutsideTheLiveKeys(t *testing.T) {
 	if err := kv.Flush(); err != nil {
 		t.Fatal(err)
 	}
+	// Pebble counts the tombstones of a table when it collects the table's statistics,
+	// in the background, after the flush: until it has, the count is not final, and a
+	// slow machine can still say none.
+	if err := kv.Quiesce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if s := kv.Snapshot(); s.TombstoneCount == 0 {
 		t.Fatal("the test has no tombstones to leave behind")
 	}
