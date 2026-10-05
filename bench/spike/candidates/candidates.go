@@ -8,7 +8,11 @@
 //	M/default           layout M on Pebble's default key schema
 //	M/default+filter    the same with the filter
 //	L/off               layout L (a log per entity) with no checkpoints
-//	L/k64a4             layout L with checkpoints due after 64 records, scaled by 4
+//	L/k64a4l1ns         layout L with checkpoints due after 64 records, scaled by 4, at
+//	                    an instant 1 ns behind the newest (the design's default)
+//	L/k64a4             the same at the newest instant (lag 0): an extension of a run
+//	                    at its start deletes every checkpoint after it, so it cannot
+//	                    help a prefix whose runs are refreshed
 //	L/k64a4l2s          the same with a checkpoint instant 2 s behind the newest
 //
 // The settings a runner or a test chooses, not the candidate's own, are in
@@ -132,13 +136,31 @@ func Wrap(v Variant, name string, wrap func(engine.Engine, Options) (engine.Engi
 }
 
 // All is the set a measurement runs by default: the four layout M variants, layout
-// L without checkpoints and layout L with the design's defaults (K_min 64, alpha 4).
+// L without checkpoints and layout L with the design's defaults (K_min 64, alpha 4,
+// an instant 1 ns behind the newest).
 func All() []Variant {
 	return []Variant{
 		layoutM(pebblekv.SchemaCRDB, false), layoutM(pebblekv.SchemaCRDB, true),
 		layoutM(pebblekv.SchemaDefault, false), layoutM(pebblekv.SchemaDefault, true),
-		LNoCheckpoints(), LCheckpoints(64, 4, 0),
+		LNoCheckpoints(), LCheckpoints(64, 4, time.Nanosecond),
 	}
+}
+
+// SweepGrid is the checkpoint policies of the mini-sweep besides the default at a
+// lag of 1 ns, which is in [All]: every other combination of K_min 32, 64 and 128
+// with alpha 1 and 4 at a lag of 1 ns, and the default policy at lag 0, which shows
+// what the lag buys. Every one is conformed with the rest of the registry.
+func SweepGrid() []string {
+	var out []string
+	for _, k := range []int{32, 64, 128} {
+		for _, a := range []float64{1, 4} {
+			if k == 64 && a == 4 {
+				continue
+			}
+			out = append(out, LCheckpoints(k, a, time.Nanosecond).Name)
+		}
+	}
+	return append(out, LCheckpoints(64, 4, 0).Name)
 }
 
 // Names are the names of [All].

@@ -73,6 +73,10 @@ type target struct {
 	// dir is the direction of the neighbors and window reads; for an existence
 	// class the only read is alive.
 	reads []Op
+	// hub says the owner is an entity that exists from the start of the stream and is
+	// never replaced, so that a run over any length of stream can be read at the
+	// same prefix (see [Pins]).
+	hub bool
 }
 
 // targets are the classes the queries are drawn from, among the prefixes that
@@ -90,13 +94,13 @@ type target struct {
 // Neither is what a window read is for, and the first would be agreed on by every
 // candidate without measuring anything.
 var targets = []target{
-	{"node<-", workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}, []Op{OpNeighbors, OpWindow, OpBatch}},
-	{"service<-", workload.Class{Layer: catalog.L2, Owner: catalog.Service, Side: workload.SideReverse}, []Op{OpNeighbors, OpWindow, OpBatch}},
-	{"pod->", workload.Class{Layer: catalog.L2, Owner: catalog.K8sPod, Side: workload.SideForward}, []Op{OpNeighbors}},
-	{"host<-", workload.Class{Layer: catalog.L1, Owner: catalog.Host, Side: workload.SideReverse}, []Op{OpNeighbors}},
-	{"node->L1", workload.Class{Layer: catalog.L1, Owner: catalog.K8sNode, Side: workload.SideForward}, []Op{OpNeighbors}},
-	{"service<-L3", workload.Class{Layer: catalog.L3, Owner: catalog.Service, Side: workload.SideReverse}, []Op{OpNeighbors}},
-	{"node exists", workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideExistence}, []Op{OpAlive}},
+	{"node<-", workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideReverse}, []Op{OpNeighbors, OpWindow, OpBatch}, true},
+	{"service<-", workload.Class{Layer: catalog.L2, Owner: catalog.Service, Side: workload.SideReverse}, []Op{OpNeighbors, OpWindow, OpBatch}, true},
+	{"pod->", workload.Class{Layer: catalog.L2, Owner: catalog.K8sPod, Side: workload.SideForward}, []Op{OpNeighbors}, false},
+	{"host<-", workload.Class{Layer: catalog.L1, Owner: catalog.Host, Side: workload.SideReverse}, []Op{OpNeighbors}, true},
+	{"node->L1", workload.Class{Layer: catalog.L1, Owner: catalog.K8sNode, Side: workload.SideForward}, []Op{OpNeighbors}, true},
+	{"service<-L3", workload.Class{Layer: catalog.L3, Owner: catalog.Service, Side: workload.SideReverse}, []Op{OpNeighbors}, true},
+	{"node exists", workload.Class{Layer: catalog.L2, Owner: catalog.K8sNode, Side: workload.SideExistence}, []Op{OpAlive}, true},
 }
 
 // Selector picks the prefixes to query from an analyzed stream.
@@ -155,6 +159,12 @@ func BuildQueries(spec Spec, sel Selector, info StreamInfo) []Query {
 								q.At, q.AsOf = info.OldAt, info.OldToken
 							}
 							if q.At.Before(earliest) {
+								continue
+							}
+							// A read a day back needs a day of history behind it: in a stream
+							// of a day it would be made at the first instant, before most
+							// runs have a history, and show nothing of how a read grows.
+							if age == Age1d && q.At.Sub(info.Start) < 24*time.Hour {
 								continue
 							}
 							out = append(out, q)

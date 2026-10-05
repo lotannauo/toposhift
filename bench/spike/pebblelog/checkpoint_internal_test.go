@@ -689,3 +689,67 @@ func TestReadsCountTheEntriesTheyDecode(t *testing.T) {
 		t.Fatal("a read that reached the baseline decoded none of its entries")
 	}
 }
+
+// The bytes of checkpoints written are the key and value bytes of the checkpoints
+// that were written, by the policy and by the scripted hook alike: with none
+// deleted since, they are the checkpoints the database holds.
+func TestTheBytesOfCheckpointsWrittenAreCounted(t *testing.T) {
+	t.Parallel()
+
+	rec := &engine.MemRecorder{}
+	p := newPair(t, Options{Recorder: rec})
+	p.write(edgeRecord(1, "p", sec(10), lifecycle.Observe, 0))
+	for _, f := range []func() error{
+		func() error { return p.e.CheckpointEdges(catalog.L2, podFP, engine.Forward, sec(100)) },
+		func() error { return p.e.CheckpointEdges(catalog.L2, nodeFP, engine.Reverse, sec(100)) },
+	} {
+		if err := f(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	heldBy := func(e *Engine) (n, bytes int64) {
+		it, err := e.kv.NewIter(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = it.Close() }()
+		for ok := it.First(); ok; ok = it.Next() {
+			k := it.Key()
+			if k[len(k)-1] == kindCheckpoint {
+				n++
+				bytes += int64(len(k) + len(it.Value()))
+			}
+		}
+		return n, bytes
+	}
+	held := func() (int64, int64) { return heldBy(p.e) }
+	n, bytes := held()
+	if n != 2 || bytes == 0 {
+		t.Fatalf("%d checkpoints holding %d bytes after two scripted ones", n, bytes)
+	}
+	if got := rec.Counter("checkpoint.written"); got != 2 {
+		t.Fatalf("%d checkpoints counted, want 2", got)
+	}
+	if got := rec.Counter("checkpoint.bytes_written"); got != bytes {
+		t.Errorf("%d checkpoint bytes counted, the database holds %d", got, bytes)
+	}
+
+	// And by the policy, on every write.
+	rec2 := &engine.MemRecorder{}
+	q := newPair(t, Options{Recorder: rec2, Checkpoints: stress(0)})
+	for i := range 8 {
+		q.write(edgeRecord(uint64(i+1), "p", sec(10+i), lifecycle.Observe, 0))
+	}
+	if rec2.Counter("checkpoint.written") == 0 {
+		t.Fatal("the policy wrote no checkpoint: the test shows nothing")
+	}
+	if rec2.Counter("checkpoint.invalidated") != 0 {
+		t.Fatal("a checkpoint was deleted: the held bytes are not what was written")
+	}
+	if _, bytes := heldBy(q.e); rec2.Counter("checkpoint.bytes_written") != bytes {
+		t.Errorf("%d checkpoint bytes counted by the policy, the database holds %d", rec2.Counter("checkpoint.bytes_written"), bytes)
+	}
+	if rec2.Counter("checkpoint.bytes_written") < rec2.Counter("checkpoint.written")*int64(suffixLen) {
+		t.Errorf("%d checkpoints written and %d bytes: fewer than the keys alone", rec2.Counter("checkpoint.written"), rec2.Counter("checkpoint.bytes_written"))
+	}
+}

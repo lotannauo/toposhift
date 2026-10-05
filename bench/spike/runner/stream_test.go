@@ -177,7 +177,9 @@ func TestSpecValidate(t *testing.T) {
 		"batch":                func(s *runner.Spec) { s.BatchSize = 0 },
 		"hot":                  func(s *runner.Spec) { s.Hot = 0 },
 		"median":               func(s *runner.Spec) { s.Median = 0 },
-		"cache":                func(s *runner.Spec) { s.CacheFraction = 0 },
+		"no cache":             func(s *runner.Spec) { s.CacheBytes = 0 },
+		"two caches":           func(s *runner.Spec) { s.CacheFraction = 0.25 },
+		"negative cache":       func(s *runner.Spec) { s.CacheBytes = -1 },
 		"non-empty high":       func(s *runner.Spec) { s.MinNonEmpty = 1.5 },
 		"workload":             func(s *runner.Spec) { s.Workload.Hosts = 0 },
 		"keep zero":            func(s *runner.Spec) { s.Retentions[0].Keep = 0 },
@@ -221,7 +223,7 @@ func TestFrozenDigests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "8c7fea0dcf663e3d1013f803c1cfe0fb91e50884a494e6d4c62d71497ddda925"; rules != want {
+	if want := "ea462e432b0a1cda82f473899069a39ef0e410e0b35f47e4d3382786ccf19c2b"; rules != want {
 		t.Errorf("decision rules digest %s, frozen at %s", rules, want)
 	}
 	for name, w := range map[string]workload.Config{"ci": workload.CI(), "week": workload.Week(), "month": workload.Month()} {
@@ -237,9 +239,9 @@ func TestFrozenDigests(t *testing.T) {
 }
 
 var frozenSpecs = map[string]string{
-	"ci":    "25e1d01a07d697f73e1308c2fa2221ed5d54efc74a5694f5c3f9f49c651ba490",
-	"week":  "d28c0e5c3a4b52e59d7d8771629f90eb6c39ee3d58f54e55ea2c6eb9d3e873bd",
-	"month": "126ed86e6c708ce1b20e349a789fc25bd8bc6b187e6e20668872d10f42425f8a",
+	"ci":    "1d69b8c68d0ffd37fa06b8eaa3f483406aa38e4413eef454ef0a9f457ed91f50",
+	"week":  "76b69d4b4546b5c8d0c268ed7f41c8d69258cd197aadc0588e4040f07987b564",
+	"month": "a660dc220878165620ece1a68665232456ec5cde888a3257d431de035f3227d0",
 }
 
 // The old snapshot is taken three quarters through the period, or halfway from
@@ -249,46 +251,174 @@ var frozenSpecs = map[string]string{
 func TestOldSnapshotIsTakenAfterTheLastRetention(t *testing.T) {
 	t.Parallel()
 
-	for name, retentions := range map[string][]runner.Retention{
-		"no retention":         nil,
-		"early retention":      {{At: 8 * time.Minute, Keep: 4 * time.Minute}},
-		"retention after":      {{At: 18 * time.Minute, Keep: 2 * time.Minute}},
-		"two, the last late":   {{At: 6 * time.Minute, Keep: 3 * time.Minute}, {At: 17 * time.Minute, Keep: 5 * time.Minute}},
-		"retention at the 3/4": {{At: 15 * time.Minute, Keep: 5 * time.Minute}},
+	// With coalesced runs the refreshes of a node are extensions whose event time is the
+	// run's start and whose Through is the refresh: the instant a record takes effect is
+	// its Through, and an instant that ignored it would be earlier than it need be.
+	for variant, mod := range map[string]func(c *workload.Config){
+		"plain": func(*workload.Config) {},
+		"coalesced": func(c *workload.Config) {
+			c.CoalesceRuns, c.ExtendTTLFraction = true, 0.5
+		},
+		"coalesced and backed up": func(c *workload.Config) {
+			c.CoalesceRuns, c.ExtendTTLFraction = true, 0.5
+			c.LateProbability, c.LateMeanDelay = 0, 0
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = 3*time.Minute, 90*time.Second, 2*time.Minute
+		},
+	} {
+		for name, retentions := range map[string][]runner.Retention{
+			"no retention":         nil,
+			"early retention":      {{At: 8 * time.Minute, Keep: 4 * time.Minute}},
+			"retention after":      {{At: 18 * time.Minute, Keep: 2 * time.Minute}},
+			"two, the last late":   {{At: 6 * time.Minute, Keep: 3 * time.Minute}, {At: 17 * time.Minute, Keep: 5 * time.Minute}},
+			"retention at the 3/4": {{At: 15 * time.Minute, Keep: 5 * time.Minute}},
+		} {
+			name := variant + ", " + name
+			spec := tinySpec()
+			mod(&spec.Workload)
+			spec.Retentions = retentions
+			var rec recorder
+			info, err := runner.Drive(context.Background(), spec, &rec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantAt := spec.Workload.Start.Add(spec.Workload.Duration / 4 * 3)
+			if n := len(retentions); n > 0 {
+				last := spec.Workload.Start.Add(retentions[n-1].At)
+				if mid := last.Add(spec.Workload.Duration - retentions[n-1].At).Add(-(spec.Workload.Duration - retentions[n-1].At) / 2); mid.After(wantAt) {
+					wantAt = mid
+				}
+			}
+			// The batch that reaches the instant is the first whose last record does; the token
+			// is the one before it, and the instant it is read at is the newest event time
+			// the batches before it reached, or before the instant the first record from the
+			// token on takes effect.
+			var want, before uint64
+			var frontier, unseen time.Time
+			found := false
+			for _, b := range rec.batches {
+				if !found && !b[len(b)-1].EventTime.Before(wantAt) {
+					want, found = before, true
+				}
+				if found {
+					for _, r := range b {
+						at := r.EventTime
+						if r.Through.After(at) {
+							at = r.Through
+						}
+						if unseen.IsZero() || at.Before(unseen) {
+							unseen = at
+						}
+					}
+					continue
+				}
+				before = b[len(b)-1].Seq
+				for _, r := range b {
+					if r.EventTime.After(frontier) {
+						frontier = r.EventTime
+					}
+				}
+			}
+			wantRead := frontier
+			if unseen.Add(-time.Nanosecond).Before(wantRead) {
+				wantRead = unseen.Add(-time.Nanosecond)
+			}
+			if wantRead.Before(info.Horizon) { // a store answers from the horizon on
+				wantRead = info.Horizon
+			}
+			if !info.OldAt.Equal(wantRead) || info.OldAt.After(wantAt) {
+				t.Errorf("%s: the old snapshot is read at %s, want %s (the frontier before its token is %s and what arrives after it takes effect at %s; not after %s)", name, info.OldAt, wantRead, frontier, unseen, wantAt)
+			}
+			if info.OldAt.Before(info.Horizon) {
+				t.Errorf("%s: the old snapshot is read at %s, before the horizon %s", name, info.OldAt, info.Horizon)
+			}
+			if info.OldToken != want {
+				t.Errorf("%s: old token %d, want %d", name, info.OldToken, want)
+			}
+			if info.OldToken < info.TokenFloor {
+				t.Errorf("%s: the old token %d is below the token at the last retention, %d", name, info.OldToken, info.TokenFloor)
+			}
+		}
+	}
+}
+
+// A record that takes effect at the horizon itself (a run that began before it,
+// restarted there) and comes after the old token would put the snapshot's instant
+// before the horizon, which a store refuses: it is read at the horizon.
+func TestOldSnapshotIsNotReadBeforeTheHorizon(t *testing.T) {
+	t.Parallel()
+
+	atHorizon := 0
+	for _, batch := range []int{1, 7, 64, 100, 333} {
+		w := workload.Small()
+		w.Duration = 8 * time.Minute
+		spec := runner.DefaultSpec(w)
+		spec.BatchSize = batch
+		spec.MinNonEmpty = 0
+		spec.Retentions = []runner.Retention{{At: 5 * time.Minute, Keep: 3 * time.Minute}}
+		info, err := runner.Drive(context.Background(), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.OldAt.Before(info.Horizon) {
+			t.Errorf("batch %d: the old snapshot is read at %s, before the horizon %s", batch, info.OldAt, info.Horizon)
+		}
+		if info.OldAt.Equal(info.Horizon) {
+			atHorizon++
+		}
+	}
+	if atHorizon == 0 {
+		t.Error("no batch size puts the instant at the horizon: the stream does not test the rule")
+	}
+}
+
+// A pipeline that is backed up at the old token has delivered the refreshes of an
+// edge only up to a while ago, so the snapshot is read at an instant before every
+// record from the token on takes effect, whatever the lateness model. Without it a
+// read at the newest instant finds the refreshed edges lapsed.
+func TestOldSnapshotIsReadBeforeAnythingAfterItTakesEffect(t *testing.T) {
+	t.Parallel()
+
+	for name, mod := range map[string]func(c *workload.Config){
+		"per-record lateness": func(c *workload.Config) {},
+		"a backed up pipeline": func(c *workload.Config) {
+			c.LateProbability, c.LateMeanDelay = 0, 0
+			c.BacklogEvery, c.BacklogMeanDelay, c.BacklogSpan = 3*time.Minute, 90*time.Second, 2*time.Minute
+		},
 	} {
 		spec := tinySpec()
-		spec.Retentions = retentions
+		spec.Retentions = nil
+		mod(&spec.Workload)
 		var rec recorder
 		info, err := runner.Drive(context.Background(), spec, &rec)
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantAt := spec.Workload.Start.Add(spec.Workload.Duration / 4 * 3)
-		if n := len(retentions); n > 0 {
-			last := spec.Workload.Start.Add(retentions[n-1].At)
-			if mid := last.Add(spec.Workload.Duration - retentions[n-1].At).Add(-(spec.Workload.Duration - retentions[n-1].At) / 2); mid.After(wantAt) {
-				wantAt = mid
-			}
-		}
-		if !info.OldAt.Equal(wantAt) {
-			t.Errorf("%s: the old snapshot is read at %s, want %s", name, info.OldAt, wantAt)
-		}
-		if !info.OldAt.After(info.Horizon) && !info.Horizon.IsZero() {
-			t.Errorf("%s: the old snapshot is read at %s, not after the horizon %s", name, info.OldAt, info.Horizon)
-		}
-		var want, before uint64
+		var frontier time.Time
+		behind := 0 // records after the token that take effect no later than the newest instant before it
 		for _, b := range rec.batches {
-			if !b[len(b)-1].EventTime.Before(wantAt) {
-				want = before
-				break
+			if b[0].Seq <= info.OldToken {
+				for _, r := range b {
+					if r.EventTime.After(frontier) {
+						frontier = r.EventTime
+					}
+				}
+				continue
 			}
-			before = b[len(b)-1].Seq
+			for _, r := range b {
+				at := r.EventTime
+				if r.Through.After(at) {
+					at = r.Through
+				}
+				if !at.After(info.OldAt) {
+					t.Errorf("%s: a record at seq %d takes effect at %s, not after the old snapshot's instant %s", name, r.Seq, at, info.OldAt)
+				}
+				if !at.After(frontier) {
+					behind++
+				}
+			}
 		}
-		if info.OldToken != want {
-			t.Errorf("%s: old token %d, want %d", name, info.OldToken, want)
-		}
-		if info.OldToken < info.TokenFloor {
-			t.Errorf("%s: the old token %d is below the token at the last retention, %d", name, info.OldToken, info.TokenFloor)
+		if behind == 0 {
+			t.Errorf("%s: no record after the token takes effect before the newest instant it saw, %s: the stream does not test the rule", name, frontier)
 		}
 	}
 }
@@ -352,11 +482,11 @@ var (
 	frozenTiny = struct {
 		queries, plan string
 		n             int
-	}{"62a3919447619bee9750e2f1e1af9eb3c4e462bb009082f654821e8979d47020", "608e6b81cb88cace3597ff3a1b639b4b90aed6e8b80d4aacdf8ee855b55a7230", 180}
+	}{"9d5ce05070f626f3f1d0c83fa5c54531c692935a966563e18f5a4c2e6ed2441b", "a6619da1b4653d6ef699edb9eae0ea2e929d05b25a3b6278ecad187f27909901", 180}
 	frozenHour = struct {
 		queries, plan string
 		n             int
-	}{"b34530ff65c698dd00c196c9dbd27d90c3c8c2445f1e1f45efd08e3fb337704f", "5174578bbddb5cbca22e3e905d0a3aa1f44cca24cbc08e86439c1bafaf9d1a95", 349}
+	}{"0c75c099803489675de473d1345248bc700924e7f51acb6c7e9265b159f4046f", "109bae89a303970374f26a7f3d0d4d8f8600946808e53100962fd57799f01c2a", 349}
 )
 
 // Every placeholder names a field of the rules (Timing* stands for the fields

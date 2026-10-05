@@ -18,6 +18,9 @@ type runKey struct {
 
 // run is a producer's current run of refreshes of one subject.
 type run struct {
+	// prev is the run this one replaced, and no further back: a refresh that
+	// arrives late, after this run started, may belong to it.
+	prev        *run
 	layer       catalog.Layer
 	start, last time.Time // last is the latest refresh seen, whether or not it was recorded
 	recorded    time.Time // the Through of the latest extension written
@@ -30,8 +33,19 @@ type run struct {
 // refreshes inside the extension interval are absorbed without a record.
 func (st *run) deadline() time.Time { return st.recorded.Add(st.ttl) }
 
-func newRun(r engine.Record) *run {
-	return &run{layer: r.Layer, start: r.EventTime, last: r.EventTime, recorded: r.EventTime, ttl: r.TTL, payload: r.Payload}
+func newRun(r engine.Record, replaced *run) *run {
+	if replaced != nil {
+		replaced.prev = nil // the chain is one run long
+	}
+	return &run{prev: replaced, layer: r.Layer, start: r.EventTime, last: r.EventTime, recorded: r.EventTime, ttl: r.TTL, payload: r.Payload}
+}
+
+// covers is whether the run, whose refreshes the store already has through its
+// stored deadline, stands for the refresh: the same description, at an instant
+// between its first and last.
+func (st *run) covers(r engine.Record) bool {
+	return st != nil && st.ttl == r.TTL && bytes.Equal(st.payload, r.Payload) &&
+		!r.EventTime.Before(st.start) && !r.EventTime.After(st.last)
 }
 
 // coalesce is the ingest-side coalescer. It turns a refresh that continues a
@@ -64,23 +78,31 @@ func (g *Generator) coalesce(r engine.Record, out []engine.Record) []engine.Reco
 	st := g.runs[key]
 	switch {
 	case st == nil:
-		g.runs[key] = newRun(r)
+		g.runs[key] = newRun(r, nil)
+		return append(out, r)
+	case r.EventTime.Before(st.start):
+		// Older than the run, and not part of it, whatever it describes: a late refresh
+		// must not start a run in the past and replace the current one. If the run before it covered that
+		// instant, it already stands for the refresh: passing it through would be an
+		// assertion that replaces that run's deadline from its instant on, and could
+		// end its existence before the new run begins. Otherwise leave it as it is.
+		if st.prev.covers(r) {
+			return out
+		}
 		return append(out, r)
 	case st.ttl != r.TTL || !bytes.Equal(st.payload, r.Payload):
 		// The description changed: this starts a run.
 		out = g.closeRun(key, st, r.EventTime, out)
-		g.runs[key] = newRun(r)
-		return append(out, r)
-	case r.EventTime.Before(st.start):
-		// Older than the run, and not part of it: leave it as it is.
+		g.runs[key] = newRun(r, st)
 		return append(out, r)
 	case !r.EventTime.After(st.last):
 		return out // already covered by the run
-	case st.start.Before(g.horizon) || r.EventTime.After(st.last.Add(st.ttl)):
-		// A run the store can no longer extend, or a gap longer than the TTL: a
-		// new run.
+	case st.start.Before(g.horizon) || r.EventTime.After(st.last.Add(st.ttl)) ||
+		(g.cfg.RunMaxAge > 0 && r.EventTime.Sub(st.start) >= g.cfg.RunMaxAge):
+		// A run the store can no longer extend, a gap longer than the TTL, or a run
+		// that has reached its greatest age: a new run.
 		out = g.closeRun(key, st, r.EventTime, out)
-		g.runs[key] = newRun(r)
+		g.runs[key] = newRun(r, st)
 		return append(out, r)
 	}
 	st.last = r.EventTime

@@ -116,6 +116,10 @@ type Analyzer struct {
 	late                                   uint64
 	lateness                               logHist
 	lastPrune                              int64
+	// what a deadline index would be written for: the runs begun, the runs that
+	// lapsed, and the extensions that moved a run's deadline into another bucket of
+	// an hour and of a day
+	newRuns, lapses, crossHour, crossDay uint64
 
 	// retainedFrom is the instant before which a store discards history, if it was
 	// told (see SetRetainedFrom).
@@ -247,6 +251,24 @@ func (a *Analyzer) Add(r engine.Record) {
 		}
 		st.deadline = from.Add(r.TTL).UnixNano()
 	}
+	if st.deadline != 0 { // a run of refreshes: what an index by deadline would see of it
+		old, had := a.edges[k]
+		live := had && !old.dead && old.deadline != 0
+		switch {
+		case live && old.deadline >= ev: // a run that was still going
+			if old.deadline/int64(time.Hour) != st.deadline/int64(time.Hour) {
+				a.crossHour++
+			}
+			if old.deadline/int64(24*time.Hour) != st.deadline/int64(24*time.Hour) {
+				a.crossDay++
+			}
+		default: // a run begins, after one that lapsed or after none
+			a.newRuns++
+			if live {
+				a.lapses++
+			}
+		}
+	}
 	a.edges[k] = st
 	if ev-a.lastPrune > int64(time.Hour) {
 		a.lastPrune = ev
@@ -254,6 +276,9 @@ func (a *Analyzer) Add(r engine.Record) {
 			// An hour behind the newest record is later than any record in these
 			// workloads arrives.
 			if (st.dead && st.event < a.frontier-int64(time.Hour)) || (st.deadline != 0 && st.deadline < a.frontier-int64(time.Hour)) {
+				if !st.dead && st.deadline != 0 {
+					a.lapses++ // a run that nothing continued
+				}
 				delete(a.edges, k)
 			}
 		}
@@ -353,6 +378,15 @@ type Report struct {
 	// that a run extension would have to rewrite: about 115 bytes (an entry and
 	// the tombstone of the one it replaces) per extension.
 	DeadlineIndexBytesPerDay float64
+
+	// A deadline index by bucket rewrites its entry only when a run's deadline moves
+	// into another bucket. NewRunsPerDay are the TTL'd runs begun, LapsesPerDay the
+	// runs that ended by their deadline, and DeadlineIndexHourly and DeadlineIndexDaily
+	// the bytes a day of such an index would write, 115 bytes (an entry and the
+	// tombstone of the one it replaces) for each run begun, each run lapsed and each
+	// extension that crossed into another bucket of an hour or of a day.
+	NewRunsPerDay, LapsesPerDay             float64
+	DeadlineIndexHourly, DeadlineIndexDaily float64
 }
 
 // liveAtEnd takes the end of the stream as now and returns, per prefix, the
@@ -405,6 +439,9 @@ func (a *Analyzer) Report() Report {
 	rep.EntitiesAlive = len(aliveEntity)
 	if d := a.duration.Hours() / 24; d > 0 {
 		rep.DeadlineIndexBytesPerDay = float64(a.extensions) * 115 / d
+		rep.NewRunsPerDay, rep.LapsesPerDay = float64(a.newRuns)/d, float64(a.lapses)/d
+		rep.DeadlineIndexHourly = float64(a.newRuns+a.lapses+a.crossHour) * 115 / d
+		rep.DeadlineIndexDaily = float64(a.newRuns+a.lapses+a.crossDay) * 115 / d
 	}
 
 	byClass := map[Class]*ClassStats{}
@@ -566,7 +603,8 @@ func (r Report) Write(w io.Writer) {
 	dead := r.Entities - r.EntitiesAlive
 	fmt.Fprintf(w, "entities: %d ever, %d alive at the end, %d dead (%.1f dead for each live)\n",
 		r.Entities, r.EntitiesAlive, dead, float64(dead)/float64(max(r.EntitiesAlive, 1)))
-	fmt.Fprintf(w, "a deadline index would cost about %.1f MB a day in extra writes\n\n", r.DeadlineIndexBytesPerDay/1e6)
+	fmt.Fprintf(w, "a deadline index would cost in extra writes, a day: %.1f MB if every extension rewrote its entry, %.1f MB bucketed by the hour, %.1f MB bucketed by the day (%s runs begin and %s lapse a day)\n\n",
+		r.DeadlineIndexBytesPerDay/1e6, r.DeadlineIndexHourly/1e6, r.DeadlineIndexDaily/1e6, perDayFloat(r.NewRunsPerDay), perDayFloat(r.LapsesPerDay))
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', tabwriter.AlignRight)
 	fmt.Fprintln(tw, "class\tprefixes\trecords/day\tobserve\textend\tdelete\tbehind\tties\tpeers p50\tp99\tmax\tlive p50\tp99\tmax")
@@ -618,3 +656,5 @@ func (r Report) Write(w io.Writer) {
 		}
 	}
 }
+
+func perDayFloat(n float64) string { return fmt.Sprintf("%.0f", n) }

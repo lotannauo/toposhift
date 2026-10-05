@@ -76,12 +76,15 @@ func TestExtensionNeverOpensAHoleInAnInterval(t *testing.T) {
 	reference := existences(t, g.All())
 
 	for name, set := range map[string]func(*workload.Config){
-		"every refresh":     func(c *workload.Config) {},
-		"half the TTL":      func(c *workload.Config) { c.ExtendTTLFraction = 0.5 },
-		"three quarters":    func(c *workload.Config) { c.ExtendTTLFraction = 0.75 },
-		"nine tenths":       func(c *workload.Config) { c.ExtendTTLFraction = 0.9 },
-		"the whole TTL":     func(c *workload.Config) { c.ExtendTTLFraction = 1 },
-		"longer than a TTL": func(c *workload.Config) { c.ExtendEvery = 7 * time.Minute },
+		"every refresh":           func(c *workload.Config) {},
+		"half the TTL":            func(c *workload.Config) { c.ExtendTTLFraction = 0.5 },
+		"three quarters":          func(c *workload.Config) { c.ExtendTTLFraction = 0.75 },
+		"nine tenths":             func(c *workload.Config) { c.ExtendTTLFraction = 0.9 },
+		"the whole TTL":           func(c *workload.Config) { c.ExtendTTLFraction = 1 },
+		"longer than a TTL":       func(c *workload.Config) { c.ExtendEvery = 7 * time.Minute },
+		"rollover, every refresh": func(c *workload.Config) { c.RunMaxAge = 15 * time.Minute },
+		"rollover, half the TTL":  func(c *workload.Config) { c.ExtendTTLFraction, c.RunMaxAge = 0.5, 20*time.Minute },
+		"rollover, nine tenths":   func(c *workload.Config) { c.ExtendTTLFraction, c.RunMaxAge = 0.9, 25*time.Minute },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

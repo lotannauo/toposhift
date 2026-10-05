@@ -67,7 +67,8 @@ type Options struct {
 	// "write.records", "read.records_stepped", "retain.prefixes_visited",
 	// "retain.prefixes_replayed", "retain.records_replayed",
 	// "retain.baselines_written", "retain.range_deletes", "retain.seeks", and for
-	// checkpoints "checkpoint.written", "checkpoint.invalidated",
+	// checkpoints "checkpoint.written", "checkpoint.bytes_written" (key and value
+	// bytes), "checkpoint.invalidated",
 	// "checkpoint.errors", "checkpoint.loads", "checkpoint.load_keys",
 	// "checkpoint.build_records_walked", "read.checkpoint_hits",
 	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version". Every

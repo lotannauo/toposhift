@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,5 +256,51 @@ func TestOutputInsideARepositoryIsRefused(t *testing.T) {
 	}
 	if _, _, err := run(t, bin); err == nil {
 		t.Error("no command was accepted")
+	}
+}
+
+// Windows of retained history through the real program: pins chosen once from the
+// shortest window, a run of each candidate over each window with only the pinned
+// prefixes written, and a judgement of G1 from them, with the guards on.
+func TestWindowsRunEndToEnd(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t) // builds a binary and runs it; the full tier does
+
+	bin := binary(t)
+	out := filepath.Join(t.TempDir(), "out")
+	stdout, stderr, err := run(t, bin, "windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
+		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-out", out)
+	if err != nil {
+		t.Fatalf("windows: %v\n%.2000s\n%.2000s", err, stdout, stderr)
+	}
+	for _, f := range []string{"pins.json", "g1.txt", "R1/plan.json", "R2/plan.json", "R3/plan.json", "R3/L_off/results.json", "R1/M_crdb1/results.json", "R2/L_k64a4l1ns/manifest.json"} {
+		if _, err := os.Stat(filepath.Join(out, f)); err != nil {
+			t.Errorf("missing %s: %v", f, err)
+		}
+	}
+	for _, want := range []string{"G1 (rules", "L/off: ", "L/k64a4l1ns: ", "M/crdb1: ", "projected", "not decided, marked ?"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the judgement lacks %q:\n%.1500s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "NOT TO BE JUDGED TOGETHER") {
+		t.Errorf("a valid validation run's windows are held to be incomparable:\n%.1500s", stdout)
+	}
+	// A family that stopped is resumed on the plans it made, if the flags are the same,
+	// and refused if they are not: the pins are of the scenario they were chosen from.
+	same := []string{
+		"windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
+		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-out", out,
+	}
+	if stdout, stderr, err := run(t, bin, same...); err != nil {
+		t.Errorf("windows resumed with the same flags: %v\n%.1500s\n%.1500s", err, stdout, stderr)
+	}
+	other := append(slices.Clone(same[:len(same)-2]), "-batch", "50", "-out", out)
+	if _, stderr, err := run(t, bin, other...); err == nil || !strings.Contains(stderr, "another scenario") {
+		t.Errorf("windows resumed with another batch size: %v\n%.1500s", err, stderr)
+	}
+	// Pins are chosen once, and a window cannot be run without them.
+	if _, stderr, err := run(t, bin, "pins", "-untimed", "-preset", "tiny", "-window", "1", "-out", out); err == nil || !strings.Contains(stderr, "exists") {
+		t.Errorf("pins chosen twice: %v\n%s", err, stderr)
 	}
 }

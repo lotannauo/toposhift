@@ -2,6 +2,7 @@ package workload_test
 
 import (
 	"bytes"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -505,5 +506,75 @@ func TestHistoryIsReportedForThirtyDays(t *testing.T) {
 	a.Report().Write(&out)
 	if !strings.Contains(out.String(), "30d prefixes") {
 		t.Errorf("the report has no column for 30 days:\n%s", out.String())
+	}
+}
+
+// A deadline index by bucket is written when a run begins, when it lapses and when an
+// extension moves its deadline into another bucket: counted here on a run whose
+// every instant is known.
+func TestTheDeadlineIndexModelsCountRunsLapsesAndBucketCrossings(t *testing.T) {
+	t.Parallel()
+
+	node := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	at := func(h float64) time.Time { return start.Add(time.Duration(h * float64(time.Hour))) }
+	rec := func(h float64, through float64, ttl time.Duration) engine.Record {
+		r := engine.Record{
+			Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "a",
+			EventTime: at(h), Kind: lifecycle.Observe, TTL: ttl, Payload: make([]byte, 10),
+		}
+		if through > 0 {
+			r.Through = at(through)
+		}
+		return r
+	}
+	a := workload.NewAnalyzer(start, 4*24*time.Hour)
+	// A run of four-hour TTL begun at 00:00, extended every hour to 47:00: its deadline
+	// is 04:00 and then 05:00, ..., 51:00: forty-seven extensions that each move it into
+	// the next hour, and across midnight into day 1 (at the extension through 20:00,
+	// deadline 24:00) and into day 2 (through 44:00, deadline 48:00).
+	a.Add(rec(0, 0, 4*time.Hour))
+	for h := 1; h <= 47; h++ {
+		a.Add(rec(0, float64(h), 4*time.Hour))
+	}
+	// It lapses at 51:00; a second run begins at 60:00 and is never extended.
+	a.Add(rec(60, 0, 4*time.Hour))
+	// A third begins at 61:00, within the TTL of the second, extended once: it is a run
+	// that went on, not a new one.
+	a.Add(rec(61, 0, 4*time.Hour))
+	// Another pod's edge begins at 0:30 with a one-hour TTL and is never refreshed: it
+	// lapses at 1:30, and is forgotten when a record much later comes.
+	lone := rec(0.5, 0, time.Hour)
+	lone.Subject = engine.EdgeSubject(fp(t, catalog.K8sPod, catalog.K8sPodUID, "q"), node, catalog.ScheduledOn)
+	a.Add(lone)
+	a.Add(rec(80, 0, 4*time.Hour)) // a record at 80:00, hours after
+	rep := a.Report()
+	// Runs begun: the first; the second at 60:00 (the first had lapsed); the lone one at
+	// 0:30; and the refresh at 80:00, after the second lapsed at 65:00. Lapses: the first
+	// when the second began, the lone one when it was forgotten, the second when the one at
+	// 80:00 began; the one at 80:00 has not lapsed within the stream.
+	d := rep.Duration.Hours() / 24
+	if got := rep.NewRunsPerDay * d; got != 4 {
+		t.Errorf("%v runs begun, want 4", got)
+	}
+	if got := rep.LapsesPerDay * d; got != 3 {
+		t.Errorf("%v lapses, want 3", got)
+	}
+	// Hourly buckets: 47 extensions crossed, and the continuing refresh at 61:00 moved the
+	// second run's deadline from 64:00 to 65:00: one more.
+	hourly := (4 + 3 + 48) * 115 / d
+	if math.Abs(rep.DeadlineIndexHourly-hourly) > 1e-6 {
+		t.Errorf("hourly index %v bytes a day, want %v", rep.DeadlineIndexHourly, hourly)
+	}
+	// Daily buckets: two crossings of midnight by the first run, and the second run's
+	// deadline stays in day 2 (64:00 to 65:00).
+	daily := (4 + 3 + 2) * 115 / d
+	if math.Abs(rep.DeadlineIndexDaily-daily) > 1e-6 {
+		t.Errorf("daily index %v bytes a day, want %v", rep.DeadlineIndexDaily, daily)
+	}
+	// Rewriting the entry at every extension is what the earlier model costs.
+	if want := float64(rep.Extensions) * 115 / d; math.Abs(rep.DeadlineIndexBytesPerDay-want) > 1e-6 {
+		t.Errorf("per-extension index %v, want %v", rep.DeadlineIndexBytesPerDay, want)
 	}
 }

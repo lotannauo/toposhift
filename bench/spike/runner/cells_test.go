@@ -246,3 +246,83 @@ func TestTheReportWarnsWhenAColdReadFilledTheCache(t *testing.T) {
 		t.Errorf("a warning for B, whose largest read filled exactly 40%% of the cache:\n%s", out.String())
 	}
 }
+
+// A cell is judged by its queries, not by their mean: two prefixes that the same
+// counter puts in opposite directions cancel in a mean and are a mixed cell.
+func TestACellWhoseQueriesCancelInAMeanIsMixed(t *testing.T) {
+	t.Parallel()
+
+	plan, cs := synthetic([]string{"g@now"}, 2, map[string]map[string][]int64{
+		"A": {"g@now|read.neighbors.seeks": {1000, 10}},
+		"B": {"g@now|read.neighbors.seeks": {10, 1000}},
+	})
+	if m := runner.CellMeans(plan, cs, "seeks")["g now"]; len(m) != 2 || m[0] != m[1] {
+		t.Fatalf("the means %v should be equal: the case shows nothing otherwise", m)
+	}
+	vs := runner.Verdicts(plan, cs, runner.DefaultRules())
+	if len(vs) != 1 || !vs[0].Mixed() || vs[0].Queries != 2 || vs[0].AheadA != 1 || vs[0].AheadB != 1 {
+		t.Errorf("verdicts %+v, want one mixed cell of two queries, one each way", vs)
+	}
+}
+
+// A cell is ordered only if a majority of its queries put the pair in order one way
+// and none puts it the other way; fewer is a tie, and one query the other way is a
+// mixed cell.
+func TestACellIsOrderedByAMajorityOfItsQueries(t *testing.T) {
+	t.Parallel()
+
+	for name, c := range map[string]struct {
+		a, b                 []int64
+		ordered, mixed, tied bool
+		first                string
+	}{
+		"all three put B first":       {[]int64{1000, 1000, 1000}, []int64{10, 10, 10}, true, false, false, "B"},
+		"all three put A first":       {[]int64{10, 10, 10}, []int64{1000, 1000, 1000}, true, false, false, "A"},
+		"two of three put B first":    {[]int64{1000, 1000, 10}, []int64{10, 10, 10}, true, false, false, "B"},
+		"one of three puts B first":   {[]int64{1000, 10, 10}, []int64{10, 10, 10}, false, false, true, ""},
+		"two B first and one A first": {[]int64{1000, 1000, 10}, []int64{10, 10, 1000}, false, true, false, ""},
+		"none puts either first":      {[]int64{100, 100, 100}, []int64{105, 105, 105}, false, false, true, ""},
+	} {
+		plan, cs := synthetic([]string{"g@now"}, 3, map[string]map[string][]int64{
+			"A": {"g@now|read.neighbors.seeks": c.a},
+			"B": {"g@now|read.neighbors.seeks": c.b},
+		})
+		vs := runner.Verdicts(plan, cs, runner.DefaultRules())
+		if len(vs) != 1 {
+			t.Fatalf("%s: %d verdicts", name, len(vs))
+		}
+		if got := vs[0].First(); got != c.first {
+			t.Errorf("%s: the cell is ordered towards %q, want %q (A ahead %d, B ahead %d)", name, got, c.first, vs[0].AheadA, vs[0].AheadB)
+		}
+		if v := vs[0]; v.Ordered() != c.ordered || v.Mixed() != c.mixed || (!v.Ordered() && !v.Mixed()) != c.tied {
+			t.Errorf("%s: ordered %v, mixed %v (queries %d, A ahead %d, B ahead %d, mixed %d); want ordered %v, mixed %v, tied %v",
+				name, v.Ordered(), v.Mixed(), v.Queries, v.AheadA, v.AheadB, v.MixedQueries, c.ordered, c.mixed, c.tied)
+		}
+	}
+}
+
+// The verdicts, and so the digest of the mixed cells, do not depend on the order
+// the candidates are given in.
+func TestVerdictsDoNotDependOnTheOrderOfTheCandidates(t *testing.T) {
+	t.Parallel()
+
+	plan, cs := synthetic([]string{"g@now", "g@1d"}, 2, map[string]map[string][]int64{
+		"A": {"g@now|read.neighbors.seeks": {1000, 1000}, "g@now|read.neighbors.internal_steps": {100, 100}, "g@1d|read.neighbors.seeks": {5, 5}},
+		"B": {"g@now|read.neighbors.seeks": {10, 10}, "g@now|read.neighbors.internal_steps": {5000, 5000}, "g@1d|read.neighbors.seeks": {500, 500}},
+		"C": {"g@now|read.neighbors.seeks": {400, 400}, "g@now|read.neighbors.internal_steps": {400, 400}, "g@1d|read.neighbors.seeks": {5, 5}},
+	})
+	rules := runner.DefaultRules()
+	want := runner.MixedDigest(runner.MixedCells(runner.Verdicts(plan, cs, rules)))
+	for _, perm := range [][]int{{0, 1, 2}, {2, 1, 0}, {1, 2, 0}, {2, 0, 1}} {
+		shuffled := []*runner.Candidate{cs[perm[0]], cs[perm[1]], cs[perm[2]]}
+		vs := runner.Verdicts(plan, shuffled, rules)
+		for _, v := range vs {
+			if v.A >= v.B {
+				t.Errorf("the pair %s, %s is not in name order", v.A, v.B)
+			}
+		}
+		if got := runner.MixedDigest(runner.MixedCells(vs)); got != want {
+			t.Errorf("order %v gives digest %.12s, want %.12s", perm, got, want)
+		}
+	}
+}

@@ -46,9 +46,13 @@ type StreamInfo struct {
 	// always above it, and which the reads of an old snapshot use.
 	TokenFloor, OldToken uint64
 	// OldAt is the instant a read of the old snapshot is made at, the instant of its
-	// token: three quarters through the period, or halfway from the last retention
-	// to the end if that is later. A read of the newest instant as of an old token
-	// would find every refreshed edge expired, and ask about nothing.
+	// token: the newest event time the stream had reached when the token was taken,
+	// which is the batch before the first that reaches three quarters through the
+	// period, or halfway from the last retention to the end if that is later, and
+	// before the instant any record after the token takes effect (its event time,
+	// or for an extension its Through), so that everything that took effect by then
+	// is in the snapshot, but not before the horizon. A read of the newest instant as of an old token would find
+	// every refreshed edge expired, and ask about nothing.
 	OldAt time.Time
 	// Start and End are the period; Horizon is the final retention horizon.
 	Start, End, Horizon time.Time
@@ -82,7 +86,13 @@ func Drive(ctx context.Context, spec Spec, sinks ...Sink) (StreamInfo, error) {
 		}
 	}
 	oldFound := false
+	var frontier time.Time // the newest event time of the batches so far
+	var unseen time.Time   // the earliest instant a record after the old token takes effect
 	var buf []byte
+	var pinned map[identity.Fingerprint]struct{}
+	if spec.Pins != nil {
+		pinned = spec.Pins.entities()
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -104,20 +114,55 @@ func Drive(ctx context.Context, spec Spec, sinks ...Sink) (StreamInfo, error) {
 			continue
 		}
 		if !oldFound && !kept[len(kept)-1].EventTime.Before(oldAt) {
-			oldFound, info.OldToken = true, info.LastSeq
-		}
-		for _, r := range kept {
-			buf = appendRecord(buf[:0], r)
-			h.Write(buf)
-			info.PayloadBytes += uint64(len(r.Payload))
-		}
-		for _, s := range sinks {
-			if err := s.Write(kept); err != nil {
-				return info, fmt.Errorf("runner: writing the batch ending at seq %d: %w", kept[len(kept)-1].Seq, err)
+			// The token is the one before this batch, so the instant it is read at is the
+			// newest event time that batch's predecessors reached, at most.
+			oldFound, info.OldToken, info.OldAt = true, info.LastSeq, oldAt
+			if !frontier.IsZero() {
+				info.OldAt = frontier
 			}
 		}
-		info.Records += uint64(len(kept))
-		info.LastSeq = kept[len(kept)-1].Seq
+		if oldFound { // what arrives from the token on may take effect before that instant
+			for _, r := range kept {
+				at := r.EventTime
+				if r.Through.After(at) {
+					at = r.Through
+				}
+				if unseen.IsZero() || at.Before(unseen) {
+					unseen = at
+				}
+			}
+		}
+		for _, r := range kept {
+			if r.EventTime.After(frontier) {
+				frontier = r.EventTime
+			}
+		}
+		// What is written is the batch, or with pins the part of it that touches
+		// them, in the same order and with the same sequence numbers; when the
+		// horizon moves is decided by the whole batch.
+		out := kept
+		if pinned != nil {
+			out = nil // a slice of its own: a sink may keep what it is given
+			for _, r := range kept {
+				if touches(pinned, r) {
+					out = append(out, r)
+				}
+			}
+		}
+		if len(out) > 0 {
+			for _, r := range out {
+				buf = appendRecord(buf[:0], r)
+				h.Write(buf)
+				info.PayloadBytes += uint64(len(r.Payload))
+			}
+			for _, s := range sinks {
+				if err := s.Write(out); err != nil {
+					return info, fmt.Errorf("runner: writing the batch ending at seq %d: %w", out[len(out)-1].Seq, err)
+				}
+			}
+			info.Records += uint64(len(out))
+			info.LastSeq = out[len(out)-1].Seq
+		}
 
 		for next < len(spec.Retentions) && !kept[len(kept)-1].EventTime.Before(g.Start().Add(spec.Retentions[next].At)) {
 			horizon = spec.Retentions[next].Horizon(g.Start())
@@ -143,7 +188,24 @@ func Drive(ctx context.Context, spec Spec, sinks ...Sink) (StreamInfo, error) {
 		return info, fmt.Errorf("runner: the old snapshot (seq %d, at %s) comes before the last retention (seq %d) within one batch: use a smaller batch or a retention further from the end", info.OldToken, oldAt.Format(time.RFC3339), info.TokenFloor)
 	}
 	info.Horizon = horizon
-	info.OldAt = oldAt
+	// The instant is read as of a token, so it must come before the instant any
+	// record after the token takes effect: a pipeline that is backed up at the
+	// token has delivered a refresh of an edge only up to a while ago, and a read of
+	// a later instant would find it lapsed, which every candidate agrees on
+	// trivially.
+	if !unseen.IsZero() && unseen.Add(-time.Nanosecond).Before(info.OldAt) {
+		info.OldAt = unseen.Add(-time.Nanosecond)
+	}
+	if info.OldAt.IsZero() { // a stream of a single batch
+		info.OldAt = oldAt
+	}
+	// A store answers from the horizon on. A record that takes effect at the horizon
+	// itself (a run that began before it, restarted there) and comes after the token
+	// would put the instant before it: the snapshot is then read at the horizon, which
+	// the baseline of the retention covers.
+	if info.OldAt.Before(horizon) {
+		info.OldAt = horizon
+	}
 	info.Digest = hex.EncodeToString(h.Sum(nil))
 	return info, nil
 }

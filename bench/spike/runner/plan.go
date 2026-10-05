@@ -74,16 +74,7 @@ type shadowSink struct {
 	set map[identity.Fingerprint]struct{}
 }
 
-func (s shadowSink) touches(r engine.Record) bool {
-	if _, ok := s.set[r.Subject.A]; ok {
-		return true
-	}
-	if r.Subject.Kind == engine.SubjectEdge {
-		_, ok := s.set[r.Subject.B]
-		return ok
-	}
-	return false
-}
+func (s shadowSink) touches(r engine.Record) bool { return touches(s.set, r) }
 
 func (s shadowSink) Write(batch []engine.Record) error {
 	var mine []engine.Record
@@ -101,9 +92,17 @@ func (s shadowSink) Write(batch []engine.Record) error {
 func (s shadowSink) Retain(h time.Time) error { return s.o.Retain(h) }
 
 // analyze runs the stream through an analyzer and chooses the queries from what
-// it found. The analyzer holds every prefix of the stream, so it is kept to this
+// it found, or, for a spec with pins, learns the shape of the projected stream and
+// asks about the pins. The analyzer holds every prefix of the stream, so it is kept to this
 // function and freed before the second pass.
 func analyze(ctx context.Context, spec Spec) (StreamInfo, []Query, error) {
+	if spec.Pins != nil { // the prefixes are chosen: there is nothing to analyze, only the stream's shape to learn
+		info, err := Drive(ctx, spec)
+		if err != nil {
+			return info, nil, err
+		}
+		return info, BuildQueries(spec, spec.Pins, info), nil
+	}
 	an := workload.NewAnalyzer(spec.Workload.Start, spec.Workload.Duration)
 	if n := len(spec.Retentions); n > 0 {
 		an.SetRetainedFrom(spec.Retentions[n-1].Horizon(spec.Workload.Start))
@@ -158,7 +157,7 @@ func MakePlan(ctx context.Context, spec Spec, say Progress) (*Plan, error) {
 	plan := &Plan{
 		Spec: spec, SpecDigest: specDigest, RulesDigest: rulesDigest, Stream: info,
 		Queries: queries, Shadow: len(set),
-		CacheBytes: cacheBytes(info.PayloadBytes, spec.CacheFraction),
+		CacheBytes: spec.cache(info.PayloadBytes),
 	}
 	groups := map[string]*GroupInfo{}
 	for i := range plan.Queries {

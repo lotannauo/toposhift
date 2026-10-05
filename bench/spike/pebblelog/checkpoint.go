@@ -336,7 +336,12 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		st.ckpts = slices.Insert(st.ckpts, i, m.c)
 		st.since, st.sinceBytes, st.lastBytes = 0, 0, m.size
 	}
+	var bytes int64
+	for _, m := range done {
+		bytes += int64(len(m.prefix) + suffixLen + m.size)
+	}
 	e.rec.Count("checkpoint.written", int64(len(done)))
+	e.rec.Count("checkpoint.bytes_written", bytes)
 }
 
 // invalidate deletes, in b, the checkpoints of the prefix that a record at ns
@@ -413,5 +418,6 @@ func (e *Engine) checkpointAt(prefix []byte, c time.Time) error {
 	i, _ := slices.BinarySearch(st.ckpts, cNs)
 	st.ckpts = slices.Insert(st.ckpts, i, cNs)
 	e.rec.Count("checkpoint.written", 1)
+	e.rec.Count("checkpoint.bytes_written", int64(len(prefix)+suffixLen+len(val)))
 	return nil
 }

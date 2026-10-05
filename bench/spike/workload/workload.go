@@ -103,7 +103,9 @@ type Config struct {
 	// description changes, or a retention means it can no longer be extended),
 	// the store is first given what its deadline lacks to reach the new run, so
 	// an interval of existence has no gap the producer did not have, apart from
-	// one before the horizon, which the store no longer keeps.
+	// one before the horizon, which the store no longer keeps, and apart from
+	// what a refresh that arrives more than one run late can do (see
+	// LateProbability).
 	// Zero extends on every refresh, which loses nothing.
 	ExtendEvery time.Duration
 
@@ -114,8 +116,32 @@ type Config struct {
 	// [0, 1], and is exclusive with ExtendEvery. Zero is off.
 	ExtendTTLFraction float64
 
+	// RunMaxAge, with CoalesceRuns, bounds how long one run of refreshes can go on: a
+	// refresh that comes when the run is that old, counted from its first event time,
+	// starts a new run instead of extending the old one, at its own event time, with
+	// the same description and TTL, and the old run is first carried to it if its
+	// stored deadline falls short (so existence is continuous, as at a retention).
+	// Nothing about the producer's facts changes: it still refreshed at the same
+	// instants, and what the store holds is one more version of the entity or edge
+	// for each RunMaxAge it was refreshed for. What it bounds is how far a layout
+	// that keeps a run's refreshes at its first instant (an extension is a record
+	// at the start of its run, and deletes every checkpoint after it) has to walk
+	// back to the oldest live run of a prefix. It applies to every refreshed run
+	// whatever its layer. Zero is no bound; otherwise at least a minute.
+	RunMaxAge time.Duration
+
 	// LateProbability is the chance a record arrives late, by an exponentially
-	// distributed delay with mean LateMeanDelay.
+	// distributed delay with mean LateMeanDelay. Each record is delayed on its own,
+	// so one producer's refreshes arrive out of order; with CoalesceRuns and a
+	// bounded extension, a refresh that arrives later than the TTL after the one
+	// before it makes the coalescer see a gap that the producer did not have, and the
+	// stream can show the subject absent for up to the extension interval; and a
+	// refresh that arrives after more than one new run has begun is older than the run
+	// before the current one, which does not cover it, so it passes through and
+	// replaces the deadline of an earlier run: the subject can then be absent for as
+	// long as that run would have lasted. The
+	// backlog model (BacklogEvery), which keeps a producer's records in order, does
+	// not, and is the one the presets use.
 	LateProbability float64
 	LateMeanDelay   time.Duration
 
@@ -240,6 +266,8 @@ func (c Config) valid() error {
 		return bad("payload bounds are %d to %d", c.PayloadMin, c.PayloadMax)
 	case c.ExtendEvery < 0 || (c.ExtendEvery > 0 && !c.CoalesceRuns):
 		return bad("ExtendEvery needs CoalesceRuns and must not be negative")
+	case c.RunMaxAge < 0 || (c.RunMaxAge > 0 && (!c.CoalesceRuns || c.RunMaxAge < time.Minute)):
+		return bad("RunMaxAge needs CoalesceRuns and is zero or at least a minute")
 	case c.ExtendTTLFraction < 0 || c.ExtendTTLFraction > 1 || (c.ExtendTTLFraction > 0 && !c.CoalesceRuns):
 		return bad("ExtendTTLFraction must be in [0, 1] and needs CoalesceRuns")
 	case c.ExtendTTLFraction > 0 && c.ExtendEvery > 0:
