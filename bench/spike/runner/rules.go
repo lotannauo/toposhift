@@ -7,7 +7,7 @@ import (
 )
 
 // RulesVersion is bumped when a rule changes its meaning.
-const RulesVersion = 3
+const RulesVersion = 4
 
 // Rules are the constants of the decision between the layouts, fixed before the
 // measurements that decide (the retained-window builds and the timing on CI
@@ -26,21 +26,27 @@ const RulesVersion = 3
 //     projection, whose block counters (block_loads and cold_block_bytes) depend on the
 //     depth of an index that is not a full store's, in level and in slope: those
 //     cells are reported and not decided, whether they are over or under, until the
-//     offset against a full build is recorded. The budget ratio is
-//     b_q = W_q(T)/Budget_k(q) at T = TargetWindow, where
-//     Budget_k(q) = Base_k*E_q + PerItem_k*D_q/ItemsPerUnit_k, E_q is the number of
-//     entities the read asks about and D_q the size of the reference engine's answer
-//     (G1Budget; a budget in blocks is multiplied by the block size of the runs).
-//     The growth is s_q = log(W_q(T)/W_q(T'))/log(T/T') over the last two windows,
-//     and is 0 when W_q(T) is at or below k's floor. The projected ratio is
-//     p_q = b_q * G1Headroom^max(s_q, 0): what the read would cost if the retention
-//     were multiplied by G1Headroom. A population passes if its statistic of p_q is
-//     at most 1: the largest over a hot population, the median over the median one.
-//     A candidate passes G1 if every population of every class passes at every
-//     instant on every counter. The slope over the first and third windows (2 and
-//     14 days) and the classes bounded (s at or below BoundedSlope) and linear (s at
-//     or above LinearSlope) are diagnostics, and feed SlopeDiffForTarget; they do not
-//     decide.
+//     offset against a full build is recorded. The budget ratio of q in the window of
+//     R days is b_q(R) = W_q(R)/Budget_k(q, R), where
+//     Budget_k(q, R) = Base_k*E_q + PerItem_k*D_q(R)/ItemsPerUnit_k, E_q is the number
+//     of entities the read asks about and D_q(R) the size of the reference engine's
+//     answer in that window (G1Budget; a budget in blocks is multiplied by the block
+//     size of the runs). A population (the queries of one group at one instant) has
+//     a statistic in each window: S(R) is the largest b_q(R) over a hot population and
+//     the median (the lower one, for an even number) over the median one, with W_q(R)
+//     counted as at least 1 so that every S(R) has a logarithm; q* is the query that
+//     is S(TargetWindow), the one with more work among queries of equal ratio. The
+//     growth s is the least-squares slope of ln S(R) against ln R over every window,
+//     and is 0 when W_q*(TargetWindow) is at or below k's floor (G1Growth). The
+//     projected ratio is p = b_q*(TargetWindow) * G1Headroom^max(s, 0): what the read
+//     would cost if the retention were multiplied by G1Headroom. A population passes
+//     if p is at most 1, and a candidate passes G1 if every population of every class
+//     passes at every instant on every counter. The slope of S between the last two
+//     windows, the slope between the first and third (2 and 14 days) and the classes
+//     it gives (bounded at or below BoundedSlope, linear at or above LinearSlope), and
+//     each query's own fit, with the query whose fit is at or above LinearSlope
+//     flagged, are diagnostics: they do not decide (the slope between the first and
+//     third windows feeds SlopeDiffForTarget, as before).
 //   - G2: a retention must not stall ingest for longer than the budget, and the
 //     block bytes right after it must stay within a factor of the settled value.
 //   - G3: the time to commit a batch while building, and the first batch after
@@ -132,6 +138,35 @@ const RulesVersion = 3
 // and the placeholders are the timing values and ReopenDeadlineIndex (whose model
 // changed: a bucketed index, compared in write bytes). RulesVersion is 3.
 //
+// Log (2026-10-05, after the first round of scenario runs over the windows and before
+// the results of the combined scenario of that round were read; the Stage 3 plan's G1
+// slope is log(W14/W2)/log 7, so this is not from the plan: it came from the runs, was
+// specified in full, and the owner took the specification as written; the second round
+// of runs was made under this rules digest, 3084fa03, before this was committed):
+// the growth of G1 is the population's (G1Growth, above): the slope of a least-squares
+// line through the population's statistic of the budget ratio in every window, where it
+// was the slope of each query between the last two windows, which a single query that
+// met a checkpoint by chance in one of those two windows decided, in either direction.
+// The slope between the last two windows and each query's own fit became diagnostics,
+// and a query whose own fit is at or above LinearSlope is flagged. G1Instants gained
+// three hours and nine hours before the end (reads that writes follow, where the end of
+// the stream has none) and "dead" (whether a pinned node is alive an hour after the
+// end, when each of its refreshes has lapsed: a read that must establish that no
+// record holds). Windows whose plans do not ask an instant of the rules are judged on
+// the instants they ask, and no pass is shown for them. G1Headroom, G1Budget, the
+// floors, the windows, TargetWindow and the populations are unchanged. RulesVersion
+// is 4.
+//
+// Two properties of the statistic are part of the rule. It is an envelope: a population
+// is the largest of its queries (or the lower median) in each window, so a query that
+// becomes the largest only at the target window counts for about a quarter of its own
+// slope; each query's own fit is a diagnostic, and a query at or above LinearSlope is
+// flagged and does not decide. And where the budget of a read is at or below the
+// counter's floor (the steps of an answer of 25 items or fewer, the seeks of a read
+// after every refresh has lapsed), work that fits the budget is also at or below the
+// floor, no growth is counted, and G1 for that read is the ratio at the target window
+// alone.
+//
 // Fields in Placeholders are values nobody has chosen yet: they are here so the
 // runner and its report can be written, and the owner sets them before a result
 // is read against them.
@@ -151,6 +186,8 @@ type Rules struct {
 	// projected ratio of G1.
 	G1Budget   map[string]Budget
 	G1Headroom float64
+	// G1Growth says how the growth of a population is measured: see above.
+	G1Growth string
 	// G1Counters are the counters G1 judges against their budgets.
 	G1Counters []string
 	// OrderCounters, OrderTolerance and CounterFloors say when a counter orders
@@ -216,6 +253,8 @@ type Rules struct {
 	// selection: "churn" is the groups chosen as the busiest by records of the
 	// prefixes a node or a service collects, "heartbeat" the groups chosen as the
 	// busiest by run extensions, and "median" the groups chosen around the middle.
+	// An instant is an age of the plan's queries (see [BuildQueries]): each
+	// population is judged at each instant its plans ask it at.
 	G1Instants, G1Populations []string
 
 	// Placeholders names the fields above that nobody has chosen.
@@ -238,6 +277,7 @@ func DefaultRules() Rules {
 		SlopeDiffForTarget: 0.25,
 		TimingRegime:       "warm, zero cache misses in the timed repetitions", TimingWarmup: 3, TimingReps: 31,
 		G1Headroom: 2,
+		G1Growth:   "least-squares slope of ln S(R) on ln R over every window, S the population's statistic of the budget ratio with work at least 1; 0 at or below the floor of the work of the query that is S at the target",
 		G1Budget: map[string]Budget{
 			"seeks": {Base: 8, PerItem: 4, ItemsPerUnit: 1},
 			// 2 x DefaultKMin per entity read (a tail and one checkpoint interval) and
@@ -264,7 +304,7 @@ func DefaultRules() Rules {
 			{"reads a day back", "reads of an old snapshot"},
 			{"windows"},
 		},
-		G1Instants:    []string{AgeNow, Age1d},
+		G1Instants:    []string{AgeNow, Age3h, Age9h, Age1d, AgeDead},
 		G1Populations: []string{"hottest 10 churn prefixes", "hottest 10 heartbeat prefixes", "median prefix"},
 		Placeholders:  []string{"Timing*", "PebbleCPUShareMin", "ReopenDeadlineIndex"},
 	}

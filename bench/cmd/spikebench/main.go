@@ -133,6 +133,7 @@ type planFlags struct {
 	extend        string
 	podHeartbeat  string
 	runMaxAge     string
+	payloadPad    int
 	minNonEmpty   float64
 }
 
@@ -149,6 +150,7 @@ func (p *planFlags) flags(fs *flag.FlagSet) {
 	fs.StringVar(&p.extend, "extend", "", "how often a refreshed run is re-asserted: \"every\" refresh (the control) or a share of its TTL such as 0.5 (default: the preset's)")
 	fs.StringVar(&p.podHeartbeat, "pod-heartbeat", "", "how often the cluster collector refreshes every pod's placement, such as 5m, or \"off\" (default: the preset's)")
 	fs.StringVar(&p.runMaxAge, "run-max-age", "", "the greatest age of a run of refreshes before the ingest coalescer continues it with a new one, such as 2h, or \"off\" (default: the preset's, none)")
+	fs.IntVar(&p.payloadPad, "payload-pad", 0, "random bytes added to every payload, drawn apart from the rest of the stream so that only the payloads change (default: none)")
 	fs.IntVar(&p.window, "window", 0, "run over a window of this many days of retained history: a stream of 2R + 1.5 days with a daily retention that keeps R (see runner.WindowSpec)")
 	fs.StringVar(&p.pins, "pins", "", "the pinned prefixes of a family of windows, as made by `pins` (needs -window; only the records that touch them are written)")
 	fs.IntVar(&p.cacheMB, "cache-mb", 0, "block cache in MiB, the same for every run (default: the spec's)")
@@ -195,6 +197,9 @@ func (p planFlags) args() []string {
 	}
 	if p.runMaxAge != "" {
 		add("run-max-age", p.runMaxAge)
+	}
+	if p.payloadPad != 0 {
+		add("payload-pad", fmt.Sprint(p.payloadPad))
 	}
 	if p.window != 0 {
 		add("window", fmt.Sprint(p.window))
@@ -272,6 +277,10 @@ func (p planFlags) spec() (runner.Spec, error) {
 		}
 		w.CoalesceRuns, w.RunMaxAge = true, d
 	}
+	if p.payloadPad < 0 {
+		return runner.Spec{}, fmt.Errorf("-payload-pad cannot be negative")
+	}
+	w.PayloadPad = p.payloadPad
 	s := runner.DefaultSpec(w)
 	if p.batch > 0 {
 		s.BatchSize = p.batch
@@ -488,7 +497,7 @@ func doRun(ctx context.Context, args []string) error {
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age":
+		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age", "payload-pad":
 			planFlagSet = true
 		}
 	})
@@ -513,7 +522,7 @@ func doRun(ctx context.Context, args []string) error {
 	} else if planFlagSet {
 		// A plan is made once and every build is checked against it: flags that
 		// would make another plan are not quietly dropped.
-		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
+		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
 	}
 	plan, err := loadPlan(c)
 	if err != nil {
@@ -754,7 +763,8 @@ func doWindows(ctx context.Context, args []string) error {
 	return selfStep(ctx, self, g1...)
 }
 
-// doG1 judges G1 from the windows under -out and writes the verdicts to g1.txt.
+// doG1 judges G1 from the windows under -out and writes the verdicts to g1.txt, and
+// for tools to g1.json.
 func doG1(args []string) error {
 	fs := flag.NewFlagSet("g1", flag.ExitOnError)
 	var c common
@@ -772,6 +782,10 @@ func doG1(args []string) error {
 			return err
 		}
 		rules.Windows, rules.TargetWindow = days, days[len(days)-1]
+	}
+	// A report of an earlier judgement is not left beside a text that disagrees with it.
+	if err := os.Remove(filepath.Join(c.out, "g1.json")); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	ws, err := runner.LoadWindows(c.out)
 	if err != nil {
@@ -794,6 +808,15 @@ func doG1(args []string) error {
 	}
 	if err := os.WriteFile(filepath.Join(c.out, "g1.txt"), []byte(text.String()), 0o644); err != nil {
 		return err
+	}
+	if gerr == nil { // the same verdicts for tools
+		b, err := json.MarshalIndent(runner.NewG1Report(cells, rules, problems), "", " ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(c.out, "g1.json"), append(b, '\n'), 0o644); err != nil {
+			return err
+		}
 	}
 	fmt.Print(shown.String())
 	if gerr != nil {

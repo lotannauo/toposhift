@@ -182,8 +182,11 @@ process with another's, and each can be run alone:
 | `read -candidate C -out D` | Opens the built database in a new process **read-only** (nothing is written, flushed or compacted, no background work runs, the directory is as it was, and it is refused unless its tables and its last sequence number are the build's), with the same absolute block cache for every candidate, asks every query twice, compares each answer with the reference engine's, asks each twice more with the block cache emptied (the tables stay open) for the blocks a first read needs, counts its allocations, and writes the cost of each query to `D/<C>/results.json`. One that answers anything differently from the reference engine fails the step (its results are written all the same). |
 | `report -out D` | Sets the candidates side by side (all that have been read, or the ones named), and fails if they cannot be compared; the full tables are always in `D/report.txt`. The first lines say whether the results can be compared at all: one plan, one stream, one binary, the same Pebble options (apart from the comparer, key schema and collectors, which are what a candidate is), every answer the reference engine's. If not, it says so first. |
 
-What is asked: forward and reverse neighbors and `Alive` as of now, an hour back, a day
-back, and an old snapshot (read at the instant of its token, which is before any record from the token on takes effect, so that a pipeline backed up at the token does not make every heartbeat prefix look lapsed; with only what it saw); windows of the last hour and the last day; and a batch of
+What is asked: forward and reverse neighbors and `Alive` as of now, an hour, three hours,
+nine hours and a day back (a read that far back needs that much stream behind it), and an old snapshot (read at the instant of its token, which is before any record from the token on takes effect, so that a pipeline backed up at the token does not make every heartbeat prefix look lapsed; with only what it saw); `Alive` an hour after the end
+(`dead`: every refresh of a heartbeating node has lapsed by then, so the store has to establish that no record holds,
+which a read of a live entity, stopping at the first record that does, never shows; a plan in which one is alive is refused,
+and a stream whose nodes are not refreshed has none); windows of the last hour and the last day; and a batch of
 the chosen prefixes together. The queries are chosen from the stream, not from any
 candidate, and are asked of live prefixes only. Reads that would be empty by
 construction are left out: a refreshed edge is one run, and all its refreshes carry the
@@ -233,19 +236,30 @@ extensions into the baseline), so every window is a store that has **always** he
 - The plan of a window generates the stream twice and holds the reference engine's records of the
   pinned entities in memory: at the `ci` preset a window of 14 days takes about 3 minutes and 6 GB, and
   one of 30 days about 8 minutes and 11 GB (measured on a Mac; the builds themselves are small).
-- `g1` applies the rule in `runner.Rules` to every pinned query at the instants of the rules: the
-  budget (per entity read, and per item of the reference answer; cold bytes in blocks of the run) at the
-  target window, multiplied by the headroom raised to the growth over the last two windows. A population
-  passes if its largest (the median, for the median population) projected ratio is at most 1, and a
-  candidate passes G1 if every population of every class does. The slope between the first and third
-  windows, the class it gives and a fit over every window are printed as diagnostics.
+- `g1` applies the rule in `runner.Rules` to every pinned query at the instants of the rules (now, three
+  and nine hours back, a day back, and `dead`): each query's ratio to its budget (per entity read, and per
+  item of the reference answer in that window; cold bytes in blocks of the run) in each window, the
+  population's statistic of it in each window (its largest, or the median for the median population), and
+  the statistic at the target window multiplied by the headroom raised to the growth, the least-squares
+  slope of the statistic's logarithm against the window's over every window (none when the statistic's work
+  at the target is at or below the counter's floor). A population passes if that is at most 1, and a
+  candidate passes G1 if every population of every class does at every instant of the rules; windows whose
+  plans do not ask one are judged on the others and no pass is shown. The slopes between the last two
+  windows and between the first and third, the class the second gives, and the largest fit of one query's
+  own work (flagged at or above the linear slope) are printed as diagnostics. `g1.txt` has the verdicts and
+  every cell, and `g1.json` the same for tools.
 
 Scenario flags, all of which leave the presets unchanged unless given: `-extend every` (every refresh
 re-asserted, the control) or `-extend 0.5` (a share of the TTL), `-pod-heartbeat 5m` or `off`,
 `-run-max-age 2h` (the ingest coalescer continues a run that reaches this age with a new one, for every
 refreshed run whatever its layer: a bound on how far a layout that keeps an extension at its run's start
-has to walk back), `-events-per-second` and `-cache-mb` (the block cache is the same absolute size in every
-run, 64 MiB unless given).
+has to walk back; a run whose extension interval, half its TTL, is at least the bound is never extended), `-payload-pad 456`
+(random bytes added to every payload from a source of their own, so the stream is the same records with
+longer payloads), `-events-per-second` and `-cache-mb` (the block cache is the same absolute size in every
+run, 64 MiB unless given). A checkpoint candidate is named by its policy, any of them: `L/k64a4l1h30m` has a
+checkpoint 1 h 30 min behind the newest record of its prefix, which with `-run-max-age 1h` and an extension
+interval of 30 min is behind every run that can still be extended (a lag is written without the units that
+are zero at its end).
 
 What a build records besides the tables: how long each batch, each retention and the first batch after
 each took (informational: a timing of the machine that built it), the reads of "now" at the end of the build

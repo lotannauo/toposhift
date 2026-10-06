@@ -48,8 +48,9 @@ func (r Retention) Horizon(start time.Time) time.Time { return start.Add(r.At - 
 
 // SpecVersion is bumped when the meaning of a spec field, or the way the
 // queries are chosen from it, changes, so that digests of different meanings
-// cannot be equal.
-const SpecVersion = 2
+// cannot be equal. 3: the reads three and nine hours back and the read after
+// every refresh has lapsed (AgeDead).
+const SpecVersion = 3
 
 // Spec is everything that must be identical for every candidate. Its digest is
 // recorded in the plan and in every manifest.

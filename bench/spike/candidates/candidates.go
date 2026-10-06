@@ -14,6 +14,12 @@
 //	                    at its start deletes every checkpoint after it, so it cannot
 //	                    help a prefix whose runs are refreshed
 //	L/k64a4l2s          the same with a checkpoint instant 2 s behind the newest
+//	L/k64a4l1h30m       the same 1 h 30 min behind: behind every run that can still be
+//	                    extended when the coalescer bounds a run's age (RunMaxAge) and
+//	                    the bound plus the extension interval is at most the lag
+//
+// A lag is written as Go writes a duration, without the units that are zero at its
+// end (30m, not 30m0s; 1h, not 1h0m0s).
 //
 // The settings a runner or a test chooses, not the candidate's own, are in
 // [Options].
@@ -107,7 +113,7 @@ func LNoCheckpoints() Variant {
 func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 	name := fmt.Sprintf("L/k%da%s", kMin, strconv.FormatFloat(alpha, 'g', -1, 64))
 	if lag != 0 {
-		name += "l" + lag.String()
+		name += "l" + lagName(lag)
 	}
 	return Variant{Name: name, Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
 		return pebblelog.Open(dir, pebblelog.Options{
@@ -115,6 +121,18 @@ func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 			Checkpoints: pebblelog.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
 		})
 	}}
+}
+
+// lagName is the duration as Go writes it, without the zero units at its end.
+func lagName(d time.Duration) string {
+	s := d.String()
+	if t, ok := strings.CutSuffix(s, "m0s"); ok {
+		s = t + "m"
+	}
+	if t, ok := strings.CutSuffix(s, "h0m"); ok {
+		s = t + "h"
+	}
+	return s
 }
 
 // Wrap is v with the engine it opens passed through wrap, under another name: a

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/lotannauo/toposhift/bench/spike/conformance"
+	"github.com/lotannauo/toposhift/bench/spike/runner"
 )
 
 // binary builds the command with cgo off, no race detector and no version control
@@ -273,7 +275,7 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("windows: %v\n%.2000s\n%.2000s", err, stdout, stderr)
 	}
-	for _, f := range []string{"pins.json", "g1.txt", "R1/plan.json", "R2/plan.json", "R3/plan.json", "R3/L_off/results.json", "R1/M_crdb1/results.json", "R2/L_k64a4l1ns/manifest.json"} {
+	for _, f := range []string{"pins.json", "g1.txt", "g1.json", "R1/plan.json", "R2/plan.json", "R3/plan.json", "R3/L_off/results.json", "R1/M_crdb1/results.json", "R2/L_k64a4l1ns/manifest.json"} {
 		if _, err := os.Stat(filepath.Join(out, f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
@@ -285,6 +287,36 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(stdout, "NOT TO BE JUDGED TOGETHER") {
 		t.Errorf("a valid validation run's windows are held to be incomparable:\n%.1500s", stdout)
+	}
+	// The verdicts for tools say what the text says.
+	var report runner.G1Report
+	if b, err := os.ReadFile(filepath.Join(out, "g1.json")); err != nil || json.Unmarshal(b, &report) != nil {
+		t.Errorf("g1.json: %v", err)
+	} else if len(report.Verdicts) != 3 || len(report.Cells) == 0 || report.RulesVersion != runner.RulesVersion || len(report.Problems) != 0 {
+		t.Errorf("g1.json holds %d verdicts, %d cells, rules version %d, problems %v", len(report.Verdicts), len(report.Cells), report.RulesVersion, report.Problems)
+	} else {
+		for _, v := range report.Verdicts {
+			if !strings.Contains(stdout, v.Candidate+": ") || v.Pass != strings.Contains(stdout, v.Candidate+": PASSES G1\n") {
+				t.Errorf("g1.json says %+v, and the text does not", v)
+			}
+		}
+	}
+	// A judgement that fails leaves no report of an earlier one beside its text.
+	if err := os.WriteFile(filepath.Join(out, "g1.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := run(t, bin, "g1", "-untimed", "-out", out, "-windows", "1,2,3,4"); err == nil {
+		t.Error("windows of 1, 2, 3 and 4 days were judged from three")
+	}
+	if _, err := os.Stat(filepath.Join(out, "g1.json")); err == nil {
+		t.Error("the report of an earlier judgement is still beside a judgement that failed")
+	}
+	// A judgement that works writes it again.
+	if _, stderr, err := run(t, bin, "g1", "-untimed", "-out", out, "-windows", "1,2,3"); err != nil {
+		t.Errorf("g1 again: %v\n%s", err, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, "g1.json")); err != nil {
+		t.Errorf("no report after a judgement that worked: %v", err)
 	}
 	// A family that stopped is resumed on the plans it made, if the flags are the same,
 	// and refused if they are not: the pins are of the scenario they were chosen from.

@@ -24,7 +24,7 @@ func factory(v candidates.Variant, o candidates.Options) conformance.Factory {
 }
 
 // Policies of layout L that a sweep names besides the default.
-var sweepPoints = append([]string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a4l2s"}, candidates.SweepGrid()...)
+var sweepPoints = append([]string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a4l2s", "L/k64a4l1h", "L/k64a4l1h30m", "L/k64a2l1ns"}, candidates.SweepGrid()...)
 
 func everyVariant(t *testing.T) []candidates.Variant {
 	t.Helper()
@@ -90,9 +90,12 @@ func TestNamesRoundTripAndBadOnesAreRefused(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"", "M", "M/nonsense", "L", "L/k", "L/k0a4", "L/k64a0", "L/k64a-1", "L/k64a4l-2s", "L/k64a4lforever",
-		"L/k064a4",   // a second spelling of L/k64a4
-		"L/k64a4.0",  // and another
-		"L/k64a4l0s", // and another: no lag has no suffix
+		"L/k064a4",        // a second spelling of L/k64a4
+		"L/k64a4.0",       // and another
+		"L/k64a4l0s",      // and another: no lag has no suffix
+		"L/k64a4l1h30m0s", // a second spelling of L/k64a4l1h30m
+		"L/k64a4l90m",     // and another
+		"L/k64a4l1h0m",    // a second spelling of L/k64a4l1h
 		"X/crdb1", "m/crdb1",
 	} {
 		if v, err := candidates.Lookup(bad); err == nil {
@@ -117,6 +120,7 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 		"L/k64a4":          {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=0s"},
 		"L/k64a4l1ns":      {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1ns"},
 		"L/k128a0.5l1ns":   {"layout": "L", "checkpoints": "kmin=128 alpha=0.5 lag=1ns"},
+		"L/k64a4l1h30m":    {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
 	}
 	for name, props := range want {
 		v, err := candidates.Lookup(name)

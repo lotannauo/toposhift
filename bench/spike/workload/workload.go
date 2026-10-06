@@ -185,6 +185,13 @@ type Config struct {
 
 	// PayloadMin and PayloadMax bound the random payload of each record.
 	PayloadMin, PayloadMax int
+
+	// PayloadPad adds this many random bytes to the end of every payload, drawn from a
+	// source of their own: a config with it draws the same numbers from the stream's
+	// source as one without, so its stream has the same records with longer payloads,
+	// and a change in a measurement is the payload's alone. Zero adds nothing, and is
+	// left out of the config's JSON, so the digest of a spec without it is as it was.
+	PayloadPad int `json:",omitempty"`
 }
 
 // Tiny is twenty minutes of a handful of entities, for tests.
@@ -264,6 +271,8 @@ func (c Config) valid() error {
 		return bad("LateProbability must be in [0, 1], with a positive LateMeanDelay if above 0")
 	case c.PayloadMin < 0 || c.PayloadMax < c.PayloadMin:
 		return bad("payload bounds are %d to %d", c.PayloadMin, c.PayloadMax)
+	case c.PayloadPad < 0:
+		return bad("PayloadPad must not be negative")
 	case c.ExtendEvery < 0 || (c.ExtendEvery > 0 && !c.CoalesceRuns):
 		return bad("ExtendEvery needs CoalesceRuns and must not be negative")
 	case c.RunMaxAge < 0 || (c.RunMaxAge > 0 && (!c.CoalesceRuns || c.RunMaxAge < time.Minute)):
@@ -280,6 +289,7 @@ func (c Config) valid() error {
 type Generator struct {
 	cfg Config
 	rng *rand.Rand
+	pad *rand.Rand // the padding of payloads (PayloadPad), apart from rng
 	res *identity.Resolver
 
 	podZipf, nodeZipf *rand.Zipf
@@ -318,6 +328,9 @@ func New(cfg Config) (*Generator, error) {
 	}
 	if cfg.BacklogEvery > 0 {
 		g.backlogs = make(map[lifecycle.Producer]*backlog)
+	}
+	if cfg.PayloadPad > 0 {
+		g.pad = rand.New(rand.NewPCG(cfg.Seed^0x7061646469e67000, ^cfg.Seed))
 	}
 	g.podZipf = rand.NewZipf(g.rng, cfg.PodSkew, 1, uint64(cfg.Pods-1))
 	g.nodeZipf = rand.NewZipf(g.rng, cfg.NodeSkew, 1, uint64(cfg.Hosts-1))
