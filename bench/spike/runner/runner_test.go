@@ -1646,18 +1646,81 @@ func TestReadRefusesTablesThatAreNotWhatTheBuildLeft(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The manifest has the figures twice, as built and as compacted; the second is the one a read holds the tables to.
-	key := `"live_table_bytes": `
-	at := strings.LastIndex(string(b), key)
-	if m.StatsCompacted["live_table_bytes"] == 0 || at < 0 {
-		t.Fatalf("the manifest has no %q", key)
+	// The bytes of the tables, and the count of a level that has some: the manifest
+	// has the figures twice, as built and as compacted, and the second is the one a
+	// read holds the tables to.
+	level := ""
+	for k, n := range m.StatsCompacted {
+		if strings.HasPrefix(k, "tables_l") && n > 0 {
+			level = k
+		}
 	}
-	end := at + len(key) + len(strings.TrimRight(strings.SplitN(string(b[at+len(key):]), "\n", 2)[0], ","))
-	if err := os.WriteFile(path, []byte(string(b[:at])+key+"1"+string(b[end:])), 0o644); err != nil {
+	if m.StatsCompacted["live_table_bytes"] == 0 || level == "" {
+		t.Fatalf("the build left no tables: %v", m.StatsCompacted)
+	}
+	for _, name := range []string{"live_table_bytes", level} {
+		key := `"` + name + `": `
+		at := strings.LastIndex(string(b), key)
+		if at < 0 {
+			t.Fatalf("the manifest has no %q", key)
+		}
+		end := at + len(key) + len(strings.TrimRight(strings.SplitN(string(b[at+len(key):]), "\n", 2)[0], ","))
+		if err := os.WriteFile(path, []byte(string(b[:at])+key+"99"+string(b[end:])), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "not what the build left: "+name) {
+			t.Errorf("%s other than the manifest's: %v", name, err)
+		}
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err == nil || !strings.Contains(err.Error(), "not what the build left") {
-		t.Errorf("tables other than the manifest's: %v", err)
+	if _, err := runner.Read(context.Background(), plan, v, dir, clean, nil); err != nil {
+		t.Errorf("the manifest put back: %v", err)
+	}
+}
+
+// lateCompaction is an engine that compacts after it has been measured: its
+// CompactAll only waits for rest, and the compaction runs when it is closed, which
+// a database does when a compaction Pebble started late is still running at the
+// close (the close waits for it).
+type lateCompaction struct{ fullEngine }
+
+func (l lateCompaction) CompactAll(ctx context.Context) error { return l.Quiesce(ctx) }
+
+func (l lateCompaction) Close() error {
+	err := l.fullEngine.CompactAll(context.Background())
+	if cerr := l.fullEngine.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// A build whose database changes between the measurement and the close is refused
+// by the build, which writes no manifest, so that what a manifest records is what a
+// read-only open finds; a read would refuse it otherwise.
+func TestABuildRefusesTablesThatChangeAfterTheyAreMeasured(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	v := candidates.Wrap(lookup(t, "M/crdb1"), "M/late", func(e engine.Engine, o candidates.Options) (engine.Engine, error) {
+		if o.ReadOnly {
+			return e, nil
+		}
+		return lateCompaction{e.(fullEngine)}, nil
+	})
+	dir := runner.CandidateDir(t.TempDir(), v.Name)
+	_, err := runner.Build(context.Background(), plan, v, dir, clean, nil)
+	if err == nil || !strings.Contains(err.Error(), "changed after it was measured") || !strings.Contains(err.Error(), "not what the build left") {
+		t.Fatalf("a database that compacted after it was measured: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, runner.ManifestFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the build wrote a manifest (%v)", err)
+	}
+	// The same engine compacting when it is told to is built and read.
+	if _, _, res := run(t, plan, candidates.Wrap(lookup(t, "M/crdb1"), "M/on-time", func(e engine.Engine, _ candidates.Options) (engine.Engine, error) { return e, nil })); len(res.Mismatches) != 0 {
+		t.Errorf("mismatches %v", first(res.Mismatches))
 	}
 }
 

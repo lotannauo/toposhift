@@ -126,9 +126,11 @@ runner can read it without knowing Pebble:
   to show the caller one, so five versions of each of a hundred keys is 100 steps and 500
   inner steps. Block bytes depend on what has been compacted when, so they are only
   comparable after `CompactAll`.
-- **`Quiescer`**: `Quiesce` waits until nothing is flushing or compacting, the estimates
-  of every table's garbage are collected, no file is marked for compaction (unless
-  automatic compactions are off) and all of that has held for a second; `CompactAll`
+- **`Quiescer`**: `Quiesce` waits until nothing is flushing or compacting, Pebble has
+  loaded the statistics of every table (they hold its tombstones and garbage estimates, and
+  the compactions that drop tombstones are picked when they arrive; Pebble's own "nothing
+  queued" is true while a job is still loading them), no file is marked for compaction
+  (unless automatic compactions are off) and all of that has held for a second; `CompactAll`
   compacts everything into as few tables as Pebble will and then waits for rest. `Settle`
   is the quick version the conformance test uses between rounds.
 - **`Statser`**: flat counters from `pebblekv.Snapshot`: flushes, compactions, read
@@ -178,7 +180,7 @@ process with another's, and each can be run alone:
 | Step | What it does |
 | --- | --- |
 | `plan -preset P -out D` | Reads the workload twice with no store. The first pass finds the prefixes to ask about (the busiest of each class by records and by run extensions, and some around the middle, among those that exist at the end); the second feeds the reference engine only the records that touch them and records its answer to every query. `D/plan.json` holds the stream's digest, the queries and the answers, and nothing about the machine, so one spec makes one plan. A group of queries whose answers are mostly empty is an error: candidates would agree on nothing. |
-| `build -candidate C -out D` | Writes the planned stream to `C` in batches of the planned size, dropping the records before the horizon as a store would refuse them, moving the horizon as planned, and checks the token after every batch. It compacts everything and records what the database holds in `D/<C>/manifest.json`. A build that does not come to the planned stream, fails a write or a retention, or counts a failed checkpoint writes no manifest, so it cannot be read; its directory is left as it was and has to be removed before the candidate is built again. |
+| `build -candidate C -out D` | Writes the planned stream to `C` in batches of the planned size, dropping the records before the horizon as a store would refuse them, moving the horizon as planned, and checks the token after every batch. It compacts everything, records what the database holds in `D/<C>/manifest.json`, and opens the closed database read-only as `read` will, checking it as `read` checks it. A build that does not come to the planned stream, fails a write or a retention, counts a failed checkpoint, or whose database changed after it was measured writes no manifest, so it cannot be read; its directory is left as it was and has to be removed before the candidate is built again. |
 | `read -candidate C -out D` | Opens the built database in a new process **read-only** (nothing is written, flushed or compacted, no background work runs, the directory is as it was, and it is refused unless its tables and its last sequence number are the build's), with the same absolute block cache for every candidate, asks every query twice, compares each answer with the reference engine's, asks each twice more with the block cache emptied (the tables stay open) for the blocks a first read needs, counts its allocations, and writes the cost of each query to `D/<C>/results.json`. One that answers anything differently from the reference engine fails the step (its results are written all the same). |
 | `report -out D` | Sets the candidates side by side (all that have been read, or the ones named), and fails if they cannot be compared; the full tables are always in `D/report.txt`. The first lines say whether the results can be compared at all: one plan, one stream, one binary, the same Pebble options (apart from the comparer, key schema and collectors, which are what a candidate is), every answer the reference engine's. If not, it says so first. |
 
