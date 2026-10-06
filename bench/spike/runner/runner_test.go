@@ -250,19 +250,64 @@ func TestEveryKindOfReadIsAskedAndAgreed(t *testing.T) {
 			t.Errorf("no %s query in the plan: %v", op, ops)
 		}
 	}
-	for _, age := range []string{runner.AgeNow, runner.Age1h, runner.AgeOldToken, runner.AgeWindow1h} {
+	for _, age := range []string{runner.AgeNow, runner.Age1h, runner.AgeOldToken, runner.AgeWindow1h, runner.AgeDead} {
 		if ages[age] == 0 {
 			t.Errorf("no query at age %s in the plan: %v", age, ages)
 		}
 	}
-	if ages[runner.Age1d] != 0 || ages[runner.AgeWindow1d] != 0 {
-		t.Errorf("queries a day back in a stream of an hour: %v", ages)
+	if ages[runner.Age1d] != 0 || ages[runner.AgeWindow1d] != 0 || ages[runner.Age3h] != 0 || ages[runner.Age9h] != 0 {
+		t.Errorf("queries three hours or more back in a stream of an hour: %v", ages)
 	}
 	for _, v := range candidates.All() {
 		_, _, res := run(t, plan, v)
 		if len(res.Mismatches) != 0 || len(res.Unstable) != 0 {
 			t.Errorf("%s: mismatches %v, unstable %v", v.Name, first(res.Mismatches), first(res.Unstable))
 		}
+		if v.Name != "L/off" {
+			continue
+		}
+		// A node that is not alive is a read of its whole run, where one that is alive
+		// stops at the first record that holds: the reads after every refresh lapsed
+		// cost layout L without checkpoints more than the reads of the same nodes now.
+		steps := map[string]int64{}
+		for i, q := range plan.Queries {
+			if q.Op == runner.OpAlive {
+				steps[q.Age] += res.Queries[i].Counters["read.records_stepped"]
+			}
+		}
+		if steps[runner.AgeDead] <= steps[runner.AgeNow] || steps[runner.AgeNow] == 0 {
+			t.Errorf("L/off stepped over %d records to find the nodes alive now and %d to find them dead", steps[runner.AgeNow], steps[runner.AgeDead])
+		}
+	}
+}
+
+// A read after every refresh lapsed asks about entities that are not alive: a stream
+// whose nodes are not refreshed has none, and one whose heartbeat outlives the instant
+// is refused, since its answers would not be what the reads are for.
+func TestReadsAfterEveryRefreshLapsedFindNothingAlive(t *testing.T) {
+	t.Parallel()
+
+	ages := func(spec runner.Spec) map[string]int {
+		out := map[string]int{}
+		for _, q := range mustPlan(t, spec).Queries {
+			out[q.Age]++
+		}
+		return out
+	}
+	if n := ages(tinySpec())[runner.AgeDead]; n == 0 {
+		t.Error("no read after every refresh lapsed in a stream of heartbeating nodes")
+	}
+	watch := tinySpec()
+	watch.Workload.HeartbeatInterval = 0
+	if n := ages(watch)[runner.AgeDead]; n != 0 {
+		t.Errorf("%d reads after every refresh lapsed in a stream whose nodes are not refreshed", n)
+	}
+	long := tinySpec()
+	long.Workload.HeartbeatInterval = 30 * time.Minute // a TTL of two hours, refreshed half an hour in
+	long.Workload.Duration = time.Hour
+	long.Retentions = nil
+	if _, err := runner.MakePlan(context.Background(), long, nil); err == nil || !strings.Contains(err.Error(), "TTL") {
+		t.Errorf("a heartbeat that outlives the instant: %v", err)
 	}
 }
 
@@ -791,6 +836,12 @@ func TestQueriesAreAskedAtTheirAges(t *testing.T) {
 		case runner.Age1d:
 			if !q.At.Equal(end.Add(-24*time.Hour)) || q.AsOf != engine.Latest {
 				t.Errorf("%s: asked at %s, token %d", q.Name(), q.At, q.AsOf)
+			}
+		case runner.Age3h, runner.Age9h:
+			t.Errorf("%s: a read %s back in a stream of an hour", q.Name(), q.Age)
+		case runner.AgeDead:
+			if !q.At.Equal(end.Add(runner.DeadAfter)) || q.AsOf != engine.Latest || q.Op != runner.OpAlive || q.Size != 0 {
+				t.Errorf("%s: a %s read asked at %s, token %d, answer of %d", q.Name(), q.Op, q.At, q.AsOf, q.Size)
 			}
 		case runner.AgeOldToken:
 			if !q.At.Equal(info.OldAt) || q.AsOf != info.OldToken || !q.At.Before(end) {
@@ -1336,6 +1387,9 @@ func TestFilesKeepTheirFields(t *testing.T) {
 		"Results":      {runner.Results{}, "Candidate,PlanDigest,ManifestDigest,Build,Untimed,Describe,Queries,Mismatches,Unstable,StatsBefore,StatsAfter"},
 		"Query result": {runner.QueryResult{}, "Digest,Size,Counters,Warm"},
 		"Build":        {runner.BuildInfo{}, "GoVersion,GOOS,GOARCH,CGO,Race,Invariants,Tags,Unoptimized,Revision,Modified,Executable"},
+		"G1 report":    {runner.G1Report{}, "RulesDigest,RulesVersion,Windows,Judgeable,Problems,Verdicts,Cells"},
+		"G1 verdict":   {runner.G1Verdict{}, "Candidate,Pass,Failing,Decided,NotDecided,Missing"},
+		"G1 cell":      {runner.G1Cell{}, "Candidate,Group,Age,Counter,Statistic,Queries,Worst,Value,Budget,Ratio,Fit,Growth,Projected,SlopeLast,SlopeFirst,Class,QueryFit,QueryFitOf,LinearQuery,Pass,NotDecided"},
 	} {
 		if got := fields(c.v); got != c.want {
 			t.Errorf("%s has fields\n  %s\nwant\n  %s", name, got, c.want)
@@ -1780,11 +1834,16 @@ func TestAReadADayBackNeedsADayOfHistoryBehindIt(t *testing.T) {
 	for _, c := range []struct {
 		duration            time.Duration
 		dayBack, dayWindows bool
+		back3h, back9h      bool
 	}{
-		{24 * time.Hour, false, true},
-		{26 * time.Hour, false, true},
-		{47 * time.Hour, false, true},
-		{48 * time.Hour, true, true},
+		{5 * time.Hour, false, false, false, false},
+		{6 * time.Hour, false, false, true, false},
+		{17 * time.Hour, false, false, true, false},
+		{18 * time.Hour, false, false, true, true},
+		{24 * time.Hour, false, true, true, true},
+		{26 * time.Hour, false, true, true, true},
+		{47 * time.Hour, false, true, true, true},
+		{48 * time.Hour, true, true, true, true},
 	} {
 		spec := tinySpec()
 		spec.Workload.Duration = c.duration
@@ -1796,8 +1855,9 @@ func TestAReadADayBackNeedsADayOfHistoryBehindIt(t *testing.T) {
 		for _, q := range plan.Queries {
 			ages[q.Age] = true
 		}
-		if ages[runner.Age1d] != c.dayBack || ages[runner.AgeWindow1d] != c.dayWindows {
-			t.Errorf("%s: reads a day back %v and windows of a day %v, want %v and %v", c.duration, ages[runner.Age1d], ages[runner.AgeWindow1d], c.dayBack, c.dayWindows)
+		if ages[runner.Age1d] != c.dayBack || ages[runner.AgeWindow1d] != c.dayWindows || ages[runner.Age3h] != c.back3h || ages[runner.Age9h] != c.back9h {
+			t.Errorf("%s: reads a day back %v, windows of a day %v, three hours back %v, nine %v; want %v, %v, %v, %v", c.duration,
+				ages[runner.Age1d], ages[runner.AgeWindow1d], ages[runner.Age3h], ages[runner.Age9h], c.dayBack, c.dayWindows, c.back3h, c.back9h)
 		}
 	}
 }

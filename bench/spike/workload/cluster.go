@@ -3,6 +3,7 @@ package workload
 import (
 	"container/heap"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
@@ -139,14 +140,22 @@ func (g *Generator) payload() []byte {
 	if g.cfg.PayloadMax > g.cfg.PayloadMin {
 		n += g.rng.IntN(g.cfg.PayloadMax - g.cfg.PayloadMin + 1)
 	}
-	b := make([]byte, n)
-	for i := 0; i < n; i += 8 {
-		v := g.rng.Uint64()
-		for j := 0; j < 8 && i+j < n; j++ {
+	b := make([]byte, n+g.cfg.PayloadPad)
+	fill(b[:n], g.rng)
+	if g.cfg.PayloadPad > 0 {
+		fill(b[n:], g.pad)
+	}
+	return b
+}
+
+// fill fills b with random bytes from rng, eight to a draw.
+func fill(b []byte, rng *rand.Rand) {
+	for i := 0; i < len(b); i += 8 {
+		v := rng.Uint64()
+		for j := 0; j < 8 && i+j < len(b); j++ {
 			b[i+j] = byte(v >> (8 * j))
 		}
 	}
-	return b
 }
 
 // layerOf is the churn layer of a relation, as the design assigns them: slow

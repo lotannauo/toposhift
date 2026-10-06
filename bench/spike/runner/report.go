@@ -167,10 +167,10 @@ var metrics = []metricSpec{
 	{"checkpoints skipped for another fold version (layout L)", "read.checkpoint_skipped_version", false},
 }
 
-// headline are the ages the short report shows: now, an hour and a day back, the
-// old snapshot and a day's window. The full report has every age (an hour's window
-// besides).
-var headline = map[string]bool{AgeNow: true, Age1h: true, Age1d: true, AgeOldToken: true, AgeWindow1d: true}
+// headline are the ages the short report shows: now, an hour, three hours, nine
+// hours and a day back, the old snapshot, after every refresh lapsed and a day's
+// window. The full report has every age (an hour's window besides).
+var headline = map[string]bool{AgeNow: true, Age1h: true, Age3h: true, Age9h: true, Age1d: true, AgeOldToken: true, AgeDead: true, AgeWindow1d: true}
 
 // Write prints the comparison: what the plan is, whether the candidates can be
 // compared, what each holds, and what the reads cost. Unless full is set, the

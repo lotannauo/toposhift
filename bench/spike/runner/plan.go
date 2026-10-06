@@ -190,6 +190,12 @@ func MakePlan(ctx context.Context, spec Spec, say Progress) (*Plan, error) {
 	})
 	var thin []string
 	for _, g := range plan.Groups {
+		if g.Age == AgeDead {
+			if err := checkDeadGroup(g); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if float64(g.NonEmpty) < spec.MinNonEmpty*float64(g.Queries) {
 			thin = append(thin, fmt.Sprintf("%s at %s (%d of %d)", g.Group, g.Age, g.NonEmpty, g.Queries))
 		}
@@ -201,6 +207,16 @@ func MakePlan(ctx context.Context, spec Spec, say Progress) (*Plan, error) {
 		return nil, err
 	}
 	return plan, nil
+}
+
+// checkDeadGroup refuses a group of reads past the end of the stream in which any
+// read finds an entity alive: they are empty by construction (every answer is "not
+// alive"), and one that is not means the instant is not past every refresh's TTL.
+func checkDeadGroup(g GroupInfo) error {
+	if g.NonEmpty > 0 {
+		return fmt.Errorf("runner: %d of %d reads of %s %s past the end find an entity alive: the instant is not past every refresh's TTL", g.NonEmpty, g.Queries, g.Group, DeadAfter)
+	}
+	return nil
 }
 
 // cacheBytes is the block cache every candidate gets: the share of the payload

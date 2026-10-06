@@ -154,6 +154,7 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		"a rate":            {[]string{"-events-per-second", "0.25"}, func(w workload.Config) bool { return w.EventsPerSecond == 0.25 }},
 		"a run age":         {[]string{"-run-max-age", "2h"}, func(w workload.Config) bool { return w.CoalesceRuns && w.RunMaxAge == 2*time.Hour }},
 		"no run age":        {[]string{"-run-max-age", "off"}, func(w workload.Config) bool { return w.RunMaxAge == 0 }},
+		"a payload pad":     {[]string{"-payload-pad", "456"}, func(w workload.Config) bool { return w.PayloadPad == 456 }},
 	} {
 		s, err := parse(t, append([]string{"-preset", "ci"}, c.args...)...).spec()
 		if err != nil || !c.check(s.Workload) {
@@ -169,6 +170,7 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		"negative rate":       {"-events-per-second", "-1"},
 		"run age nonsense":    {"-run-max-age", "long"},
 		"run age too short":   {"-run-max-age", "10s"},
+		"negative pad":        {"-payload-pad", "-1"},
 		"window with days":    {"-window", "2", "-days", "5"},
 		"window with retain":  {"-window", "2", "-retain", "48h/24h"},
 		"pins with no window": {"-pins", pinsFile(t)},
@@ -179,8 +181,8 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		}
 	}
 	// The flags are passed on to the processes of a run.
-	p := parse(t, "-extend", "every", "-pod-heartbeat", "5m", "-events-per-second", "0.25", "-run-max-age", "2h", "-window", "7")
-	want := []string{"-preset", "ci", "-events-per-second", "0.25", "-extend", "every", "-pod-heartbeat", "5m", "-run-max-age", "2h", "-window", "7"}
+	p := parse(t, "-extend", "every", "-pod-heartbeat", "5m", "-events-per-second", "0.25", "-run-max-age", "2h", "-payload-pad", "456", "-window", "7")
+	want := []string{"-preset", "ci", "-events-per-second", "0.25", "-extend", "every", "-pod-heartbeat", "5m", "-run-max-age", "2h", "-payload-pad", "456", "-window", "7"}
 	if got := p.args(); !slices.Equal(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
 	}

@@ -2,6 +2,7 @@ package runner_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -223,7 +224,7 @@ func TestFrozenDigests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "ea462e432b0a1cda82f473899069a39ef0e410e0b35f47e4d3382786ccf19c2b"; rules != want {
+	if want := "3084fa037c27ebea4dbe5ddb51974d9ce85451b5e9792ad9c312f8e5b5aeaa1f"; rules != want {
 		t.Errorf("decision rules digest %s, frozen at %s", rules, want)
 	}
 	for name, w := range map[string]workload.Config{"ci": workload.CI(), "week": workload.Week(), "month": workload.Month()} {
@@ -238,10 +239,30 @@ func TestFrozenDigests(t *testing.T) {
 	}
 }
 
+// A workload option that is off is left out of the spec, so the plans made before it
+// existed still hash to the digests they record and can be loaded and judged again.
+func TestAnOptionThatIsOffLeavesTheSpecAsItWas(t *testing.T) {
+	t.Parallel()
+
+	off, err := json.Marshal(runner.DefaultSpec(workload.CI()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := workload.CI()
+	w.PayloadPad = 456
+	on, err := json.Marshal(runner.DefaultSpec(w))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(off), "PayloadPad") || !strings.Contains(string(on), `"PayloadPad":456`) {
+		t.Errorf("a spec without a payload pad: %s\nwith one: %s", off, on)
+	}
+}
+
 var frozenSpecs = map[string]string{
-	"ci":    "1d69b8c68d0ffd37fa06b8eaa3f483406aa38e4413eef454ef0a9f457ed91f50",
-	"week":  "76b69d4b4546b5c8d0c268ed7f41c8d69258cd197aadc0588e4040f07987b564",
-	"month": "a660dc220878165620ece1a68665232456ec5cde888a3257d431de035f3227d0",
+	"ci":    "8c2f064625127aa6639ba2000bc61dbf7edff8beaa3524cdde88b3d205364da9",
+	"week":  "98e2c1bc2f168fd71c90f6e378036c912fcc3ae2d4b09e518bc2f32dc43faf9b",
+	"month": "d27b21ee0724df48d35bc61c6043bd5ff243e15b7b50ef42e7d7f4d3730e40c4",
 }
 
 // The old snapshot is taken three quarters through the period, or halfway from
@@ -482,11 +503,11 @@ var (
 	frozenTiny = struct {
 		queries, plan string
 		n             int
-	}{"9d5ce05070f626f3f1d0c83fa5c54531c692935a966563e18f5a4c2e6ed2441b", "a6619da1b4653d6ef699edb9eae0ea2e929d05b25a3b6278ecad187f27909901", 180}
+	}{"15d6b98f645994902b942f3f5e3ea314b835211dfb0688a6663c23d3b5040bbb", "b7e5d0a4fbfa236074625b53f3c937d6fcd68d3fc4aa65bb9c3f2a8723636862", 193}
 	frozenHour = struct {
 		queries, plan string
 		n             int
-	}{"0c75c099803489675de473d1345248bc700924e7f51acb6c7e9265b159f4046f", "109bae89a303970374f26a7f3d0d4d8f8600946808e53100962fd57799f01c2a", 349}
+	}{"2902eb347c8b4c17259ba3d450249bf5703e0912ebddd2acfa5813d4af35896c", "e606c5d9b15c5e361a2bdab9d3a0daf2dff27509caac9b4c1c4045dd1c5f80c1", 364}
 )
 
 // Every placeholder names a field of the rules (Timing* stands for the fields

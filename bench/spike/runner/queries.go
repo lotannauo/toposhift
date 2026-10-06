@@ -30,15 +30,33 @@ const (
 // The ages a read can be made at, as the name of the age and what it means. A
 // read "now" is as of the end of the period and the newest snapshot; the others
 // look back from it. Windows end at "now" and span the age. A read of the "old
-// token" is made at the instant of that token, with only the records it saw.
+// token" is made at the instant of that token, with only the records it saw. The
+// reads three and nine hours back are made where writes follow, which the end of
+// the stream does not have: a checkpoint near the end survives because nothing comes
+// after it. "dead" asks whether an entity is alive DeadAfter past the end, when every
+// refresh of a heartbeating entity has lapsed: the store then has to establish that
+// no record holds, which a read of a live entity, stopping at the first record that
+// does, never shows.
 const (
 	AgeNow      = "now"
 	Age1h       = "1h"
+	Age3h       = "3h"
+	Age9h       = "9h"
 	Age1d       = "1d"
 	AgeOldToken = "old-token"
+	AgeDead     = "dead"
 	AgeWindow1h = "window-1h"
 	AgeWindow1d = "window-1d"
 )
+
+// DeadAfter is how long after the end of the period a read of AgeDead is made: longer
+// than the TTL of a node's heartbeat in every preset (four minutes), so the pinned
+// nodes are not alive then. A plan whose reference engine finds one alive is refused.
+const DeadAfter = time.Hour
+
+// lookBack is how far before the end of the period a read at the age is made, for
+// the ages that look back by a fixed span.
+var lookBack = map[string]time.Duration{Age1h: time.Hour, Age3h: 3 * time.Hour, Age9h: 9 * time.Hour, Age1d: 24 * time.Hour}
 
 // Query is one read, with the answer the reference engine gave.
 type Query struct {
@@ -145,26 +163,32 @@ func BuildQueries(spec Spec, sel Selector, info StreamInfo) []Query {
 					q.Fps, q.Age, q.At = fps, AgeNow, info.End
 					out = append(out, q)
 				case OpNeighbors, OpAlive:
+					ages := []string{AgeNow, Age1h, Age3h, Age9h, Age1d, AgeOldToken}
+					if op == OpAlive && spec.Workload.HeartbeatInterval > 0 {
+						ages = append(ages, AgeDead) // without a heartbeat nothing lapses
+					}
 					for i, fp := range fps {
-						for _, age := range []string{AgeNow, Age1h, Age1d, AgeOldToken} {
+						for _, age := range ages {
 							q := base
 							q.Rank, q.Fps, q.Age = i, []identity.Fingerprint{fp}, age
 							q.At = info.End
 							switch age {
-							case Age1h:
-								q.At = info.End.Add(-time.Hour)
-							case Age1d:
-								q.At = info.End.Add(-24 * time.Hour)
+							case Age1h, Age3h, Age9h, Age1d:
+								q.At = info.End.Add(-lookBack[age])
 							case AgeOldToken:
 								q.At, q.AsOf = info.OldAt, info.OldToken
+							case AgeDead:
+								q.At = info.End.Add(DeadAfter)
 							}
 							if q.At.Before(earliest) {
 								continue
 							}
-							// A read a day back needs a day of history behind it: in a stream
-							// of a day it would be made at the first instant, before most
-							// runs have a history, and show nothing of how a read grows.
-							if age == Age1d && q.At.Sub(info.Start) < 24*time.Hour {
+							// A read a day back needs a day of history behind it, and one three
+							// or nine hours back that much: in a stream of a day a read a day
+							// back would be made at the first instant, before most runs have a
+							// history, and show nothing of how a read grows. A read an hour back
+							// needs only to be after the start and the horizon.
+							if age != Age1h && lookBack[age] > 0 && q.At.Sub(info.Start) < lookBack[age] {
 								continue
 							}
 							out = append(out, q)
