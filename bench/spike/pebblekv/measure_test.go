@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -299,6 +300,110 @@ func TestQuiesceStopsWhenItsContextDoes(t *testing.T) {
 	}
 	if time.Since(start) > 5*time.Second {
 		t.Errorf("Quiesce took %s to notice its context", time.Since(start))
+	}
+}
+
+// heldFS holds every opening of a table, once it is armed, until it is let go:
+// Pebble reads a new table's statistics in the background, opening the table, and
+// this holds that reading for as long as a test wants, as a slow or starved
+// machine does.
+type heldFS struct {
+	vfs.FS
+	mu     sync.Mutex
+	armed  bool
+	letGo  chan struct{}
+	opened chan string
+}
+
+func (h *heldFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+	h.mu.Lock()
+	held := h.armed && strings.HasSuffix(name, ".sst")
+	h.mu.Unlock()
+	if held {
+		select {
+		case h.opened <- name:
+		default:
+		}
+		<-h.letGo
+	}
+	return h.FS.Open(name, opts...)
+}
+
+// Quiesce waits for the statistics of a new table, however long Pebble takes to
+// load them. Until they are loaded the table's deletions are not in the tombstone
+// count, and the compactions that drop them are not picked, while Pebble says it
+// has no statistics queued (the job that loads them took the queue).
+func TestQuiesceWaitsForTheStatisticsOfEveryTable(t *testing.T) {
+	t.Parallel()
+	fs := &heldFS{FS: vfs.NewMem(), letGo: make(chan struct{}), opened: make(chan string, 1)}
+	// Tables large enough that the flush makes one, which nothing compacts.
+	kv := bytewise(t, fs, "db", pebblekv.Config{Tuning: pebblekv.BenchTuning()})
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(fs.letGo)
+		}
+	}
+	defer func() {
+		release()
+		_ = kv.Close()
+	}()
+	const keys, deleted = 3000, 2000 // a table that is mostly deletions, whose statistics Pebble loads in the background
+	b := kv.NewBatch()
+	for i := range keys {
+		if err := b.Set(fmt.Appendf(nil, "k%05d", i), make([]byte, 200), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range deleted {
+		if err := b.Delete(fmt.Appendf(nil, "k%05d", i), nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := b.Commit(kv.WriteOptions()); err != nil {
+		t.Fatal(err)
+	}
+	fs.mu.Lock()
+	fs.armed = true
+	fs.mu.Unlock()
+	if err := kv.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fs.opened: // the statistics are being read, and held
+	case <-time.After(30 * time.Second):
+		t.Fatal("nothing opened the new table to read its statistics")
+	}
+	done := make(chan error, 1)
+	go func() { done <- kv.Quiesce(context.Background()) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Quiesce returned (%v) while the table's statistics were still being read; it counts %d tombstones", err, kv.Snapshot().TombstoneCount)
+	case <-time.After(2500 * time.Millisecond): // more than the second of quiet it needs
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// At rest the count is the tables' own, whatever the compactions the statistics
+	// called for (moving the table to the last level and dropping what its deletions
+	// cover) have left.
+	levels, err := kv.SSTables(pebble.WithProperties())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inTables uint64
+	for _, level := range levels {
+		for _, table := range level {
+			inTables += table.Properties.NumDeletions
+			if table.TableStats.NumDeletions != table.Properties.NumDeletions {
+				t.Errorf("at rest, the statistics of a table hold %d deletions, its properties %d", table.TableStats.NumDeletions, table.Properties.NumDeletions)
+			}
+		}
+	}
+	if got := kv.Snapshot().TombstoneCount; got != inTables {
+		t.Errorf("at rest, %d tombstones counted, and the tables hold %d", got, inTables)
 	}
 }
 

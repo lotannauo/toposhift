@@ -84,16 +84,9 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	}
 
 	rec := NewCapture()
-	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{
-		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true, ReadOnly: true,
-	})
+	e, err := openReadOnly(plan, v, dir, rec)
 	if err != nil {
 		return nil, err
-	}
-	e, ok := opened.(measurable)
-	if !ok {
-		_ = opened.Close()
-		return nil, fmt.Errorf("runner: %s cannot report what a measurement needs", v.Name)
 	}
 	defer func() { _ = e.Close() }()
 
@@ -101,21 +94,8 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	if err != nil {
 		return nil, err
 	}
-	for _, k := range stable {
-		if desc[k] != m.Describe[k] {
-			return nil, fmt.Errorf("runner: %s is not what it was built as: %s is %q, was %q: %w", v.Name, k, desc[k], m.Describe[k], errMismatch)
-		}
-	}
-	// A read-only database does nothing when it is opened, so what it holds must be
-	// what the build left: the same tables, in the same levels.
-	have := e.Stats()
-	for k, want := range m.StatsCompacted {
-		if (k == "live_table_bytes" || strings.HasPrefix(k, "tables_l")) && have[k] != want {
-			return nil, fmt.Errorf("runner: %s is not what the build left: %s is %d, was %d: %w", v.Name, k, have[k], want, errMismatch)
-		}
-	}
-	if got := e.LastSeq(); got != plan.Stream.LastSeq {
-		return nil, fmt.Errorf("runner: %s opens at seq %d, the plan at %d: %w", v.Name, got, plan.Stream.LastSeq, errMismatch)
+	if err := sameAsBuilt(e, desc, m, plan); err != nil {
+		return nil, fmt.Errorf("runner: %s %w", v.Name, err)
 	}
 
 	// A database that is not read-only reads the tables it has just opened in the
@@ -205,6 +185,48 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 		return nil, err
 	}
 	return res, nil
+}
+
+// openReadOnly opens the database a build left under dir as a read opens it:
+// read-only, with the plan's block cache, nothing compacting.
+func openReadOnly(plan *Plan, v candidates.Variant, dir string, rec *Capture) (measurable, error) {
+	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{
+		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true, ReadOnly: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	e, ok := opened.(measurable)
+	if !ok {
+		_ = opened.Close()
+		return nil, fmt.Errorf("runner: %s cannot report what a measurement needs", v.Name)
+	}
+	return e, nil
+}
+
+// sameAsBuilt returns the first way a database opened read-only, which desc
+// describes, is not the one the manifest records: a setting that makes the
+// variant what it is, its tables, or the sequence number it opens at. The error
+// reads after the candidate's name.
+func sameAsBuilt(e measurable, desc map[string]string, m *Manifest, plan *Plan) error {
+	for _, k := range stable {
+		if desc[k] != m.Describe[k] {
+			return fmt.Errorf("is not what it was built as: %s is %q, was %q: %w", k, desc[k], m.Describe[k], errMismatch)
+		}
+	}
+	// A read-only database does nothing when it is opened, so what it holds must be
+	// what the build left: the same tables, in the same levels.
+	have := e.Stats()
+	keys := slices.Sorted(maps.Keys(m.StatsCompacted))
+	for _, k := range keys {
+		if want := m.StatsCompacted[k]; (k == "live_table_bytes" || strings.HasPrefix(k, "tables_l")) && have[k] != want {
+			return fmt.Errorf("is not what the build left: %s is %d, was %d: %w", k, have[k], want, errMismatch)
+		}
+	}
+	if got := e.LastSeq(); got != plan.Stream.LastSeq {
+		return fmt.Errorf("opens at seq %d, the plan at %d: %w", got, plan.Stream.LastSeq, errMismatch)
+	}
+	return nil
 }
 
 // sameCounters compares the counters that count what a read did, leaving out

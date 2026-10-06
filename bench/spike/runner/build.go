@@ -215,11 +215,35 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 	if err := e.Close(); err != nil {
 		return nil, err
 	}
+	// The manifest is written only if a read will find what it records: the
+	// database is opened as a read opens it and checked as a read checks it. A
+	// compaction that started after the measurement, and that the close waited for,
+	// would otherwise leave a manifest no read accepts.
+	if err := checkAsRead(plan, v, dir, m); err != nil {
+		return nil, fmt.Errorf("runner: %s changed after it was measured, and a read would refuse it: %s %w", v.Name, v.Name, err)
+	}
 	if err := writeJSON(filepath.Join(dir, ManifestFile), m); err != nil {
 		return nil, err
 	}
 	say.say("build %s: %d table bytes, %d records", v.Name, m.StatsCompacted["live_table_bytes"], info.Records)
 	return m, nil
+}
+
+// checkAsRead opens the database a build has closed read-only, as [Read] does, and
+// returns the first way it differs from what the manifest records.
+func checkAsRead(plan *Plan, v candidates.Variant, dir string, m *Manifest) error {
+	e, err := openReadOnly(plan, v, dir, NewCapture())
+	if err != nil {
+		return err
+	}
+	desc, err := e.Describe()
+	if err == nil {
+		err = sameAsBuilt(e, desc, m, plan)
+	}
+	if cerr := e.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // sameAsPlan returns the first way a stream differs from the planned one.

@@ -48,8 +48,11 @@ type Snapshot struct {
 	BytesIn, BytesFlushed, BytesCompacted uint64
 
 	MarkedFiles int
-	// StatsComplete is false while Pebble is still reading the tables it opened
-	// to estimate their garbage; the estimates above are not final until then.
+	// StatsComplete is false while Pebble has tables queued to read for their
+	// statistics (the garbage estimates above, and the tombstones it counts, which
+	// leave out a table whose statistics are not loaded). It is true again as soon
+	// as a job takes the queue, before that job has loaded anything: only
+	// [KV.Quiesce] waits for the statistics themselves.
 	StatsComplete bool
 }
 
@@ -103,10 +106,19 @@ func (s Snapshot) Flat() map[string]int64 {
 }
 
 // Quiesce waits until the database is at rest, which is what a size or a read
-// has to be measured against: nothing flushing or compacting, the estimates of
-// every table's garbage collected, no file marked for a compaction that is
-// coming (unless automatic compactions are off, when none is), and all of that
-// unchanged for a whole second. Settle is the quick version for a test.
+// has to be measured against: nothing flushing or compacting, the statistics of
+// every table loaded, no file marked for a compaction that is coming (unless
+// automatic compactions are off, when none is), and all of that unchanged for a
+// whole second. Settle is the quick version for a test.
+//
+// The statistics are waited for table by table, not by [Snapshot.StatsComplete]:
+// Pebble loads them in the background after a flush or a compaction, a job at a
+// time, and empties its queue when a job starts, so the queue can be empty for as
+// long as a slow job runs. Until a table's statistics are loaded, its deletions are
+// not in the tombstone count, and the compactions that drop them (an elision-only
+// compaction of a table moved into the last level with its tombstones, say) are not
+// picked; Pebble picks them when the statistics arrive. A database measured before
+// then can still compact before it is closed.
 //
 // It returns when ctx is done with its error, so the caller sets the patience:
 // minutes are right for a gigabyte.
@@ -133,7 +145,15 @@ func (k *KV) Quiesce(ctx context.Context) error {
 		} else if since.IsZero() {
 			since = time.Now()
 		} else if time.Since(since) >= stable {
-			return nil
+			// Checked last, and only then, because it lists every table.
+			n, err := k.tablesAwaitingStats()
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return nil
+			}
+			since = time.Time{}
 		}
 		last = s
 		select {
@@ -207,6 +227,32 @@ func (k *KV) tableSpan() (lo, hi []byte, err error) {
 		}
 	}
 	return lo, hi, nil
+}
+
+// tablesAwaitingStats is how many tables Pebble has not loaded the statistics of.
+func (k *KV) tablesAwaitingStats() (int, error) {
+	levels, err := k.SSTables()
+	if err != nil {
+		return 0, err
+	}
+	return awaitingStats(levels), nil
+}
+
+// awaitingStats counts the tables whose statistics are not loaded: Pebble reports
+// a table's statistics as zero until it has, and once it has they count its
+// entries, points and range deletions alike, which every table a layout writes
+// has. It needs no table opened, so it does not wait for the job that is reading
+// one.
+func awaitingStats(levels [][]pebble.SSTableInfo) int {
+	n := 0
+	for _, level := range levels {
+		for _, t := range level {
+			if t.TableStats.NumEntries == 0 {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // CloseClean flushes the memtable and closes the database, so that opening it
