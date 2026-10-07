@@ -129,6 +129,7 @@ type planFlags struct {
 	cacheMB       int
 	window        int
 	pins          string
+	full          bool
 	rate          float64
 	extend        string
 	podHeartbeat  string
@@ -152,7 +153,8 @@ func (p *planFlags) flags(fs *flag.FlagSet) {
 	fs.StringVar(&p.runMaxAge, "run-max-age", "", "the greatest age of a run of refreshes before the ingest coalescer continues it with a new one, such as 2h, or \"off\" (default: the preset's, none)")
 	fs.IntVar(&p.payloadPad, "payload-pad", 0, "random bytes added to every payload, drawn apart from the rest of the stream so that only the payloads change (default: none)")
 	fs.IntVar(&p.window, "window", 0, "run over a window of this many days of retained history: a stream of 2R + 1.5 days with a daily retention that keeps R (see runner.WindowSpec)")
-	fs.StringVar(&p.pins, "pins", "", "the pinned prefixes of a family of windows, as made by `pins` (needs -window; only the records that touch them are written)")
+	fs.StringVar(&p.pins, "pins", "", "the pinned prefixes of a family of windows, as made by `pins` (needs -window; only the records that touch them are written, unless -full)")
+	fs.BoolVar(&p.full, "full", false, "with -pins, write the whole stream and ask the pins' queries of it: a full store read at the pinned prefixes")
 	fs.IntVar(&p.cacheMB, "cache-mb", 0, "block cache in MiB, the same for every run (default: the spec's)")
 	fs.Float64Var(&p.minNonEmpty, "min-non-empty", -1, "least share of each group of queries with a non-empty answer (default: the spec's)")
 }
@@ -206,6 +208,9 @@ func (p planFlags) args() []string {
 	}
 	if p.pins != "" {
 		add("pins", p.pins)
+	}
+	if p.full {
+		out = append(out, "-full")
 	}
 	if p.minNonEmpty >= 0 {
 		add("min-non-empty", fmt.Sprint(p.minNonEmpty))
@@ -342,6 +347,12 @@ func (p planFlags) spec() (runner.Spec, error) {
 		}
 		s.Pins = &pins
 	}
+	if p.full {
+		if p.pins == "" {
+			return runner.Spec{}, fmt.Errorf("-full is for -pins: without pins every store is full")
+		}
+		s.FullStore = true
+	}
 	if (p.minNonEmpty < 0 && p.minNonEmpty != -1) || p.cacheFraction < 0 || p.cacheMB < 0 || p.window < 0 || p.days < 0 || p.batch < 0 || p.hot < 0 || p.median < 0 {
 		return runner.Spec{}, fmt.Errorf("-days, -batch, -hot, -median, -min-non-empty, -cache-fraction and -cache-mb cannot be negative (leave a flag out, or 0, for the spec's own value)")
 	}
@@ -391,9 +402,16 @@ func doBuild(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	var c common
 	var name string
+	var rest bool
 	c.flags(fs)
 	fs.StringVar(&name, "candidate", "", "the candidate to build (required)")
+	fs.BoolVar(&rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	_ = fs.Parse(args)
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "rest-after-retention" })
+	if !given {
+		rest = c.untimed
+	}
 	plan, err := loadPlan(c)
 	if err != nil {
 		return err
@@ -402,7 +420,7 @@ func doBuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = runner.Build(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), progress)
+	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), runner.BuildOptions{RestAfterRetention: rest}, progress)
 	return err
 }
 
@@ -497,7 +515,7 @@ func doRun(ctx context.Context, args []string) error {
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age", "payload-pad":
+		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age", "payload-pad", "full":
 			planFlagSet = true
 		}
 	})
@@ -522,7 +540,7 @@ func doRun(ctx context.Context, args []string) error {
 	} else if planFlagSet {
 		// A plan is made once and every build is checked against it: flags that
 		// would make another plan are not quietly dropped.
-		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
+		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad, full) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
 	}
 	plan, err := loadPlan(c)
 	if err != nil {
@@ -654,6 +672,7 @@ func doPins(ctx context.Context, args []string) error {
 	if p.window < 1 || p.pins != "" {
 		return fmt.Errorf("pins: give -window (the shortest window, whose stream the prefixes are chosen from) and not -pins")
 	}
+	p.full = false // the pins are chosen from the whole stream either way
 	spec, err := p.spec()
 	if err != nil {
 		return err

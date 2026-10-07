@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,6 +68,9 @@ const (
 	ManifestFile = "manifest.json"
 	ResultsFile  = "results.json"
 	DBDir        = "db"
+	// RestKey is the key of a manifest's Describe that says whether the build rested
+	// after each retention ([BuildOptions]).
+	RestKey = "rest_after_retention"
 )
 
 // CandidateDir is where a candidate is built under out.
@@ -91,8 +95,11 @@ type measurable interface {
 // buildSink writes the stream to a candidate, and stops the build at the first
 // thing that is not as planned.
 type buildSink struct {
-	e measurable
-	t *Timing
+	ctx context.Context
+	e   measurable
+	t   *Timing
+	// rest says to wait for the database to be at rest after each retention.
+	rest bool
 	// afterRetention is set by a retention and cleared by the next write.
 	afterRetention *bool
 }
@@ -120,13 +127,44 @@ func (s buildSink) Retain(h time.Time) error {
 	err := s.e.Retain(h)
 	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
 	*s.afterRetention = true
-	return err
+	if err != nil {
+		return err
+	}
+	if !s.rest {
+		return nil
+	}
+	// The retention is timed alone; then, untimed, the build waits until the database
+	// is at rest. A retention writes a deletion for every prefix it rewrites, and a
+	// writer that runs on before the compactions and Pebble's statistics of those
+	// deletions have caught up piles them up in memory (several gigabytes at seven
+	// days), which a store ingesting at the cluster's own pace does not do.
+	return s.e.Quiesce(s.ctx)
 }
 
-// Build writes the plan's stream to the candidate under dir, compacts
+// BuildOptions are the choices of a build that do not change what it writes.
+type BuildOptions struct {
+	// RestAfterRetention makes the build wait, after each retention and not counted in
+	// its time, until the database is at rest. A writer that runs on before the
+	// compactions and Pebble's statistics of a retention's deletions have caught up
+	// piles them up in memory, which an ingest at the cluster's own pace does not; but
+	// the first batch after a retention then does not carry the compactions' catch-up
+	// either, so a timing of it from a rested build is not comparable with one from a
+	// build that did not rest. It is recorded in the manifest (Describe, key
+	// rest_after_retention).
+	RestAfterRetention bool
+}
+
+// Build is [BuildWith] with the options of a build by this binary: it rests after
+// each retention if the binary may not produce a result (untimed, as every run
+// that chooses designs by counters is), and does not if a timing may come of it.
+func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress) (*Manifest, error) {
+	return BuildWith(ctx, plan, v, dir, g, BuildOptions{RestAfterRetention: g.Untimed}, say)
+}
+
+// BuildWith writes the plan's stream to the candidate under dir, compacts
 // everything, and records what the database holds in dir's manifest. The
 // directory must be new and outside any git worktree.
-func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress) (*Manifest, error) {
+func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, opts BuildOptions, say Progress) (*Manifest, error) {
 	if err := g.Check(); err != nil {
 		return nil, err
 	}
@@ -164,7 +202,7 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 	say.say("build %s: writing %d records in batches of %d", v.Name, plan.Stream.Records, plan.Spec.BatchSize)
 	var timing Timing
 	after := false
-	info, err := Drive(ctx, plan.Spec, buildSink{e: e, t: &timing, afterRetention: &after})
+	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, rest: opts.RestAfterRetention})
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
@@ -192,6 +230,7 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 	if m.Describe, err = e.Describe(); err != nil {
 		return nil, err
 	}
+	m.Describe[RestKey] = strconv.FormatBool(opts.RestAfterRetention)
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err

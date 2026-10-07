@@ -485,13 +485,17 @@ func TestG1BlockCountersOfAProjectionAreNotDecided(t *testing.T) {
 		"block counters under": 1,
 		"block counters over":  100,
 	} {
-		for _, pinned := range []bool{true, false} {
+		for _, store := range []string{"projected", "full", "full at pins"} {
+			pinned := store == "projected" // only a projection leaves its block counters undecided
 			ws := g1Windows(qs, "A", func(runner.Query, int) map[string]int64 {
 				return map[string]int64{"read.neighbors.seeks": 1, "read.neighbors.block_loads": blockLoads, "read.neighbors.cold_block_bytes": blockLoads << 15}
 			})
-			if pinned {
-				for _, w := range ws {
+			for _, w := range ws {
+				switch store {
+				case "projected":
 					w.Plan.Spec.Pins = &runner.Pins{}
+				case "full at pins":
+					w.Plan.Spec.Pins, w.Plan.Spec.FullStore = &runner.Pins{}, true
 				}
 			}
 			cells, err := runner.G1(ws, rules)
@@ -502,18 +506,18 @@ func TestG1BlockCountersOfAProjectionAreNotDecided(t *testing.T) {
 				cell := cellOf(t, cells, qs[0].Group, runner.AgeNow, counter)
 				want := pinned && (counter == "block_loads" || counter == "cold_block_bytes")
 				if cell.NotDecided != want {
-					t.Errorf("%s, pinned %v, %s: not decided %v, want %v", name, pinned, counter, cell.NotDecided, want)
+					t.Errorf("%s, %s, %s: not decided %v, want %v", name, store, counter, cell.NotDecided, want)
 				}
 			}
 			// Pinned, the block counters do not count and the verdict is the other counters';
 			// not pinned, a read over its block budget fails.
 			if got, want := runner.G1Passes(cells, "A"), pinned || blockLoads < 8; got != want {
-				t.Errorf("%s, pinned %v: passes %v, want %v", name, pinned, got, want)
+				t.Errorf("%s, %s: passes %v, want %v", name, store, got, want)
 			}
 			var out strings.Builder
 			runner.WriteG1(&out, cells, rules, 0)
 			if got := strings.Contains(out.String(), "not decided, marked ?"); got != pinned {
-				t.Errorf("%s, pinned %v: the verdict says cells are not decided: %v\n%s", name, pinned, got, out.String())
+				t.Errorf("%s, %s: the verdict says cells are not decided: %v\n%s", name, store, got, out.String())
 			}
 		}
 	}

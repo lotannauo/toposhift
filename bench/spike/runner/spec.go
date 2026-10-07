@@ -73,10 +73,15 @@ type Spec struct {
 	// MinNonEmpty is the least share of each group of queries that must have a
 	// non-empty answer: an empty answer agrees between candidates trivially.
 	MinNonEmpty float64
-	// Pins, if set, are the prefixes the stream is read at and the only ones it is
-	// written for: the records that touch none of them are not written to any store.
-	// The queries are the pins', not chosen from the stream.
+	// Pins, if set, are the prefixes the stream is read at and, unless FullStore is
+	// set, the only ones it is written for: the records that touch none of them are
+	// not written to any store. The queries are the pins', not chosen from the stream.
 	Pins *Pins `json:",omitempty"`
+	// FullStore, with Pins, writes the whole stream to every store and asks the pins'
+	// queries of it: a full store read at the pinned prefixes, whose block counters,
+	// stall, commit, bytes and checkpoint shares are a full build's, as a projection's
+	// are not. Without pins every store is full and it is not set.
+	FullStore bool `json:",omitempty"`
 }
 
 // WindowSpec is the spec of a run that has always held days days of history, from
@@ -138,6 +143,9 @@ func (s Spec) Validate() error {
 	if _, err := workload.New(s.Workload); err != nil {
 		return bad("workload: %w", err)
 	}
+	if s.FullStore && s.Pins == nil {
+		return bad("FullStore is for a spec with pins: without them every store is full")
+	}
 	if s.Pins != nil {
 		if err := s.Pins.Verify(); err != nil {
 			return bad("%w", err)
@@ -176,12 +184,17 @@ func (s Spec) cache(payload uint64) int64 {
 }
 
 // ScenarioDigest is the SHA-256 of the spec without the window it is a stream of: its
-// workload and its options, but not its length, its retentions or its pins. The
-// windows of one family have the same, and the pins are chosen from a stream of it.
+// workload and its options, but not its length, its retentions, its pins or whether
+// its stores are full or projected. The windows of one family have the same, and the
+// pins are chosen from a stream of it.
 func (s Spec) ScenarioDigest() (string, error) {
-	s.Pins, s.Retentions, s.Workload.Duration = nil, nil, 0
+	s.Pins, s.Retentions, s.Workload.Duration, s.FullStore = nil, nil, 0, false
 	return s.Digest()
 }
+
+// Projected is whether the stores of the spec are written the projection of the
+// stream on its pins rather than the whole stream.
+func (s Spec) Projected() bool { return s.Pins != nil && !s.FullStore }
 
 // Digest is the SHA-256 of the spec, as hex.
 func (s Spec) Digest() (string, error) {

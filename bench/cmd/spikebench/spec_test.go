@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"path/filepath"
@@ -174,6 +176,7 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		"window with days":    {"-window", "2", "-days", "5"},
 		"window with retain":  {"-window", "2", "-retain", "48h/24h"},
 		"pins with no window": {"-pins", pinsFile(t)},
+		"full with no pins":   {"-window", "2", "-full"},
 		"negative window":     {"-window", "-2"},
 	} {
 		if _, err := parse(t, append([]string{"-preset", "ci"}, args...)...).spec(); err == nil {
@@ -185,6 +188,46 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 	want := []string{"-preset", "ci", "-events-per-second", "0.25", "-extend", "every", "-pod-heartbeat", "5m", "-run-max-age", "2h", "-payload-pad", "456", "-window", "7"}
 	if got := p.args(); !slices.Equal(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
+	}
+}
+
+// With pins, -full makes the stores full ones read at the pins, and is passed on.
+func TestAFullFlagMakesFullStoresReadAtThePins(t *testing.T) {
+	t.Parallel()
+
+	window, err := parse(t, "-preset", "tiny", "-window", "1").spec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	made, err := runner.MakePins(context.Background(), window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(made)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := filepath.Join(t.TempDir(), "pins.json")
+	if err := os.WriteFile(pins, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := parse(t, "-preset", "tiny", "-window", "2", "-pins", pins, "-full")
+	if got, want := p.args(), []string{"-preset", "tiny", "-window", "2", "-pins", pins, "-full"}; !slices.Equal(got, want) {
+		t.Errorf("args = %v, want %v", got, want)
+	}
+	s, err := p.spec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.FullStore || s.Pins == nil || s.Projected() {
+		t.Errorf("full %v, pins %v, projected %v", s.FullStore, s.Pins != nil, s.Projected())
+	}
+	projected, err := parse(t, "-preset", "tiny", "-window", "2", "-pins", pins).spec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projected.FullStore || !projected.Projected() {
+		t.Error("a window with pins and no -full is not a projection")
 	}
 }
 

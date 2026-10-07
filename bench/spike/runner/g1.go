@@ -166,7 +166,7 @@ func G1(windows []RetainedWindow, r Rules) ([]G1Cell, error) {
 		for _, k := range order {
 			c := populationCell(groups[k], ws, r, k.counter, strings.Contains(k.group, " median "))
 			c.Candidate, c.Group, c.Age, c.Counter = name, k.group, k.age, k.counter
-			c.NotDecided = target.Plan.Spec.Pins != nil && blockCounters[k.counter]
+			c.NotDecided = target.Plan.Spec.Projected() && blockCounters[k.counter]
 			out = append(out, c)
 		}
 	}

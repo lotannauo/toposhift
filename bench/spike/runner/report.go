@@ -84,6 +84,12 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		if !sameBinary(c.Manifest.Build, ref.Manifest.Build) {
 			out = append(out, fmt.Sprintf("%s and %s were built by different binaries", ref.Results.Candidate, name))
 		}
+		// A build that rested after each retention and one that did not have timings that
+		// are not alike (the batches after a retention carry no catch-up in the first), so
+		// the commit gates would hold one to the other.
+		if a, b := ref.Manifest.Describe[RestKey], c.Manifest.Describe[RestKey]; a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with and without a rest after each retention (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
+		}
 		if diff := optionsDiff(ref.Manifest.Describe["pebble_options"], c.Manifest.Describe["pebble_options"]); diff != "" {
 			out = append(out, fmt.Sprintf("%s and %s ran with different Pebble options: %s", ref.Results.Candidate, name, diff))
 		}
@@ -241,7 +247,7 @@ func Write(w io.Writer, plan *Plan, cs []*Candidate, full bool) {
 	}
 	writeColdCacheWarning(w, plan, cs)
 	writeUncompacted(w, plan, cs)
-	if plan.Spec.Pins != nil {
+	if plan.Spec.Projected() {
 		fmt.Fprintln(w, "\nA stream of pins is a projection of the full one: only G0 is judged here; the stall, commit, bytes and checkpoint gates are those of a full build, and the block counters (which a projection has fewer index blocks in) are not a basis for choosing between candidates in the verdicts below.")
 	}
 	WriteGates(w, GatesOf(plan, cs, DefaultRules()))
