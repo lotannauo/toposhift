@@ -186,7 +186,11 @@ type KV struct {
 	options string
 	// cache is the block cache the database uses; this holds a reference to it so
 	// that [KV.ColdStart] can empty it.
-	cache     *pebble.Cache
+	cache *pebble.Cache
+	// dir and opts are where the database lives and the options it was opened with,
+	// defaults filled in, which [KV.Canonicalize] writes its tables with.
+	dir       string
+	opts      *pebble.Options
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -251,11 +255,12 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 	if cfg.Sync {
 		wo = pebble.Sync
 	}
-	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name, cache: cache}
+	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, layoutName: layout.Name, cache: cache, dir: dir}
 	kv.recovered = db.Metrics().Total().TableBytesFlushed
 	full := opts.Clone() // Open filled in the defaults on a copy of its own
 	full.EnsureDefaults()
 	kv.options = full.String()
+	kv.opts = full
 	return kv, nil
 }
 

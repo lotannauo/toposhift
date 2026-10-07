@@ -159,6 +159,18 @@ type Quiescer interface {
 	CompactAll(ctx context.Context) error
 }
 
+// Canonicalizer is implemented by an engine that can rewrite what it holds, once
+// compacted by [Quiescer.CompactAll], into files whose boundaries are a function of
+// the data alone: CompactAll leaves files cut wherever the compactions that wrote
+// them happened to cut, which depends on how fast the writer ran against them, so
+// two builds of the same data can leave different files and their reads cross
+// different blocks. It changes no answer, and the blocks a read loads; what a read
+// steps over changes only where the compacted tables still held tombstones, which
+// the rewrite drops. It is called once nothing writes to the engine.
+type Canonicalizer interface {
+	Canonicalize(ctx context.Context) error
+}
+
 // ColdStarter is implemented by an engine that can empty its block cache while
 // staying open, so that a read can be measured as the first read of a process
 // that has been running (its files open, none of its blocks in memory). It is

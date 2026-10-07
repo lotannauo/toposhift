@@ -19,12 +19,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -401,17 +403,13 @@ func loadPlan(c common) (*runner.Plan, error) {
 func doBuild(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	var c common
+	var b buildFlags
 	var name string
-	var rest bool
 	c.flags(fs)
+	b.flags(fs)
 	fs.StringVar(&name, "candidate", "", "the candidate to build (required)")
-	fs.BoolVar(&rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	_ = fs.Parse(args)
-	given := false
-	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "rest-after-retention" })
-	if !given {
-		rest = c.untimed
-	}
+	b.resolve(fs, c.untimed)
 	plan, err := loadPlan(c)
 	if err != nil {
 		return err
@@ -420,8 +418,102 @@ func doBuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), runner.BuildOptions{RestAfterRetention: rest}, progress)
+	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), b.options(), progress)
 	return err
+}
+
+// buildFlags are the choices of a build that do not change what it writes. build
+// takes them, and run and windows take them too and pass them to every build they
+// start, so that the candidates of a family are all built alike (a report refuses to
+// compare builds that are not).
+type buildFlags struct{ rest, canonical bool }
+
+func (b *buildFlags) flags(fs *flag.FlagSet) {
+	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
+	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
+}
+
+// resolve gives -rest-after-retention its default once fs is parsed: on for an
+// -untimed build, off otherwise, unless it was given.
+func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) {
+	given := false
+	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "rest-after-retention" })
+	if !given {
+		b.rest = untimed
+	}
+}
+
+// args are the flags that make a build step do what b says, both given explicitly.
+func (b buildFlags) args() []string {
+	return []string{"-rest-after-retention=" + strconv.FormatBool(b.rest), "-canonical-layout=" + strconv.FormatBool(b.canonical)}
+}
+
+func (b buildFlags) options() runner.BuildOptions {
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical}
+}
+
+// forward is step with b's flags added to every build it starts.
+func (b buildFlags) forward(step func(cmd string, extra ...string) error) func(cmd string, extra ...string) error {
+	return func(cmd string, extra ...string) error {
+		if cmd == "build" {
+			extra = append(slices.Clone(extra), b.args()...)
+		}
+		return step(cmd, extra...)
+	}
+}
+
+// agrees returns why the candidate built under dir, if one is, was built otherwise
+// than b says, or nil. A manifest without the key of the canonical layout is of a
+// build without it; one without the key of the rest is of a binary that did not
+// record it, which agrees with neither.
+func (b buildFlags) agrees(dir string) error {
+	if _, err := os.Stat(filepath.Join(dir, runner.ManifestFile)); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	m, err := runner.LoadManifest(dir)
+	if err != nil {
+		return err
+	}
+	canonical := m.Describe[runner.CanonicalKey]
+	if canonical == "" {
+		canonical = "false"
+	}
+	for _, f := range []struct{ flag, key, have, want string }{
+		{"-canonical-layout", runner.CanonicalKey, canonical, strconv.FormatBool(b.canonical)},
+		{"-rest-after-retention", runner.RestKey, m.Describe[runner.RestKey], strconv.FormatBool(b.rest)},
+	} {
+		if f.have != f.want {
+			return fmt.Errorf("%s was built with %s %q, and this run asks for %s=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, f.key, f.have, f.flag, f.want)
+		}
+	}
+	return nil
+}
+
+// agreeAll is the first candidate under out, of any that has a manifest and not only
+// those a run names, built otherwise than b says.
+func (b buildFlags) agreeAll(out string) error {
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		dir := filepath.Join(out, e.Name())
+		isDir := e.IsDir()
+		if !isDir && e.Type()&os.ModeSymlink != 0 { // a link to a candidate directory is one
+			st, err := os.Stat(dir)
+			isDir = err == nil && st.IsDir()
+		}
+		if !isDir {
+			continue
+		}
+		if err := b.agrees(dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func doRead(ctx context.Context, args []string) error {
@@ -507,11 +599,14 @@ func doRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var c common
 	var p planFlags
+	var b buildFlags
 	var names string
 	c.flags(fs)
 	p.flags(fs)
+	b.flags(fs)
 	fs.StringVar(&names, "candidates", strings.Join(candidates.Names(), ","), "the candidates to run")
 	_ = fs.Parse(args)
+	b.resolve(fs, c.untimed)
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -542,6 +637,12 @@ func doRun(ctx context.Context, args []string) error {
 		// would make another plan are not quietly dropped.
 		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad, full) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
 	}
+	list := strings.Split(names, ",")
+	// A run that resumes builds the candidates it has not built yet as the flags say,
+	// so the ones it built before must have been built so too.
+	if err := b.agreeAll(c.out); err != nil {
+		return err
+	}
 	plan, err := loadPlan(c)
 	if err != nil {
 		return err
@@ -550,9 +651,8 @@ func doRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	list := strings.Split(names, ",")
 	exe := runner.ReadBuildInfo().Executable
-	ran, failed := runCandidates(ctx, list, step, func(n string) candidateState {
+	ran, failed := runCandidates(ctx, list, b.forward(step), func(n string) candidateState {
 		return diskState(runner.CandidateDir(c.out, n), planDigest, exe, c.untimed)
 	})
 	if len(ran) > 0 && ctx.Err() == nil {
@@ -710,12 +810,15 @@ func doWindows(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("windows", flag.ExitOnError)
 	var c common
 	var p planFlags
+	var b buildFlags
 	var names, windows string
 	c.flags(fs)
 	p.flags(fs)
+	b.flags(fs)
 	fs.StringVar(&windows, "windows", "2,7,14,30", "the windows of retained history to run, in days")
 	fs.StringVar(&names, "candidates", strings.Join(candidates.Names(), ","), "the candidates to run")
 	_ = fs.Parse(args)
+	b.resolve(fs, c.untimed)
 	if err := c.require(); err != nil {
 		return err
 	}
@@ -740,6 +843,14 @@ func doWindows(ctx context.Context, args []string) error {
 			return fmt.Errorf("choosing the pins: %w", err)
 		}
 	}
+	// A family is built all with or all without these flags: every window is checked
+	// before the first one is run, so that a window refused late does not follow hours of
+	// builds in the windows before it.
+	for _, d := range days {
+		if err := b.agreeAll(runner.WindowDir(c.out, d)); err != nil {
+			return fmt.Errorf("the window of %d days: %w", d, err)
+		}
+	}
 	for _, d := range days {
 		if ctx.Err() != nil {
 			return fmt.Errorf("stopped before the window of %d days", d)
@@ -759,7 +870,8 @@ func doWindows(ctx context.Context, args []string) error {
 			return err
 		}
 		dir := runner.WindowDir(c.out, d)
-		argv := []string{"run", "-out", dir, "-candidates", names}
+		// Each run refuses to resume over a build made otherwise than these flags say.
+		argv := append([]string{"run", "-out", dir, "-candidates", names}, b.args()...)
 		if _, statErr := os.Stat(filepath.Join(dir, planFile)); statErr != nil {
 			argv = append(argv, "-window", strconv.Itoa(d), "-pins", pinsPath)
 			argv = append(argv, p.args()...)

@@ -12,12 +12,13 @@ import (
 )
 
 var (
-	_ engine.Quiescer    = (*Engine)(nil)
-	_ engine.ColdStarter = (*Engine)(nil)
-	_ engine.Statser     = (*Engine)(nil)
-	_ engine.LayerSizer  = (*Engine)(nil)
-	_ engine.Describer   = (*Engine)(nil)
-	_ engine.Breakdowner = (*Engine)(nil)
+	_ engine.Quiescer      = (*Engine)(nil)
+	_ engine.ColdStarter   = (*Engine)(nil)
+	_ engine.Statser       = (*Engine)(nil)
+	_ engine.LayerSizer    = (*Engine)(nil)
+	_ engine.Describer     = (*Engine)(nil)
+	_ engine.Breakdowner   = (*Engine)(nil)
+	_ engine.Canonicalizer = (*Engine)(nil)
 )
 
 // Quiesce implements [engine.Quiescer].
@@ -28,6 +29,10 @@ func (e *Engine) ColdStart() { e.kv.ColdStart() }
 
 // CompactAll implements [engine.Quiescer].
 func (e *Engine) CompactAll(ctx context.Context) error { return e.kv.CompactAll(ctx) }
+
+// Canonicalize implements [engine.Canonicalizer]. The engine's own sequence number,
+// horizon and the rest of its state are keys, rewritten with the others.
+func (e *Engine) Canonicalize(ctx context.Context) error { return e.kv.Canonicalize(ctx) }
 
 // Stats implements [engine.Statser].
 func (e *Engine) Stats() map[string]int64 { return e.kv.Snapshot().Flat() }
