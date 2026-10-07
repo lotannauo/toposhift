@@ -69,7 +69,8 @@ type Options struct {
 	// "retain.baselines_written", "retain.range_deletes", "retain.seeks", and for
 	// checkpoints "checkpoint.written", "checkpoint.bytes_written" (key and value
 	// bytes), "checkpoint.invalidated",
-	// "checkpoint.errors", "checkpoint.loads", "checkpoint.load_keys",
+	// "checkpoint.errors", "checkpoint.loads", "checkpoint.lookups",
+	// "checkpoint.load_keys" (the keys both read),
 	// "checkpoint.build_records_walked", "read.checkpoint_hits",
 	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version". Every
 	// read also samples Pebble's iterator statistics under "read.<op>.<name>" (see
@@ -92,6 +93,9 @@ type Options struct {
 	// landing.
 	beforeCheckpointApply func() error
 	beforeRecordApply     func() error
+	// fullStateRead makes the writer read the whole of a prefix to learn its
+	// state, as it once did: for tests that compare the two.
+	fullStateRead bool
 }
 
 // Engine is layout L. It implements [engine.Engine], [engine.Settler] and
@@ -107,6 +111,7 @@ type Engine struct {
 	ckpt        CheckpointOptions
 
 	afterCheckpointApply, beforeCheckpointApply, beforeRecordApply func() error
+	fullStateRead                                                  bool
 
 	// mu serializes Write and Retain, which the caller is already required to
 	// do; it keeps the horizon coherent if a caller forgets.
@@ -150,7 +155,7 @@ func Open(dir string, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter, ckpt: opts.Checkpoints, afterCheckpointApply: opts.afterCheckpointApply, beforeCheckpointApply: opts.beforeCheckpointApply, beforeRecordApply: opts.beforeRecordApply, states: map[string]*prefixState{}}
+	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter, ckpt: opts.Checkpoints, afterCheckpointApply: opts.afterCheckpointApply, beforeCheckpointApply: opts.beforeCheckpointApply, beforeRecordApply: opts.beforeRecordApply, fullStateRead: opts.fullStateRead, states: map[string]*prefixState{}}
 	if e.rec == nil {
 		e.rec = engine.NopRecorder{}
 	}

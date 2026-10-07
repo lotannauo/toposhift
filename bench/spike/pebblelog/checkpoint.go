@@ -42,12 +42,18 @@ import (
 //     already committed, and a returned error would make the caller retry
 //     sequence numbers it has used.
 //
-// Losing a checkpoint is harmless, a stale one is the bug. The list of each
-// prefix's checkpoints is kept in memory so the writer deletes known keys; it is
-// rebuilt by one scan of the prefix the first time a write (or the hook) touches
-// it, but only in
-// a database that has ever had a checkpoint (a meta key says so), so one that has
-// none is never scanned and, with checkpoints off, nothing is remembered at all.
+// Losing a checkpoint is harmless, a stale one is the bug. What the writer knows
+// of each prefix is kept in memory (prefixState), so it deletes known keys. It is
+// read from the database the first time a write (or the hook) touches the prefix
+// after an opening, a retention or a failed commit, but only in a database that
+// has ever had a checkpoint (a meta key says so), so one that has none is never
+// read and, with checkpoints off, nothing is remembered at all. That read stops at
+// the newest checkpoint (and the newest record, if it is older): it is as long as
+// the tail the policy lets grow, not the prefix's history. The older checkpoints
+// are looked up only when something needs them, by reading back from the oldest
+// instant known down to the one needed: a late record (the checkpoints after it),
+// or a checkpoint asked for at an older instant. A late record's lookup is as long
+// as the history it is late by.
 
 // CheckpointOptions says when checkpoints are written. The zero value writes
 // none.
@@ -66,11 +72,18 @@ type CheckpointOptions struct {
 	Lag time.Duration
 }
 
-// prefixState is what the writer remembers about one prefix.
+// prefixState is what the writer remembers about one prefix. Everything but
+// below and the part of ckpts it bounds is exactly what a read of the whole prefix
+// would have found when the state was read, and changes as the writer changes the
+// prefix after that.
 type prefixState struct {
-	ckpts      []int64 // instants of the ordinary checkpoints, ascending
-	latest     int64   // newest record's event time, -1 if none
-	since      int     // records written since the last checkpoint was written
+	// ckpts are the instants, ascending, of every checkpoint in the prefix at or
+	// after below; whether there are any before below is not known. below is 0
+	// once the whole prefix has been read.
+	ckpts      []int64
+	below      int64
+	latest     int64 // newest record's event time, -1 if none
+	since      int   // records written since the last checkpoint was written
 	sinceBytes int
 	lastBytes  int // size of the last checkpoint written
 }
@@ -92,9 +105,14 @@ func (e *Engine) state(prefix []byte) (*prefixState, error) {
 		return nil, err
 	}
 	defer func() { _ = it.Close() }()
-	newer := true // before the newest checkpoint: these records are its tail
+	// The keys run newest first. The records before the newest checkpoint are its
+	// tail; the newest record may be older than it. Once both are found nothing
+	// older changes what is remembered, except the older checkpoints, which are
+	// left to lookups (see know).
+	newer := true
 	var keys int64
-	for ok := it.First(); ok; ok = it.Next() {
+	ok := it.First()
+	for ; ok; ok = it.Next() {
 		keys++
 		_, ns, _, kind, err := parseKey(it.Key())
 		if err != nil {
@@ -115,16 +133,62 @@ func (e *Engine) state(prefix []byte) (*prefixState, error) {
 			}
 			newer = false
 			st.ckpts = append(st.ckpts, ns)
+			st.below = ns
+		}
+		if !newer && st.latest >= 0 && !e.fullStateRead {
+			break
 		}
 	}
 	if err := it.Error(); err != nil {
 		return nil, err
+	}
+	if !ok {
+		st.below = 0 // the whole prefix was read
 	}
 	slices.Reverse(st.ckpts) // the key order is newest first
 	e.states[string(prefix)] = st
 	e.rec.Count("checkpoint.loads", 1)
 	e.rec.Count("checkpoint.load_keys", keys)
 	return st, nil
+}
+
+// know makes st.ckpts hold every checkpoint of the prefix at or after lo, by
+// reading the prefix from st.below back to lo.
+func (e *Engine) know(prefix []byte, st *prefixState, lo int64) error {
+	lo = max(lo, 0)
+	if lo >= st.below {
+		return nil
+	}
+	_, hi := prefixBounds(prefix)
+	it, err := e.kv.NewIter(&pebble.IterOptions{LowerBound: seekKey(prefix, st.below-1), UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = it.Close() }()
+	var found []int64 // newest first
+	var keys int64
+	for ok := it.First(); ok; ok = it.Next() {
+		_, ns, _, kind, err := parseKey(it.Key())
+		if err != nil {
+			return err
+		}
+		keys++
+		if ns < lo {
+			break
+		}
+		if kind == kindCheckpoint {
+			found = append(found, ns)
+		}
+	}
+	if err := it.Error(); err != nil {
+		return err
+	}
+	slices.Reverse(found)
+	st.ckpts = append(found, st.ckpts...)
+	st.below = lo
+	e.rec.Count("checkpoint.lookups", 1)
+	e.rec.Count("checkpoint.load_keys", keys)
+	return nil
 }
 
 // floor is the instant at or below which no checkpoint is written: the horizon's,
@@ -303,6 +367,11 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		if !ok || !e.placeable(c) {
 			continue
 		}
+		if err := e.know([]byte(k), st, c); err != nil {
+			e.rec.Count("checkpoint.errors", 1)
+			delete(e.states, k)
+			continue
+		}
 		if _, exists := slices.BinarySearch(st.ckpts, c); exists {
 			st.since, st.sinceBytes = 0, 0 // already summarized to here, and still true
 			continue
@@ -351,6 +420,9 @@ func (e *Engine) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns 
 	if ns == math.MaxInt64 {
 		return nil // nothing is after it
 	}
+	if err := e.know(prefix, st, ns+1); err != nil {
+		return err
+	}
 	i, _ := slices.BinarySearch(st.ckpts, ns+1) // the first checkpoint with c > ns
 	if i == len(st.ckpts) {
 		return nil
@@ -397,6 +469,10 @@ func (e *Engine) checkpointAt(prefix []byte, c time.Time) error {
 	}
 	st, err := e.state(prefix)
 	if err != nil {
+		return err
+	}
+	if err := e.know(prefix, st, cNs); err != nil {
+		delete(e.states, string(prefix))
 		return err
 	}
 	if _, exists := slices.BinarySearch(st.ckpts, cNs); exists {
