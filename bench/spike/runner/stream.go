@@ -90,7 +90,7 @@ func Drive(ctx context.Context, spec Spec, sinks ...Sink) (StreamInfo, error) {
 	var unseen time.Time   // the earliest instant a record after the old token takes effect
 	var buf []byte
 	var pinned map[identity.Fingerprint]struct{}
-	if spec.Pins != nil {
+	if spec.Projected() {
 		pinned = spec.Pins.entities()
 	}
 

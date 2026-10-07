@@ -115,6 +115,14 @@ func TestRecordIterReportsWhatAReadDid(t *testing.T) {
 	if err := kv.Settle(); err != nil {
 		t.Fatal(err)
 	}
+	// Opened again read-only, the cache is the kilobyte: a database that is written
+	// to has room besides for its memtables.
+	if err := kv.CloseClean(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ReadOnly = true
+	kv = bytewise(t, fs, "db", cfg)
+	t.Cleanup(func() { _ = kv.Close() })
 	for round := range 2 {
 		scan(t, kv, mem, "tables")
 		blocks := mem.Samples("read.tables.block_bytes")
@@ -152,6 +160,62 @@ func TestACachedSecondReadLoadsFromTheCache(t *testing.T) {
 	blocks, cached := mem.Samples("read.warm.block_bytes"), mem.Samples("read.warm.block_bytes_cached")
 	if blocks[1] == 0 || cached[1] != blocks[1] {
 		t.Errorf("second read: %d bytes loaded, %d from the cache; want all of them cached", blocks[1], cached[1])
+	}
+}
+
+// A database that is written to caches blocks however much of the cache Pebble
+// holds back for its memtables: with a cache the size of one memtable and three
+// memtables held, a second read is still served from it. Read-only, the cache is
+// the size asked for, and the description says that size either way.
+func TestTheMemtablesDoNotCrowdTheBlocksOutOfTheCache(t *testing.T) {
+	t.Parallel()
+	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), DisableAutoCompactions: true}
+	cfg.Tuning.CacheBytes = int64(cfg.Tuning.MemTableSize)
+	fs := vfs.NewMem()
+	kv := bytewise(t, fs, "db", cfg)
+	t.Cleanup(func() { _ = kv.Close() })
+	fill(t, kv, 300, 100)
+	if err := kv.Settle(); err != nil {
+		t.Fatal(err)
+	}
+	// Memtables queued up to the threshold at which Pebble stops writes, none flushed.
+	for i := 0; ; i++ {
+		if err := kv.Set(fmt.Appendf(nil, "zz-%06d", i), make([]byte, 200), kv.WriteOptions()); err != nil {
+			t.Fatal(err)
+		}
+		if kv.Metrics().MemTable.Count >= 3 || i > 100000 {
+			break
+		}
+	}
+	mem := &engine.MemRecorder{}
+	scan(t, kv, mem, "warm")
+	scan(t, kv, mem, "warm")
+	blocks, cached := mem.Samples("read.warm.block_bytes"), mem.Samples("read.warm.block_bytes_cached")
+	if blocks[1] == 0 || cached[1] == 0 {
+		t.Errorf("second read with the memtables held back: %d bytes loaded, %d from the cache", blocks[1], cached[1])
+	}
+	d, err := kv.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprint(cfg.Tuning.CacheBytes); d["cache_bytes"] != want {
+		t.Errorf("cache_bytes %q, want %s", d["cache_bytes"], want)
+	}
+	if !strings.Contains(d["pebble_options"], fmt.Sprintf("cache_size=%d", cfg.Tuning.CacheBytes+cfg.Tuning.MemTableReserve())) {
+		t.Errorf("a database written to has no room for its memtables besides the blocks: %s", d["pebble_options"])
+	}
+	if err := kv.CloseClean(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ReadOnly = true
+	ro := bytewise(t, fs, "db", cfg)
+	t.Cleanup(func() { _ = ro.Close() })
+	d, err = ro.Describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprint(cfg.Tuning.CacheBytes); d["cache_bytes"] != want || !strings.Contains(d["pebble_options"], "cache_size="+want+"\n") {
+		t.Errorf("read-only: cache_bytes %q, options %s; want %s for both", d["cache_bytes"], d["pebble_options"], want)
 	}
 }
 

@@ -18,6 +18,10 @@ type GateVerdict struct {
 	// Local says the value is a timing taken on this machine, which informs and does
 	// not decide: a result is a timing on CI hardware.
 	Local bool
+	// NotComparable says the value is shown and not judged: the first batch after a
+	// retention of a build that rested after it (see [BuildOptions]) does not carry
+	// the catch-up of the compactions, so it is not comparable with one that did not.
+	NotComparable bool
 }
 
 // passesG0 is whether the candidate answers every query as the reference engine
@@ -63,8 +67,9 @@ func Gates(cs []*Candidate, r Rules) []GateVerdict {
 		return float64(c.Manifest.StatsCompacted["live_table_bytes"]) / float64(max(c.Manifest.Stream.Records, 1))
 	}
 	commit := func(c *Candidate) float64 { return float64(c.Manifest.Timing.Writes.Quantile(0.99)) }
+	rested := func(c *Candidate) bool { return c.Manifest.Describe[RestKey] == "true" }
 	after := func(c *Candidate) float64 {
-		if len(c.Manifest.Timing.AfterRetention) == 0 {
+		if len(c.Manifest.Timing.AfterRetention) == 0 || rested(c) { // a rested build sets no standard
 			return 0
 		}
 		return float64(slices.Max(c.Manifest.Timing.AfterRetention))
@@ -83,7 +88,10 @@ func Gates(cs []*Candidate, r Rules) []GateVerdict {
 			if b := best(commit); b > 0 {
 				add(c, "G3 batch commit, 99th percentile", time.Duration(commit(c)).String(), fmt.Sprintf("%s (x%.1f the best, %s)", time.Duration(b*r.CommitFactor), r.CommitFactor, time.Duration(b)), commit(c) <= b*r.CommitFactor, true)
 			}
-			if b := best(after); b > 0 && after(c) > 0 {
+			if rested(c) && len(c.Manifest.Timing.AfterRetention) > 0 {
+				longest := time.Duration(slices.Max(c.Manifest.Timing.AfterRetention))
+				out = append(out, GateVerdict{Candidate: c.Results.Candidate, Gate: "G3 first batch after a retention, longest", Value: longest.String(), Limit: "not comparable: the build rested after each retention", Pass: true, Local: true, NotComparable: true})
+			} else if b := best(after); b > 0 && after(c) > 0 {
 				add(c, "G3 first batch after a retention, longest", time.Duration(after(c)).String(), fmt.Sprintf("%s (x%.1f the best, %s)", time.Duration(b*r.CommitFactor), r.CommitFactor, time.Duration(b)), after(c) <= b*r.CommitFactor, true)
 			}
 		}
@@ -95,14 +103,15 @@ func Gates(cs []*Candidate, r Rules) []GateVerdict {
 	return out
 }
 
-// GatesOf is [Gates] for the stream of a plan. A plan with pins writes a projection, about
-// a tenth of the records and the busiest prefixes: a retention over it stalls for a
-// fraction of what one over the whole stream does, a batch commits faster, and the
-// share of checkpoints is higher than a full store's. Only G0, which is about answers,
-// is judged on it; the other gates are those of a full build.
+// GatesOf is [Gates] for the stream of a plan. A plan with pins writes a projection
+// (unless its stores are full), about a tenth of the records and the busiest prefixes:
+// a retention over it stalls for a fraction of what one over the whole stream does, a
+// batch commits faster, and the share of checkpoints is higher than a full store's.
+// Only G0, which is about answers, is judged on it; the other gates are those of a
+// full build.
 func GatesOf(plan *Plan, cs []*Candidate, r Rules) []GateVerdict {
 	vs := Gates(cs, r)
-	if plan.Spec.Pins == nil {
+	if !plan.Spec.Projected() {
 		return vs
 	}
 	return slices.DeleteFunc(vs, func(v GateVerdict) bool { return !strings.HasPrefix(v.Gate, "G0") })
@@ -123,7 +132,10 @@ func WriteGates(w io.Writer, vs []GateVerdict) {
 				continue
 			}
 			verdict := "ok"
-			if !v.Pass {
+			switch {
+			case v.NotComparable:
+				verdict = "not judged"
+			case !v.Pass:
 				verdict = "OVER"
 			}
 			local := ""

@@ -54,12 +54,16 @@ func TestWindowsAreJudgedTogetherOnlyIfTheyAreOfTheSamePinsCacheSeedAndCandidate
 	}{
 		"another pins digest": {func(ws []runner.RetainedWindow) { ws[1].Plan.Spec.Pins = &runner.Pins{Digest: "pins-2"} }, "different pins"},
 		"no pins":             {func(ws []runner.RetainedWindow) { ws[2].Plan.Spec.Pins = nil }, "no pins"},
+		"a full store":        {func(ws []runner.RetainedWindow) { ws[1].Plan.Spec.FullStore = true }, "not both full stores or both projections"},
 		"another cache":       {func(ws []runner.RetainedWindow) { ws[1].Plan.CacheBytes = 32 << 20 }, "block caches"},
 		"another seed":        {func(ws []runner.RetainedWindow) { ws[2].Plan.Spec.Workload.Seed++ }, "different seeds"},
 		"the wrong length":    {func(ws []runner.RetainedWindow) { ws[1].Plan.Spec.Workload.Duration += 1 }, "not the"},
 		"another scenario":    {func(ws []runner.RetainedWindow) { ws[2].Plan.Spec.Workload.EventsPerSecond *= 2 }, "different scenarios"},
 		"another run age":     {func(ws []runner.RetainedWindow) { ws[1].Plan.Spec.Workload.RunMaxAge = 2 * time.Hour }, "different scenarios"},
-		"another candidate":   {func(ws []runner.RetainedWindow) { ws[2].Candidates = ws[2].Candidates[:1] }, "different candidates"},
+		"a rest in one build": {func(ws []runner.RetainedWindow) {
+			ws[1].Candidates[0].Manifest.Describe = map[string]string{runner.RestKey: "true"}
+		}, "with and without a rest"},
+		"another candidate": {func(ws []runner.RetainedWindow) { ws[2].Candidates = ws[2].Candidates[:1] }, "different candidates"},
 		"another binary": {func(ws []runner.RetainedWindow) {
 			for _, c := range ws[1].Candidates { // consistent within the window
 				c.Manifest.Build.Executable, c.Results.Build.Executable = "other", "other"

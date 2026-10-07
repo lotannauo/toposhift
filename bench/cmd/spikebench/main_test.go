@@ -280,6 +280,30 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
+	// The flag overrides the default: an untimed build that is told not to rest does not,
+	// and its manifest says so.
+	own := filepath.Join(t.TempDir(), "own")
+	_, planErr, err := run(t, bin, "plan", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40", "-out", own)
+	if err != nil {
+		t.Errorf("plan: %v\n%s", err, planErr)
+	} else if _, stderr, err := run(t, bin, "build", "-untimed", "-rest-after-retention=false", "-out", own, "-candidate", "L/off"); err != nil {
+		t.Errorf("build: %v\n%s", err, stderr)
+	} else if b, err := os.ReadFile(filepath.Join(own, "L_off/manifest.json")); err != nil || !strings.Contains(string(b), `"rest_after_retention": "false"`) {
+		t.Errorf("the manifest of a build told not to rest does not say so: %v", err)
+	}
+	// A plan flag is not quietly dropped when a plan exists: run refuses it (here -full
+	// and -payload-pad, which a plan of another kind would have made).
+	if _, statErr := os.Stat(filepath.Join(own, "plan.json")); statErr == nil { // without a plan, run would make one and build everything
+		for _, flag := range [][]string{{"-full"}, {"-payload-pad", "8"}} {
+			if _, stderr, err := run(t, bin, append([]string{"run", "-untimed", "-out", own}, flag...)...); err == nil || !strings.Contains(stderr, "cannot be applied") {
+				t.Errorf("run with %v over an existing plan: %v\n%.300s", flag, err, stderr)
+			}
+		}
+	}
+	// An untimed build rests after each retention by default, and its manifest says so.
+	if b, err := os.ReadFile(filepath.Join(out, "R3/L_off/manifest.json")); err != nil || !strings.Contains(string(b), `"rest_after_retention": "true"`) {
+		t.Errorf("the manifest of an untimed build does not say it rested after each retention: %v", err)
+	}
 	for _, want := range []string{"G1 (rules", "L/off: ", "L/k64a4l1ns: ", "M/crdb1: ", "projected", "not decided, marked ?"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("the judgement lacks %q:\n%.1500s", want, stdout)
@@ -330,6 +354,26 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	other := append(slices.Clone(same[:len(same)-2]), "-batch", "50", "-out", out)
 	if _, stderr, err := run(t, bin, other...); err == nil || !strings.Contains(stderr, "another scenario") {
 		t.Errorf("windows resumed with another batch size: %v\n%.1500s", err, stderr)
+	}
+	// The same family on full stores read at the pins: the stream of each window is the
+	// whole one, and the block counters are decided.
+	fullOut := filepath.Join(t.TempDir(), "full")
+	stdout, stderr, err = run(t, bin, append(slices.Clone(same[:len(same)-2]), "-full", "-out", fullOut)...)
+	if err != nil {
+		t.Fatalf("windows -full: %v\n%.2000s\n%.2000s", err, stdout, stderr)
+	}
+	if strings.Contains(stdout, "not decided, marked ?") || !strings.Contains(stdout, "G1 (rules") {
+		t.Errorf("full stores leave block counters undecided, or were not judged:\n%.1500s", stdout)
+	}
+	for _, d := range []string{"R1", "R3"} {
+		pp, err1 := runner.LoadPlan(filepath.Join(out, d, "plan.json"))
+		pf, err2 := runner.LoadPlan(filepath.Join(fullOut, d, "plan.json"))
+		if err1 != nil || err2 != nil {
+			t.Fatal(err1, err2)
+		}
+		if !pf.Spec.FullStore || pf.Stream.Records <= pp.Stream.Records || pf.QueriesDigest == "" || len(pf.Queries) != len(pp.Queries) {
+			t.Errorf("%s: full %v, %d records against the projection's %d, %d queries against %d", d, pf.Spec.FullStore, pf.Stream.Records, pp.Stream.Records, len(pf.Queries), len(pp.Queries))
+		}
 	}
 	// Pins are chosen once, and a window cannot be run without them.
 	if _, stderr, err := run(t, bin, "pins", "-untimed", "-preset", "tiny", "-window", "1", "-out", out); err == nil || !strings.Contains(stderr, "exists") {

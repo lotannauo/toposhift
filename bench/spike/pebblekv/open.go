@@ -48,7 +48,9 @@ type Tuning struct {
 	TargetFileSize        int64
 	LBaseMaxBytes         int64
 	L0CompactionThreshold int
-	CacheBytes            int64
+	// CacheBytes is the block cache for blocks. A database that is written to gets
+	// [Tuning.MemTableReserve] more, which Pebble holds back for its memtables.
+	CacheBytes int64
 }
 
 // TinyTuning makes everything small, to exercise flushes, compactions and block
@@ -204,8 +206,20 @@ func (k *KV) Close() error {
 // has to bring in, not the opening of files. It must not be called while a read
 // is in progress, whose blocks are held and are not evicted.
 func (k *KV) ColdStart() {
-	k.cache.Reserve(int(k.cfg.Tuning.CacheBytes))()
+	k.cache.Reserve(int(k.cache.MaxSize()))()
 }
+
+// memTableStopWritesThreshold is how many memtables, full or being filled, Pebble
+// holds before it stops writes until one is flushed.
+const memTableStopWritesThreshold = 4
+
+// MemTableReserve is about as much of the block cache as Pebble holds back for the
+// memtables of a database that is written to: it charges each memtable, the one
+// being filled and the ones waiting for their flush, to the cache, up to the
+// threshold at which it stops writes (a flushed memtable that an open iterator still
+// holds keeps its charge a while longer, so it can briefly be more). A database
+// opened read-only has none.
+func (t Tuning) MemTableReserve() int64 { return int64(t.MemTableSize) * memTableStopWritesThreshold }
 
 // Open opens the database under dir, creating it if there is none.
 func Open(dir string, layout Layout, cfg Config) (*KV, error) {
@@ -214,7 +228,14 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 		t = BenchTuning() // a forgotten setting must not measure a toy
 		cfg.Tuning = t
 	}
-	cache := pebble.NewCache(t.CacheBytes) // this reference is the KV's, released by Close
+	// Pebble charges its memtables to the block cache, so a database that is written
+	// to gets room for them on top of the blocks: with a cache no larger than the
+	// memtables it would cache no block at all while it is written.
+	size := t.CacheBytes
+	if !cfg.ReadOnly {
+		size += t.MemTableReserve()
+	}
+	cache := pebble.NewCache(size) // this reference is the KV's, released by Close
 
 	opts, err := buildOptions(layout, cfg, cache)
 	if err != nil {
@@ -259,7 +280,7 @@ func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Optio
 		Cache:                       cache,
 		Logger:                      quietLogger{},
 		MemTableSize:                t.MemTableSize,
-		MemTableStopWritesThreshold: 4,
+		MemTableStopWritesThreshold: memTableStopWritesThreshold,
 		L0CompactionThreshold:       t.L0CompactionThreshold,
 		LBaseMaxBytes:               t.LBaseMaxBytes,
 		FS:                          cfg.FS,

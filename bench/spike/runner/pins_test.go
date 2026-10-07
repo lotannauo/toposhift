@@ -141,6 +141,69 @@ func TestAPlanFromPinsAsksAboutThePinsOnly(t *testing.T) {
 	}
 }
 
+// A plan from pins with full stores writes the whole stream, the stream of the plan
+// without pins, and asks the pins' queries of it, which have the answers the
+// projected plan has: the reference engine of each sees the same records of the
+// pinned entities. Without pins it is refused, and the scenario is the projected one's.
+func TestAPlanFromPinsWithFullStoresWritesTheWholeStream(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	spec := tinySpec()
+	pins, err := runner.MakePins(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := spec
+	projected.Pins = pins
+	fullStores := projected
+	fullStores.FullStore = true
+	pp, pf, unpinned := mustPlan(t, projected), mustPlan(t, fullStores), mustPlan(t, spec)
+
+	if pf.Stream.Digest != unpinned.Stream.Digest || pf.Stream.Records != unpinned.Stream.Records || pf.Stream.LastSeq != unpinned.Stream.LastSeq {
+		t.Errorf("a full store's stream is %s (%d records), the stream without pins %s (%d)", pf.Stream.Digest, pf.Stream.Records, unpinned.Stream.Digest, unpinned.Stream.Records)
+	}
+	if pp.Stream.Records >= pf.Stream.Records {
+		t.Errorf("the projection holds %d records and the full store %d", pp.Stream.Records, pf.Stream.Records)
+	}
+	if len(pf.Queries) != len(pp.Queries) || len(pf.Queries) == 0 {
+		t.Fatalf("%d queries on full stores, %d on the projection", len(pf.Queries), len(pp.Queries))
+	}
+	for i, q := range pf.Queries {
+		if q.Name() != pp.Queries[i].Name() || q.Expect != pp.Queries[i].Expect || q.Size != pp.Queries[i].Size {
+			t.Errorf("query %d: %s answers %s (%d) on full stores, %s %s (%d) on the projection", i, q.Name(), q.Expect, q.Size, pp.Queries[i].Name(), pp.Queries[i].Expect, pp.Queries[i].Size)
+		}
+	}
+	if !pp.Spec.Projected() || pf.Spec.Projected() || unpinned.Spec.Projected() {
+		t.Errorf("projected: %v with pins, %v with full stores, %v without pins", pp.Spec.Projected(), pf.Spec.Projected(), unpinned.Spec.Projected())
+	}
+	a, _ := projected.ScenarioDigest()
+	b, _ := fullStores.ScenarioDigest()
+	if a != b {
+		t.Error("full stores are another scenario than the projection: the pins would not fit them")
+	}
+	dp, _ := pp.Digest()
+	df, _ := pf.Digest()
+	if dp == df {
+		t.Error("a plan of full stores has the digest of the projected one")
+	}
+	// The report of a projection says only G0 is judged; the report of full stores does not.
+	for name, p := range map[string]*runner.Plan{"projection": pp, "full stores": pf} {
+		v := lookup(t, "L/off")
+		_, m, res := run(t, p, v)
+		var out strings.Builder
+		runner.Write(&out, p, []*runner.Candidate{{Manifest: m, Results: res}}, false)
+		if got := strings.Contains(out.String(), "only G0 is judged here"); got != (name == "projection") {
+			t.Errorf("the report of the %s says only G0 is judged: %v", name, got)
+		}
+	}
+	bad := spec
+	bad.FullStore = true
+	if err := bad.Validate(); err == nil {
+		t.Error("full stores without pins were accepted")
+	}
+}
+
 // A window of R days is a stream of 2R + 1.5 days with a retention each day from R + 1
 // that keeps R, the last twelve hours before the end.
 func TestWindowSpecShapes(t *testing.T) {

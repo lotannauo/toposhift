@@ -146,9 +146,38 @@ func TestOnAProjectionOnlyTheAnswersAreAGate(t *testing.T) {
 	if len(proj) == 0 || len(proj) >= len(full) {
 		t.Fatalf("%d verdicts on a projection and %d on a full stream", len(proj), len(full))
 	}
+	// Full stores read at pins are judged on every gate.
+	if pinnedFull := runner.GatesOf(&runner.Plan{Spec: runner.Spec{Pins: &runner.Pins{}, FullStore: true}}, cs, runner.DefaultRules()); len(pinnedFull) != len(full) {
+		t.Errorf("%d verdicts on full stores read at pins and %d on a full stream", len(pinnedFull), len(full))
+	}
 	for _, v := range proj {
 		if !strings.HasPrefix(v.Gate, "G0") {
 			t.Errorf("a projection is judged on %s", v.Gate)
 		}
+	}
+}
+
+// The first batch after a retention of a build that rested after each one does not carry
+// the compactions' catch-up: its value is shown and not judged, and it sets no standard
+// for a build that did not rest.
+func TestAFirstBatchAfterARetentionOfARestedBuildIsNotComparable(t *testing.T) {
+	t.Parallel()
+
+	rules := runner.DefaultRules()
+	plain := gateCandidate("plain", 1000, 10, time.Microsecond, time.Second, 10*time.Second)
+	fast := gateCandidate("rested", 1000, 10, time.Microsecond, time.Second, time.Microsecond) // far quicker than the other, which it must not hold to a standard
+	fast.Manifest.Describe = map[string]string{runner.RestKey: "true"}
+	vs := runner.Gates([]*runner.Candidate{plain, fast}, rules)
+
+	if v, ok := verdictOf(vs, "rested", "G3 first"); !ok || !v.NotComparable || !v.Pass || !strings.Contains(v.Limit, "not comparable") {
+		t.Errorf("the rested build's first batch after a retention: %+v", v)
+	}
+	if v, ok := verdictOf(vs, "plain", "G3 first"); !ok || v.NotComparable || !v.Pass {
+		t.Errorf("a build that did not rest was held to a rested build's value: %+v", v)
+	}
+	var out strings.Builder
+	runner.WriteGates(&out, vs)
+	if !strings.Contains(out.String(), "not judged") {
+		t.Errorf("the report does not say the value is not judged:\n%s", out.String())
 	}
 }

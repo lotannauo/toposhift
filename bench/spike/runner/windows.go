@@ -97,6 +97,8 @@ func CheckWindows(ws []RetainedWindow, allowUntimed bool) []string {
 			out = append(out, fmt.Sprintf("window of %d days: the plan has no pins", w.Days))
 		case w.Plan.Spec.Pins.Digest != ref.Plan.Spec.Pins.Digest:
 			out = append(out, fmt.Sprintf("windows of %d and %d days were made of different pins", ref.Days, w.Days))
+		case w.Plan.Spec.FullStore != ref.Plan.Spec.FullStore:
+			out = append(out, fmt.Sprintf("windows of %d and %d days are not both full stores or both projections", ref.Days, w.Days))
 		}
 		if w.Plan.CacheBytes != ref.Plan.CacheBytes {
 			out = append(out, fmt.Sprintf("windows of %d and %d days have block caches of %d and %d bytes", ref.Days, w.Days, ref.Plan.CacheBytes, w.Plan.CacheBytes))

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1379,7 +1380,7 @@ func TestFilesKeepTheirFields(t *testing.T) {
 		want string
 	}{
 		"Plan":         {runner.Plan{}, "Spec,SpecDigest,RulesDigest,Stream,Queries,QueriesDigest,Groups,CacheBytes,Shadow"},
-		"Spec":         {runner.Spec{}, "Version,Workload,BatchSize,Retentions,Hot,Median,CacheBytes,CacheFraction,MinNonEmpty,Pins"},
+		"Spec":         {runner.Spec{}, "Version,Workload,BatchSize,Retentions,Hot,Median,CacheBytes,CacheFraction,MinNonEmpty,Pins,FullStore"},
 		"Query":        {runner.Query{}, "Group,Rank,Op,Layer,Dir,Fps,Age,At,From,To,AsOf,Expect,Size"},
 		"Stream":       {runner.StreamInfo{}, "Digest,Records,Dropped,LastSeq,PayloadBytes,Retentions,TokenFloor,OldToken,OldAt,Start,End,Horizon"},
 		"Group":        {runner.GroupInfo{}, "Group,Age,Queries,NonEmpty"},
@@ -1721,6 +1722,81 @@ func TestABuildRefusesTablesThatChangeAfterTheyAreMeasured(t *testing.T) {
 	// The same engine compacting when it is told to is built and read.
 	if _, _, res := run(t, plan, candidates.Wrap(lookup(t, "M/crdb1"), "M/on-time", func(e engine.Engine, _ candidates.Options) (engine.Engine, error) { return e, nil })); len(res.Mismatches) != 0 {
 		t.Errorf("mismatches %v", first(res.Mismatches))
+	}
+}
+
+// restCounter counts the times a build waits for its database to be at rest, and
+// the retentions it has seen by then.
+type restCounter struct {
+	fullEngine
+	retains, rests *int
+	restedAfter    *[]int
+}
+
+func (r restCounter) Retain(h time.Time) error {
+	*r.retains++
+	return r.fullEngine.Retain(h)
+}
+
+func (r restCounter) Quiesce(ctx context.Context) error {
+	*r.rests++
+	*r.restedAfter = append(*r.restedAfter, *r.retains)
+	return r.fullEngine.Quiesce(ctx)
+}
+
+// A build with the option waits for its database to be at rest after every retention,
+// before the next batch, so that the deletions a retention writes do not pile up
+// behind the writer; the wait is not part of the retention's time. Without it the
+// build does not wait. What it did is in the manifest, and the default is to rest in
+// an untimed build and not in a timed one.
+func TestABuildRestsAfterEveryRetentionIfItIsToAndNotOtherwise(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	if len(plan.Stream.Retentions) == 0 {
+		t.Fatal("the plan has no retention")
+	}
+	timed := clean
+	untimed := clean
+	untimed.Untimed = true
+	for name, c := range map[string]struct {
+		build func(ctx context.Context, v candidates.Variant, dir string) (*runner.Manifest, error)
+		rests bool
+	}{
+		"with the option": {func(ctx context.Context, v candidates.Variant, dir string) (*runner.Manifest, error) {
+			return runner.BuildWith(ctx, plan, v, dir, clean, runner.BuildOptions{RestAfterRetention: true}, nil)
+		}, true},
+		"without the option": {func(ctx context.Context, v candidates.Variant, dir string) (*runner.Manifest, error) {
+			return runner.BuildWith(ctx, plan, v, dir, untimed, runner.BuildOptions{RestAfterRetention: false}, nil)
+		}, false},
+		"by default, timed": {func(ctx context.Context, v candidates.Variant, dir string) (*runner.Manifest, error) {
+			return runner.Build(ctx, plan, v, dir, timed, nil)
+		}, false},
+		"by default, untimed": {func(ctx context.Context, v candidates.Variant, dir string) (*runner.Manifest, error) {
+			return runner.Build(ctx, plan, v, dir, untimed, nil)
+		}, true},
+	} {
+		var retains, rests int
+		var after []int
+		v := candidates.Wrap(lookup(t, "L/off"), "L/counted", func(e engine.Engine, o candidates.Options) (engine.Engine, error) {
+			if o.ReadOnly {
+				return e, nil
+			}
+			return restCounter{e.(fullEngine), &retains, &rests, &after}, nil
+		})
+		m, err := c.build(context.Background(), v, runner.CandidateDir(t.TempDir(), v.Name))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if want := strconv.FormatBool(c.rests); m.Describe[runner.RestKey] != want {
+			t.Errorf("%s: the manifest says %s=%q, want %q", name, runner.RestKey, m.Describe[runner.RestKey], want)
+		}
+		for i := 1; i <= len(plan.Stream.Retentions); i++ {
+			if got := slices.Contains(after, i); got != c.rests {
+				t.Errorf("%s: a rest after retention %d is %v, want %v (rests after %v retentions)", name, i, got, c.rests, after)
+			}
+		}
 	}
 }
 
