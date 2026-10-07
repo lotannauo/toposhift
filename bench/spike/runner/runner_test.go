@@ -757,7 +757,89 @@ func TestCheckFindsWhatMakesResultsIncomparable(t *testing.T) {
 		b.Manifest.Describe["pebble_options"] = strings.Replace(b.Manifest.Describe["pebble_options"], "bytes_per_sync=", "bytes_per_sync=1", 1)
 	})
 	mutate("canonical layout", "with and without the canonical layout", func(_, b *runner.Candidate) { b.Manifest.Describe[runner.CanonicalKey] = "true" })
+	mutate("sync of every commit", "with and without a sync of every commit", func(_, b *runner.Candidate) { b.Manifest.Describe[runner.SyncKey] = "true" })
+	mutate("sync true in one, no sync key in the other", "with and without a sync of every commit", func(a, b *runner.Candidate) {
+		a.Manifest.Describe[runner.SyncKey] = "true"
+		delete(b.Manifest.Describe, runner.SyncKey)
+	})
+	mutate("metric sampling", "with different metric sampling", func(_, b *runner.Candidate) { b.Manifest.Describe[runner.MetricsKey] = "30s" })
+	mutate("another sampling interval", "with different metric sampling", func(a, b *runner.Candidate) {
+		a.Manifest.Describe[runner.MetricsKey] = "1m0s"
+		b.Manifest.Describe[runner.MetricsKey] = "30s"
+	})
+	// A manifest without the key is of a build without it: "false" for the sync and "0s"
+	// for the sampling, so one side missing and the other saying so is not a mix.
+	agree := func(name string, notWant string, f func(a, b *runner.Candidate)) {
+		t.Helper()
+		ca, cb := *a, *b
+		ma, mb := *a.Manifest, *b.Manifest
+		ca.Manifest, cb.Manifest = &ma, &mb
+		ma.Describe = cloneMap(a.Manifest.Describe)
+		mb.Describe = cloneMap(b.Manifest.Describe)
+		f(&ca, &cb)
+		if problems := strings.Join(runner.Check(plan, []*runner.Candidate{&ca, &cb}, false), "\n"); strings.Contains(problems, notWant) {
+			t.Errorf("%s: %q among the problems of builds that agree:\n%s", name, notWant, problems)
+		}
+	}
+	agree("sync false in the first, none in the second", "sync", func(a, b *runner.Candidate) {
+		a.Manifest.Describe[runner.SyncKey] = "false"
+		delete(b.Manifest.Describe, runner.SyncKey)
+	})
+	agree("no sync key in the first, false in the second", "sync", func(a, b *runner.Candidate) {
+		delete(a.Manifest.Describe, runner.SyncKey)
+		b.Manifest.Describe[runner.SyncKey] = "false"
+	})
+	agree("sampling 0s in the first, none in the second", "metric sampling", func(a, b *runner.Candidate) {
+		a.Manifest.Describe[runner.MetricsKey] = "0s"
+		delete(b.Manifest.Describe, runner.MetricsKey)
+	})
+	agree("no sampling key in the first, 0s in the second", "metric sampling", func(a, b *runner.Candidate) {
+		delete(a.Manifest.Describe, runner.MetricsKey)
+		b.Manifest.Describe[runner.MetricsKey] = "0s"
+	})
 	mutate("missing results", "results for", func(_, b *runner.Candidate) { b.Results.Queries = b.Results.Queries[1:] })
+}
+
+// A build told to sync every commit succeeds, says so in its manifest (as the engine
+// describes it: the runner adds nothing), and is read: the database is opened read-only
+// with the build's setting, so the description a read compares is the build's. One not
+// told to says it did not, and records no sampling of its metrics and writes no file
+// for them.
+func TestASyncedBuildIsReadAndRecordsIt(t *testing.T) {
+	t.Parallel()
+	conformance.SkipWhenTrimmed(t)
+
+	plan := mustPlan(t, tinySpec())
+	v := lookup(t, "L/off")
+	for _, c := range []struct {
+		sync bool
+		want string
+	}{{true, "true"}, {false, "false"}} {
+		dir := runner.CandidateDir(t.TempDir(), v.Name)
+		m, err := runner.BuildWith(context.Background(), plan, v, dir, clean, runner.BuildOptions{Sync: c.sync}, nil)
+		if err != nil {
+			t.Fatalf("sync %v: building: %v", c.sync, err)
+		}
+		if got := m.Describe[runner.SyncKey]; got != c.want {
+			t.Errorf("sync %v: the manifest says %s %q, want %q", c.sync, runner.SyncKey, got, c.want)
+		}
+		if loaded, err := runner.LoadManifest(dir); err != nil || loaded.Describe[runner.SyncKey] != c.want {
+			t.Errorf("sync %v: the manifest on disk: %v, %v", c.sync, loaded, err)
+		}
+		if got := m.Describe[runner.MetricsKey]; got != "0s" {
+			t.Errorf("sync %v: %s is %q without sampling, want \"0s\"", c.sync, runner.MetricsKey, got)
+		}
+		if _, err := os.Stat(filepath.Join(dir, runner.MetricsFile)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("sync %v: a build that was not asked to sample has a %s (%v)", c.sync, runner.MetricsFile, err)
+		}
+		res, err := runner.Read(context.Background(), plan, v, dir, clean, nil)
+		if err != nil {
+			t.Fatalf("sync %v: reading: %v", c.sync, err)
+		}
+		if res.Describe[runner.SyncKey] != c.want || len(res.Mismatches)+len(res.Unstable) != 0 {
+			t.Errorf("sync %v: the read describes sync %q, %v wrong, %v unstable", c.sync, res.Describe[runner.SyncKey], res.Mismatches, res.Unstable)
+		}
+	}
 }
 
 func cloneMap(m map[string]string) map[string]string {

@@ -95,6 +95,16 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		if a, b := ref.Manifest.Describe[CanonicalKey], c.Manifest.Describe[CanonicalKey]; a != b {
 			out = append(out, fmt.Sprintf("%s and %s were built with and without the canonical layout (%q and %q): the blocks their reads load are not comparable", ref.Results.Candidate, name, a, b))
 		}
+		// A commit that waits for the log to reach the disk takes a different time from
+		// one that does not, whatever else is alike.
+		if a, b := describedOr(ref.Manifest, SyncKey, "false"), describedOr(c.Manifest, SyncKey, "false"); a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with and without a sync of every commit (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
+		}
+		// Sampling the database's metrics takes its metrics lock, so builds that sampled
+		// at different intervals (or one that did not) were not slowed alike.
+		if a, b := describedOr(ref.Manifest, MetricsKey, "0s"), describedOr(c.Manifest, MetricsKey, "0s"); a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with different metric sampling (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
+		}
 		if diff := optionsDiff(ref.Manifest.Describe["pebble_options"], c.Manifest.Describe["pebble_options"]); diff != "" {
 			out = append(out, fmt.Sprintf("%s and %s ran with different Pebble options: %s", ref.Results.Candidate, name, diff))
 		}

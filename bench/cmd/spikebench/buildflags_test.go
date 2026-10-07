@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lotannauo/toposhift/bench/spike/conformance"
 	"github.com/lotannauo/toposhift/bench/spike/runner"
@@ -21,14 +22,16 @@ func parseBuild(t *testing.T, untimed bool, args ...string) buildFlags {
 	if err := fs.Parse(args); err != nil {
 		t.Fatal(err)
 	}
-	b.resolve(fs, untimed)
+	if err := b.resolve(fs, untimed); err != nil {
+		t.Fatal(err)
+	}
 	return b
 }
 
 // The rest after each retention is on by default for an untimed build and off for
-// a timed one, unless it is given; the canonical layout is off unless it is given.
-// What is passed on to a build step says both, and makes the same choices whatever
-// the step's own -untimed.
+// a timed one, unless it is given; the canonical layout, the sync of every commit and
+// the sampling of the metrics are off unless given. What is passed on to a build step
+// says all of them, and makes the same choices whatever the step's own -untimed.
 func TestBuildFlagsDefaultsAndWhatIsPassedOn(t *testing.T) {
 	t.Parallel()
 
@@ -43,6 +46,14 @@ func TestBuildFlagsDefaultsAndWhatIsPassedOn(t *testing.T) {
 		{false, []string{"-rest-after-retention"}, buildFlags{rest: true}},
 		{true, []string{"-canonical-layout"}, buildFlags{rest: true, canonical: true}},
 		{false, []string{"-canonical-layout=true", "-rest-after-retention=false"}, buildFlags{canonical: true}},
+		{true, []string{"-sync"}, buildFlags{rest: true, sync: true}},
+		{false, []string{"-sync"}, buildFlags{sync: true}},
+		{false, []string{"-sync=false"}, buildFlags{}},
+		{true, []string{"-metrics-every", "30s"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}},
+		{false, []string{"-metrics-every=1m30s"}, buildFlags{metricsEvery: 90 * time.Second}},
+		{false, []string{"-metrics-every=0"}, buildFlags{}},
+		{false, []string{"-sync", "-metrics-every", "30s", "-canonical-layout"}, buildFlags{canonical: true, sync: true, metricsEvery: 30 * time.Second}},
+		{true, []string{"-sync", "-metrics-every=1s", "-canonical-layout", "-rest-after-retention=false"}, buildFlags{canonical: true, sync: true, metricsEvery: time.Second}},
 	} {
 		got := parseBuild(t, c.untimed, c.args...)
 		if got != c.want {
@@ -56,16 +67,51 @@ func TestBuildFlagsDefaultsAndWhatIsPassedOn(t *testing.T) {
 	}
 }
 
+// A sampling interval of a second or more, or none, is accepted; one that is
+// negative or shorter than a second is refused, naming the flag.
+func TestMetricsEveryIsAtLeastASecondOrNone(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		arg    string
+		accept bool
+	}{
+		{"0", true},
+		{"1s", true},
+		{"30s", true},
+		{"1h", true},
+		{"500ms", false},
+		{"999ms", false},
+		{"1ns", false},
+		{"-1s", false},
+		{"-1ms", false},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		var b buildFlags
+		b.flags(fs)
+		if err := fs.Parse([]string{"-metrics-every=" + c.arg}); err != nil {
+			t.Fatal(err)
+		}
+		err := b.resolve(fs, false)
+		switch {
+		case c.accept && err != nil:
+			t.Errorf("-metrics-every=%s: refused: %v, want accepted", c.arg, err)
+		case !c.accept && (err == nil || !strings.Contains(err.Error(), "-metrics-every")):
+			t.Errorf("-metrics-every=%s: %v, want a refusal naming -metrics-every", c.arg, err)
+		}
+	}
+}
+
 // A run passes the build flags to every build it starts, and to nothing else.
 func TestRunPassesTheBuildFlagsToItsBuilds(t *testing.T) {
 	t.Parallel()
 
 	var s steps
-	b := buildFlags{canonical: true}
+	b := buildFlags{canonical: true, sync: true, metricsEvery: 30 * time.Second}
 	runCandidates(t.Context(), []string{"A", "B"}, b.forward(s.step), nothingOnDisk)
 	want := []string{
-		"build -candidate A -rest-after-retention=false -canonical-layout=true", "read -candidate A",
-		"build -candidate B -rest-after-retention=false -canonical-layout=true", "read -candidate B",
+		"build -candidate A -rest-after-retention=false -canonical-layout=true -sync=true -metrics-every=30s", "read -candidate A",
+		"build -candidate B -rest-after-retention=false -canonical-layout=true -sync=true -metrics-every=30s", "read -candidate B",
 	}
 	if !slices.Equal(s.calls, want) {
 		t.Errorf("calls %v, want %v", s.calls, want)
@@ -123,6 +169,37 @@ func TestARunRefusesToResumeOverABuildMadeOtherwise(t *testing.T) {
 	writeManifest(t, runner.CandidateDir(out, "M/crdb1"), map[string]string{runner.CanonicalKey: "false"})
 	if err := plain.agreeAll(out); err == nil || !strings.Contains(err.Error(), "rest_after_retention") {
 		t.Errorf("a manifest without the rest key: %v", err)
+	}
+
+	// The sync of every commit and the sampling of the metrics: a manifest that says
+	// one is refused by flags that say another, naming it; a manifest without the key
+	// is of a build without it.
+	for _, c := range []struct {
+		name     string
+		describe map[string]string
+		b        buildFlags
+		want     string // the key the refusal names, or "" for none
+	}{
+		{"synced build, flags without sync", map[string]string{runner.RestKey: "true", runner.SyncKey: "true"}, plain, "sync"},
+		{"unsynced build, flags with sync", map[string]string{runner.RestKey: "true", runner.SyncKey: "false"}, buildFlags{rest: true, sync: true}, "sync"},
+		{"synced build, flags with sync", map[string]string{runner.RestKey: "true", runner.SyncKey: "true"}, buildFlags{rest: true, sync: true}, ""},
+		{"no sync key, flags without sync", map[string]string{runner.RestKey: "true"}, plain, ""},
+		{"no sync key, flags with sync", map[string]string{runner.RestKey: "true"}, buildFlags{rest: true, sync: true}, "sync"},
+		{"sampled build, flags without sampling", map[string]string{runner.RestKey: "true", runner.MetricsKey: "30s"}, plain, "metrics_every"},
+		{"unsampled build, flags with sampling", map[string]string{runner.RestKey: "true", runner.MetricsKey: "0s"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}, "metrics_every"},
+		{"sampled build, another interval", map[string]string{runner.RestKey: "true", runner.MetricsKey: "30s"}, buildFlags{rest: true, metricsEvery: time.Minute}, "metrics_every"},
+		{"sampled build, flags with its interval", map[string]string{runner.RestKey: "true", runner.MetricsKey: "30s"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}, ""},
+		{"no metrics key, flags without sampling", map[string]string{runner.RestKey: "true"}, plain, ""},
+		{"no metrics key, flags with sampling", map[string]string{runner.RestKey: "true"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}, "metrics_every"},
+	} {
+		writeManifest(t, runner.CandidateDir(out, "M/crdb1"), c.describe)
+		err := c.b.agreeAll(out)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: refused: %v, want accepted", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: %v, want a refusal naming %s", c.name, err, c.want)
+		}
 	}
 }
 

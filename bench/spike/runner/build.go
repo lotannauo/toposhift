@@ -74,6 +74,17 @@ const (
 	// CanonicalKey is the key of a manifest's Describe that says whether the build
 	// rewrote its compacted tables into the canonical layout ([BuildOptions]).
 	CanonicalKey = "canonical_layout"
+	// SyncKey is the key of a manifest's Describe that says whether every commit of
+	// the build waited for the log to reach the disk ([BuildOptions]). It is the
+	// engine's own description, not one the runner adds, and is among the descriptions
+	// a read must find as the build gave them.
+	SyncKey = "sync"
+	// MetricsKey is the key of a manifest's Describe that gives the interval at which
+	// the build sampled its metrics, as a duration ("0s" for none).
+	MetricsKey = "metrics_every"
+	// MetricsFile is the name of the file in a candidate's directory that the
+	// sampling of a build appends to.
+	MetricsFile = "metrics.jsonl"
 )
 
 // CandidateDir is where a candidate is built under out.
@@ -105,6 +116,9 @@ type buildSink struct {
 	rest bool
 	// afterRetention is set by a retention and cleared by the next write.
 	afterRetention *bool
+	// prog is told the phase and the progress, for the sampling of the build's
+	// metrics; nil for none.
+	prog *buildProgress
 }
 
 func (s buildSink) Write(batch []engine.Record) error {
@@ -119,6 +133,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 	if err != nil {
 		return err
 	}
+	s.prog.batch()
 	if got, want := s.e.LastSeq(), batch[len(batch)-1].Seq; got != want {
 		return fmt.Errorf("LastSeq is %d after a batch ending at %d", got, want)
 	}
@@ -126,6 +141,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 }
 
 func (s buildSink) Retain(h time.Time) error {
+	s.prog.setPhase(phaseRetain)
 	start := time.Now()
 	err := s.e.Retain(h)
 	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
@@ -133,9 +149,13 @@ func (s buildSink) Retain(h time.Time) error {
 	if err != nil {
 		return err
 	}
+	s.prog.retention()
 	if !s.rest {
+		s.prog.setPhase(phaseWrite)
 		return nil
 	}
+	s.prog.setPhase(phaseRest)
+	defer s.prog.setPhase(phaseWrite)
 	// The retention is timed alone; then, untimed, the build waits until the database
 	// is at rest. A retention writes a deletion for every prefix it rewrites, and a
 	// writer that runs on before the compactions and Pebble's statistics of those
@@ -167,6 +187,21 @@ type BuildOptions struct {
 	// are not comparable with those of one without. It is
 	// recorded in the manifest (Describe, key canonical_layout).
 	CanonicalLayout bool
+	// Sync makes every commit wait for the log to reach the disk, as production does.
+	// It changes no stored byte and changes every commit's time, so the timings of a
+	// build with it are not comparable with those of one without. It is recorded in
+	// the manifest as the engine's own description (Describe, key sync), and builds
+	// with and without it are never compared.
+	Sync bool
+	// MetricsEvery, if above zero, makes the build append, every MetricsEvery while
+	// it runs, a line of the database's statistics and the Go runtime's memory to
+	// [MetricsFile] in the candidate's directory: it is for finding what grows during
+	// a build. Reading the statistics takes the database's metrics lock for a moment,
+	// so the interval is recorded in the manifest (Describe, key metrics_every) and
+	// builds with different intervals are not compared. For the same reason the
+	// first-batch-after-a-retention figure of a sampled build is comparable only with
+	// builds sampled the same way, which [Check] enforces. Zero is off.
+	MetricsEvery time.Duration
 }
 
 // Build is [BuildWith] with the options of a build by this binary: it rests after
@@ -198,7 +233,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 
 	rec := NewCapture()
-	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec, DisableReadCompactions: true})
+	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec, DisableReadCompactions: true, Sync: opts.Sync})
 	if err != nil {
 		return nil, err
 	}
@@ -214,10 +249,21 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		}
 	}()
 
+	prog := newBuildProgress()
+	var samp *sampler
+	if opts.MetricsEvery > 0 {
+		if samp, err = startSampler(filepath.Join(dir, MetricsFile), opts.MetricsEvery, prog, e.Stats); err != nil {
+			return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+		}
+		// Registered after the engine's close, so it runs before it: a sampler that
+		// outlived the engine would read a closed database.
+		defer func() { _ = samp.stop() }()
+	}
+
 	say.say("build %s: writing %d records in batches of %d", v.Name, plan.Stream.Records, plan.Spec.BatchSize)
 	var timing Timing
 	after := false
-	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, rest: opts.RestAfterRetention})
+	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, rest: opts.RestAfterRetention, prog: prog})
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
@@ -232,11 +278,13 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		Candidate: v.Name, Layout: v.Layout, PlanDigest: planDigest, Stream: info,
 		Build: g.Info, Untimed: g.Untimed, Counters: totals, StatsBuilt: e.Stats(), Timing: timing,
 	}
+	prog.setPhase(phaseUncompacted)
 	say.say("build %s: reading what the stream left, before compacting", v.Name)
 	if m.Uncompacted, m.UncompactedWrong, err = readUncompacted(e, rec, plan, v.Name); err != nil {
 		return nil, err
 	}
 
+	prog.setPhase(phaseCompact)
 	say.say("build %s: compacting everything", v.Name)
 	if err := e.CompactAll(ctx); err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
@@ -246,6 +294,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		if !ok {
 			return nil, fmt.Errorf("runner: %s cannot rewrite its tables into the canonical layout", v.Name)
 		}
+		prog.setPhase(phaseCanonical)
 		say.say("build %s: rewriting the tables in the canonical layout", v.Name)
 		if err := c.Canonicalize(ctx); err != nil {
 			return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
@@ -257,6 +306,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	m.Describe[RestKey] = strconv.FormatBool(opts.RestAfterRetention)
 	m.Describe[CanonicalKey] = strconv.FormatBool(opts.CanonicalLayout)
+	m.Describe[MetricsKey] = opts.MetricsEvery.String()
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err
@@ -274,6 +324,10 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		m.SizeByLayer[l.String()] = n
 	}
 	if m.Size, err = e.Size(); err != nil {
+		return nil, err
+	}
+	prog.setPhase(phaseDone)
+	if err := samp.failure(v.Name); err != nil {
 		return nil, err
 	}
 	closed = true
@@ -297,7 +351,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 // checkAsRead opens the database a build has closed read-only, as [Read] does, and
 // returns the first way it differs from what the manifest records.
 func checkAsRead(plan *Plan, v candidates.Variant, dir string, m *Manifest) error {
-	e, err := openReadOnly(plan, v, dir, NewCapture())
+	e, err := openReadOnly(plan, v, dir, NewCapture(), m.Describe[SyncKey] == "true")
 	if err != nil {
 		return err
 	}

@@ -54,7 +54,7 @@ type Results struct {
 // the build and the read on purpose.
 var stable = []string{
 	"layout", "comparer", "key_schema_in_tables", "collectors_in_tables", "time_filter_asked", "checkpoints",
-	"block_bytes", "memtable_bytes", "target_file_bytes", "l_base_max_bytes", "l0_compaction_threshold", "cache_bytes", "sync",
+	"block_bytes", "memtable_bytes", "target_file_bytes", "l_base_max_bytes", "l0_compaction_threshold", "cache_bytes", SyncKey,
 }
 
 // Read opens the database built under dir in a fresh engine, read-only, and puts
@@ -84,7 +84,7 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	}
 
 	rec := NewCapture()
-	e, err := openReadOnly(plan, v, dir, rec)
+	e, err := openReadOnly(plan, v, dir, rec, m.Describe[SyncKey] == "true")
 	if err != nil {
 		return nil, err
 	}
@@ -188,10 +188,13 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 }
 
 // openReadOnly opens the database a build left under dir as a read opens it:
-// read-only, with the plan's block cache, nothing compacting.
-func openReadOnly(plan *Plan, v candidates.Variant, dir string, rec *Capture) (measurable, error) {
+// read-only, with the plan's block cache, nothing compacting. A read-only database
+// commits nothing, so sync (whether the build synced every commit) only makes its
+// description the build's: one of the descriptions a read compares.
+func openReadOnly(plan *Plan, v candidates.Variant, dir string, rec *Capture, sync bool) (measurable, error) {
 	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{
 		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true, ReadOnly: true,
+		Sync: sync,
 	})
 	if err != nil {
 		return nil, err

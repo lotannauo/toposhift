@@ -301,6 +301,28 @@ func TestSnapshotMovesWithTheDatabase(t *testing.T) {
 	}
 }
 
+// Flat names what a sampler of a build's progress reads: the compaction debt, the
+// jobs running, the sublevels of level 0, the memtables and the tables waiting for
+// their statistics.
+func TestFlatHasTheCountersASamplerReads(t *testing.T) {
+	t.Parallel()
+	kv := bytewise(t, vfs.NewMem(), "db", pebblekv.Config{DisableAutoCompactions: true})
+	t.Cleanup(func() { _ = kv.Close() })
+	fill(t, kv, 150, 100)
+	flat := kv.Snapshot().Flat()
+	for _, k := range []string{"compaction_debt", "compactions_in_progress", "flushes_in_progress", "l0_sublevels", "memtable_count", "pending_stats_tables"} {
+		if _, ok := flat[k]; !ok {
+			t.Errorf("Flat has no %q: %v", k, flat)
+		}
+	}
+	if flat["memtable_count"] < 1 {
+		t.Errorf("memtable_count is %d, want at least the one being written", flat["memtable_count"])
+	}
+	if flat["l0_sublevels"] < 1 {
+		t.Errorf("l0_sublevels is %d after a flush into level 0 with automatic compactions off, want at least 1", flat["l0_sublevels"])
+	}
+}
+
 // DisableAutoCompactions holds: with it a database that flushed many times keeps
 // all its tables, and CompactAll then merges them. Without it Pebble merges them
 // on its own, so the first half of this would pass for nothing.
