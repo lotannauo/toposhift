@@ -1,0 +1,696 @@
+name: bench
+
+# The storage-engine spike's timing gates (G2: the longest retention stalls
+# ingest no longer than 60 s; G3: the 99th percentile of a batch's commit time and
+# the first batch after each retention are within 2x of the best candidate) are
+# only meaningful on CI hardware, so they are measured here, on GitHub-hosted
+# runners. Each spikebench build writes its timings and its table bytes per record
+# (G4) into the candidate's manifest.json; this workflow only produces those
+# manifests and uploads them. They are judged offline, later.
+#
+# Standard GitHub-hosted runners are free for a public repository, so the work is
+# cut into one job per (runner, window, candidate, repetition): the longest job is
+# then one 30-day build, well inside the six hours a job may run. Larger runners
+# cost money and are not used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      family:
+        description: The scenario family, which fixes the scenario flags of the plans.
+        type: choice
+        options: [rmae, ph5m-rmae]
+        default: rmae
+      windows:
+        description: Windows to build, in days, as a comma list of at most 4 increasing integers from 1 to 31.
+        type: string
+        default: "2,7,30"
+      candidates:
+        description: Candidates to build, as a comma list (for example L/off,L/k64a2l1ns,M/crdb1).
+        type: string
+        default: L/off,L/k64a2l1ns
+      reps:
+        description: Repetitions of every build, an integer from 1 to 10.
+        type: string
+        default: "1"
+      arches:
+        description: Which runners to build on.
+        type: choice
+        options: [both, x64, arm64]
+        default: both
+      pins_window:
+        description: The window, in days, whose stream the pinned prefixes are chosen from, an integer from 1 to 60.
+        type: string
+        default: "2"
+      sync:
+        description: Pass -sync to every build. Needs the change that adds that flag; before it merges the build step fails at once with "flag provided but not defined".
+        type: boolean
+        default: false
+      metrics_every:
+        description: Pass -metrics-every with this Go duration (for example 30s) to every build, or leave empty. Needs the change that adds that flag; before it merges the build step fails at once with "flag provided but not defined".
+        type: string
+        default: ""
+  # A change to this workflow or to the program it runs gets a dry run at the
+  # tiny preset, which proves the whole chain in minutes.
+  pull_request:
+    paths:
+      - .github/workflows/bench.yml
+      - bench/**
+      - mise.toml
+
+permissions: {}
+
+concurrency:
+  # A newer push to a pull request cancels its older dry run. A dispatch has a
+  # group of its own and is never cancelled: a timed run that is cancelled has
+  # measured nothing.
+  group: bench-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for
+    # an unnamed bash step does not set pipefail).
+    shell: bash
+
+jobs:
+  # Turns the inputs into a matrix. Every input reaches a script only through env,
+  # and is checked here before anything else runs, so a mistyped dispatch fails in
+  # seconds and not after hours of building.
+  setup:
+    name: bench setup
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      family: ${{ steps.matrix.outputs.family }}
+      family_flags: ${{ steps.matrix.outputs.family_flags }}
+      windows: ${{ steps.matrix.outputs.windows }}
+      pins_window: ${{ steps.matrix.outputs.pins_window }}
+      sync: ${{ steps.matrix.outputs.sync }}
+      metrics_every: ${{ steps.matrix.outputs.metrics_every }}
+      plans_key: ${{ steps.matrix.outputs.plans_key }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check the inputs and plan the jobs
+        id: matrix
+        env:
+          REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          FAMILY: ${{ inputs.family }}
+          WINDOWS: ${{ inputs.windows }}
+          CANDIDATES: ${{ inputs.candidates }}
+          REPS: ${{ inputs.reps }}
+          ARCHES: ${{ inputs.arches }}
+          PINS_WINDOW: ${{ inputs.pins_window }}
+          SYNC: ${{ inputs.sync }}
+          METRICS_EVERY: ${{ inputs.metrics_every }}
+        run: |
+          set -euo pipefail
+
+          # The messages never repeat an input: its text is not trusted, and a
+          # line that starts with "::" is a command to the runner.
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+
+          # This is a convention, not enforcement: a dispatch with ref=<branch>
+          # runs that branch's copy of this file, which could drop the check. The
+          # offline judge must therefore refuse any manifest whose revision is not
+          # an ancestor of origin/main.
+          [ "$REF" = refs/heads/main ] ||
+            fail "timed runs are dispatched from main, so every number comes from a merged commit"
+
+          # The scenario flags of each family are fixed here and never taken from
+          # free text: the plans job splits them into words.
+          case "$FAMILY" in
+            rmae) family_flags="-run-max-age 30m" ;;
+            ph5m-rmae) family_flags="-pod-heartbeat 5m -run-max-age 10m" ;;
+            *) fail "family: not one of rmae, ph5m-rmae" ;;
+          esac
+
+          case "$ARCHES" in
+            both) oses=(ubuntu-24.04 ubuntu-24.04-arm) ;;
+            x64) oses=(ubuntu-24.04) ;;
+            arm64) oses=(ubuntu-24.04-arm) ;;
+            *) fail "arches: not one of both, x64, arm64" ;;
+          esac
+
+          case "$SYNC" in
+            true | false) ;;
+            *) fail "sync: not true or false" ;;
+          esac
+
+          # A Go duration: one or more numbers, each with a unit.
+          metrics_every="${METRICS_EVERY//[[:space:]]/}"
+          if [ -n "$metrics_every" ]; then
+            re='^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'
+            [[ $metrics_every =~ $re ]] ||
+              fail "metrics_every: empty or a Go duration such as 30s"
+          fi
+
+          re='^[1-9][0-9]?$'
+          [[ $PINS_WINDOW =~ $re ]] && [ "$PINS_WINDOW" -le 60 ] ||
+            fail "pins_window: an integer from 1 to 60"
+
+          re='^([1-9]|10)$'
+          [[ $REPS =~ $re ]] ||
+            fail "reps: an integer from 1 to 10"
+
+          windows="${WINDOWS//[[:space:]]/}"
+          re='^[0-9]+(,[0-9]+)*$'
+          [[ $windows =~ $re ]] ||
+            fail "windows: a comma list of integers"
+          IFS=, read -ra wins <<<"$windows"
+          [ "${#wins[@]}" -le 4 ] ||
+            fail "windows: at most 4 windows in one dispatch"
+          re='^[1-9][0-9]?$'
+          previous=0
+          for w in "${wins[@]}"; do
+            [[ $w =~ $re ]] && [ "$w" -le 31 ] ||
+              fail "windows: every window is an integer from 1 to 31 days"
+            [ "$w" -gt "$previous" ] ||
+              fail "windows: the windows must be increasing"
+            previous="$w"
+          done
+          if [ "$PINS_WINDOW" -gt "${wins[0]}" ]; then
+            echo "::warning::pins_window is longer than the shortest window"
+          fi
+
+          candidates="${CANDIDATES//[[:space:]]/}"
+          re='^[^,]+(,[^,]+)*$'
+          [[ $candidates =~ $re ]] ||
+            fail "candidates: a comma list of names"
+          IFS=, read -ra cands <<<"$candidates"
+          re='^[A-Za-z0-9][A-Za-z0-9/+._-]*$'
+          seen=" "
+          for c in "${cands[@]}"; do
+            [[ $c =~ $re ]] ||
+              fail "candidates: every name must match ^[A-Za-z0-9][A-Za-z0-9/+._-]*\$"
+            # The slug names an artifact and the candidate's directory, so two
+            # names with one slug would write over each other.
+            case "$seen" in
+              *" ${c//\//_} "*) fail "candidates: two names give the same directory" ;;
+            esac
+            seen="$seen${c//\//_} "
+          done
+
+          jobs=$((${#oses[@]} * ${#wins[@]} * ${#cands[@]} * REPS))
+          [ "$jobs" -le 256 ] ||
+            fail "the matrix has $jobs jobs and a matrix may have at most 256"
+
+          tsv="$RUNNER_TEMP/matrix.tsv"
+          : >"$tsv"
+          for os in "${oses[@]}"; do
+            for w in "${wins[@]}"; do
+              for c in "${cands[@]}"; do
+                for ((rep = 1; rep <= REPS; rep++)); do
+                  printf '%s\t%s\t%s\t%s\t%s\n' "$os" "$w" "$c" "${c//\//_}" "$rep" >>"$tsv"
+                done
+              done
+            done
+          done
+          # Compact, on one line: fromJSON reads it from a job output.
+          matrix="$(jq -Rsc '{include: [split("\n")[] | select(length > 0) | split("\t") | {os: .[0], window: (.[1] | tonumber), candidate: .[2], slug: .[3], rep: (.[4] | tonumber)}]}' "$tsv")"
+
+          {
+            echo "matrix=$matrix"
+            echo "family=$FAMILY"
+            echo "family_flags=$family_flags"
+            echo "windows=$windows"
+            echo "pins_window=$PINS_WINDOW"
+            echo "sync=$SYNC"
+            echo "metrics_every=$metrics_every"
+            echo "plans_key=bench-plans-${RUN_ID}-${RUN_ATTEMPT}"
+          } >>"$GITHUB_OUTPUT"
+
+          {
+            echo "### Planned jobs: $jobs"
+            echo
+            echo "- family: \`$FAMILY\` (scenario flags \`$family_flags\`)"
+            echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
+            echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
+            echo
+            echo "| runner | window (days) | candidate | repetition |"
+            echo "|---|---|---|---|"
+            while IFS=$'\t' read -r os w c _ rep; do
+              echo "| $os | $w | \`$c\` | $rep |"
+            done <"$tsv"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
+  # but the file is about 350 KB, so it is made here, where the memory is, and the
+  # build jobs on both architectures read it from the cache. The plan is expected
+  # to be the same file on any machine; the digests printed in the summary check
+  # it, and a later check compares them with the plans made locally.
+  plans:
+    name: bench plans
+    if: github.event_name == 'workflow_dispatch'
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      # time -v is how each step's peak memory is read.
+      - name: Check that GNU time is present
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update && sudo apt-get install --yes time
+          fi
+          /usr/bin/time --version
+
+      # A timed build refuses a binary from a tree with uncommitted or untracked
+      # changes, and the plans are made by the same binary the builds use. The
+      # check is the last thing before go build, and the binary and everything
+      # after it are written outside the checkout.
+      - name: Build spikebench
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      - name: Make the pins and the plans
+        env:
+          # From the setup job's fixed mapping of the family, never from free
+          # text; it is split into words on purpose.
+          FAMILY_FLAGS: ${{ needs.setup.outputs.family_flags }}
+          PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
+          WINDOWS: ${{ needs.setup.outputs.windows }}
+        run: |
+          set -euo pipefail
+          SB="$RUNNER_TEMP/spikebench"
+          PLANS="$RUNNER_TEMP/plans"
+          LOGS="$RUNNER_TEMP/logs"
+          mkdir -p "$LOGS"
+          read -ra flags <<<"$FAMILY_FLAGS"
+          IFS=, read -ra wins <<<"$WINDOWS"
+
+          /usr/bin/time -v -o "$LOGS/pins.time.txt" \
+            "$SB" pins -out "$PLANS" -preset ci "${flags[@]}" -window "$PINS_WINDOW" \
+            2>&1 | tee "$LOGS/pins.log"
+
+          for d in "${wins[@]}"; do
+            /usr/bin/time -v -o "$LOGS/plan-R$d.time.txt" \
+              "$SB" plan -out "$PLANS/R$d" -preset ci "${flags[@]}" -window "$d" -pins "$PLANS/pins.json" -full \
+              2>&1 | tee "$LOGS/plan-R$d.log"
+          done
+
+      - name: Summarise the plans
+        if: always()
+        env:
+          WINDOWS: ${{ needs.setup.outputs.windows }}
+        run: |
+          set -uo pipefail
+          PLANS="$RUNNER_TEMP/plans"
+          LOGS="$RUNNER_TEMP/logs"
+          IFS=, read -ra wins <<<"$WINDOWS"
+          peak() {
+            awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$1" 2>/dev/null
+          }
+          {
+            echo "### Plans"
+            echo
+            echo "| file | sha256 | peak memory of the step that made it |"
+            echo "|---|---|---|"
+            if [ -f "$PLANS/pins.json" ]; then
+              echo "| pins.json | \`$(sha256sum "$PLANS/pins.json" | cut -d' ' -f1)\` | $(peak "$LOGS/pins.time.txt") |"
+            else
+              echo "| pins.json | not written | |"
+            fi
+            for d in "${wins[@]}"; do
+              if [ -f "$PLANS/R$d/plan.json" ]; then
+                echo "| R$d/plan.json | \`$(sha256sum "$PLANS/R$d/plan.json" | cut -d' ' -f1)\` | $(peak "$LOGS/plan-R$d.time.txt") |"
+              else
+                echo "| R$d/plan.json | not written | |"
+              fi
+            done
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Save the plans for the build jobs
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plans
+          key: ${{ needs.setup.outputs.plans_key }}
+
+      - name: Keep the plans and their logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-plans-${{ needs.setup.outputs.family }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/plans
+            ${{ runner.temp }}/logs
+          if-no-files-found: warn
+          # A re-run of this job in the same run replaces the artifact.
+          overwrite: true
+          retention-days: 90
+
+  # One spikebench build per job, so the longest job is one 30-day build. Every
+  # job gets its own runner, and so its own disk and its own memory.
+  build:
+    name: bench build (${{ matrix.os }} R${{ matrix.window }} ${{ matrix.candidate }} #${{ matrix.rep }})
+    if: github.event_name == 'workflow_dispatch'
+    needs: [setup, plans]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 358
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The runner images carry gigabytes of toolchains a build never uses, and the
+      # database of a long build is large. Best effort: a path that is not on this
+      # image is skipped, and nothing under the home directory is touched.
+      - name: Free disk space
+        run: |
+          echo "before:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          echo "after:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      - name: Restore the plans
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/plans
+          key: ${{ needs.setup.outputs.plans_key }}
+          fail-on-cache-miss: true
+
+      # time -v is how the build's peak memory and elapsed time are read.
+      - name: Check that GNU time is present
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update && sudo apt-get install --yes time
+          fi
+          /usr/bin/time --version
+
+      # A timed build refuses a binary from a tree with uncommitted or untracked
+      # changes. The check is the last thing before go build, and the binary and
+      # everything after it are written outside the checkout.
+      - name: Build spikebench
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      # A build wants plan.json in its output directory, and nothing else there but
+      # other candidates.
+      - name: Prepare the build directory
+        env:
+          WINDOW: ${{ matrix.window }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          mkdir -p "$WORK" "$RUNNER_TEMP/logs"
+          cp "$RUNNER_TEMP/plans/R$WINDOW/plan.json" "$WORK/plan.json"
+
+      # What the disk and the memory did over the build, a minute apart. The build
+      # directory is kept under the runner's temp directory for now, which is on
+      # the root filesystem; every sample also reads /mnt, so that the pilot shows
+      # which of the two disks is the one that fills up. If it shows that the root
+      # filesystem is short, the fallback is a build directory under /mnt. The
+      # sampler is not stopped here: the runner cleans up the processes a job left
+      # behind when the job ends. One failed df or free must not end it, so
+      # nothing in it can fail the loop.
+      - name: Sample the disk and the memory
+        run: |
+          set -euo pipefail
+          sample() {
+            {
+              date -u +%Y-%m-%dT%H:%M:%SZ
+              echo "== root"
+              df -kP / || true
+              echo "== mnt"
+              df -kP /mnt || true
+              echo "== work"
+              df -kP "$RUNNER_TEMP" || true
+              free -m || true
+            } >>"$RUNNER_TEMP/logs/system.log" 2>&1
+          }
+          sample
+          (
+            set +e
+            while sleep 60; do sample; done
+          ) >/dev/null 2>&1 &
+
+      # Timed: no -untimed, no -rest-after-retention and no -canonical-layout, so
+      # the numbers are those of a build as it ingests. Its own step with a timeout
+      # shorter than the job's, so that an overrun still reaches the upload.
+      - name: Build the candidate
+        timeout-minutes: 340
+        env:
+          WINDOW: ${{ matrix.window }}
+          CANDIDATE: ${{ matrix.candidate }}
+          SYNC: ${{ needs.setup.outputs.sync }}
+          METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          extra=()
+          if [ "$SYNC" = true ]; then
+            extra+=(-sync)
+          fi
+          if [ -n "$METRICS_EVERY" ]; then
+            extra+=(-metrics-every "$METRICS_EVERY")
+          fi
+          /usr/bin/time -v -o "$RUNNER_TEMP/logs/time.txt" \
+            "$RUNNER_TEMP/spikebench" build -out "$WORK" -candidate "$CANDIDATE" "${extra[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/logs/build.log"
+
+      - name: Collect the manifest and the logs
+        if: always()
+        env:
+          FAMILY: ${{ needs.setup.outputs.family }}
+          PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
+          SYNC: ${{ needs.setup.outputs.sync }}
+          METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+          OS: ${{ matrix.os }}
+          WINDOW: ${{ matrix.window }}
+          CANDIDATE: ${{ matrix.candidate }}
+          SLUG: ${{ matrix.slug }}
+          REP: ${{ matrix.rep }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -uo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          OUT="$RUNNER_TEMP/out"
+          LOGS="$RUNNER_TEMP/logs"
+          mkdir -p "$OUT"
+
+          # Only the manifest and the metrics, never db/: the database is
+          # gigabytes.
+          manifest=no
+          if [ -f "$WORK/$SLUG/manifest.json" ]; then
+            cp "$WORK/$SLUG/manifest.json" "$OUT/manifest.json"
+            manifest=yes
+          fi
+          if [ -f "$WORK/$SLUG/metrics.jsonl" ]; then
+            cp "$WORK/$SLUG/metrics.jsonl" "$OUT/metrics.jsonl"
+          fi
+
+          # What this job was and what it ran on, so a manifest can be judged
+          # without the run page. Hosted runners of one label are not one machine:
+          # the CPU model can differ from job to job, and a timing is only
+          # comparable within one model. The offline judge must therefore compare
+          # candidates only within one CPU model, or require reps >= 3.
+          cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }')"
+          cpu="${cpu:-unknown}"
+          cpus="$(nproc 2>/dev/null || echo 0)"
+          mem_kb="$(awk '/^MemTotal/ { print $2 }' /proc/meminfo 2>/dev/null)"
+          mem_kb="${mem_kb:-0}"
+          kernel="$(uname -r)"
+          image_os="${ImageOS:-unknown}"
+          image_version="${ImageVersion:-unknown}"
+          runner_name="${RUNNER_NAME:-unknown}"
+          # The binary this job built and ran, to tell builds of one commit apart.
+          binary_sha256="$(sha256sum "$RUNNER_TEMP/spikebench" 2>/dev/null | cut -d' ' -f1)"
+          binary_sha256="${binary_sha256:-unknown}"
+          jq -n \
+            --arg sha "$SHA" --arg os "$OS" --arg arch "$(uname -m)" \
+            --arg family "$FAMILY" --argjson window "$WINDOW" --arg candidate "$CANDIDATE" \
+            --argjson rep "$REP" --argjson pins_window "$PINS_WINDOW" \
+            --arg sync "$SYNC" --arg metrics_every "$METRICS_EVERY" \
+            --arg cpu_model "$cpu" --argjson nproc "$cpus" --argjson mem_total_kb "$mem_kb" \
+            --arg image_os "$image_os" --arg image_version "$image_version" \
+            --arg runner_name "$runner_name" --arg kernel "$kernel" \
+            --arg run_id "$RUN_ID" --arg run_attempt "$RUN_ATTEMPT" \
+            --arg binary_sha256 "$binary_sha256" \
+            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
+            >"$OUT/job.json"
+
+          cp -r "$LOGS" "$OUT/logs"
+
+          rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/time.txt" 2>/dev/null)"
+          elapsed="$(awk '/Elapsed \(wall clock\)/ { print $NF }' "$LOGS/time.txt" 2>/dev/null)"
+          # The data line after each df header, by the section the sampler wrote
+          # it under: the used 1K-blocks of the root filesystem, of /mnt and of
+          # the filesystem the build writes to.
+          disk="$(awk '
+            /^== / { label = $2 }
+            /^Filesystem/ { getline; if ($3 > max[label]) max[label] = $3 }
+            END {
+              for (l in max) {
+                printf "%s%s %.1f GiB", sep, l, max[l] / 1048576
+                sep = ", "
+              }
+            }' "$LOGS/system.log" 2>/dev/null)"
+          {
+            echo "### $CANDIDATE, $WINDOW days, $OS, repetition $REP"
+            echo
+            echo "- manifest written: $manifest"
+            echo "- peak memory: ${rss:-unknown}"
+            echo "- elapsed time (h:mm:ss or m:ss): ${elapsed:-unknown}"
+            echo "- most disk used, sampled each minute (root, mnt and the work directory's filesystem): ${disk:-unknown}"
+            echo "- hardware: $cpu, $cpus CPUs, $((mem_kb / 1024)) MiB memory, kernel $kernel"
+            echo "- runner: $runner_name, image $image_os $image_version, run $RUN_ID attempt $RUN_ATTEMPT"
+            echo "- binary sha256: \`$binary_sha256\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the manifest and the logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-${{ needs.setup.outputs.family }}-R${{ matrix.window }}-${{ matrix.slug }}-${{ matrix.os }}-rep${{ matrix.rep }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: warn
+          # A re-run of this job in the same run replaces the artifact.
+          overwrite: true
+          retention-days: 90
+
+  # On a pull request that touches this workflow or the program, the whole chain
+  # at the tiny preset: pins, plan, two candidates built, read and reported. Every
+  # step is timed (no -untimed), so the guards of a timed build run exactly as they
+  # do in a dispatch. It uploads nothing.
+  dry-run:
+    name: bench dry run
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      - name: Build spikebench
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      - name: Choose the pins
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/spikebench" pins -out "$RUNNER_TEMP/dry" -preset tiny -events-per-second 0.05 -batch 40 -window 1
+
+      - name: Make the plan
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry"
+          "$RUNNER_TEMP/spikebench" plan -out "$D/R1" -preset tiny -events-per-second 0.05 -batch 40 -window 1 -pins "$D/pins.json" -full
+
+      - name: Build the first candidate
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/spikebench" build -out "$RUNNER_TEMP/dry/R1" -candidate L/off
+
+      - name: Build the second candidate
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/spikebench" build -out "$RUNNER_TEMP/dry/R1" -candidate L/k64a2l1ns
+
+      - name: Read both candidates
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry/R1"
+          "$RUNNER_TEMP/spikebench" read -out "$D" -candidate L/off
+          "$RUNNER_TEMP/spikebench" read -out "$D" -candidate L/k64a2l1ns
+
+      - name: Report
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/spikebench" report -out "$RUNNER_TEMP/dry/R1"
