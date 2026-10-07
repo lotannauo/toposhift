@@ -54,6 +54,21 @@ type Snapshot struct {
 	// as a job takes the queue, before that job has loaded anything: only
 	// [KV.Quiesce] waits for the statistics themselves.
 	StatsComplete bool
+
+	// CompactionDebt is the bytes Pebble estimates still have to be compacted for the
+	// tree to reach a stable state.
+	CompactionDebt uint64
+	// CompactionsInProgress and FlushesInProgress are the jobs running at the moment
+	// of the reading.
+	CompactionsInProgress, FlushesInProgress int64
+	// L0Sublevels is the number of sublevels of level 0.
+	L0Sublevels int32
+	// MemtableCount is the memtables the database holds, the mutable one and those
+	// waiting to be flushed.
+	MemtableCount int64
+	// PendingStatsTables is the number of tables queued for their statistics to be
+	// read.
+	PendingStatsTables int64
 }
 
 // Snapshot reads the database's metrics.
@@ -71,7 +86,13 @@ func (k *KV) Snapshot() Snapshot {
 		CacheHits:             m.BlockCache.Hits, CacheMisses: m.BlockCache.Misses, CacheSize: m.BlockCache.Size,
 		MarkedFiles:   m.Compact.MarkedFiles,
 		StatsComplete: m.Table.InitialStatsCollectionComplete && m.Table.PendingStatsCollectionCount == 0,
+
+		CompactionDebt:        m.Compact.EstimatedDebt,
+		CompactionsInProgress: m.Compact.NumInProgress, FlushesInProgress: m.Flush.NumInProgress,
+		MemtableCount:      m.MemTable.Count,
+		PendingStatsTables: m.Table.PendingStatsCollectionCount,
 	}
+	s.L0Sublevels = m.Levels[0].Sublevels
 	for i := 0; i < len(m.Levels) && i < len(s.TablesPerLevel); i++ {
 		s.TablesPerLevel[i] = m.Levels[i].TablesCount
 		s.BytesPerLevel[i] = m.Levels[i].TablesSize
@@ -93,7 +114,10 @@ func (s Snapshot) Flat() map[string]int64 {
 		"range_tombstone_garbage": int64(s.RangeTombstoneGarbage),
 		"cache_hits":              s.CacheHits, "cache_misses": s.CacheMisses, "cache_size": s.CacheSize,
 		"bytes_in": int64(s.BytesIn), "bytes_flushed": int64(s.BytesFlushed), "bytes_compacted": int64(s.BytesCompacted),
-		"marked_files": int64(s.MarkedFiles),
+		"marked_files":    int64(s.MarkedFiles),
+		"compaction_debt": int64(s.CompactionDebt), "compactions_in_progress": s.CompactionsInProgress,
+		"flushes_in_progress": s.FlushesInProgress, "l0_sublevels": int64(s.L0Sublevels),
+		"memtable_count": s.MemtableCount, "pending_stats_tables": s.PendingStatsTables,
 	}
 	for i := range s.TablesPerLevel {
 		out[fmt.Sprintf("tables_l%d", i)] = s.TablesPerLevel[i]

@@ -409,7 +409,9 @@ func doBuild(ctx context.Context, args []string) error {
 	b.flags(fs)
 	fs.StringVar(&name, "candidate", "", "the candidate to build (required)")
 	_ = fs.Parse(args)
-	b.resolve(fs, c.untimed)
+	if err := b.resolve(fs, c.untimed); err != nil {
+		return err
+	}
 	plan, err := loadPlan(c)
 	if err != nil {
 		return err
@@ -426,30 +428,43 @@ func doBuild(ctx context.Context, args []string) error {
 // takes them, and run and windows take them too and pass them to every build they
 // start, so that the candidates of a family are all built alike (a report refuses to
 // compare builds that are not).
-type buildFlags struct{ rest, canonical bool }
+type buildFlags struct {
+	rest, canonical, sync bool
+	metricsEvery          time.Duration
+}
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
+	fs.BoolVar(&b.sync, "sync", false, "commit every batch with a sync of the log to the disk, as production does; recorded in the manifest, and a report refuses to compare builds with and without it (default: off)")
+	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
 }
 
 // resolve gives -rest-after-retention its default once fs is parsed: on for an
-// -untimed build, off otherwise, unless it was given.
-func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) {
+// -untimed build, off otherwise, unless it was given. It refuses a -metrics-every
+// that is negative or shorter than a second.
+func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 	given := false
 	fs.Visit(func(f *flag.Flag) { given = given || f.Name == "rest-after-retention" })
 	if !given {
 		b.rest = untimed
 	}
+	if b.metricsEvery < 0 || (b.metricsEvery > 0 && b.metricsEvery < time.Second) {
+		return fmt.Errorf("-metrics-every %s: give 0 for none, or at least 1s", b.metricsEvery)
+	}
+	return nil
 }
 
 // args are the flags that make a build step do what b says, both given explicitly.
 func (b buildFlags) args() []string {
-	return []string{"-rest-after-retention=" + strconv.FormatBool(b.rest), "-canonical-layout=" + strconv.FormatBool(b.canonical)}
+	return []string{
+		"-rest-after-retention=" + strconv.FormatBool(b.rest), "-canonical-layout=" + strconv.FormatBool(b.canonical),
+		"-sync=" + strconv.FormatBool(b.sync), "-metrics-every=" + b.metricsEvery.String(),
+	}
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical}
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery}
 }
 
 // forward is step with b's flags added to every build it starts.
@@ -464,8 +479,10 @@ func (b buildFlags) forward(step func(cmd string, extra ...string) error) func(c
 
 // agrees returns why the candidate built under dir, if one is, was built otherwise
 // than b says, or nil. A manifest without the key of the canonical layout is of a
-// build without it; one without the key of the rest is of a binary that did not
-// record it, which agrees with neither.
+// build without it, and one without the key of the sync, which every engine has always
+// described, is of a build without it; one without the key of the metrics sampling is
+// of a build that did not sample; one without the key of the rest is of a binary that
+// did not record it, which agrees with neither.
 func (b buildFlags) agrees(dir string) error {
 	if _, err := os.Stat(filepath.Join(dir, runner.ManifestFile)); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -474,13 +491,18 @@ func (b buildFlags) agrees(dir string) error {
 	if err != nil {
 		return err
 	}
-	canonical := m.Describe[runner.CanonicalKey]
-	if canonical == "" {
-		canonical = "false"
+	orDefault := func(key, def string) string {
+		if v := m.Describe[key]; v != "" {
+			return v
+		}
+		return def
 	}
+	canonical := orDefault(runner.CanonicalKey, "false")
 	for _, f := range []struct{ flag, key, have, want string }{
 		{"-canonical-layout", runner.CanonicalKey, canonical, strconv.FormatBool(b.canonical)},
 		{"-rest-after-retention", runner.RestKey, m.Describe[runner.RestKey], strconv.FormatBool(b.rest)},
+		{"-sync", runner.SyncKey, orDefault(runner.SyncKey, "false"), strconv.FormatBool(b.sync)},
+		{"-metrics-every", runner.MetricsKey, orDefault(runner.MetricsKey, "0s"), b.metricsEvery.String()},
 	} {
 		if f.have != f.want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for %s=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, f.key, f.have, f.flag, f.want)
@@ -606,7 +628,9 @@ func doRun(ctx context.Context, args []string) error {
 	b.flags(fs)
 	fs.StringVar(&names, "candidates", strings.Join(candidates.Names(), ","), "the candidates to run")
 	_ = fs.Parse(args)
-	b.resolve(fs, c.untimed)
+	if err := b.resolve(fs, c.untimed); err != nil {
+		return err
+	}
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -818,7 +842,9 @@ func doWindows(ctx context.Context, args []string) error {
 	fs.StringVar(&windows, "windows", "2,7,14,30", "the windows of retained history to run, in days")
 	fs.StringVar(&names, "candidates", strings.Join(candidates.Names(), ","), "the candidates to run")
 	_ = fs.Parse(args)
-	b.resolve(fs, c.untimed)
+	if err := b.resolve(fs, c.untimed); err != nil {
+		return err
+	}
 	if err := c.require(); err != nil {
 		return err
 	}

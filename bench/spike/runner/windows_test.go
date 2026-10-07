@@ -76,6 +76,14 @@ func TestWindowsAreJudgedTogetherOnlyIfTheyAreOfTheSamePinsCacheSeedAndCandidate
 				c.Manifest.Describe = map[string]string{runner.RestKey: "true"}
 			}
 		}, "windows of 1 and 3 days were built with and without a rest after each retention"},
+		"a sync in one build": {func(ws []runner.RetainedWindow) {
+			ws[1].Candidates[0].Manifest.Describe = map[string]string{runner.SyncKey: "true"}
+		}, "with and without a sync of every commit"},
+		"a sync in one window": {func(ws []runner.RetainedWindow) {
+			for _, c := range ws[2].Candidates { // consistent within the window
+				c.Manifest.Describe = map[string]string{runner.SyncKey: "true"}
+			}
+		}, "windows of 1 and 3 days were built with and without a sync of every commit (\"false\" and \"true\")"},
 		"another candidate": {func(ws []runner.RetainedWindow) { ws[2].Candidates = ws[2].Candidates[:1] }, "different candidates"},
 		"another binary": {func(ws []runner.RetainedWindow) {
 			for _, c := range ws[1].Candidates { // consistent within the window
@@ -92,5 +100,46 @@ func TestWindowsAreJudgedTogetherOnlyIfTheyAreOfTheSamePinsCacheSeedAndCandidate
 	}
 	if got := runner.CheckWindows(nil, true); len(got) == 0 {
 		t.Error("no windows were judged")
+	}
+}
+
+// A manifest without the key of the sync is of a build without it, so windows of which
+// some say "false" and some say nothing agree.
+func TestWindowsWhereTheSyncIsFalseOrMissingAreJudgedTogether(t *testing.T) {
+	t.Parallel()
+
+	ws := goodWindows()
+	for _, c := range ws[1].Candidates { // consistent within the window
+		c.Manifest.Describe = map[string]string{runner.SyncKey: "false"}
+	}
+	for _, c := range ws[2].Candidates {
+		c.Manifest.Describe = map[string]string{}
+	}
+	if got := reasons(ws); strings.Contains(got, "sync") {
+		t.Errorf("windows of which one says sync false and another says nothing: %s", got)
+	}
+}
+
+// The sampling of a build's metrics changes no counter that G1 judges, so windows
+// that sampled at different intervals are judged together; a mix inside a window is
+// still refused, as for any set of candidates, because their timings are not alike.
+func TestWindowsThatSampledDifferentlyAreJudgedTogether(t *testing.T) {
+	t.Parallel()
+
+	ws := goodWindows()
+	for _, c := range ws[2].Candidates { // consistent within the window
+		c.Manifest.Describe = map[string]string{runner.MetricsKey: "30s"}
+	}
+	for _, c := range ws[1].Candidates {
+		c.Manifest.Describe = map[string]string{runner.MetricsKey: "0s"}
+	}
+	if got := reasons(ws); got != "" {
+		t.Errorf("windows that sampled at different intervals, each consistent: %s", got)
+	}
+
+	ws = goodWindows()
+	ws[1].Candidates[0].Manifest.Describe = map[string]string{runner.MetricsKey: "30s"}
+	if got := reasons(ws); !strings.Contains(got, "window of 2 days: ") || !strings.Contains(got, "with different metric sampling") {
+		t.Errorf("a mix inside a window: the reasons %q lack the refusal of the window", got)
 	}
 }

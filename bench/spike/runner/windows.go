@@ -137,6 +137,12 @@ func CheckWindows(ws []RetainedWindow, allowUntimed bool) []string {
 			if a, b := ref.Candidates[0].Manifest.Describe[RestKey], w.Candidates[0].Manifest.Describe[RestKey]; a != b {
 				out = append(out, fmt.Sprintf("windows of %d and %d days were built with and without a rest after each retention (%q and %q)", ref.Days, w.Days, a, b))
 			}
+			// A sync of every commit changes how fast the writer ran against the compactions,
+			// and with it the table boundaries of a build that is not canonical. Sampling the
+			// metrics changes no counter that G1 judges, so it is not compared here.
+			if a, b := describedOr(ref.Candidates[0].Manifest, SyncKey, "false"), describedOr(w.Candidates[0].Manifest, SyncKey, "false"); a != b {
+				out = append(out, fmt.Sprintf("windows of %d and %d days were built with and without a sync of every commit (%q and %q)", ref.Days, w.Days, a, b))
+			}
 		}
 	}
 	return out
