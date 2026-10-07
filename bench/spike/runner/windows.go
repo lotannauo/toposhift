@@ -128,6 +128,16 @@ func CheckWindows(ws []RetainedWindow, allowUntimed bool) []string {
 		if len(w.Candidates) > 0 && len(ref.Candidates) > 0 && !sameBinary(w.Candidates[0].Manifest.Build, ref.Candidates[0].Manifest.Build) {
 			out = append(out, fmt.Sprintf("windows of %d and %d days were built by different binaries", ref.Days, w.Days))
 		}
+		if len(w.Candidates) > 0 && len(ref.Candidates) > 0 {
+			if a, b := ref.Candidates[0].Manifest.Describe[CanonicalKey], w.Candidates[0].Manifest.Describe[CanonicalKey]; a != b {
+				out = append(out, fmt.Sprintf("windows of %d and %d days were built with and without the canonical layout (%q and %q)", ref.Days, w.Days, a, b))
+			}
+			// A rest after each retention changes when the compactions run, and with it the
+			// table boundaries and the block counters of a build that is not canonical.
+			if a, b := ref.Candidates[0].Manifest.Describe[RestKey], w.Candidates[0].Manifest.Describe[RestKey]; a != b {
+				out = append(out, fmt.Sprintf("windows of %d and %d days were built with and without a rest after each retention (%q and %q)", ref.Days, w.Days, a, b))
+			}
+		}
 	}
 	return out
 }

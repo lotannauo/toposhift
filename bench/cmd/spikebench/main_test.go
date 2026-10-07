@@ -271,7 +271,7 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	bin := binary(t)
 	out := filepath.Join(t.TempDir(), "out")
 	stdout, stderr, err := run(t, bin, "windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
-		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-out", out)
+		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-canonical-layout", "-out", out)
 	if err != nil {
 		t.Fatalf("windows: %v\n%.2000s\n%.2000s", err, stdout, stderr)
 	}
@@ -290,6 +290,14 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 		t.Errorf("build: %v\n%s", err, stderr)
 	} else if b, err := os.ReadFile(filepath.Join(own, "L_off/manifest.json")); err != nil || !strings.Contains(string(b), `"rest_after_retention": "false"`) {
 		t.Errorf("the manifest of a build told not to rest does not say so: %v", err)
+	} else if !strings.Contains(string(b), `"canonical_layout": "false"`) {
+		t.Error("the manifest of a build not told to rewrite its tables does not say it did not")
+	} else if _, stderr, err := run(t, bin, "build", "-untimed", "-canonical-layout", "-out", own, "-candidate", "M/crdb1"); err != nil {
+		t.Errorf("build -canonical-layout: %v\n%s", err, stderr)
+	} else if b, err := os.ReadFile(filepath.Join(own, "M_crdb1/manifest.json")); err != nil || !strings.Contains(string(b), `"canonical_layout": "true"`) {
+		t.Errorf("the manifest of a build told to rewrite its tables does not say so: %v", err)
+	} else if _, stderr, err := run(t, bin, "read", "-untimed", "-out", own, "-candidate", "M/crdb1"); err != nil {
+		t.Errorf("read of a canonical build: %v\n%s", err, stderr)
 	}
 	// A plan flag is not quietly dropped when a plan exists: run refuses it (here -full
 	// and -payload-pad, which a plan of another kind would have made).
@@ -300,9 +308,12 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	// An untimed build rests after each retention by default, and its manifest says so.
-	if b, err := os.ReadFile(filepath.Join(out, "R3/L_off/manifest.json")); err != nil || !strings.Contains(string(b), `"rest_after_retention": "true"`) {
-		t.Errorf("the manifest of an untimed build does not say it rested after each retention: %v", err)
+	// An untimed build rests after each retention by default, and its manifest says so;
+	// windows passes -canonical-layout to the builds of every window.
+	for _, f := range []string{"R3/L_off/manifest.json", "R1/M_crdb1/manifest.json", "R2/L_k64a4l1ns/manifest.json"} {
+		if b, err := os.ReadFile(filepath.Join(out, f)); err != nil || !strings.Contains(string(b), `"rest_after_retention": "true"`) || !strings.Contains(string(b), `"canonical_layout": "true"`) {
+			t.Errorf("%s does not say it rested after each retention and was rewritten in the canonical layout: %v", f, err)
+		}
 	}
 	for _, want := range []string{"G1 (rules", "L/off: ", "L/k64a4l1ns: ", "M/crdb1: ", "projected", "not decided, marked ?"} {
 		if !strings.Contains(stdout, want) {
@@ -346,10 +357,34 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	// and refused if they are not: the pins are of the scenario they were chosen from.
 	same := []string{
 		"windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
-		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-out", out,
+		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-canonical-layout", "-out", out,
 	}
 	if stdout, stderr, err := run(t, bin, same...); err != nil {
 		t.Errorf("windows resumed with the same flags: %v\n%.1500s\n%.1500s", err, stdout, stderr)
+	}
+	// Without the build flag the family was built with, it is refused before anything runs.
+	if _, stderr, err := run(t, bin, slices.DeleteFunc(slices.Clone(same), func(a string) bool { return a == "-canonical-layout" })...); err == nil || !strings.Contains(stderr, "a family is built all with or all without it") {
+		t.Errorf("windows resumed without -canonical-layout: %v\n%.1500s", err, stderr)
+	}
+	// A build in the last window made otherwise is found before the first window runs,
+	// not after hours of builds in the windows before it.
+	last := filepath.Join(out, "R3", "L_off", "manifest.json")
+	if b, err := os.ReadFile(last); err != nil {
+		t.Errorf("no manifest to alter: %v", err)
+	} else {
+		alt := strings.Replace(string(b), `"canonical_layout": "true"`, `"canonical_layout": "false"`, 1)
+		if alt == string(b) {
+			t.Error("the manifest does not say canonical_layout true")
+		}
+		if err := os.WriteFile(last, []byte(alt), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, stderr, err := run(t, bin, same...); err == nil || !strings.Contains(stderr, "the window of 3 days") || strings.Contains(stderr, "windows: 1 days of retained history") {
+			t.Errorf("windows resumed over a last window built plain: %v\n%.1500s", err, stderr)
+		}
+		if err := os.WriteFile(last, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	other := append(slices.Clone(same[:len(same)-2]), "-batch", "50", "-out", out)
 	if _, stderr, err := run(t, bin, other...); err == nil || !strings.Contains(stderr, "another scenario") {

@@ -756,6 +756,7 @@ func TestCheckFindsWhatMakesResultsIncomparable(t *testing.T) {
 	mutate("other options", "different Pebble options", func(_, b *runner.Candidate) {
 		b.Manifest.Describe["pebble_options"] = strings.Replace(b.Manifest.Describe["pebble_options"], "bytes_per_sync=", "bytes_per_sync=1", 1)
 	})
+	mutate("canonical layout", "with and without the canonical layout", func(_, b *runner.Candidate) { b.Manifest.Describe[runner.CanonicalKey] = "true" })
 	mutate("missing results", "results for", func(_, b *runner.Candidate) { b.Results.Queries = b.Results.Queries[1:] })
 }
 

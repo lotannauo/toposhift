@@ -71,6 +71,9 @@ const (
 	// RestKey is the key of a manifest's Describe that says whether the build rested
 	// after each retention ([BuildOptions]).
 	RestKey = "rest_after_retention"
+	// CanonicalKey is the key of a manifest's Describe that says whether the build
+	// rewrote its compacted tables into the canonical layout ([BuildOptions]).
+	CanonicalKey = "canonical_layout"
 )
 
 // CandidateDir is where a candidate is built under out.
@@ -152,6 +155,18 @@ type BuildOptions struct {
 	// build that did not rest. It is recorded in the manifest (Describe, key
 	// rest_after_retention).
 	RestAfterRetention bool
+	// CanonicalLayout makes the build, once it has compacted everything, rewrite the
+	// data once in key order into bottom-level tables of the tuning's target file
+	// size ([engine.Canonicalizer]), so the tables, and with them the blocks every
+	// read after the compaction loads, are a function of the data and not of how fast
+	// the writer ran against the compactions. Answers and the engine's counters do not
+	// change, nor what a read steps over, except where the compacted tables still held
+	// tombstones, which the rewrite drops (its points, internal steps and key bytes
+	// then fall); the blocks a read loads, the bytes of the tables and where a value is
+	// kept (in place or in a value block) do change, so the reads of a build with it
+	// are not comparable with those of one without. It is
+	// recorded in the manifest (Describe, key canonical_layout).
+	CanonicalLayout bool
 }
 
 // Build is [BuildWith] with the options of a build by this binary: it rests after
@@ -226,11 +241,22 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if err := e.CompactAll(ctx); err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
+	if opts.CanonicalLayout {
+		c, ok := e.(engine.Canonicalizer)
+		if !ok {
+			return nil, fmt.Errorf("runner: %s cannot rewrite its tables into the canonical layout", v.Name)
+		}
+		say.say("build %s: rewriting the tables in the canonical layout", v.Name)
+		if err := c.Canonicalize(ctx); err != nil {
+			return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+		}
+	}
 	m.StatsCompacted = e.Stats()
 	if m.Describe, err = e.Describe(); err != nil {
 		return nil, err
 	}
 	m.Describe[RestKey] = strconv.FormatBool(opts.RestAfterRetention)
+	m.Describe[CanonicalKey] = strconv.FormatBool(opts.CanonicalLayout)
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err

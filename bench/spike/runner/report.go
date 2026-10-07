@@ -90,6 +90,11 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		if a, b := ref.Manifest.Describe[RestKey], c.Manifest.Describe[RestKey]; a != b {
 			out = append(out, fmt.Sprintf("%s and %s were built with and without a rest after each retention (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
 		}
+		// Canonical tables are cut where the data says and the others where the
+		// compactions happened to cut, so the blocks their reads load are not alike.
+		if a, b := ref.Manifest.Describe[CanonicalKey], c.Manifest.Describe[CanonicalKey]; a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with and without the canonical layout (%q and %q): the blocks their reads load are not comparable", ref.Results.Candidate, name, a, b))
+		}
 		if diff := optionsDiff(ref.Manifest.Describe["pebble_options"], c.Manifest.Describe["pebble_options"]); diff != "" {
 			out = append(out, fmt.Sprintf("%s and %s ran with different Pebble options: %s", ref.Results.Candidate, name, diff))
 		}

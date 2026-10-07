@@ -63,6 +63,19 @@ func TestWindowsAreJudgedTogetherOnlyIfTheyAreOfTheSamePinsCacheSeedAndCandidate
 		"a rest in one build": {func(ws []runner.RetainedWindow) {
 			ws[1].Candidates[0].Manifest.Describe = map[string]string{runner.RestKey: "true"}
 		}, "with and without a rest"},
+		"a canonical layout in one build": {func(ws []runner.RetainedWindow) {
+			ws[1].Candidates[1].Manifest.Describe = map[string]string{runner.CanonicalKey: "true"}
+		}, "with and without the canonical layout"},
+		"a canonical layout in one window": {func(ws []runner.RetainedWindow) {
+			for _, c := range ws[2].Candidates { // consistent within the window
+				c.Manifest.Describe = map[string]string{runner.CanonicalKey: "true"}
+			}
+		}, "windows of 1 and 3 days were built with and without the canonical layout"},
+		"a rest in one window": {func(ws []runner.RetainedWindow) {
+			for _, c := range ws[2].Candidates { // consistent within the window
+				c.Manifest.Describe = map[string]string{runner.RestKey: "true"}
+			}
+		}, "windows of 1 and 3 days were built with and without a rest after each retention"},
 		"another candidate": {func(ws []runner.RetainedWindow) { ws[2].Candidates = ws[2].Candidates[:1] }, "different candidates"},
 		"another binary": {func(ws []runner.RetainedWindow) {
 			for _, c := range ws[1].Candidates { // consistent within the window
