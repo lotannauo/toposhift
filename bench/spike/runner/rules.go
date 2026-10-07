@@ -157,6 +157,23 @@ const RulesVersion = 4
 // floors, the windows, TargetWindow and the populations are unchanged. RulesVersion
 // is 4.
 //
+// Log (2026-10-07, before any timing on CI hardware; the owner's decisions; no field of
+// Rules changes, so the digest does not): G2, G3 and G4 are judged on builds that commit
+// without a sync of the log, as every build so far has; a build that syncs every commit is
+// a separate measurement of what a sync costs a layout that writes checkpoints in a second
+// commit, which informs the store's commit design and is never compared with a build that
+// does not (the report refuses the mix). The timed builds do not rest after a retention,
+// are not rewritten into the canonical layout, and are not read: G2, G3 and G4 come from
+// the build's manifest, and G0 is the counters run's on the same plan. The best candidate
+// of G3 and G4 is taken over the candidates of the timed run that pass G0: L/off and the
+// checkpoint policy chosen by G1, K_min 64, alpha 2, lag 1 ns. M/crdb1, which fails G1, is
+// built at the 7-day window in the first timed run; if its 99th-percentile commit there is
+// more than 10% below L/off's on either architecture, it joins that set at every window.
+// Each candidate is built once per job, in its own job, several times on each
+// architecture: G3 and G4 compare each candidate's median over its repetitions with the
+// best median, G2 takes the largest longest-retention over the repetitions, and a gate
+// passes only if it passes on both architectures.
+//
 // Two properties of the statistic are part of the rule. It is an envelope: a population
 // is the largest of its queries (or the lower median) in each window, so a query that
 // becomes the largest only at the target window counts for about a quarter of its own
