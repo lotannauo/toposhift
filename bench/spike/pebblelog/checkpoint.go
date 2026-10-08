@@ -45,15 +45,25 @@ import (
 // Losing a checkpoint is harmless, a stale one is the bug. What the writer knows
 // of each prefix is kept in memory (prefixState), so it deletes known keys. It is
 // read from the database the first time a write (or the hook) touches the prefix
-// after an opening, a retention or a failed commit, but only in a database that
-// has ever had a checkpoint (a meta key says so), so one that has none is never
-// read and, with checkpoints off, nothing is remembered at all. That read stops at
-// the newest checkpoint (and the newest record, if it is older): it is as long as
-// the tail the policy lets grow, not the prefix's history. The older checkpoints
-// are looked up only when something needs them, by reading back from the oldest
-// instant known down to the one needed: a late record (the checkpoints after it),
-// or a checkpoint asked for at an older instant. A late record's lookup is as long
-// as the history it is late by.
+// after an opening or a failed commit, but only in a database that has ever had a
+// checkpoint (a meta key says so), so one that has none is never read and, with
+// checkpoints off, nothing is remembered at all. A retention does not make it
+// forget where the policy is on and a checkpoint may exist: it works out what the
+// read would find from the keys it leaves in each prefix (see foldRetained), and
+// when it has done that for every prefix the map is complete, and a prefix
+// missing from it is known to be empty without a read (see Engine.complete). A
+// database opened empty starts complete. Some retentions do not work the state
+// out, and then the map is empty and the prefixes are read as they are touched: a
+// database that has no checkpoint yet, a policy that is off, a horizon outside
+// the range of instants, a key that cannot be read, and a retention that stops
+// or fails. A retention that changes nothing (a horizon before the first instant
+// a record can have) forgets nothing. That read stops at the newest checkpoint
+// (and the newest record, if it is older): it is as long as the tail the policy
+// lets grow, not the prefix's history. The older checkpoints are looked up only
+// when something needs them, by reading back from the oldest instant known down
+// to the one needed: a late record (the checkpoints after it), or a checkpoint
+// asked for at an older instant. A late record's lookup is as long as the
+// history it is late by.
 
 // CheckpointOptions says when checkpoints are written. The zero value writes
 // none.
@@ -88,14 +98,92 @@ type prefixState struct {
 	lastBytes  int // size of the last checkpoint written
 }
 
+// empty says the state is what reading a prefix that holds no record and no
+// checkpoint finds.
+func (st *prefixState) empty() bool {
+	return st.latest < 0 && len(st.ckpts) == 0 && st.since == 0 && st.below == 0
+}
+
+// stateFold builds a prefixState from the keys of one prefix in key order, newest
+// first. It is the one definition of what the writer learns from a read, shared
+// by the read that learns it ([Engine.state]) and by the retention that works it
+// out from the keys it is about to leave behind, so the two cannot disagree.
+//
+// The records before the newest checkpoint are its tail; the newest record may be
+// older than it. Once both are found nothing older changes what is remembered,
+// except the older checkpoints, which are left to lookups (see know). With whole
+// set it reads on regardless, to the end of the prefix.
+type stateFold struct {
+	st      prefixState
+	newer   bool // no checkpoint seen yet
+	whole   bool
+	stopped bool // nothing older can change the state
+}
+
+func newStateFold(whole bool) stateFold {
+	return stateFold{st: prefixState{latest: -1}, newer: true, whole: whole}
+}
+
+// add takes the next key and says whether the fold needs no more.
+func (f *stateFold) add(ns int64, kind byte, valueLen int) (done bool) {
+	st := &f.st
+	switch kind {
+	case kindRecord:
+		if st.latest < 0 {
+			st.latest = ns
+		}
+		if f.newer {
+			st.since++
+			st.sinceBytes += valueLen
+		}
+	case kindCheckpoint:
+		if f.newer {
+			st.lastBytes = valueLen
+		}
+		f.newer = false
+		st.ckpts = append(st.ckpts, ns)
+		st.below = ns
+	}
+	if !f.newer && st.latest >= 0 && !f.whole {
+		f.stopped = true
+	}
+	return f.stopped
+}
+
+// result is the state: its bound is 0 if the whole prefix was read.
+func (f *stateFold) result() prefixState {
+	st := f.st
+	if !f.stopped {
+		st.below = 0
+	}
+	slices.Reverse(st.ckpts) // the key order is newest first
+	return st
+}
+
+// forget drops what is remembered of one prefix, which is then read again when
+// it is next touched. The map is no longer complete: the prefix may hold keys.
+func (e *Engine) forget(prefix string) {
+	delete(e.states, prefix)
+	e.complete = false
+}
+
+// forgetAll drops everything that is remembered. Nothing is known of any prefix
+// afterwards, so the map is not complete.
+func (e *Engine) forgetAll() {
+	e.states = map[string]*prefixState{}
+	e.complete = false
+}
+
 func (e *Engine) state(prefix []byte) (*prefixState, error) {
 	if st, ok := e.states[string(prefix)]; ok {
 		return st, nil
 	}
-	st := &prefixState{latest: -1}
-	if !e.anyCkpt {
-		// No checkpoint was ever written to this database, so none is under this
-		// prefix, and there is nothing to find by reading it.
+	if !e.anyCkpt || e.complete {
+		// Either no checkpoint was ever written to this database, so none is under
+		// this prefix, or the map is complete (see Engine.complete) and a prefix it
+		// lacks holds no record and no checkpoint. Either way there is nothing to
+		// find by reading it, and the state is the one a read of nothing finds.
+		st := &prefixState{latest: -1}
 		e.states[string(prefix)] = st
 		return st, nil
 	}
@@ -105,51 +193,59 @@ func (e *Engine) state(prefix []byte) (*prefixState, error) {
 		return nil, err
 	}
 	defer func() { _ = it.Close() }()
-	// The keys run newest first. The records before the newest checkpoint are its
-	// tail; the newest record may be older than it. Once both are found nothing
-	// older changes what is remembered, except the older checkpoints, which are
-	// left to lookups (see know).
-	newer := true
+	f := newStateFold(e.fullStateRead)
 	var keys int64
-	ok := it.First()
-	for ; ok; ok = it.Next() {
+	for ok := it.First(); ok; ok = it.Next() {
 		keys++
 		_, ns, _, kind, err := parseKey(it.Key())
 		if err != nil {
 			return nil, err
 		}
-		switch kind {
-		case kindRecord:
-			if st.latest < 0 {
-				st.latest = ns
-			}
-			if newer {
-				st.since++
-				st.sinceBytes += len(it.Value())
-			}
-		case kindCheckpoint:
-			if newer {
-				st.lastBytes = len(it.Value())
-			}
-			newer = false
-			st.ckpts = append(st.ckpts, ns)
-			st.below = ns
-		}
-		if !newer && st.latest >= 0 && !e.fullStateRead {
+		if f.add(ns, kind, len(it.Value())) {
 			break
 		}
 	}
 	if err := it.Error(); err != nil {
 		return nil, err
 	}
-	if !ok {
-		st.below = 0 // the whole prefix was read
-	}
-	slices.Reverse(st.ckpts) // the key order is newest first
+	res := f.result()
+	st := &res
 	e.states[string(prefix)] = st
 	e.rec.Count("checkpoint.loads", 1)
 	e.rec.Count("checkpoint.load_keys", keys)
 	return st, nil
+}
+
+// foldRetained is what [Engine.state] would find in prefix once a retention at
+// the horizon hNs has rewritten it, worked out before the rewrite from the keys
+// that stay: those at or after hNs, which it reads from the iterator's position,
+// the first key of the prefix. A retention that rewrites the prefix deletes the
+// checkpoint exactly at hNs, which a prefix it does not rewrite keeps; dropped is
+// the state in the first case and kept in the second. parsed is false if a key
+// could not be read, in which case nothing is known. keys is how many it read.
+func foldRetained(it *pebble.Iterator, prefix []byte, hNs int64) (kept, dropped prefixState, keys int64, parsed bool, err error) {
+	keep, drop := newStateFold(false), newStateFold(false)
+	for ok := true; ok && hasPrefix(it.Key(), prefix) && (!keep.stopped || !drop.stopped); ok = it.Next() {
+		keys++
+		_, ns, _, kind, perr := parseKey(it.Key())
+		if perr != nil {
+			return kept, dropped, keys, false, nil
+		}
+		if ns < hNs {
+			break // all of it is deleted, or there never was any
+		}
+		n := len(it.Value())
+		if !keep.stopped {
+			keep.add(ns, kind, n)
+		}
+		if !drop.stopped && (kind != kindCheckpoint || ns != hNs) {
+			drop.add(ns, kind, n)
+		}
+	}
+	if err := it.Error(); err != nil {
+		return kept, dropped, keys, false, err
+	}
+	return keep.result(), drop.result(), keys, true, nil
 }
 
 // know makes st.ckpts hold every checkpoint of the prefix at or after lo, by
@@ -369,7 +465,7 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		}
 		if err := e.know([]byte(k), st, c); err != nil {
 			e.rec.Count("checkpoint.errors", 1)
-			delete(e.states, k)
+			e.forget(k)
 			continue
 		}
 		if _, exists := slices.BinarySearch(st.ckpts, c); exists {
@@ -379,7 +475,7 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		val, err := e.build([]byte(k), c)
 		if err != nil {
 			e.rec.Count("checkpoint.errors", 1)
-			delete(e.states, k)
+			e.forget(k)
 			continue
 		}
 		if err := b.Set(stampKey([]byte(k), c, kindCheckpoint), val, nil); err != nil {
@@ -393,7 +489,7 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 	}
 	if err := e.applyCheckpoints(b); err != nil {
 		e.rec.Count("checkpoint.errors", 1)
-		e.states = map[string]*prefixState{} // what is on disk is unknown
+		e.forgetAll() // what is on disk is unknown
 		return
 	}
 	for _, m := range done {
@@ -472,7 +568,7 @@ func (e *Engine) checkpointAt(prefix []byte, c time.Time) error {
 		return err
 	}
 	if err := e.know(prefix, st, cNs); err != nil {
-		delete(e.states, string(prefix))
+		e.forget(string(prefix))
 		return err
 	}
 	if _, exists := slices.BinarySearch(st.ckpts, cNs); exists {
@@ -488,7 +584,7 @@ func (e *Engine) checkpointAt(prefix []byte, c time.Time) error {
 		return err
 	}
 	if err := e.applyCheckpoints(b); err != nil {
-		e.states = map[string]*prefixState{} // what is on disk is unknown
+		e.forgetAll() // what is on disk is unknown
 		return err
 	}
 	i, _ := slices.BinarySearch(st.ckpts, cNs)
