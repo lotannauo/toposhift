@@ -64,7 +64,7 @@ func TestACanonicalBuildAnswersAndStepsAsAPlainOne(t *testing.T) {
 		if len(rc.Mismatches)+len(rc.Unstable)+len(canon.UncompactedWrong) > 0 {
 			t.Errorf("%s: canonical: %v wrong, %v unstable", name, rc.Mismatches, rc.Unstable)
 		}
-		if !reflect.DeepEqual(plain.Counters, canon.Counters) || !reflect.DeepEqual(plain.Breakdown, canon.Breakdown) {
+		if !reflect.DeepEqual(withoutWallTimes(plain.Counters), withoutWallTimes(canon.Counters)) || !reflect.DeepEqual(plain.Breakdown, canon.Breakdown) {
 			t.Errorf("%s: what the build counted or holds differs with the canonical layout", name)
 		}
 		for i, q := range rp.Queries {

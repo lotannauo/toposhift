@@ -67,7 +67,10 @@ type Options struct {
 	// names are "write.versions", "read.versions_stepped", "retain.keys_visited"
 	// (keys that had history before the horizon), "retain.seeks" (the seeks made
 	// to reach them, one per key whose newest version is at or after the horizon
-	// as well), "retain.baselines_kept" and "retain.range_deletes". Every read
+	// as well), "retain.baselines_kept", "retain.range_deletes", and "retain.flush_ns",
+	// "retain.settle_ns" and "retain.settle_deadline_hits" (the flush and the wait
+	// of [pebblekv.Config.SettleRetention], and the waits that reached their
+	// deadline). Every read
 	// also samples Pebble's iterator statistics under "read.<op>.<name>" (see
 	// [pebblekv.RecordIter]); those are in the same unit for every layout, which
 	// "read.versions_stepped" is not.
@@ -91,6 +94,8 @@ type Engine struct {
 	// do; it keeps the horizon coherent if a caller forgets.
 	mu      sync.Mutex
 	horizon time.Time
+	// last is how the last Retain spent its time (see [Engine.LastRetain]).
+	last retainPhases
 }
 
 var (
@@ -103,6 +108,22 @@ var (
 // key with its baseline kept answers every instant at or after the horizon as it
 // did before.
 const defaultRetainBatchBytes = 4 << 20
+
+// retainPhases is how a call of Retain spent its time.
+type retainPhases struct {
+	work, flush, settle time.Duration
+	deadlineHit         bool
+}
+
+// LastRetain is how the last call of Retain spent its time: the rewrite up to its last
+// commit, the flush and the wait of SettleRetention, and whether the wait reached its
+// deadline. All zero before the first Retain; flush and settle are zero when
+// SettleRetention is off or the retention returned early, before rewriting anything.
+func (e *Engine) LastRetain() (work, flush, settle time.Duration, deadlineHit bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.last.work, e.last.flush, e.last.settle, e.last.deadlineHit
+}
 
 // Open opens the engine under dir, new or as an earlier one left it: its
 // records, its last sequence number and its retention horizon.
@@ -152,7 +173,9 @@ func (e *Engine) Settle() error { return e.kv.Settle() }
 // Size implements [engine.Engine].
 func (e *Engine) Size() (int64, error) { return e.kv.Size() }
 
-// Close implements [engine.Engine].
+// Close implements [engine.Engine]. It does not take the lock Write and Retain
+// hold, so it must not run while either does: a Retain under SettleRetention can
+// hold the database for up to its deadline.
 func (e *Engine) Close() error { return e.kv.Close() }
 
 // put is one version to store.
@@ -241,10 +264,24 @@ func (e *Engine) Write(batch []engine.Record) error {
 	return nil
 }
 
-// Retain implements [engine.Engine].
+// Retain implements [engine.Engine]. With SettleRetention it returns only when the
+// database has settled or the deadline has passed, holding the engine's lock for
+// all of that; Close must not be called meanwhile.
 func (e *Engine) Retain(horizon time.Time) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.last = retainPhases{}
+	// The clock starts after the lock, so a writer's wait is not counted as work. The
+	// work ends at the last commit (workEnd), or at the return on any path that does
+	// not reach it.
+	start := time.Now()
+	var workEnd time.Time
+	defer func() {
+		if workEnd.IsZero() {
+			workEnd = time.Now()
+		}
+		e.last.work = workEnd.Sub(start)
+	}()
 	if !horizon.After(e.horizon) {
 		return nil
 	}
@@ -286,7 +323,8 @@ func (e *Engine) Retain(horizon time.Time) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = it.Close() }()
+	closeIter := sync.OnceFunc(func() { _ = it.Close() })
+	defer closeIter()
 
 	b := e.kv.NewBatch()
 	defer func() { _ = b.Close() }()
@@ -350,5 +388,29 @@ func (e *Engine) Retain(horizon time.Time) error {
 	e.rec.Count("retain.seeks", seeks)
 	e.rec.Count("retain.baselines_kept", kept)
 	e.rec.Count("retain.range_deletes", deletes)
-	return nil
+	workEnd = time.Now()
+	// The iterator is closed before the wait: it would pin the tables the
+	// compactions replace.
+	closeIter()
+	return e.settleRetention()
+}
+
+// settleRetention is the end of every retention that does not return early, under
+// SettleRetention, whether or not it deleted anything: see
+// [pebblekv.KV.SettleAfterRetention].
+func (e *Engine) settleRetention() error {
+	cfg := e.kv.Config()
+	if !cfg.SettleRetention {
+		return nil
+	}
+	flush, settle, hit, err := e.kv.SettleAfterRetention(cfg.SettleDeadline)
+	e.last.flush, e.last.settle, e.last.deadlineHit = flush, settle, hit
+	e.rec.Count("retain.flush_ns", flush.Nanoseconds())
+	e.rec.Count("retain.settle_ns", settle.Nanoseconds())
+	hits := int64(0)
+	if hit {
+		hits = 1
+	}
+	e.rec.Count("retain.settle_deadline_hits", hits)
+	return err
 }

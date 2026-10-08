@@ -123,6 +123,13 @@ var BytewiseLayout = func() Layout {
 	}
 }()
 
+// DefaultSettleDeadline is how long [Config.SettleRetention] waits when
+// [Config.SettleDeadline] is zero. The wait is bounded so a retention cannot hold
+// the writer forever; two minutes is twice the stall budget, so a settle that
+// reaches it has already failed the stall gate, and the time it took is still
+// measured.
+const DefaultSettleDeadline = 2 * time.Minute
+
 // Config says how a database is opened. Every database is opened at
 // [pebble.FormatNewest]: the format is a one-way decision (a database written at
 // it cannot be read by an older Pebble), and crdb1 needs a version that
@@ -148,6 +155,15 @@ type Config struct {
 	// reads, which are on by default and would rewrite tables in the middle of a
 	// measurement of reads.
 	DisableReadCompactions bool
+	// SettleRetention makes a retention end only when the database has settled what it
+	// wrote: after its last commit, Retain flushes and waits, at most SettleDeadline, until
+	// the database is at rest as [KV.Quiesce] defines it, so that the compactions its range
+	// deletions call for have run before the writer resumes. Off, Retain returns after its
+	// last commit. A build records it (Describe, key settle_tombstones).
+	SettleRetention bool
+	// SettleDeadline bounds the wait of SettleRetention; zero is DefaultSettleDeadline.
+	// When it passes, Retain returns without error and records that it did.
+	SettleDeadline time.Duration
 	// ReadOnly opens an existing database without the ability to write to it: no
 	// log is created, nothing is flushed or compacted, no background statistics
 	// are collected, and a write is an error. A measurement of reads opens the
