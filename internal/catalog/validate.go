@@ -12,7 +12,7 @@ import (
 var (
 	// ErrInvalid marks a malformed or missing value.
 	ErrInvalid = errors.New("invalid")
-	// ErrDuplicate marks a name used twice in the same scope.
+	// ErrDuplicate marks a name or id used twice in the same scope.
 	ErrDuplicate = errors.New("duplicate")
 	// ErrUnknown marks a reference to an entity type that is not registered.
 	ErrUnknown = errors.New("unknown entity type")
@@ -31,6 +31,9 @@ func validName(s string) bool { return len(s) <= MaxNameLen && namePattern.Match
 // first:
 //   - every name matches the name syntax and is at most MaxNameLen bytes;
 //   - entity names are unique, and so are relation names;
+//   - every entity id and relation id is non-zero, entity ids are unique among
+//     entities, and relation ids are unique among relations (the two spaces
+//     are separate, so entity id 1 and relation id 1 may coexist);
 //   - layers, propagations, storages and key kinds are valid (non-zero and
 //     known);
 //   - an attribute name has the same kind in every entity type that uses it;
@@ -46,28 +49,46 @@ func New(entities []EntitySpec, relations []RelationSpec) (*Catalog, error) {
 		relations: make([]Relation, 0, len(relations)),
 		entityIdx: make(map[EntityType]int, len(entities)),
 		relIdx:    make(map[RelationType]int, len(relations)),
+
+		entityByID: make(map[EntityID]int, len(entities)),
+		relByID:    make(map[RelationID]int, len(relations)),
 	}
 
 	kinds := make(map[AttributeKey]keyKind)
 	for _, s := range entities {
 		errs = append(errs, checkEntity(s)...)
 		errs = append(errs, checkKindConsistency(s, kinds)...)
+		_, idDup := c.entityByID[s.ID]
+		if idDup && s.ID != 0 {
+			errs = append(errs, fmt.Errorf("entity %q: id %d: %w", s.Type, s.ID, ErrDuplicate))
+		}
 		if _, dup := c.entityIdx[s.Type]; dup {
 			errs = append(errs, fmt.Errorf("entity %q: %w", s.Type, ErrDuplicate))
 			continue
 		}
+		if s.ID != 0 && !idDup {
+			c.entityByID[s.ID] = len(c.entities)
+		}
 		c.entityIdx[s.Type] = len(c.entities)
-		c.entities = append(c.entities, Entity{typ: s.Type, layer: s.Layer, keys: slices.Clone(s.Keys)})
+		c.entities = append(c.entities, Entity{id: s.ID, typ: s.Type, layer: s.Layer, keys: slices.Clone(s.Keys)})
 	}
 
 	for _, s := range relations {
 		errs = append(errs, checkRelation(s, c.entityIdx)...)
+		_, idDup := c.relByID[s.ID]
+		if idDup && s.ID != 0 {
+			errs = append(errs, fmt.Errorf("relation %q: id %d: %w", s.Type, s.ID, ErrDuplicate))
+		}
 		if _, dup := c.relIdx[s.Type]; dup {
 			errs = append(errs, fmt.Errorf("relation %q: %w", s.Type, ErrDuplicate))
 			continue
 		}
+		if s.ID != 0 && !idDup {
+			c.relByID[s.ID] = len(c.relations)
+		}
 		c.relIdx[s.Type] = len(c.relations)
 		c.relations = append(c.relations, Relation{
+			id:          s.ID,
 			typ:         s.Type,
 			endpoints:   slices.Clone(s.Endpoints),
 			propagation: s.Propagation,
@@ -89,6 +110,9 @@ func checkEntity(s EntitySpec) []error {
 
 	if !s.Type.Valid() {
 		fail(ErrInvalid, "name does not match %s", namePattern)
+	}
+	if s.ID == 0 {
+		fail(ErrInvalid, "id 0")
 	}
 	if s.Layer < L0 || s.Layer > L3 {
 		fail(ErrInvalid, "layer %s", s.Layer)
@@ -128,6 +152,9 @@ func checkRelation(s RelationSpec, entities map[EntityType]int) []error {
 
 	if !s.Type.Valid() {
 		fail(ErrInvalid, "name does not match %s", namePattern)
+	}
+	if s.ID == 0 {
+		fail(ErrInvalid, "id 0")
 	}
 	if s.Propagation < PropagateDown || s.Propagation > PropagateNone {
 		fail(ErrInvalid, "propagation %s", s.Propagation)

@@ -151,10 +151,25 @@ type Endpoint struct {
 	From, To EntityType
 }
 
+// EntityID is an entity type's stable number: it is part of every stored key
+// of the type's entities. Zero is invalid. Ids are append-only: a new type
+// takes a new number, and a number is never changed or reused, because stored
+// keys outlive any one version of the catalog. An id is not derived from the
+// type's position in the catalog, so reordering declarations renumbers
+// nothing.
+type EntityID uint16
+
+// RelationID is a relation's stable number, with the same rules as [EntityID]
+// and in a space of its own: entity id 1 and relation id 1 may coexist. A
+// derived relation has an id too, though it is never stored, so that adding a
+// stored relation after it renumbers nothing.
+type RelationID uint16
+
 // EntitySpec describes an entity type to [New]. Key order is the declaration
 // order reported by [Entity.Keys]; the identity layer sorts keys itself, so
 // order carries no meaning.
 type EntitySpec struct {
+	ID    EntityID
 	Type  EntityType
 	Layer Layer
 	Keys  []Key
@@ -163,6 +178,7 @@ type EntitySpec struct {
 // RelationSpec describes a relation type to [New]. A relation with no
 // endpoints is unconstrained: it may connect any two entity types.
 type RelationSpec struct {
+	ID          RelationID
 	Type        RelationType
 	Endpoints   []Endpoint
 	Propagation Propagation
@@ -171,10 +187,14 @@ type RelationSpec struct {
 
 // Entity is a registered entity type. It is a read-only view.
 type Entity struct {
+	id    EntityID
 	typ   EntityType
 	layer Layer
 	keys  []Key
 }
+
+// ID returns the entity type's stable number.
+func (e Entity) ID() EntityID { return e.id }
 
 // Type returns the entity type name.
 func (e Entity) Type() EntityType { return e.typ }
@@ -197,11 +217,15 @@ func (e Entity) Key(name AttributeKey) (Key, bool) {
 
 // Relation is a registered relation type. It is a read-only view.
 type Relation struct {
+	id          RelationID
 	typ         RelationType
 	endpoints   []Endpoint
 	propagation Propagation
 	storage     Storage
 }
+
+// ID returns the relation's stable number.
+func (r Relation) ID() RelationID { return r.id }
 
 // Type returns the relation type name.
 func (r Relation) Type() RelationType { return r.typ }
@@ -236,6 +260,10 @@ type Catalog struct {
 	relations []Relation
 	entityIdx map[EntityType]int
 	relIdx    map[RelationType]int
+
+	// entityByID and relByID index the same slices by stable number.
+	entityByID map[EntityID]int
+	relByID    map[RelationID]int
 }
 
 // Entity returns the registered entity type with the given name.
@@ -250,6 +278,26 @@ func (c *Catalog) Entity(t EntityType) (Entity, bool) {
 // Relation returns the registered relation type with the given name.
 func (c *Catalog) Relation(t RelationType) (Relation, bool) {
 	i, ok := c.relIdx[t]
+	if !ok {
+		return Relation{}, false
+	}
+	return c.relations[i], true
+}
+
+// EntityByID returns the registered entity type with the given stable number.
+// Zero and unassigned numbers are not found.
+func (c *Catalog) EntityByID(id EntityID) (Entity, bool) {
+	i, ok := c.entityByID[id]
+	if !ok {
+		return Entity{}, false
+	}
+	return c.entities[i], true
+}
+
+// RelationByID returns the registered relation with the given stable number.
+// Zero and unassigned numbers are not found.
+func (c *Catalog) RelationByID(id RelationID) (Relation, bool) {
+	i, ok := c.relByID[id]
 	if !ok {
 		return Relation{}, false
 	}

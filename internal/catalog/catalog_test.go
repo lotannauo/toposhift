@@ -13,13 +13,14 @@ import (
 // below breaks exactly one rule in a copy of it.
 func validEntities() []catalog.EntitySpec {
 	return []catalog.EntitySpec{
-		{Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id", Kind: catalog.KindString}}},
-		{Type: "pod", Layer: catalog.L2, Keys: []catalog.Key{{Name: "pod.uid", Kind: catalog.KindString}}},
+		{ID: 1, Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id", Kind: catalog.KindString}}},
+		{ID: 2, Type: "pod", Layer: catalog.L2, Keys: []catalog.Key{{Name: "pod.uid", Kind: catalog.KindString}}},
 	}
 }
 
 func validRelations() []catalog.RelationSpec {
 	return []catalog.RelationSpec{{
+		ID:          1,
 		Type:        "runs_on",
 		Endpoints:   []catalog.Endpoint{{From: "pod", To: "host"}},
 		Propagation: catalog.PropagateDown,
@@ -39,9 +40,25 @@ func TestNewRejects(t *testing.T) {
 		{
 			name: "duplicate entity",
 			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
-				*e = append(*e, (*e)[0])
+				dup := (*e)[0]
+				dup.ID = 3 // only the name repeats
+				*e = append(*e, dup)
 			},
-			want: catalog.ErrDuplicate, offend: `"host"`,
+			want: catalog.ErrDuplicate, offend: `entity "host": duplicate`,
+		},
+		{
+			name: "zero entity id",
+			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
+				(*e)[0].ID = 0
+			},
+			want: catalog.ErrInvalid, offend: `entity "host": id 0: invalid`,
+		},
+		{
+			name: "duplicate entity id",
+			mutate: func(e *[]catalog.EntitySpec, _ *[]catalog.RelationSpec) {
+				(*e)[1].ID = (*e)[0].ID
+			},
+			want: catalog.ErrDuplicate, offend: `entity "pod": id 1: duplicate`,
 		},
 		{
 			name: "entity name with colon",
@@ -130,9 +147,30 @@ func TestNewRejects(t *testing.T) {
 		{
 			name: "duplicate relation",
 			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
-				*r = append(*r, (*r)[0])
+				dup := (*r)[0]
+				dup.ID = 2 // only the name repeats
+				*r = append(*r, dup)
 			},
-			want: catalog.ErrDuplicate, offend: `"runs_on"`,
+			want: catalog.ErrDuplicate, offend: `relation "runs_on": duplicate`,
+		},
+		{
+			name: "zero relation id",
+			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
+				(*r)[0].ID = 0
+			},
+			want: catalog.ErrInvalid, offend: `relation "runs_on": id 0: invalid`,
+		},
+		{
+			name: "duplicate relation id",
+			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
+				*r = append(*r, catalog.RelationSpec{
+					ID:          (*r)[0].ID,
+					Type:        "co_resident",
+					Propagation: catalog.PropagateNone,
+					Storage:     catalog.StorageDerived,
+				})
+			},
+			want: catalog.ErrDuplicate, offend: `relation "co_resident": id 1: duplicate`,
 		},
 		{
 			name: "relation name invalid",
@@ -215,6 +253,7 @@ func TestNewReportsEveryViolation(t *testing.T) {
 	e, r := validEntities(), validRelations()
 	e[0].Layer = 0                                                   // ErrInvalid
 	e = append(e, e[1])                                              // ErrDuplicate
+	e[1].ID = 0                                                      // ErrInvalid, an id violation
 	r[0].Endpoints = []catalog.Endpoint{{From: "ghost", To: "host"}} // ErrUnknown
 
 	_, err := catalog.New(e, r)
@@ -222,6 +261,64 @@ func TestNewReportsEveryViolation(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Errorf("error does not wrap %v: %v", want, err)
 		}
+	}
+	for _, text := range []string{`entity "host": layer`, `entity "pod": id 0: invalid`, `entity "pod": duplicate`, `"ghost"`} {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("error does not report %q: %v", text, err)
+		}
+	}
+}
+
+// TestNewDoesNotBlameAnIdOfARejectedSpec checks that a spec dropped for a
+// repeated name does not hold its id, so a later spec that takes that id is not
+// reported as a duplicate of something that was never registered.
+func TestNewDoesNotBlameAnIdOfARejectedSpec(t *testing.T) {
+	t.Parallel()
+
+	key := []catalog.Key{{Name: "x.id", Kind: catalog.KindString}}
+	_, err := catalog.New([]catalog.EntitySpec{
+		{ID: 1, Type: "host", Layer: catalog.L1, Keys: key},
+		{ID: 3, Type: "host", Layer: catalog.L1, Keys: key},
+		{ID: 3, Type: "pod", Layer: catalog.L2, Keys: key},
+	}, nil)
+	if !errors.Is(err, catalog.ErrDuplicate) || !strings.Contains(err.Error(), `entity "host": duplicate`) {
+		t.Fatalf("err = %v, want the repeated name of host reported", err)
+	}
+	if strings.Contains(err.Error(), "id 3") {
+		t.Errorf("pod is blamed for an id held only by a rejected spec: %v", err)
+	}
+
+	_, err = catalog.New(validEntities(), []catalog.RelationSpec{
+		{ID: 1, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom},
+		{ID: 3, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom},
+		{ID: 3, Type: "same_as", Propagation: catalog.PropagateNone, Storage: catalog.StorageDerived},
+	})
+	if !errors.Is(err, catalog.ErrDuplicate) || !strings.Contains(err.Error(), `relation "runs_on": duplicate`) {
+		t.Fatalf("err = %v, want the repeated name of runs_on reported", err)
+	}
+	if strings.Contains(err.Error(), "id 3") {
+		t.Errorf("same_as is blamed for an id held only by a rejected spec: %v", err)
+	}
+}
+
+// TestNewKeepsEntityAndRelationIdsApart checks that the two id spaces are
+// separate: an entity and a relation may carry the same number.
+func TestNewKeepsEntityAndRelationIdsApart(t *testing.T) {
+	t.Parallel()
+
+	e, r := validEntities(), validRelations()
+	if e[0].ID != 1 || r[0].ID != 1 {
+		t.Fatalf("setup: entity id %d and relation id %d, want both 1", e[0].ID, r[0].ID)
+	}
+	c, err := catalog.New(e, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := c.EntityByID(1); !ok || got.Type() != "host" {
+		t.Errorf("EntityByID(1) = %v, %v; want host", got, ok)
+	}
+	if got, ok := c.RelationByID(1); !ok || got.Type() != "runs_on" {
+		t.Errorf("RelationByID(1) = %v, %v; want runs_on", got, ok)
 	}
 }
 
@@ -235,6 +332,7 @@ func TestNewAcceptsDerivedRelations(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			r := append(validRelations(), catalog.RelationSpec{
+				ID:          2,
 				Type:        "co_resident",
 				Endpoints:   endpoints,
 				Propagation: catalog.PropagateNone,
@@ -297,6 +395,25 @@ func TestLookup(t *testing.T) {
 		t.Error("Relation(ghost) found")
 	}
 
+	if e, ok := c.EntityByID(2); !ok || e.Type() != "pod" || e.ID() != 2 {
+		t.Errorf("EntityByID(2) = %v, %v", e, ok)
+	}
+	if _, ok := c.EntityByID(0); ok {
+		t.Error("EntityByID(0) found")
+	}
+	if _, ok := c.EntityByID(99); ok {
+		t.Error("EntityByID(99) found")
+	}
+	if r, ok := c.RelationByID(1); !ok || r.Type() != "runs_on" || r.ID() != 1 {
+		t.Errorf("RelationByID(1) = %v, %v", r, ok)
+	}
+	if _, ok := c.RelationByID(0); ok {
+		t.Error("RelationByID(0) found")
+	}
+	if _, ok := c.RelationByID(99); ok {
+		t.Error("RelationByID(99) found")
+	}
+
 	var got []catalog.EntityType
 	for e := range c.Entities() {
 		got = append(got, e.Type())
@@ -306,10 +423,52 @@ func TestLookup(t *testing.T) {
 	}
 }
 
+// TestLookupByID checks that ids are looked up by their number, not by where
+// the type was declared: the specs here declare the larger id first.
+func TestLookupByID(t *testing.T) {
+	t.Parallel()
+
+	e := validEntities()
+	e[0].ID, e[1].ID = 9, 4 // host declared first with the larger id
+	r := append(validRelations(), catalog.RelationSpec{
+		ID: 7, Type: "same_as", Propagation: catalog.PropagateNone, Storage: catalog.StorageDerived,
+	})
+	r[0].ID = 3
+	c, err := catalog.New(e, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for id, want := range map[catalog.EntityID]catalog.EntityType{9: "host", 4: "pod"} {
+		got, ok := c.EntityByID(id)
+		if !ok || got.Type() != want || got.ID() != id {
+			t.Errorf("EntityByID(%d) = %q (id %d), %v; want %q", id, got.Type(), got.ID(), ok, want)
+		}
+	}
+	for id, want := range map[catalog.RelationID]catalog.RelationType{3: "runs_on", 7: "same_as"} {
+		got, ok := c.RelationByID(id)
+		if !ok || got.Type() != want || got.ID() != id {
+			t.Errorf("RelationByID(%d) = %q (id %d), %v; want %q", id, got.Type(), got.ID(), ok, want)
+		}
+	}
+	// The positions the numbers would have had if they were derived from them.
+	for _, id := range []catalog.EntityID{0, 1, 2, 5} {
+		if got, ok := c.EntityByID(id); ok {
+			t.Errorf("EntityByID(%d) = %q, want none", id, got.Type())
+		}
+	}
+	for _, id := range []catalog.RelationID{0, 1, 2, 4} {
+		if got, ok := c.RelationByID(id); ok {
+			t.Errorf("RelationByID(%d) = %q, want none", id, got.Type())
+		}
+	}
+}
+
 func TestRelationAllows(t *testing.T) {
 	t.Parallel()
 
 	c, err := catalog.New(validEntities(), append(validRelations(), catalog.RelationSpec{
+		ID:          2,
 		Type:        "same_as",
 		Propagation: catalog.PropagateNone,
 		Storage:     catalog.StorageDerived,
