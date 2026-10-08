@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
@@ -78,9 +79,12 @@ type Record struct {
 	// Payload is the producer's opaque description. It is empty for a delete.
 	Payload []byte
 	// Boot identifies the boot of the machine a host observation was made in
-	// (the OpenTelemetry-derived attribute topo.host.boot.id, copied by the
-	// ingest layer). It is empty when the producer reports none. Only an
-	// observation of an entity carries one: a delete and an edge record never do.
+	// (the attribute topo.host.boot.id, copied by the ingest layer). It is empty
+	// when the producer reports none. Only an observation of a host carries one:
+	// a delete, an edge record and any other entity type never do. It is valid
+	// UTF-8 of at most [MaxBootLen] bytes, and is compared as given: trimming or
+	// normalising a producer's value is the ingest layer's job, because two
+	// values that differ in white space are two boots.
 	// A store opened with a [lifecycle.Policy] that names [lifecycle.BootID]
 	// tells boots apart, and reports two live boots of one host as a clone
 	// collision, from this field.
@@ -150,8 +154,12 @@ func (r Record) Validate() error {
 		switch {
 		case r.Kind != lifecycle.Observe:
 			return fail("only an observation carries a boot id")
-		case r.Subject.Kind != SubjectEntity:
-			return fail("only an entity record carries a boot id")
+		case r.Subject.Kind != SubjectEntity || r.Subject.A.Type() != catalog.Host:
+			return fail("only a host record carries a boot id")
+		case len(r.Boot) > MaxBootLen:
+			return fail("boot id is %d bytes, more than %d", len(r.Boot), MaxBootLen)
+		case !utf8.ValidString(r.Boot):
+			return fail("boot id is not valid UTF-8")
 		}
 		// The specification refuses a blank boot id (empty or white space only).
 		policy.BootKey = lifecycle.BootID
@@ -161,6 +169,11 @@ func (r Record) Validate() error {
 	}
 	return nil
 }
+
+// MaxBootLen is the longest boot id, in bytes, a record may carry. Boot ids are
+// identifiers (a UUID is 36 bytes); the cap keeps a layout's value encoding and
+// a file format's column small and bounded.
+const MaxBootLen = 256
 
 // payloadKey is the attribute that carries the payload into a lifecycle
 // assertion, so a run of identical refreshes coalesces.
