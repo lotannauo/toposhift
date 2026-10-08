@@ -2,6 +2,7 @@ package candidates_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -196,6 +197,31 @@ func TestOptionsReachTheDatabase(t *testing.T) {
 	got, _ = e2.(engine.Describer).Describe()
 	if got["sync"] != "false" || got["auto_compactions"] != "true" || got["read_compactions"] != "true" {
 		t.Errorf("defaults: %v", got)
+	}
+}
+
+// SettleRetention reaches the engine of every layout, and is off unless asked.
+func TestSettleRetentionReachesEveryLayout(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"L/off", "L/k64a2l1ns", "M/crdb1"} {
+		v, err := candidates.Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, asked := range []bool{true, false} {
+			e, err := factory(v, candidates.Options{SettleRetention: asked})(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := e.(engine.Describer).Describe()
+			_ = e.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := fmt.Sprint(asked); got["settle_tombstones"] != want {
+				t.Errorf("%s asked %v: settle_tombstones = %q, want %q", name, asked, got["settle_tombstones"], want)
+			}
+		}
 	}
 }
 

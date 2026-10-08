@@ -268,7 +268,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 
 	rec := NewCapture()
-	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec, DisableReadCompactions: true, Sync: opts.Sync})
+	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true})
 	if err != nil {
 		return nil, err
 	}

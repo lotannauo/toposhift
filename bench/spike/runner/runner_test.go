@@ -1315,6 +1315,19 @@ func TestACostlierEngineMeasuresLarger(t *testing.T) {
 	}
 }
 
+// withoutWallTimes drops the counters of a build that are clock readings, which no
+// two builds repeat: the time a retention spent flushing and waiting to settle.
+// (retain.settle_deadline_hits is a count and stays.)
+func withoutWallTimes(counters map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(counters))
+	for k, v := range counters {
+		if k != "retain.flush_ns" && k != "retain.settle_ns" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 // The same candidate built twice from the same plan comes to the same bytes and
 // costs the same to read: nothing in a result depends on which build it was.
 func TestTwoBuildsOfACandidateAreTheSame(t *testing.T) {
@@ -1333,7 +1346,7 @@ func TestTwoBuildsOfACandidateAreTheSame(t *testing.T) {
 		if !reflect.DeepEqual(m1.Breakdown, m2.Breakdown) || !reflect.DeepEqual(m1.SizeByLayer, m2.SizeByLayer) {
 			t.Errorf("%s: what it holds differs between builds: %v / %v", name, m1.SizeByLayer, m2.SizeByLayer)
 		}
-		if !reflect.DeepEqual(m1.Counters, m2.Counters) {
+		if !reflect.DeepEqual(withoutWallTimes(m1.Counters), withoutWallTimes(m2.Counters)) {
 			t.Errorf("%s: what building counted differs between builds", name)
 		}
 		stable := func(m map[string]int64) map[string]int64 {
@@ -1766,16 +1779,28 @@ func TestReadRefusesTablesThatAreNotWhatTheBuildLeft(t *testing.T) {
 	}
 }
 
-// lateCompaction is an engine that compacts after it has been measured: its
-// CompactAll only waits for rest, and the compaction runs when it is closed, which
-// a database does when a compaction Pebble started late is still running at the
-// close (the close waits for it).
-type lateCompaction struct{ fullEngine }
+// lateWrite is an engine whose database changes after it has been measured: its
+// CompactAll only waits for rest, and when it is closed it writes one more record
+// and flushes it into a table, as a late background job would. It does not depend
+// on anything the build left to be compacted.
+type lateWrite struct {
+	fullEngine
+	at time.Time
+}
 
-func (l lateCompaction) CompactAll(ctx context.Context) error { return l.Quiesce(ctx) }
+func (l lateWrite) CompactAll(ctx context.Context) error { return l.Quiesce(ctx) }
 
-func (l lateCompaction) Close() error {
-	err := l.fullEngine.CompactAll(context.Background())
+func (l lateWrite) Close() error {
+	rack, err := identity.NewResolver(catalog.Default()).Resolve(catalog.Rack, []identity.Attr{{Key: catalog.RackID, Value: "late"}})
+	if err == nil {
+		err = l.Write([]engine.Record{{
+			Layer: catalog.L0, Subject: engine.EntitySubject(rack.Fingerprint()), Producer: "x",
+			EventTime: l.at, Seq: l.LastSeq() + 1, Kind: 1, Payload: bytes.Repeat([]byte{1}, 50),
+		}})
+	}
+	if err == nil {
+		err = l.fullEngine.(engine.Settler).Settle()
+	}
 	if cerr := l.fullEngine.Close(); err == nil {
 		err = cerr
 	}
@@ -1794,12 +1819,12 @@ func TestABuildRefusesTablesThatChangeAfterTheyAreMeasured(t *testing.T) {
 		if o.ReadOnly {
 			return e, nil
 		}
-		return lateCompaction{e.(fullEngine)}, nil
+		return lateWrite{e.(fullEngine), plan.Stream.End}, nil
 	})
 	dir := runner.CandidateDir(t.TempDir(), v.Name)
 	_, err := runner.Build(context.Background(), plan, v, dir, clean, nil)
 	if err == nil || !strings.Contains(err.Error(), "changed after it was measured") || !strings.Contains(err.Error(), "not what the build left") {
-		t.Fatalf("a database that compacted after it was measured: %v", err)
+		t.Fatalf("a database that changed after it was measured: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, runner.ManifestFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the build wrote a manifest (%v)", err)

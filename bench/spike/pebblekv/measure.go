@@ -2,6 +2,7 @@ package pebblekv
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -153,6 +154,12 @@ func (k *KV) Quiesce(ctx context.Context) error {
 	if err := k.Flush(); err != nil {
 		return err
 	}
+	return k.waitAtRest(ctx)
+}
+
+// waitAtRest is the wait of [KV.Quiesce], after the flush: it polls until the
+// database is at rest, or until ctx is done.
+func (k *KV) waitAtRest(ctx context.Context) error {
 	const (
 		poll   = 20 * time.Millisecond
 		stable = time.Second
@@ -186,6 +193,35 @@ func (k *KV) Quiesce(ctx context.Context) error {
 		case <-time.After(poll):
 		}
 	}
+}
+
+// SettleAfterRetention is the end of a retention under [Config.SettleRetention]: it
+// flushes and waits until the database is at rest, at most deadline
+// ([DefaultSettleDeadline] when zero). The deadline bounds the wait, not the flush,
+// which runs first and has no limit. It returns how long the flush and the wait
+// took, and whether the deadline passed first, which is not an error: the writer
+// resumes and what is not settled is paid by the reads and writes after it.
+func (k *KV) SettleAfterRetention(deadline time.Duration) (flush, settle time.Duration, deadlineHit bool, err error) {
+	if k.cfg.ReadOnly {
+		return 0, 0, false, nil
+	}
+	if deadline == 0 {
+		deadline = DefaultSettleDeadline
+	}
+	start := time.Now()
+	if err := k.Flush(); err != nil {
+		return time.Since(start), 0, false, err
+	}
+	flush = time.Since(start)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	start = time.Now()
+	err = k.waitAtRest(ctx)
+	settle = time.Since(start)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return flush, settle, true, nil
+	}
+	return flush, settle, false, err
 }
 
 // CompactAll flushes the memtable and compacts everything the database holds
@@ -412,6 +448,11 @@ func RecordParts(v Value, dir byte, total int) (kind string, kindBytes int, payl
 // what shows a variant is in effect and not only asked for.
 func (k *KV) Describe() (map[string]string, error) {
 	t := k.cfg.Tuning
+	// The runner reads the key settle_tombstones by its literal.
+	deadline := k.cfg.SettleDeadline
+	if deadline == 0 {
+		deadline = DefaultSettleDeadline
+	}
 	out := map[string]string{
 		"comparer":                k.layoutName,
 		"block_bytes":             fmt.Sprint(t.BlockSize),
@@ -427,6 +468,8 @@ func (k *KV) Describe() (map[string]string, error) {
 		"time_filter_asked":       fmt.Sprint(k.cfg.TimeFilter),
 		"recovered_bytes":         fmt.Sprint(k.recovered),
 		"pebble_options":          k.options,
+		"settle_tombstones":       fmt.Sprint(k.cfg.SettleRetention),
+		"settle_deadline":         deadline.String(),
 	}
 	props, err := k.TableProperties()
 	if err != nil {
