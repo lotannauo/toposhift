@@ -291,6 +291,15 @@ it belongs to the judgement of the timed builds. The rules' log of 2026-10-08 ha
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
 or moves its deadline into another bucket.
 
+`dbhash <db>...` prints, for each Pebble database it opens read-only, the number of keys, how many are
+layout-L records, checkpoints and baselines, and a SHA-256 of every key and value, so two stores built from
+the same stream can be compared byte for byte. With `-data` it digests only layout L's data keys (those whose
+first byte is a layer, 1 to 4) and leaves out the meta keys, which are the part a change of the store's own
+bookkeeping may change on purpose; `TestStoredBytesAreUnchanged` in `spike/pebblelog` freezes the same digest
+for fixed streams. `-tails` reports how many keys a whole-prefix read of each data prefix reads and how many a
+read that stops at the newest checkpoint and record does. It is for layout L: layout M's keys use another
+comparer, which the command does not install.
+
 **A binary that a result may come from** is built with `CGO_ENABLED=0` (the block cache is
 then on the Go heap, as `toposhift` ships), without `-race` or the `invariants` tag, from
 a clean tree of the repository with its version control stamp (a binary built with
