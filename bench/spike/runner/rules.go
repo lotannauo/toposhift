@@ -7,7 +7,7 @@ import (
 )
 
 // RulesVersion is bumped when a rule changes its meaning.
-const RulesVersion = 4
+const RulesVersion = 5
 
 // Rules are the constants of the decision between the layouts, fixed before the
 // measurements that decide (the retained-window builds and the timing on CI
@@ -47,10 +47,11 @@ const RulesVersion = 4
 //     each query's own fit, with the query whose fit is at or above LinearSlope
 //     flagged, are diagnostics: they do not decide (the slope between the first and
 //     third windows feeds SlopeDiffForTarget, as before).
-//   - G2: a retention must not stall ingest for longer than the budget, and the
-//     block bytes right after it must stay within a factor of the settled value.
-//   - G3: the time to commit a batch while building, and the first batch after
-//     a retention, within a factor of the best candidate.
+//   - G2: a retention, with the slowness it leaves in the batches after it, must not
+//     stall ingest for longer than the budget, and the block bytes right after it must
+//     stay within a factor of the settled value.
+//   - G3: the 99th-percentile time to commit a batch while building, within a factor
+//     of the best candidate.
 //   - G4: physical bytes per record within a factor of the best candidate.
 //
 // How the gates combine. G0 comes first. G1 and G2 are absolute gates on each
@@ -174,6 +175,37 @@ const RulesVersion = 4
 // best median, G2 takes the largest longest-retention over the repetitions, and a gate
 // passes only if it passes on both architectures.
 //
+// Log (2026-10-08, before any timing on CI hardware of an engine that keeps the writer's
+// state across a retention and settles a retention's tombstones; set after a local
+// diagnosis that timed such an engine on one machine, which informs and does not decide;
+// the owner's decisions). A retention ends only when the database has settled what it
+// wrote: in every layout, Retain flushes and waits, timed with it, until the database is
+// at rest (at most a deadline, after which the writer resumes and the build records that
+// the deadline was reached); a build says so in its description (settle_tombstones), and
+// builds with and without it are never compared. G2 judges what a retention costs the
+// writer, its own time and the slowness it leaves behind: for retention i, S_i = R_i +
+// E_i, where R_i is how long Retain took and E_i is the sum, over the first
+// PostRetentionBatches (100) batches written after it (fewer if the stream or the next
+// retention comes first), of max(0, t_j - m), with m the build's median batch commit (its
+// bucket bound). A build's G2 value is its largest S_i; a candidate's is the largest over
+// its repetitions, and passes if it is at most StallBudgetSeconds. A build that rested
+// after each retention, or that did not record the batches after one, is shown and not
+// judged on G2. If, at a window and on an architecture, no member of G3's reference set
+// that passes G0 is within StallBudgetSeconds, synchronous retention fits the budget there
+// for no layout: that is recorded as a finding (the store must retain asynchronously
+// before it ingests real data), and G2 there is judged against the best instead: a
+// candidate passes if it is within StallBudgetSeconds or its G2 value is within
+// CommitFactor of the smallest G2 value of those members, compared as G3's timings are
+// (within one CPU model, or pooled when every candidate compared has at least three
+// repetitions). G3 is the 99th-percentile batch commit alone, a candidate's median over
+// its repetitions within CommitFactor of the best median; the longest first batch after a
+// retention is no longer part of G3 (it is the first term of E_i) and is printed, with
+// the ratio the former rule took, as a diagnostic, as are R_i alone, the settling time
+// and the deadlines reached. A G3 comparison in a scope where L/off's own
+// 99th-percentile commit varies by more than a factor of 1.5 over its repetitions is not
+// decided. PostRetentionBatches is new and RulesVersion is 5, so the digest changes; no
+// other value changes.
+//
 // Two properties of the statistic are part of the rule. It is an envelope: a population
 // is the largest of its queries (or the lower median) in each window, so a query that
 // becomes the largest only at the target window counts for about a quarter of its own
@@ -230,10 +262,13 @@ type Rules struct {
 	TimingMinRatio, PebbleCPUShareMin float64
 	TimingFloor                       string
 
-	// G2: the stall a retention may cause, in seconds, and the factor its block
-	// bytes may exceed the settled value by.
+	// G2: the stall a retention may cause, in seconds, counting the batches after it,
+	// and the factor its block bytes may exceed the settled value by.
 	StallBudgetSeconds float64
 	PostRetentionBytes float64
+	// PostRetentionBatches is how many batches after a retention G2 counts the slowness
+	// of: see the log of 2026-10-08.
+	PostRetentionBatches int
 	// G3 and G4: factors over the best candidate.
 	CommitFactor, BytesPerRecordFactor float64
 
@@ -307,7 +342,7 @@ func DefaultRules() Rules {
 		TimingReaders: 1, TimingConfirm: 4, TimingRoundsLocal: 8, TimingJobsCI: 5,
 		TimingMinRatio: 1.10, PebbleCPUShareMin: 0.5,
 		TimingFloor:        "the 95th percentile, over pairs of the same candidate, of the largest absolute log ratio over cells",
-		StallBudgetSeconds: 60, PostRetentionBytes: 2,
+		StallBudgetSeconds: 60, PostRetentionBytes: 2, PostRetentionBatches: 100,
 		CommitFactor: 2, BytesPerRecordFactor: 2,
 		CheckpointReadGain: 2, CheckpointExtraBytes: 0.25,
 		LayoutMGain: 1.5,

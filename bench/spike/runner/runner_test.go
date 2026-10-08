@@ -1468,6 +1468,8 @@ func TestFilesKeepTheirFields(t *testing.T) {
 		"Stream":       {runner.StreamInfo{}, "Digest,Records,Dropped,LastSeq,PayloadBytes,Retentions,TokenFloor,OldToken,OldAt,Start,End,Horizon"},
 		"Group":        {runner.GroupInfo{}, "Group,Age,Queries,NonEmpty"},
 		"Manifest":     {runner.Manifest{}, "Candidate,Layout,PlanDigest,Stream,Build,Untimed,Describe,Counters,StatsBuilt,StatsCompacted,Breakdown,SizeByLayer,Size,Timing,Uncompacted,UncompactedWrong"},
+		"Timing":       {runner.Timing{}, "Writes,AfterRetention,Retains,PostRetention,RetainPhases"},
+		"Retain phase": {runner.RetainPhase{}, "Work,Flush,Settle,DeadlineHit"},
 		"Results":      {runner.Results{}, "Candidate,PlanDigest,ManifestDigest,Build,Untimed,Describe,Queries,Mismatches,Unstable,StatsBefore,StatsAfter"},
 		"Query result": {runner.QueryResult{}, "Digest,Size,Counters,Warm"},
 		"Build":        {runner.BuildInfo{}, "GoVersion,GOOS,GOARCH,CGO,Race,Invariants,Tags,Unoptimized,Revision,Modified,Executable"},
@@ -2220,6 +2222,23 @@ func TestABuildRecordsItsTimingAndReadsBeforeCompacting(t *testing.T) {
 		}
 		if m.Timing.Writes.TotalNs <= 0 || m.Timing.Writes.MaxNs <= 0 || m.Timing.Writes.Quantile(0.5) == 0 {
 			t.Errorf("%s: no time was recorded for the writes: %+v", name, m.Timing.Writes)
+		}
+		// The batches after each retention, which G2 counts: one list for each retention,
+		// of at most the rules' number of batches, the first of them the one recorded
+		// as the first batch after it.
+		if m.Describe["post_retention_batches"] != "100" {
+			t.Errorf("%s: post_retention_batches is %q, want %q", name, m.Describe["post_retention_batches"], "100")
+		}
+		if len(m.Timing.PostRetention) != len(m.Timing.Retains) {
+			t.Errorf("%s: %d lists of batches after a retention, for %d retentions", name, len(m.Timing.PostRetention), len(m.Timing.Retains))
+		}
+		for i, list := range m.Timing.PostRetention {
+			if len(list) > runner.DefaultRules().PostRetentionBatches {
+				t.Errorf("%s: retention %d: %d batches recorded after it, more than the rules count", name, i, len(list))
+			}
+			if i < len(m.Timing.AfterRetention) && len(list) > 0 && list[0] != m.Timing.AfterRetention[i] {
+				t.Errorf("%s: retention %d: the first batch after it is %d in one list and %d in the other", name, i, list[0], m.Timing.AfterRetention[i])
+			}
 		}
 		now := 0
 		for _, q := range plan.Queries {

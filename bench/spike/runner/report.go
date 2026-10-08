@@ -90,6 +90,12 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		if a, b := ref.Manifest.Describe[RestKey], c.Manifest.Describe[RestKey]; a != b {
 			out = append(out, fmt.Sprintf("%s and %s were built with and without a rest after each retention (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
 		}
+		// A retention that settles its tombstones before it returns costs the writer what
+		// the settling takes, and one that does not leaves them to slow the batches after
+		// it: the timings of the two are not alike.
+		if a, b := describedOr(ref.Manifest, SettleKey, "false"), describedOr(c.Manifest, SettleKey, "false"); a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with and without settling a retention's tombstones (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
+		}
 		// Canonical tables are cut where the data says and the others where the
 		// compactions happened to cut, so the blocks their reads load are not alike.
 		if a, b := ref.Manifest.Describe[CanonicalKey], c.Manifest.Describe[CanonicalKey]; a != b {
@@ -324,6 +330,29 @@ func writeTiming(w io.Writer, cs []*Candidate) {
 			return "-"
 		}
 		return dur(slices.Max(t.AfterRetention))
+	})
+	fmt.Fprint(tw, "retention plus the slowness after it: longest (G2)")
+	for _, c := range cs {
+		if m := measureOf(c.Manifest); m.hasStall {
+			fmt.Fprint(tw, "\t", dur(m.stall))
+		} else {
+			fmt.Fprint(tw, "\t-")
+		}
+	}
+	fmt.Fprintln(tw, "\t")
+	row("settling of a retention: longest", func(t Timing) string {
+		longest, _, ok := settlingOf(t)
+		if !ok {
+			return "-"
+		}
+		return dur(int64(longest))
+	})
+	row("settle deadline reached", func(t Timing) string {
+		_, hits, ok := settlingOf(t)
+		if !ok {
+			return "-"
+		}
+		return fmt.Sprint(hits)
 	})
 	_ = tw.Flush()
 }
