@@ -28,7 +28,8 @@
 //
 // Package memstore is the reference implementation: it keeps every record in
 // memory and answers each read by folding the records with the lifecycle
-// specification.
+// specification. Package storetest is the conformance suite every backend runs
+// against it.
 //
 // # Not here yet
 //
@@ -38,6 +39,5 @@
 //   - checkpoints;
 //   - the mapping from ingest time to a snapshot token;
 //   - cascade and co-residency, which are derived above the store by interval
-//     overlap;
-//   - the conformance suite that every backend must pass.
+//     overlap.
 package store
