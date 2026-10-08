@@ -169,3 +169,74 @@ func TestSubjectConstructors(t *testing.T) {
 		t.Errorf("EdgeSubject = %+v, want %+v", got, want)
 	}
 }
+
+func TestAHostRecordCarriesItsBoot(t *testing.T) {
+	t.Parallel()
+
+	host := fp(t, catalog.Host, catalog.HostID, "h")
+	node := fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	obs := func(at int64, boot string) store.Record {
+		return store.Record{
+			Layer: catalog.L1, Subject: store.EntitySubject(host), Producer: "node-collector",
+			EventTime: time.Unix(at, 0).UTC(), Seq: uint64(at), Kind: lifecycle.Observe, TTL: time.Hour,
+			Payload: []byte("d"), Boot: boot,
+		}
+	}
+	if err := obs(10, "boot-1").Validate(); err != nil {
+		t.Errorf("a host observation with a boot id: %v", err)
+	}
+	if err := obs(10, "").Validate(); err != nil {
+		t.Errorf("a host observation without a boot id: %v", err)
+	}
+
+	for name, r := range map[string]store.Record{
+		"blank boot id": obs(10, "  \t"),
+		"delete with boot": func() store.Record {
+			r := obs(10, "boot-1")
+			r.Kind, r.TTL, r.Payload = lifecycle.Delete, 0, nil
+			return r
+		}(),
+		"edge with boot": {
+			Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, "scheduled_on"), Producer: "k8s",
+			EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe, TTL: time.Hour, Boot: "boot-1",
+		},
+	} {
+		if err := r.Validate(); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("%s: err = %v, want one wrapping ErrInvalid", name, err)
+		}
+	}
+
+	// The boot reaches the lifecycle assertion as the specification's boot
+	// attribute, so a policy that names it tells boots apart and reports two
+	// live boots of one host as a clone collision.
+	a := obs(10, "boot-1").Assertion()
+	var got string
+	for _, attr := range a.Attrs {
+		if attr.Key == lifecycle.BootID {
+			got, _ = attr.Value.(string)
+		}
+	}
+	if got != "boot-1" {
+		t.Errorf("assertion boot attribute = %q, want boot-1 (attrs %+v)", got, a.Attrs)
+	}
+	if len(obs(10, "").Assertion().Attrs) != 1 {
+		t.Errorf("a record without a boot id carries %d attributes, want only the payload", len(obs(10, "").Assertion().Attrs))
+	}
+	policy := lifecycle.Policy{BootKey: lifecycle.BootID}
+	clone := []lifecycle.Assertion{obs(10, "boot-1").Assertion(), obs(20, "boot-2").Assertion(), obs(30, "boot-1").Assertion()}
+	if _, err := lifecycle.Fold(clone, policy); !errors.Is(err, lifecycle.ErrCloneCollision) {
+		t.Errorf("a boot seen again after another: err = %v, want a clone collision", err)
+	}
+	reboot := []lifecycle.Assertion{obs(10, "boot-1").Assertion(), obs(20, "boot-2").Assertion()}
+	tl, err := lifecycle.Fold(reboot, policy)
+	if err != nil || len(tl.Boots()) != 2 {
+		t.Errorf("a reboot: boots = %d, err = %v, want 2 boots and no error", len(tl.Boots()), err)
+	}
+
+	// A changed boot is a changed description: a run of refreshes does not
+	// coalesce across it.
+	if got := lifecycle.Coalesce([]lifecycle.Assertion{obs(10, "boot-1").Assertion(), obs(20, "boot-2").Assertion()}); len(got) != 2 {
+		t.Errorf("refreshes across a boot change coalesced to %d assertions, want 2", len(got))
+	}
+}

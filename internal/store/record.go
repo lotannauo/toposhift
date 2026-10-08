@@ -77,6 +77,14 @@ type Record struct {
 	Through time.Time
 	// Payload is the producer's opaque description. It is empty for a delete.
 	Payload []byte
+	// Boot identifies the boot of the machine a host observation was made in
+	// (the OpenTelemetry-derived attribute topo.host.boot.id, copied by the
+	// ingest layer). It is empty when the producer reports none. Only an
+	// observation of an entity carries one: a delete and an edge record never do.
+	// A store opened with a [lifecycle.Policy] that names [lifecycle.BootID]
+	// tells boots apart, and reports two live boots of one host as a clone
+	// collision, from this field.
+	Boot string
 }
 
 // Validate checks the rules a storage layout relies on. The assertion rules
@@ -137,7 +145,18 @@ func (r Record) Validate() error {
 	if r.Kind == lifecycle.Delete && len(r.Payload) != 0 {
 		return fail("a delete cannot carry a payload")
 	}
-	if _, err := lifecycle.Fold([]lifecycle.Assertion{r.Assertion()}, lifecycle.Policy{}); err != nil {
+	policy := lifecycle.Policy{}
+	if r.Boot != "" {
+		switch {
+		case r.Kind != lifecycle.Observe:
+			return fail("only an observation carries a boot id")
+		case r.Subject.Kind != SubjectEntity:
+			return fail("only an entity record carries a boot id")
+		}
+		// The specification refuses a blank boot id (empty or white space only).
+		policy.BootKey = lifecycle.BootID
+	}
+	if _, err := lifecycle.Fold([]lifecycle.Assertion{r.Assertion()}, policy); err != nil {
 		return fmt.Errorf("record seq %d: %w: %w", r.Seq, err, ErrInvalid)
 	}
 	return nil
@@ -159,6 +178,9 @@ func (r Record) Assertion() lifecycle.Assertion {
 	}
 	if r.Kind == lifecycle.Observe {
 		a.Attrs = []identity.Attr{{Key: payloadKey, Value: string(r.Payload)}}
+		if r.Boot != "" {
+			a.Attrs = append(a.Attrs, identity.Attr{Key: lifecycle.BootID, Value: r.Boot})
+		}
 	}
 	return a
 }
