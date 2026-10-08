@@ -66,10 +66,14 @@ type Options struct {
 	// Recorder receives the engine's counts. Nil discards them. The names are
 	// "write.records", "read.records_stepped", "retain.prefixes_visited",
 	// "retain.prefixes_replayed", "retain.records_replayed",
-	// "retain.baselines_written", "retain.range_deletes", "retain.seeks", and for
+	// "retain.baselines_written", "retain.range_deletes", "retain.seeks",
+	// "retain.state_keys" (the keys a retention reads to work out the writer's
+	// state, when it does; see [Engine.Retain]), and for
 	// checkpoints "checkpoint.written", "checkpoint.bytes_written" (key and value
 	// bytes), "checkpoint.invalidated",
-	// "checkpoint.errors", "checkpoint.loads", "checkpoint.lookups",
+	// "checkpoint.errors", "checkpoint.loads" (prefixes whose state was read from
+	// the database: not those a retention worked out, nor the new ones a complete
+	// map knows to be empty), "checkpoint.lookups",
 	// "checkpoint.load_keys" (the keys both read),
 	// "checkpoint.build_records_walked", "read.checkpoint_hits",
 	// "read.checkpoint_skipped_w" and "read.checkpoint_skipped_version". Every
@@ -94,7 +98,8 @@ type Options struct {
 	beforeCheckpointApply func() error
 	beforeRecordApply     func() error
 	// fullStateRead makes the writer read the whole of a prefix to learn its
-	// state, as it once did: for tests that compare the two.
+	// state, as it once did, and never trust the map to be complete: for tests
+	// that compare the two.
 	fullStateRead bool
 }
 
@@ -123,7 +128,27 @@ type Engine struct {
 	// read for the checkpoints it holds. flagOnDisk says the meta key that records
 	// it is durably there; until a commit carrying it succeeds, every checkpoint
 	// batch carries it (see applyCheckpoints).
+	//
+	// complete says the map is not only right about the prefixes in it but
+	// exhaustive: a prefix it lacks holds no record and no checkpoint, so the
+	// writer knows its state (empty) without reading it. It holds from the
+	// opening of a database with no data, and from the end of a retention that
+	// worked out the state of every prefix in its own pass (see Retain). It does
+	// not hold, and the prefixes are read as they are touched, in a database that
+	// already holds data when it is opened; after a retention that does not work
+	// the state out (no checkpoint in the database yet, the policy off, a horizon
+	// outside the range, a key that cannot be read, or a retention that stops or
+	// fails); after anything that drops what is remembered (a failed commit or
+	// read); and after a write with checkpoints off and none in the database,
+	// which stores records and remembers nothing, so the prefixes it leaves are
+	// read if a checkpoint is later written.
+	//
+	// The price is memory: one entry per live prefix (about 150 to 200 bytes: the
+	// map slot, the separately allocated state, the key as a string and the
+	// checkpoint list), kept for as long as the engine is open, where the map
+	// would otherwise hold only the prefixes touched since the last retention.
 	states     map[string]*prefixState
+	complete   bool
 	anyCkpt    bool
 	flagOnDisk bool
 }
@@ -189,6 +214,21 @@ func Open(dir string, opts Options) (*Engine, error) {
 	}
 	e.anyCkpt = raw != nil
 	e.flagOnDisk = e.anyCkpt
+	// A database that holds no data has no prefix to learn: every one a write
+	// meets is new, and there is no need to read it to find that out. (An engine
+	// that reads the whole of every prefix, for tests, trusts nothing it has not
+	// read.)
+	lo, hi := dataBounds()
+	it, err := kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return fail(err)
+	}
+	empty := !it.First()
+	err = errors.Join(it.Error(), it.Close())
+	if err != nil {
+		return fail(err)
+	}
+	e.complete = empty && !e.fullStateRead
 	return e, nil
 }
 
@@ -247,12 +287,15 @@ func (e *Engine) Write(batch []engine.Record) error {
 	// from here the list in memory may be ahead of the database, and is dropped.
 	touched := map[string]struct{}{}
 	fail := func(err error) error {
-		e.states = map[string]*prefixState{}
+		e.forgetAll()
 		return err
 	}
 	// Nothing is remembered, and nothing can need invalidating, in a database that
 	// has no checkpoints and is not writing any.
 	track := e.ckpt.On || e.anyCkpt
+	if !track {
+		e.complete = false // records are about to be stored that the map will not know of
+	}
 	for _, p := range puts {
 		if track {
 			st, err := e.state(p.prefix)
@@ -311,13 +354,14 @@ func (e *Engine) Retain(horizon time.Time) error {
 		return err
 	}
 	e.horizon = horizon
-	// What was remembered of each prefix is about to be out of date.
-	e.states = map[string]*prefixState{}
 
 	hNs, where := pebblekv.Locate(horizon)
 	if where == pebblekv.Before || (where == pebblekv.Inside && hNs == 0) {
-		return nil // no instant a record can have is before it
+		return nil // no instant a record can have is before it: nothing changes, and nothing is forgotten
 	}
+	// What was remembered of each prefix is about to be out of date. It is
+	// worked out again below, and stays empty if the retention does not finish.
+	e.forgetAll()
 	// The newest instant strictly before the horizon, and where the baseline is
 	// keyed. After the end of the range the baseline is keyed at the last instant,
 	// inside what the range delete covers, so it is written after the delete.
@@ -332,6 +376,29 @@ func (e *Engine) Retain(horizon time.Time) error {
 		return err
 	}
 	defer func() { _ = it.Close() }()
+	// What the writer would find if it read each prefix after this retention,
+	// worked out as the retention goes by, so that the first write to a prefix
+	// need not read it. Not working it out is always correct (the prefix is then
+	// read when it is next touched), so it is done only where it pays: with the
+	// checkpoint policy on, where a read would look (a checkpoint may be in the
+	// database), where a read is the kind that stops at the tail, and where the
+	// horizon is inside the range (past it the retention rewrites every prefix in
+	// a way the keys it leaves do not describe). The cost is a read of the keys at
+	// or after the horizon of each prefix, up to its newest checkpoint, counted as
+	// "retain.state_keys".
+	derive := e.ckpt.On && e.anyCkpt && !e.fullStateRead && where == pebblekv.Inside
+	derived := derive
+	var stateKeys int64
+	var next map[string]*prefixState
+	if derive {
+		next = map[string]*prefixState{}
+	}
+	remember := func(prefix []byte, st *prefixState) {
+		if derive && !st.empty() { // an empty state is what a missing prefix means
+			c := *st
+			next[string(prefix)] = &c
+		}
+	}
 	b := e.kv.NewBatch()
 	defer func() { _ = b.Close() }()
 
@@ -358,13 +425,30 @@ func (e *Engine) Retain(horizon time.Time) error {
 		prefix := slices.Clone(key[:prefixLen])
 		dir := prefix[prefixLen-1]
 		visited++
+		// The keys that stay are read first, from the first key of the prefix,
+		// where the iterator is.
+		var kept, dropped prefixState
+		if derive {
+			var parsed bool
+			var n int64
+			kept, dropped, n, parsed, err = foldRetained(it, prefix, hNs)
+			if err != nil {
+				return err
+			}
+			stateKeys += n
+			if !parsed {
+				derive, next = false, nil // a key that cannot be read: learn nothing here
+			}
+		}
 		// Go to the newest record of this prefix strictly before the horizon. The
 		// seek may land in a later prefix, which the loop then takes up.
 		seeks++
 		ok = it.SeekGE(seekKey(prefix, oldMax))
 		if !ok || !hasPrefix(it.Key(), prefix) {
+			remember(prefix, &kept) // nothing is rewritten here: a checkpoint at the horizon stays
 			continue
 		}
+		remember(prefix, &dropped)
 		replayed++
 		decided := map[string]struct{}{}
 		var entries []Entry
@@ -449,6 +533,14 @@ func (e *Engine) Retain(horizon time.Time) error {
 	}
 	if err := commit(); err != nil {
 		return err
+	}
+	if derive {
+		// Only now, with every commit landed, is what was worked out true of the
+		// database. Every prefix was visited, so the map is complete.
+		e.states, e.complete = next, true
+	}
+	if derived {
+		e.rec.Count("retain.state_keys", stateKeys)
 	}
 	e.rec.Count("retain.prefixes_visited", visited)
 	e.rec.Count("retain.prefixes_replayed", replayed)
