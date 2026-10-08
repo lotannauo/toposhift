@@ -82,6 +82,13 @@ const (
 	// MetricsKey is the key of a manifest's Describe that gives the interval at which
 	// the build sampled its metrics, as a duration ("0s" for none).
 	MetricsKey = "metrics_every"
+	// PostRetentionKey is the key of a manifest's Describe that gives how many batches
+	// after each retention the build timed one by one (Timing.PostRetention).
+	PostRetentionKey = "post_retention_batches"
+	// SettleKey is the key of a manifest's Describe that says whether each retention of
+	// the build settled its tombstones before returning. It is the engine's own
+	// description, not one the runner adds.
+	SettleKey = "settle_tombstones"
 	// MetricsFile is the name of the file in a candidate's directory that the
 	// sampling of a build appends to.
 	MetricsFile = "metrics.jsonl"
@@ -116,9 +123,23 @@ type buildSink struct {
 	rest bool
 	// afterRetention is set by a retention and cleared by the next write.
 	afterRetention *bool
+	// post counts the batches after the last retention that are still to be timed one
+	// by one ([Timing].PostRetention); nil for none.
+	post *postState
 	// prog is told the phase and the progress, for the sampling of the build's
 	// metrics; nil for none.
 	prog *buildProgress
+}
+
+// postState is how many more batches after the last retention are to be recorded in
+// [Timing].PostRetention, and how many a retention records at most.
+type postState struct {
+	left, n int
+}
+
+// lastRetainer is what an engine says of how its last retention spent its time.
+type lastRetainer interface {
+	LastRetain() (work, flush, settle time.Duration, deadlineHit bool)
 }
 
 func (s buildSink) Write(batch []engine.Record) error {
@@ -129,6 +150,11 @@ func (s buildSink) Write(batch []engine.Record) error {
 	if *s.afterRetention {
 		*s.afterRetention = false
 		s.t.AfterRetention = append(s.t.AfterRetention, int64(d))
+	}
+	if p := s.post; p != nil && p.left > 0 && len(s.t.PostRetention) > 0 {
+		p.left--
+		last := len(s.t.PostRetention) - 1
+		s.t.PostRetention[last] = append(s.t.PostRetention[last], int64(d))
 	}
 	if err != nil {
 		return err
@@ -145,6 +171,15 @@ func (s buildSink) Retain(h time.Time) error {
 	start := time.Now()
 	err := s.e.Retain(h)
 	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
+	if lr, ok := s.e.(lastRetainer); ok {
+		work, flush, settle, hit := lr.LastRetain()
+		s.t.RetainPhases = append(s.t.RetainPhases, RetainPhase{Work: int64(work), Flush: int64(flush), Settle: int64(settle), DeadlineHit: hit})
+	}
+	// A retention starts its own list of batches, and ends the previous one's.
+	s.t.PostRetention = append(s.t.PostRetention, []int64{})
+	if s.post != nil {
+		s.post.left = s.post.n
+	}
 	*s.afterRetention = true
 	if err != nil {
 		return err
@@ -263,7 +298,8 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	say.say("build %s: writing %d records in batches of %d", v.Name, plan.Stream.Records, plan.Spec.BatchSize)
 	var timing Timing
 	after := false
-	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, rest: opts.RestAfterRetention, prog: prog})
+	postBatches := DefaultRules().PostRetentionBatches
+	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog})
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
@@ -307,6 +343,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	m.Describe[RestKey] = strconv.FormatBool(opts.RestAfterRetention)
 	m.Describe[CanonicalKey] = strconv.FormatBool(opts.CanonicalLayout)
 	m.Describe[MetricsKey] = opts.MetricsEvery.String()
+	m.Describe[PostRetentionKey] = strconv.Itoa(postBatches)
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err

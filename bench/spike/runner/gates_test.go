@@ -18,7 +18,9 @@ func gateCandidate(name string, tableBytes, records int64, commit time.Duration,
 		Manifest: &runner.Manifest{
 			Stream: runner.StreamInfo{Records: uint64(records)}, StatsCompacted: map[string]int64{"live_table_bytes": tableBytes},
 			StatsBuilt: map[string]int64{"bytes_in": 1000}, Counters: map[string]int64{},
-			Timing: runner.Timing{Writes: h, Retains: []int64{int64(retain)}, AfterRetention: []int64{int64(after)}},
+			// One batch is recorded after the retention: the first.
+			Describe: map[string]string{runner.PostRetentionKey: "100"},
+			Timing:   runner.Timing{Writes: h, Retains: []int64{int64(retain)}, AfterRetention: []int64{int64(after)}, PostRetention: [][]int64{{int64(after)}}},
 		},
 		Results: &runner.Results{Candidate: name},
 	}
@@ -38,7 +40,7 @@ func TestGatesAreRatiosToTheBestCandidateThatAnswersRight(t *testing.T) {
 
 	rules := runner.DefaultRules() // factors of 2; a stall budget of 60 s
 	best := gateCandidate("best", 1000, 10, 1000*time.Nanosecond, 5*time.Second, 100*time.Microsecond)
-	near := gateCandidate("near", 2000, 10, 1900*time.Nanosecond, 60*time.Second, 190*time.Microsecond)                   // twice the bytes, within the factors
+	near := gateCandidate("near", 2000, 10, 1900*time.Nanosecond, 59*time.Second, 190*time.Microsecond)                   // twice the bytes, within the factors
 	over := gateCandidate("over", 2010, 10, 4000*time.Nanosecond, 60*time.Second+time.Millisecond, 5000*time.Microsecond) // over every limit
 	// A candidate that answers wrongly, and is far cheaper than any: it must not set the
 	// standard the others are held to.
@@ -55,15 +57,12 @@ func TestGatesAreRatiosToTheBestCandidateThatAnswersRight(t *testing.T) {
 		{"best", "G0", true},
 		{"best", "G4", true},
 		{"best", "G3 batch", true},
-		{"best", "G3 first", true},
 		{"best", "G2", true},
 		{"near", "G4", true},
 		{"near", "G3 batch", true},
-		{"near", "G3 first", true},
 		{"near", "G2", true},
 		{"over", "G4", false},
 		{"over", "G3 batch", false},
-		{"over", "G3 first", false},
 		{"over", "G2", false},
 		{"wrong", "G0", false},
 		{"late", "G0", false},
@@ -71,6 +70,17 @@ func TestGatesAreRatiosToTheBestCandidateThatAnswersRight(t *testing.T) {
 		v, ok := verdictOf(vs, c.candidate, c.gate)
 		if !ok || v.Pass != c.pass {
 			t.Errorf("%s %s: %+v (found %v), want pass %v", c.candidate, c.gate, v, ok, c.pass)
+		}
+	}
+	// The first batch after a retention is shown with the verdict the former rule gave and
+	// decides nothing.
+	for name, former := range map[string]string{"best": "ok", "near": "ok", "over": "OVER"} {
+		v, ok := verdictOf(vs, name, "first batch")
+		if !ok || !v.NotComparable || !strings.HasSuffix(v.Limit, "[the former rule: "+former+"]") {
+			t.Errorf("%s: the first batch after a retention: %+v (found %v), want a diagnostic with the former verdict %s", name, v, ok, former)
+		}
+		if strings.HasPrefix(v.Gate, "G3") {
+			t.Errorf("%s: a diagnostic is named as a G3 gate: %q", name, v.Gate)
 		}
 	}
 	// A candidate that answers wrongly is held to G0 and no other ratio.
@@ -169,15 +179,112 @@ func TestAFirstBatchAfterARetentionOfARestedBuildIsNotComparable(t *testing.T) {
 	fast.Manifest.Describe = map[string]string{runner.RestKey: "true"}
 	vs := runner.Gates([]*runner.Candidate{plain, fast}, rules)
 
-	if v, ok := verdictOf(vs, "rested", "G3 first"); !ok || !v.NotComparable || !v.Pass || !strings.Contains(v.Limit, "not comparable") {
+	if v, ok := verdictOf(vs, "rested", "first batch"); !ok || !v.NotComparable || !v.Pass || !strings.Contains(v.Limit, "not comparable") {
 		t.Errorf("the rested build's first batch after a retention: %+v", v)
 	}
-	if v, ok := verdictOf(vs, "plain", "G3 first"); !ok || v.NotComparable || !v.Pass {
+	// The former rule's verdict for the build that did not rest is against itself, not
+	// against the rested build's value.
+	if v, ok := verdictOf(vs, "plain", "first batch"); !ok || !strings.HasSuffix(v.Limit, "[the former rule: ok]") {
 		t.Errorf("a build that did not rest was held to a rested build's value: %+v", v)
 	}
 	var out strings.Builder
 	runner.WriteGates(&out, vs)
 	if !strings.Contains(out.String(), "not judged") {
 		t.Errorf("the report does not say the value is not judged:\n%s", out.String())
+	}
+}
+
+// G2 is judged on what a retention costs the writer, its own time and the slowness
+// it leaves behind, and only where the build says it recorded that: a build that rested
+// after each retention, or that did not record the batches after one, is shown and not
+// judged.
+func TestG2IsNotJudgedWhereTheBatchesAfterARetentionAreNotComparable(t *testing.T) {
+	t.Parallel()
+
+	rules := runner.DefaultRules()
+	judged := gateCandidate("judged", 1000, 10, time.Microsecond, time.Second, time.Millisecond)
+	rested := gateCandidate("rested", 1000, 10, time.Microsecond, time.Second, time.Millisecond)
+	rested.Manifest.Describe[runner.RestKey] = "true"
+	// Slow enough after the retention that, judged, it would be over the budget.
+	rested.Manifest.Timing.Retains = []int64{int64(61 * time.Second)}
+	unrecorded := gateCandidate("unrecorded", 1000, 10, time.Microsecond, 61*time.Second, time.Millisecond)
+	unrecorded.Manifest.Timing.PostRetention = nil
+	delete(unrecorded.Manifest.Describe, runner.PostRetentionKey)
+	vs := runner.Gates([]*runner.Candidate{judged, rested, unrecorded}, rules)
+
+	if v, ok := verdictOf(vs, "judged", "G2"); !ok || v.NotComparable || !v.Pass || !v.Local {
+		t.Errorf("a build that recorded the batches after a retention: %+v (found %v)", v, ok)
+	}
+	for name, why := range map[string]string{
+		"rested":     "not comparable: the build rested after each retention",
+		"unrecorded": "not comparable: the build did not record the batches after a retention",
+	} {
+		v, ok := verdictOf(vs, name, "G2")
+		if !ok || !v.NotComparable || v.Limit != why || v.Value != "1m1s" {
+			t.Errorf("%s: %+v (found %v), want a value shown and not judged, limit %q", name, v, ok, why)
+		}
+	}
+	var out strings.Builder
+	runner.WriteGates(&out, vs)
+	for _, want := range []string{"G2 retention and the slowness after it, longest", "not judged"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the text does not hold %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// The slowness after a retention counts: a short retention followed by slow batches is
+// over the budget, which the retention alone would pass.
+func TestG2CountsTheSlownessAfterARetention(t *testing.T) {
+	t.Parallel()
+
+	c := gateCandidate("slow after", 1000, 10, time.Millisecond, 5*time.Second, time.Millisecond)
+	batches := make([]int64, 100)
+	for i := range batches {
+		batches[i] = int64(3 * time.Second)
+	}
+	c.Manifest.Timing.PostRetention = [][]int64{batches}
+	vs := runner.Gates([]*runner.Candidate{c}, runner.DefaultRules())
+	if v, ok := verdictOf(vs, "slow after", "G2"); !ok || v.Pass || v.NotComparable {
+		t.Errorf("a retention of 5 s followed by 100 batches of 3 s passes G2: %+v", v)
+	}
+	if v, ok := verdictOf(vs, "slow after", "retention alone"); !ok || !v.NotComparable || v.Value != "5s" {
+		t.Errorf("the retention alone is not shown as a diagnostic: %+v", v)
+	}
+}
+
+// A report refuses to compare builds that settled a retention's tombstones with builds
+// that did not, and a manifest without the key is a build that did not.
+func TestCheckRefusesBuildsWithAndWithoutSettling(t *testing.T) {
+	t.Parallel()
+
+	plan := &runner.Plan{}
+	digest, err := plan.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(name, settle string) *runner.Candidate {
+		m := &runner.Manifest{Candidate: name, PlanDigest: digest, Describe: map[string]string{}}
+		if settle != "" {
+			m.Describe[runner.SettleKey] = settle
+		}
+		return &runner.Candidate{Manifest: m, Results: &runner.Results{Candidate: name, PlanDigest: digest}}
+	}
+	for _, c := range []struct {
+		name         string
+		a, b         string
+		wantProblems bool
+	}{
+		{"settled and not", "true", "false", true},
+		{"settled and no key", "true", "", true},
+		{"both settled", "true", "true", false},
+		{"both not", "false", "false", false},
+		{"not and no key", "false", "", false},
+	} {
+		problems := strings.Join(runner.Check(plan, []*runner.Candidate{build("a", c.a), build("b", c.b)}, true), "\n")
+		got := strings.Contains(problems, "settling a retention's tombstones")
+		if got != c.wantProblems {
+			t.Errorf("%s: refused %v, want %v:\n%s", c.name, got, c.wantProblems, problems)
+		}
 	}
 }

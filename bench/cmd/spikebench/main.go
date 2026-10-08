@@ -9,6 +9,7 @@
 //	spikebench pins   -preset ci -window 2 -out DIR  choose the prefixes the windows are read at
 //	spikebench windows -preset ci -out DIR           run over windows of 2, 7, 14 and 30 days of retained history
 //	spikebench g1     -out DIR                       judge G1 from the windows
+//	spikebench timing -in DIR...                     judge G2, G3 and G4 from the bench workflow's artifacts
 //
 // Build with CGO_ENABLED=0 and without -race or the invariants tag, from a clean
 // tree; the program refuses to produce a result otherwise (-untimed allows it
@@ -79,6 +80,8 @@ func main() {
 		err = doWindows(ctx, args)
 	case "g1":
 		err = doG1(args)
+	case "timing":
+		err = doTiming(ctx, args)
 	default:
 		usage()
 	}
@@ -89,7 +92,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1 [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|timing [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 

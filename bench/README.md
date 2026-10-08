@@ -272,7 +272,20 @@ What a build records besides the tables: how long each batch, each retention and
 each took (informational: a timing of the machine that built it), the reads of "now" at the end of the build
 before anything was compacted (a labelled cell, outside the verdicts, with each answer checked), and, for
 layout L with checkpoints, the bytes of checkpoints written. The report prints the other gates (G0 answers,
-G2 stall, G3 commit, G4 bytes per record) and the share of the bytes written that went to checkpoints.
+G2 retention and the slowness after it, G3 commit, G4 bytes per record) and the share of the bytes written that
+went to checkpoints.
+
+**G2 and G3 since rules version 5.** G2 judges what a retention costs the writer: the retention's own time plus,
+for each of the first 100 batches written after it, how much that batch took over the build's median commit
+(never less than zero); a build's value is the largest of these over its retentions, and it passes within the
+stall budget. The first batch after a retention is no longer judged as a ratio to the best candidate: it is the
+first term of that sum, and the report prints it, with the verdict the former rule gave, as a diagnostic, as it
+does the retention alone and the time a retention spent settling. G3 is the 99th-percentile commit alone. A build
+records the batches after each retention (`post_retention_batches` in its description), and every layout settles
+a retention's tombstones inside the retention (`settle_tombstones`); builds with and without it are never
+compared, and a build that rested after each retention, or did not record those batches, is shown and not judged
+on G2. The local report judges the absolute budget only; the relative fallback for a window where no layout fits
+it belongs to the judgement of the timed builds. The rules' log of 2026-10-08 has the rule in full.
 
 `streamstats` prints three models of what a deadline index would cost: every extension rewriting its
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
@@ -297,6 +310,42 @@ Size: the three-day `ci` preset is 7.9 million records and about 300 MB of table
 - Everything is read after `CompactAll`, which leaves a few large tables: range deletions, tombstones and L0 are not in the picture, and an iterator crosses fewer levels than in a running store. The reads of "now" at the end of the build, before anything is compacted, are recorded and printed beside them (a labelled cell outside the verdicts); the block bytes right after a retention are not measured.
 - One seed, until `-seed` is varied: a family of windows is one seed and one scenario: the pins record the scenario they were chosen from (the hubs are the same entities in every seed, so the pins of another seed would otherwise be taken for its busiest prefixes), and a plan with the pins of another scenario is refused. How a read grows with retained history is what the windows measure (see above); a window of R days is a stream of 2R + 1.5 days, and the projection that makes the long ones cheap has a shallower index than a full store, so its block counters are lower. The prefixes asked about are ranked by the records a store still holds after the final retention, not by the whole stream: on a heartbeat prefix the busiest over the whole stream is the one with an unbroken run, which a retention folds into the baseline.
 - The workload is synthetic and every default of it is provisional until the Alibaba and kwok replays exist.
+
+#### Timed builds on CI hardware: timing
+
+G2, G3 and G4 are judged on builds made on GitHub-hosted runners by the `bench` workflow, which
+uploads, for each job (one runner, window, candidate and repetition), an artifact with the build's
+`manifest.json`, a `job.json` that says what the job was and what it ran on (revision, binary, CPU
+model, run), and logs. `timing` reads the downloaded artifacts and the plans, and judges them offline:
+
+```sh
+~/spikebench/bin/spikebench timing -in ~/spikebench/ci/run-1 -counters ~/spikebench/scen5 \
+    -join-from ~/spikebench/ci/first-run -git ~/Developer/toposhift -json ~/spikebench/timing.json
+```
+
+`-in` (repeatable, and arguments after the flags are more) are searched at any depth for artifacts and
+`plan.json` files; `-counters` for counters runs, which give G0 on the same plan; `-join-from` for the artifacts of
+the first timed run, from which it is decided whether M/crdb1 joins the reference set (by default the `-in` builds);
+`-git` is a checkout of the repository, in which two read-only git commands check that the builds' revision is an
+ancestor of `-ref` (default `origin/main`); `-json` also writes the verdicts for tools, outside the repository.
+The rule is the one in the rules' log of 2026-10-07 and of 2026-10-08: builds without a sync of the log, without a
+rest after a retention, not rewritten into the canonical layout and not sampling metrics, that settled each
+retention's tombstones and recorded the batches after it as the rules count them; G2 takes the largest, over a
+candidate's repetitions, of the retention plus the slowness after it, within the stall budget, or, on an architecture
+at a window where no layout of the reference set fits, within the factor of the best (a finding says so, and that
+the store must retain asynchronously before it ingests real data); G3 takes the median 99th-percentile commit over
+the repetitions against the best median of the reference set, not decided where L/off's own commit varies over its
+repetitions by more than a factor of 1.5; G4 the median bytes per record. The reference set is L/off and the
+checkpoint policy G1 chose, plus M/crdb1 if its median commit at the 7-day window is more than 10% below L/off's on
+either architecture, decided from `-join-from`, whose builds must be of the same family and pins and of the same
+plan; a gate passes only if it passes on both architectures. A timing is compared only within one CPU model, or
+pooled over models when every candidate compared has at least three repetitions, and is otherwise not comparable.
+The first batch after a retention, the retention alone and the settling time are printed as diagnostics that do not
+decide. A line is labelled `CI timing` only when every precondition holds (one revision, one binary per
+architecture, the revision checked, the plan and the counters runs present, three repetitions, comparable
+hardware); otherwise it says `not judged:` and why. A plan made under earlier rules is refused, and builds that did
+not settle a retention's tombstones or did not record the batches after one are shown and not judged. The command reads files,
+runs git only with `-git`, never touches the network and writes nothing but `-json`.
 
 ### Adding a candidate
 

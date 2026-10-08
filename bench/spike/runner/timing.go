@@ -16,6 +16,21 @@ type Timing struct {
 	AfterRetention []int64 // nanoseconds, one per retention that a batch followed
 	// Retains is how long each retention took, in nanoseconds, in order.
 	Retains []int64
+	// PostRetention is, for each retention in order, how long each of the first batches
+	// written after it took, in nanoseconds: at most the build's post_retention_batches
+	// (Describe) of them, fewer when the stream or the next retention came first, none when
+	// no batch followed. AfterRetention is the first of each.
+	PostRetention [][]int64
+	// RetainPhases is, for each retention in order, how its time was spent, when the engine
+	// says so: the rewrite up to its last commit, the flush and the wait for the database
+	// to be at rest, and whether that wait reached its deadline.
+	RetainPhases []RetainPhase
+}
+
+// RetainPhase is how one retention spent its time, in nanoseconds.
+type RetainPhase struct {
+	Work, Flush, Settle int64
+	DeadlineHit         bool
 }
 
 // Histogram counts durations in buckets that are exact below 8 ns and, above, eight to

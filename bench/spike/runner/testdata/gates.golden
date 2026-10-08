@@ -1,0 +1,513 @@
+== every branch: 55 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+a best                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+a best                          G2 retention and the slowness after it, longest                                5s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+a best                          G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+a best                          G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+a best                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+a best                          retention alone, longest                                                       5s                                              limit a diagnostic                                                            not judged (local timing)
+b near                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+b near                          G2 retention and the slowness after it, longest                                1m0s                                            limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+b near                          G4 table bytes per record                                                      200.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+b near                          G3 batch commit, 99th percentile                                               1.92µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+b near                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  190µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+b near                          retention alone, longest                                                       1m0s                                            limit a diagnostic                                                            not judged (local timing)
+c over                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+c over                          G2 retention and the slowness after it, longest                                1m0.001s                                        limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+c over                          G4 table bytes per record                                                      201.0                                           limit 200.0 (x2.0 the best, 100.0)                                            OVER
+c over                          G3 batch commit, 99th percentile                                               4.096µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        OVER (local timing)
+c over                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  5ms                                             limit 200µs (x2.0 the best, 100µs) [the former rule: OVER]                    not judged (local timing)
+c over                          retention alone, longest                                                       1m0.001s                                        limit a diagnostic                                                            not judged (local timing)
+d wrong                         G0 answers                                                                     2 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    OVER
+d wrong                         G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+d wrong                         retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+e late                          G0 answers                                                                     0 wrong, 1 wrong before compaction, 0 unstable  limit none                                                                    OVER
+e late                          G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+e late                          retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+f unstable                      G0 answers                                                                     0 wrong, 0 wrong before compaction, 1 unstable  limit none                                                                    OVER
+f unstable                      G2 retention and the slowness after it, longest                                3s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+f unstable                      retention alone, longest                                                       3s                                              limit a diagnostic                                                            not judged (local timing)
+g rested                        G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+g rested                        G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+g rested                        G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+g rested                        first batch after a retention, longest (a diagnostic: under G2 since rules 5)  1µs                                             limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+h rested without a first batch  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+h rested without a first batch  G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+h rested without a first batch  G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+h rested without a first batch  G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+h rested without a first batch  retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+i no retention                  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+i no retention                  G4 table bytes per record                                                      110.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+i no retention                  G3 batch commit, 99th percentile                                               1.152µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+j checkpoints within            G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+j checkpoints within            G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+j checkpoints within            G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+j checkpoints within            retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+j checkpoints within            checkpoint bytes written, share of bytes in                                    20.0%                                           limit 20% (the design is reopened above it)                                   ok
+k checkpoints over              G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+k checkpoints over              G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+k checkpoints over              G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+k checkpoints over              G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+k checkpoints over              first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+k checkpoints over              retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+k checkpoints over              checkpoint bytes written, share of bytes in                                    20.1%                                           limit 20% (the design is reopened above it)                                   OVER
+"a best" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"a best" "G2 retention and the slowness after it, longest" "5s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"a best" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"a best" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"a best" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"a best" "retention alone, longest" "5s" "a diagnostic" pass=true local=true notcomparable=true
+"b near" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"b near" "G2 retention and the slowness after it, longest" "1m0s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"b near" "G4 table bytes per record" "200.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"b near" "G3 batch commit, 99th percentile" "1.92µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"b near" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "190µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"b near" "retention alone, longest" "1m0s" "a diagnostic" pass=true local=true notcomparable=true
+"c over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"c over" "G2 retention and the slowness after it, longest" "1m0.001s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"c over" "G4 table bytes per record" "201.0" "200.0 (x2.0 the best, 100.0)" pass=false local=false notcomparable=false
+"c over" "G3 batch commit, 99th percentile" "4.096µs" "2.048µs (x2.0 the best, 1.024µs)" pass=false local=true notcomparable=false
+"c over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "5ms" "200µs (x2.0 the best, 100µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"c over" "retention alone, longest" "1m0.001s" "a diagnostic" pass=true local=true notcomparable=true
+"d wrong" "G0 answers" "2 wrong, 0 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"d wrong" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"d wrong" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"e late" "G0 answers" "0 wrong, 1 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"e late" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"e late" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"f unstable" "G0 answers" "0 wrong, 0 wrong before compaction, 1 unstable" "none" pass=false local=false notcomparable=false
+"f unstable" "G2 retention and the slowness after it, longest" "3s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"f unstable" "retention alone, longest" "3s" "a diagnostic" pass=true local=true notcomparable=true
+"g rested" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"g rested" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"g rested" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"g rested" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "1µs" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"h rested without a first batch" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"h rested without a first batch" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"h rested without a first batch" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"h rested without a first batch" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"h rested without a first batch" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"i no retention" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"i no retention" "G4 table bytes per record" "110.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"i no retention" "G3 batch commit, 99th percentile" "1.152µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"j checkpoints within" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"j checkpoints within" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"j checkpoints within" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"j checkpoints within" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"j checkpoints within" "checkpoint bytes written, share of bytes in" "20.0%" "20% (the design is reopened above it)" pass=true local=false notcomparable=false
+"k checkpoints over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"k checkpoints over" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"k checkpoints over" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"k checkpoints over" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"k checkpoints over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"k checkpoints over" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"k checkpoints over" "checkpoint bytes written, share of bytes in" "20.1%" "20% (the design is reopened above it)" pass=false local=false notcomparable=false
+== a plan of a full stream: 55 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+a best                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+a best                          G2 retention and the slowness after it, longest                                5s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+a best                          G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+a best                          G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+a best                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+a best                          retention alone, longest                                                       5s                                              limit a diagnostic                                                            not judged (local timing)
+b near                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+b near                          G2 retention and the slowness after it, longest                                1m0s                                            limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+b near                          G4 table bytes per record                                                      200.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+b near                          G3 batch commit, 99th percentile                                               1.92µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+b near                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  190µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+b near                          retention alone, longest                                                       1m0s                                            limit a diagnostic                                                            not judged (local timing)
+c over                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+c over                          G2 retention and the slowness after it, longest                                1m0.001s                                        limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+c over                          G4 table bytes per record                                                      201.0                                           limit 200.0 (x2.0 the best, 100.0)                                            OVER
+c over                          G3 batch commit, 99th percentile                                               4.096µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        OVER (local timing)
+c over                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  5ms                                             limit 200µs (x2.0 the best, 100µs) [the former rule: OVER]                    not judged (local timing)
+c over                          retention alone, longest                                                       1m0.001s                                        limit a diagnostic                                                            not judged (local timing)
+d wrong                         G0 answers                                                                     2 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    OVER
+d wrong                         G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+d wrong                         retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+e late                          G0 answers                                                                     0 wrong, 1 wrong before compaction, 0 unstable  limit none                                                                    OVER
+e late                          G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+e late                          retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+f unstable                      G0 answers                                                                     0 wrong, 0 wrong before compaction, 1 unstable  limit none                                                                    OVER
+f unstable                      G2 retention and the slowness after it, longest                                3s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+f unstable                      retention alone, longest                                                       3s                                              limit a diagnostic                                                            not judged (local timing)
+g rested                        G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+g rested                        G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+g rested                        G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+g rested                        first batch after a retention, longest (a diagnostic: under G2 since rules 5)  1µs                                             limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+h rested without a first batch  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+h rested without a first batch  G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+h rested without a first batch  G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+h rested without a first batch  G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+h rested without a first batch  retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+i no retention                  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+i no retention                  G4 table bytes per record                                                      110.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+i no retention                  G3 batch commit, 99th percentile                                               1.152µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+j checkpoints within            G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+j checkpoints within            G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+j checkpoints within            G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+j checkpoints within            retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+j checkpoints within            checkpoint bytes written, share of bytes in                                    20.0%                                           limit 20% (the design is reopened above it)                                   ok
+k checkpoints over              G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+k checkpoints over              G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+k checkpoints over              G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+k checkpoints over              G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+k checkpoints over              first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+k checkpoints over              retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+k checkpoints over              checkpoint bytes written, share of bytes in                                    20.1%                                           limit 20% (the design is reopened above it)                                   OVER
+"a best" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"a best" "G2 retention and the slowness after it, longest" "5s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"a best" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"a best" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"a best" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"a best" "retention alone, longest" "5s" "a diagnostic" pass=true local=true notcomparable=true
+"b near" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"b near" "G2 retention and the slowness after it, longest" "1m0s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"b near" "G4 table bytes per record" "200.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"b near" "G3 batch commit, 99th percentile" "1.92µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"b near" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "190µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"b near" "retention alone, longest" "1m0s" "a diagnostic" pass=true local=true notcomparable=true
+"c over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"c over" "G2 retention and the slowness after it, longest" "1m0.001s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"c over" "G4 table bytes per record" "201.0" "200.0 (x2.0 the best, 100.0)" pass=false local=false notcomparable=false
+"c over" "G3 batch commit, 99th percentile" "4.096µs" "2.048µs (x2.0 the best, 1.024µs)" pass=false local=true notcomparable=false
+"c over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "5ms" "200µs (x2.0 the best, 100µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"c over" "retention alone, longest" "1m0.001s" "a diagnostic" pass=true local=true notcomparable=true
+"d wrong" "G0 answers" "2 wrong, 0 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"d wrong" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"d wrong" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"e late" "G0 answers" "0 wrong, 1 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"e late" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"e late" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"f unstable" "G0 answers" "0 wrong, 0 wrong before compaction, 1 unstable" "none" pass=false local=false notcomparable=false
+"f unstable" "G2 retention and the slowness after it, longest" "3s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"f unstable" "retention alone, longest" "3s" "a diagnostic" pass=true local=true notcomparable=true
+"g rested" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"g rested" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"g rested" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"g rested" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "1µs" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"h rested without a first batch" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"h rested without a first batch" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"h rested without a first batch" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"h rested without a first batch" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"h rested without a first batch" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"i no retention" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"i no retention" "G4 table bytes per record" "110.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"i no retention" "G3 batch commit, 99th percentile" "1.152µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"j checkpoints within" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"j checkpoints within" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"j checkpoints within" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"j checkpoints within" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"j checkpoints within" "checkpoint bytes written, share of bytes in" "20.0%" "20% (the design is reopened above it)" pass=true local=false notcomparable=false
+"k checkpoints over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"k checkpoints over" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"k checkpoints over" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"k checkpoints over" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"k checkpoints over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"k checkpoints over" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"k checkpoints over" "checkpoint bytes written, share of bytes in" "20.1%" "20% (the design is reopened above it)" pass=false local=false notcomparable=false
+== a projection: 11 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+a best                          G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+b near                          G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+c over                          G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+d wrong                         G0 answers  2 wrong, 0 wrong before compaction, 0 unstable  limit none  OVER
+e late                          G0 answers  0 wrong, 1 wrong before compaction, 0 unstable  limit none  OVER
+f unstable                      G0 answers  0 wrong, 0 wrong before compaction, 1 unstable  limit none  OVER
+g rested                        G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+h rested without a first batch  G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+i no retention                  G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+j checkpoints within            G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+k checkpoints over              G0 answers  0 wrong, 0 wrong before compaction, 0 unstable  limit none  ok
+"a best" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"b near" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"c over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"d wrong" "G0 answers" "2 wrong, 0 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"e late" "G0 answers" "0 wrong, 1 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"f unstable" "G0 answers" "0 wrong, 0 wrong before compaction, 1 unstable" "none" pass=false local=false notcomparable=false
+"g rested" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"h rested without a first batch" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"i no retention" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"j checkpoints within" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"k checkpoints over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+== full stores read at pins: 55 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+a best                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+a best                          G2 retention and the slowness after it, longest                                5s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+a best                          G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+a best                          G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+a best                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+a best                          retention alone, longest                                                       5s                                              limit a diagnostic                                                            not judged (local timing)
+b near                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+b near                          G2 retention and the slowness after it, longest                                1m0s                                            limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+b near                          G4 table bytes per record                                                      200.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+b near                          G3 batch commit, 99th percentile                                               1.92µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+b near                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  190µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+b near                          retention alone, longest                                                       1m0s                                            limit a diagnostic                                                            not judged (local timing)
+c over                          G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+c over                          G2 retention and the slowness after it, longest                                1m0.001s                                        limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+c over                          G4 table bytes per record                                                      201.0                                           limit 200.0 (x2.0 the best, 100.0)                                            OVER
+c over                          G3 batch commit, 99th percentile                                               4.096µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        OVER (local timing)
+c over                          first batch after a retention, longest (a diagnostic: under G2 since rules 5)  5ms                                             limit 200µs (x2.0 the best, 100µs) [the former rule: OVER]                    not judged (local timing)
+c over                          retention alone, longest                                                       1m0.001s                                        limit a diagnostic                                                            not judged (local timing)
+d wrong                         G0 answers                                                                     2 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    OVER
+d wrong                         G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+d wrong                         retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+e late                          G0 answers                                                                     0 wrong, 1 wrong before compaction, 0 unstable  limit none                                                                    OVER
+e late                          G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+e late                          retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+f unstable                      G0 answers                                                                     0 wrong, 0 wrong before compaction, 1 unstable  limit none                                                                    OVER
+f unstable                      G2 retention and the slowness after it, longest                                3s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+f unstable                      retention alone, longest                                                       3s                                              limit a diagnostic                                                            not judged (local timing)
+g rested                        G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+g rested                        G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+g rested                        G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+g rested                        first batch after a retention, longest (a diagnostic: under G2 since rules 5)  1µs                                             limit not comparable: the build rested after each retention                   not judged (local timing)
+g rested                        retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+h rested without a first batch  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+h rested without a first batch  G2 retention and the slowness after it, longest                                4s                                              limit not comparable: the build rested after each retention                   not judged (local timing)
+h rested without a first batch  G4 table bytes per record                                                      120.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+h rested without a first batch  G3 batch commit, 99th percentile                                               1.28µs                                          limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+h rested without a first batch  retention alone, longest                                                       4s                                              limit a diagnostic                                                            not judged (local timing)
+i no retention                  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+i no retention                  G4 table bytes per record                                                      110.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+i no retention                  G3 batch commit, 99th percentile                                               1.152µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+j checkpoints within            G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+j checkpoints within            G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+j checkpoints within            G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+j checkpoints within            first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+j checkpoints within            retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+j checkpoints within            checkpoint bytes written, share of bytes in                                    20.0%                                           limit 20% (the design is reopened above it)                                   ok
+k checkpoints over              G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+k checkpoints over              G2 retention and the slowness after it, longest                                1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+k checkpoints over              G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+k checkpoints over              G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                                        ok (local timing)
+k checkpoints over              first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 200µs (x2.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+k checkpoints over              retention alone, longest                                                       1s                                              limit a diagnostic                                                            not judged (local timing)
+k checkpoints over              checkpoint bytes written, share of bytes in                                    20.1%                                           limit 20% (the design is reopened above it)                                   OVER
+"a best" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"a best" "G2 retention and the slowness after it, longest" "5s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"a best" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"a best" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"a best" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"a best" "retention alone, longest" "5s" "a diagnostic" pass=true local=true notcomparable=true
+"b near" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"b near" "G2 retention and the slowness after it, longest" "1m0s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"b near" "G4 table bytes per record" "200.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"b near" "G3 batch commit, 99th percentile" "1.92µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"b near" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "190µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"b near" "retention alone, longest" "1m0s" "a diagnostic" pass=true local=true notcomparable=true
+"c over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"c over" "G2 retention and the slowness after it, longest" "1m0.001s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"c over" "G4 table bytes per record" "201.0" "200.0 (x2.0 the best, 100.0)" pass=false local=false notcomparable=false
+"c over" "G3 batch commit, 99th percentile" "4.096µs" "2.048µs (x2.0 the best, 1.024µs)" pass=false local=true notcomparable=false
+"c over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "5ms" "200µs (x2.0 the best, 100µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"c over" "retention alone, longest" "1m0.001s" "a diagnostic" pass=true local=true notcomparable=true
+"d wrong" "G0 answers" "2 wrong, 0 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"d wrong" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"d wrong" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"e late" "G0 answers" "0 wrong, 1 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"e late" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"e late" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"f unstable" "G0 answers" "0 wrong, 0 wrong before compaction, 1 unstable" "none" pass=false local=false notcomparable=false
+"f unstable" "G2 retention and the slowness after it, longest" "3s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"f unstable" "retention alone, longest" "3s" "a diagnostic" pass=true local=true notcomparable=true
+"g rested" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"g rested" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"g rested" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"g rested" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "1µs" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"g rested" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"h rested without a first batch" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"h rested without a first batch" "G2 retention and the slowness after it, longest" "4s" "not comparable: the build rested after each retention" pass=true local=true notcomparable=true
+"h rested without a first batch" "G4 table bytes per record" "120.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"h rested without a first batch" "G3 batch commit, 99th percentile" "1.28µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"h rested without a first batch" "retention alone, longest" "4s" "a diagnostic" pass=true local=true notcomparable=true
+"i no retention" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"i no retention" "G4 table bytes per record" "110.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"i no retention" "G3 batch commit, 99th percentile" "1.152µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"j checkpoints within" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"j checkpoints within" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"j checkpoints within" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"j checkpoints within" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"j checkpoints within" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"j checkpoints within" "checkpoint bytes written, share of bytes in" "20.0%" "20% (the design is reopened above it)" pass=true local=false notcomparable=false
+"k checkpoints over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"k checkpoints over" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"k checkpoints over" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"k checkpoints over" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"k checkpoints over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "200µs (x2.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"k checkpoints over" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"k checkpoints over" "checkpoint bytes written, share of bytes in" "20.1%" "20% (the design is reopened above it)" pass=false local=false notcomparable=false
+== batches after a retention recorded: 32 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+m settled           G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                              ok
+m settled           G2 retention and the slowness after it, longest                                40.021s                                         limit 1m0s                                              ok (local timing)
+m settled           G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                      ok
+m settled           G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                  ok (local timing)
+m settled           first batch after a retention, longest (a diagnostic: under G2 since rules 5)  20ms                                            limit 2µs (x2.0 the best, 1µs) [the former rule: OVER]  not judged (local timing)
+m settled           retention alone, longest                                                       40s                                             limit a diagnostic                                      not judged (local timing)
+m settled           settling of a retention, longest                                               9s                                              limit a diagnostic; deadline reached 0 times            not judged (local timing)
+n at the budget     G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                              ok
+n at the budget     G2 retention and the slowness after it, longest                                1m0s                                            limit 1m0s                                              ok (local timing)
+n at the budget     G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                      ok
+n at the budget     G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                  ok (local timing)
+n at the budget     first batch after a retention, longest (a diagnostic: under G2 since rules 5)  1µs                                             limit 2µs (x2.0 the best, 1µs) [the former rule: ok]    not judged (local timing)
+n at the budget     retention alone, longest                                                       1m0s                                            limit a diagnostic                                      not judged (local timing)
+o over the budget   G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                              ok
+o over the budget   G2 retention and the slowness after it, longest                                1m0.001s                                        limit 1m0s                                              OVER (local timing)
+o over the budget   G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                      ok
+o over the budget   G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                  ok (local timing)
+o over the budget   first batch after a retention, longest (a diagnostic: under G2 since rules 5)  1µs                                             limit 2µs (x2.0 the best, 1µs) [the former rule: ok]    not judged (local timing)
+o over the budget   retention alone, longest                                                       1m0.001s                                        limit a diagnostic                                      not judged (local timing)
+p stalled           G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                              ok
+p stalled           G2 retention and the slowness after it, longest                                5m5s                                            limit 1m0s                                              OVER (local timing)
+p stalled           G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                      ok
+p stalled           G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                  ok (local timing)
+p stalled           first batch after a retention, longest (a diagnostic: under G2 since rules 5)  3s                                              limit 2µs (x2.0 the best, 1µs) [the former rule: OVER]  not judged (local timing)
+p stalled           retention alone, longest                                                       5s                                              limit a diagnostic                                      not judged (local timing)
+q deadline reached  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                              ok
+q deadline reached  G2 retention and the slowness after it, longest                                1m12s                                           limit 1m0s                                              OVER (local timing)
+q deadline reached  G4 table bytes per record                                                      100.0                                           limit 200.0 (x2.0 the best, 100.0)                      ok
+q deadline reached  G3 batch commit, 99th percentile                                               1.024µs                                         limit 2.048µs (x2.0 the best, 1.024µs)                  ok (local timing)
+q deadline reached  first batch after a retention, longest (a diagnostic: under G2 since rules 5)  2s                                              limit 2µs (x2.0 the best, 1µs) [the former rule: OVER]  not judged (local timing)
+q deadline reached  retention alone, longest                                                       1m10s                                           limit a diagnostic                                      not judged (local timing)
+q deadline reached  settling of a retention, longest                                               9s                                              limit a diagnostic; deadline reached 1 times            not judged (local timing)
+"m settled" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"m settled" "G2 retention and the slowness after it, longest" "40.021s" "1m0s" pass=true local=true notcomparable=false
+"m settled" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"m settled" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"m settled" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "20ms" "2µs (x2.0 the best, 1µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"m settled" "retention alone, longest" "40s" "a diagnostic" pass=true local=true notcomparable=true
+"m settled" "settling of a retention, longest" "9s" "a diagnostic; deadline reached 0 times" pass=true local=true notcomparable=true
+"n at the budget" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"n at the budget" "G2 retention and the slowness after it, longest" "1m0s" "1m0s" pass=true local=true notcomparable=false
+"n at the budget" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"n at the budget" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"n at the budget" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "1µs" "2µs (x2.0 the best, 1µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"n at the budget" "retention alone, longest" "1m0s" "a diagnostic" pass=true local=true notcomparable=true
+"o over the budget" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"o over the budget" "G2 retention and the slowness after it, longest" "1m0.001s" "1m0s" pass=false local=true notcomparable=false
+"o over the budget" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"o over the budget" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"o over the budget" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "1µs" "2µs (x2.0 the best, 1µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"o over the budget" "retention alone, longest" "1m0.001s" "a diagnostic" pass=true local=true notcomparable=true
+"p stalled" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"p stalled" "G2 retention and the slowness after it, longest" "5m5s" "1m0s" pass=false local=true notcomparable=false
+"p stalled" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"p stalled" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"p stalled" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "3s" "2µs (x2.0 the best, 1µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"p stalled" "retention alone, longest" "5s" "a diagnostic" pass=true local=true notcomparable=true
+"q deadline reached" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"q deadline reached" "G2 retention and the slowness after it, longest" "1m12s" "1m0s" pass=false local=true notcomparable=false
+"q deadline reached" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"q deadline reached" "G3 batch commit, 99th percentile" "1.024µs" "2.048µs (x2.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"q deadline reached" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "2s" "2µs (x2.0 the best, 1µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"q deadline reached" "retention alone, longest" "1m10s" "a diagnostic" pass=true local=true notcomparable=true
+"q deadline reached" "settling of a retention, longest" "9s" "a diagnostic; deadline reached 1 times" pass=true local=true notcomparable=true
+== none passes G0: 9 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+d wrong     G0 answers                                       2 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    OVER
+d wrong     G2 retention and the slowness after it, longest  1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+d wrong     retention alone, longest                         1s                                              limit a diagnostic                                                            not judged (local timing)
+e late      G0 answers                                       0 wrong, 1 wrong before compaction, 0 unstable  limit none                                                                    OVER
+e late      G2 retention and the slowness after it, longest  1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+e late      retention alone, longest                         1s                                              limit a diagnostic                                                            not judged (local timing)
+f unstable  G0 answers                                       0 wrong, 0 wrong before compaction, 1 unstable  limit none                                                                    OVER
+f unstable  G2 retention and the slowness after it, longest  3s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+f unstable  retention alone, longest                         3s                                              limit a diagnostic                                                            not judged (local timing)
+"d wrong" "G0 answers" "2 wrong, 0 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"d wrong" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"d wrong" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"e late" "G0 answers" "0 wrong, 1 wrong before compaction, 0 unstable" "none" pass=false local=false notcomparable=false
+"e late" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"e late" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"f unstable" "G0 answers" "0 wrong, 0 wrong before compaction, 1 unstable" "none" pass=false local=false notcomparable=false
+"f unstable" "G2 retention and the slowness after it, longest" "3s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"f unstable" "retention alone, longest" "3s" "a diagnostic" pass=true local=true notcomparable=true
+== no batch was timed: 8 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+x  G0 answers                                       0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+x  G2 retention and the slowness after it, longest  1s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+x  G4 table bytes per record                        100.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+x  retention alone, longest                         1s                                              limit a diagnostic                                                            not judged (local timing)
+y  G0 answers                                       0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+y  G2 retention and the slowness after it, longest  2s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+y  G4 table bytes per record                        200.0                                           limit 200.0 (x2.0 the best, 100.0)                                            ok
+y  retention alone, longest                         2s                                              limit a diagnostic                                                            not judged (local timing)
+"x" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"x" "G2 retention and the slowness after it, longest" "1s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"x" "G4 table bytes per record" "100.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"x" "retention alone, longest" "1s" "a diagnostic" pass=true local=true notcomparable=true
+"y" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"y" "G2 retention and the slowness after it, longest" "2s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"y" "G4 table bytes per record" "200.0" "200.0 (x2.0 the best, 100.0)" pass=true local=false notcomparable=false
+"y" "retention alone, longest" "2s" "a diagnostic" pass=true local=true notcomparable=true
+== another rule: 18 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
+a best  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+a best  G2 retention and the slowness after it, longest                                5s                                              limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+a best  G4 table bytes per record                                                      100.0                                           limit 150.0 (x1.5 the best, 100.0)                                            ok
+a best  G3 batch commit, 99th percentile                                               1.024µs                                         limit 3.072µs (x3.0 the best, 1.024µs)                                        ok (local timing)
+a best  first batch after a retention, longest (a diagnostic: under G2 since rules 5)  100µs                                           limit 300µs (x3.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+a best  retention alone, longest                                                       5s                                              limit a diagnostic                                                            not judged (local timing)
+b near  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+b near  G2 retention and the slowness after it, longest                                1m0s                                            limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+b near  G4 table bytes per record                                                      200.0                                           limit 150.0 (x1.5 the best, 100.0)                                            OVER
+b near  G3 batch commit, 99th percentile                                               1.92µs                                          limit 3.072µs (x3.0 the best, 1.024µs)                                        ok (local timing)
+b near  first batch after a retention, longest (a diagnostic: under G2 since rules 5)  190µs                                           limit 300µs (x3.0 the best, 100µs) [the former rule: ok]                      not judged (local timing)
+b near  retention alone, longest                                                       1m0s                                            limit a diagnostic                                                            not judged (local timing)
+c over  G0 answers                                                                     0 wrong, 0 wrong before compaction, 0 unstable  limit none                                                                    ok
+c over  G2 retention and the slowness after it, longest                                1m0.001s                                        limit not comparable: the build did not record the batches after a retention  not judged (local timing)
+c over  G4 table bytes per record                                                      201.0                                           limit 150.0 (x1.5 the best, 100.0)                                            OVER
+c over  G3 batch commit, 99th percentile                                               4.096µs                                         limit 3.072µs (x3.0 the best, 1.024µs)                                        OVER (local timing)
+c over  first batch after a retention, longest (a diagnostic: under G2 since rules 5)  5ms                                             limit 300µs (x3.0 the best, 100µs) [the former rule: OVER]                    not judged (local timing)
+c over  retention alone, longest                                                       1m0.001s                                        limit a diagnostic                                                            not judged (local timing)
+"a best" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"a best" "G2 retention and the slowness after it, longest" "5s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"a best" "G4 table bytes per record" "100.0" "150.0 (x1.5 the best, 100.0)" pass=true local=false notcomparable=false
+"a best" "G3 batch commit, 99th percentile" "1.024µs" "3.072µs (x3.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"a best" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "100µs" "300µs (x3.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"a best" "retention alone, longest" "5s" "a diagnostic" pass=true local=true notcomparable=true
+"b near" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"b near" "G2 retention and the slowness after it, longest" "1m0s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"b near" "G4 table bytes per record" "200.0" "150.0 (x1.5 the best, 100.0)" pass=false local=false notcomparable=false
+"b near" "G3 batch commit, 99th percentile" "1.92µs" "3.072µs (x3.0 the best, 1.024µs)" pass=true local=true notcomparable=false
+"b near" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "190µs" "300µs (x3.0 the best, 100µs) [the former rule: ok]" pass=true local=true notcomparable=true
+"b near" "retention alone, longest" "1m0s" "a diagnostic" pass=true local=true notcomparable=true
+"c over" "G0 answers" "0 wrong, 0 wrong before compaction, 0 unstable" "none" pass=true local=false notcomparable=false
+"c over" "G2 retention and the slowness after it, longest" "1m0.001s" "not comparable: the build did not record the batches after a retention" pass=true local=true notcomparable=true
+"c over" "G4 table bytes per record" "201.0" "150.0 (x1.5 the best, 100.0)" pass=false local=false notcomparable=false
+"c over" "G3 batch commit, 99th percentile" "4.096µs" "3.072µs (x3.0 the best, 1.024µs)" pass=false local=true notcomparable=false
+"c over" "first batch after a retention, longest (a diagnostic: under G2 since rules 5)" "5ms" "300µs (x3.0 the best, 100µs) [the former rule: OVER]" pass=true local=true notcomparable=true
+"c over" "retention alone, longest" "1m0.001s" "a diagnostic" pass=true local=true notcomparable=true
+== nothing: 0 verdicts
+
+the other gates (G0 answers, G2 retention and the slowness after it, G3 commit, G4 bytes; the block bytes right after a retention are not measured here; timings are of this machine and inform, they are not results):
