@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,16 @@ func TestAHostRecordCarriesItsBoot(t *testing.T) {
 	if err := obs(10, "boot-1").Validate(); err != nil {
 		t.Errorf("a host observation with a boot id: %v", err)
 	}
+	if err := obs(10, strings.Repeat("b", store.MaxBootLen)).Validate(); err != nil {
+		t.Errorf("a boot id of exactly the cap: %v", err)
+	}
+	// White space is part of the value: padded and unpadded are two boots.
+	if err := obs(10, " boot-1").Validate(); err != nil {
+		t.Errorf("a padded boot id: %v", err)
+	}
+	if got := len(obs(10, "boot-1").Assertion().Attrs); got != 2 {
+		t.Errorf("a host observation with a boot carries %d attributes, want the payload and the boot", got)
+	}
 	if err := obs(10, "").Validate(); err != nil {
 		t.Errorf("a host observation without a boot id: %v", err)
 	}
@@ -197,6 +208,16 @@ func TestAHostRecordCarriesItsBoot(t *testing.T) {
 			r.Kind, r.TTL, r.Payload = lifecycle.Delete, 0, nil
 			return r
 		}(),
+		"boot on a pod": {
+			Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: "k8s",
+			EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe, TTL: time.Hour, Boot: "boot-1",
+		},
+		"boot on a node": {
+			Layer: catalog.L2, Subject: store.EntitySubject(node), Producer: "k8s",
+			EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe, TTL: time.Hour, Boot: "boot-1",
+		},
+		"boot over the length cap":     obs(10, strings.Repeat("b", store.MaxBootLen+1)),
+		"boot that is not valid UTF-8": obs(10, "boot-\xff"),
 		"edge with boot": {
 			Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, "scheduled_on"), Producer: "k8s",
 			EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe, TTL: time.Hour, Boot: "boot-1",
