@@ -348,8 +348,8 @@ func TestParse(t *testing.T) {
 
 	// An identity valid in structure but not under this catalog.
 	other := identity.NewResolver(mustCatalog(t, []catalog.EntitySpec{
-		{Type: "gadget", Layer: catalog.L1, Keys: []catalog.Key{{Name: "gadget.id", Kind: catalog.KindString}}},
-		{Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id", Kind: catalog.KindInt}}},
+		{ID: 1, Type: "gadget", Layer: catalog.L1, Keys: []catalog.Key{{Name: "gadget.id", Kind: catalog.KindString}}},
+		{ID: 2, Type: "host", Layer: catalog.L1, Keys: []catalog.Key{{Name: "host.id", Kind: catalog.KindInt}}},
 	}))
 	gadget, err := other.Resolve("gadget", attrs(catalog.AttributeKey("gadget.id"), "g"))
 	if err != nil {
