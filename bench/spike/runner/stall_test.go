@@ -30,6 +30,12 @@ func (p *phased) LastRetain() (work, flush, settle time.Duration, deadlineHit bo
 	return n * time.Millisecond, 2 * n * time.Millisecond, 3 * n * time.Millisecond, p.retentions%2 == 0
 }
 
+// silent is an engine that reports nothing of how a retention was spent, whatever the
+// engine it wraps would report: it stands for one that has no such method.
+type silent struct {
+	fullEngine
+}
+
 // A build records, for every retention, the phases an engine reports for it, and for an
 // engine that reports none it records none.
 func TestABuildRecordsHowAnEngineSpentEachRetention(t *testing.T) {
@@ -53,7 +59,10 @@ func TestABuildRecordsHowAnEngineSpentEachRetention(t *testing.T) {
 		}
 	}
 
-	_, plain, _ := run(t, plan, lookup(t, "M/crdb1"))
+	quiet := candidates.Wrap(lookup(t, "M/crdb1"), "M/silent", func(e engine.Engine, _ candidates.Options) (engine.Engine, error) {
+		return &silent{fullEngine: e.(fullEngine)}, nil
+	})
+	_, plain, _ := run(t, plan, quiet)
 	if len(plain.Timing.RetainPhases) != 0 {
 		t.Errorf("phases were recorded for an engine that says nothing of them: %+v", plain.Timing.RetainPhases)
 	}
