@@ -150,6 +150,8 @@ func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 type Store interface {
 	// Write stores a batch. Records must be in ascending Seq, and above every
 	// Seq already written; Seq starts at 1, because token 0 means "nothing".
+	// A Seq equal to [Latest] is refused with an error wrapping [ErrInvalid],
+	// like Seq 0, because Latest names no record.
 	// The store writes both directions of every edge.
 	// A batch with any invalid record, or any record before the retention
 	// horizon ([ErrBeforeHorizon]), is refused whole: nothing from it is

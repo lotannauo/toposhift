@@ -26,6 +26,10 @@
 // cascade and every other derivation are computed at read time from those
 // records and never written back.
 //
+// Package memstore is the reference implementation: it keeps every record in
+// memory and answers each read by folding the records with the lifecycle
+// specification.
+//
 // # Not here yet
 //
 // This package does not yet cover:
@@ -35,6 +39,5 @@
 //   - the mapping from ingest time to a snapshot token;
 //   - cascade and co-residency, which are derived above the store by interval
 //     overlap;
-//   - an in-memory reference implementation and the conformance suite that
-//     every backend must pass, which are a later change.
+//   - the conformance suite that every backend must pass.
 package store
