@@ -56,23 +56,33 @@ func drawWorld(t *rapid.T) world {
 	return w
 }
 
+// stopper is what the checks of a property need of a test: both a rapid test and a plain
+// one have it. The same checks run on drawn inputs and on the named inputs below, so
+// that the claim that they meet every kind of scope does not depend on what is drawn.
+type stopper interface {
+	Fatalf(format string, args ...any)
+}
+
+func checkOrderIndependence(t stopper, in, shuffled runner.TimedInputs) {
+	a, b := runner.JudgeTiming(in, verified()), runner.JudgeTiming(shuffled, verified())
+	if !reflect.DeepEqual(a, b) {
+		t.Fatalf("the reports differ:\n%s\nand\n%s", timingText(a), timingText(b))
+	}
+	if timingText(a) != timingText(b) {
+		t.Fatalf("the texts differ")
+	}
+}
+
 func TestTimingIsIndependentOfTheOrderOfItsInputs(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(t *rapid.T) {
 		in := drawWorld(t).memory()
-		shuffled := runner.TimedInputs{
+		checkOrderIndependence(t, in, runner.TimedInputs{
 			Builds:   rapid.Permutation(in.Builds).Draw(t, "builds"),
 			Plans:    rapid.Permutation(in.Plans).Draw(t, "plans"),
 			Counters: rapid.Permutation(in.Counters).Draw(t, "counters"),
-		}
-		a, b := runner.JudgeTiming(in, verified()), runner.JudgeTiming(shuffled, verified())
-		if !reflect.DeepEqual(a, b) {
-			t.Fatalf("the reports differ:\n%s\nand\n%s", timingText(a), timingText(b))
-		}
-		if timingText(a) != timingText(b) {
-			t.Fatal("the texts differ")
-		}
+		})
 	})
 }
 
@@ -87,127 +97,137 @@ func buildsOf(rep runner.TimingReport, v runner.TimingVerdict) []runner.TimingBu
 	return out
 }
 
+func checkMedians(t stopper, w world) {
+	rep := w.judge(verified())
+	for _, v := range rep.Verdicts {
+		if v.NotComparable || v.Arch == runner.ArchBoth {
+			continue
+		}
+		var values []float64
+		switch v.Gate {
+		case runner.GateG3Commit:
+			for _, b := range buildsOf(rep, v) {
+				values = append(values, float64(b.CommitP99))
+			}
+		case runner.GateG4:
+			for _, b := range buildsOf(rep, v) {
+				values = append(values, b.BytesPerRecord)
+			}
+		default:
+			continue
+		}
+		if len(values) != v.Reps {
+			t.Fatalf("%+v: %d values for %d repetitions", v, len(values), v.Reps)
+		}
+		if !slices.Contains(values, v.Value) || v.Value < slices.Min(values) || v.Value > slices.Max(values) {
+			t.Fatalf("%d days %s %s %s %s: value %v is not among %v", v.Window, v.Candidate, v.Gate, v.Arch, v.Scope, v.Value, values)
+		}
+	}
+}
+
 func TestAMedianIsOneOfTheValues(t *testing.T) {
 	t.Parallel()
 
-	rapid.Check(t, func(t *rapid.T) {
-		rep := drawWorld(t).judge(verified())
+	rapid.Check(t, func(t *rapid.T) { checkMedians(t, drawWorld(t)) })
+}
+
+func checkConjunction(t stopper, w world) {
+	rep := w.judge(verified())
+	for _, both := range rep.Verdicts {
+		if both.Arch != runner.ArchBoth {
+			continue
+		}
+		want, archs := true, map[string]bool{}
 		for _, v := range rep.Verdicts {
-			if v.NotComparable || v.Arch == runner.ArchBoth {
-				continue
-			}
-			var values []float64
-			switch v.Gate {
-			case runner.GateG3Commit:
-				for _, b := range buildsOf(rep, v) {
-					values = append(values, float64(b.CommitP99))
-				}
-			case runner.GateG4:
-				for _, b := range buildsOf(rep, v) {
-					values = append(values, b.BytesPerRecord)
-				}
-			default:
-				continue
-			}
-			if len(values) != v.Reps {
-				t.Fatalf("%+v: %d values for %d repetitions", v, len(values), v.Reps)
-			}
-			if !slices.Contains(values, v.Value) || v.Value < slices.Min(values) || v.Value > slices.Max(values) {
-				t.Fatalf("%d days %s %s %s %s: value %v is not among %v", v.Window, v.Candidate, v.Gate, v.Arch, v.Scope, v.Value, values)
+			if v.Window == both.Window && v.Candidate == both.Candidate && v.Gate == both.Gate && v.Arch != runner.ArchBoth {
+				want, archs[v.Arch] = want && v.Pass, true
 			}
 		}
-	})
+		if len(archs) == 2 && both.Pass != want {
+			t.Fatalf("%d days %s %s: both passes %v, the architectures' conjunction is %v", both.Window, both.Candidate, both.Gate, both.Pass, want)
+		}
+		if len(archs) < 2 && (both.Pass || both.Judged) {
+			t.Fatalf("%d days %s %s: judged on %d architectures: %+v", both.Window, both.Candidate, both.Gate, len(archs), both)
+		}
+	}
 }
 
 func TestBothIsTheConjunctionOfTheArchitectures(t *testing.T) {
 	t.Parallel()
 
-	rapid.Check(t, func(t *rapid.T) {
-		rep := drawWorld(t).judge(verified())
-		for _, both := range rep.Verdicts {
-			if both.Arch != runner.ArchBoth {
-				continue
-			}
-			want, archs := true, map[string]bool{}
-			for _, v := range rep.Verdicts {
-				if v.Window == both.Window && v.Candidate == both.Candidate && v.Gate == both.Gate && v.Arch != runner.ArchBoth {
-					want, archs[v.Arch] = want && v.Pass, true
-				}
-			}
-			if len(archs) == 2 && both.Pass != want {
-				t.Fatalf("%d days %s %s: both passes %v, the architectures' conjunction is %v", both.Window, both.Candidate, both.Gate, both.Pass, want)
-			}
-			if len(archs) < 2 && (both.Pass || both.Judged) {
-				t.Fatalf("%d days %s %s: judged on %d architectures: %+v", both.Window, both.Candidate, both.Gate, len(archs), both)
-			}
+	rapid.Check(t, func(t *rapid.T) { checkConjunction(t, drawWorld(t)) })
+}
+
+func checkRepeating(t stopper, w world, cand string) {
+	doubled := w
+	doubled.Builds = slices.Clone(w.Builds)
+	for _, b := range w.Builds {
+		if b.Candidate == cand {
+			b.Run = "200"
+			doubled.Builds = append(doubled.Builds, b)
 		}
-	})
+	}
+	before, after := w.judge(verified()), doubled.judge(verified())
+	type key struct {
+		window            int
+		gate, arch, scope string
+	}
+	index := map[key]float64{}
+	for _, v := range before.Verdicts {
+		if v.Candidate == cand && v.Gate != runner.GateG0 && !v.NotComparable {
+			index[key{v.Window, v.Gate, v.Arch, v.Scope}] = v.Value
+		}
+	}
+	for _, v := range after.Verdicts {
+		if v.Candidate != cand || v.Gate == runner.GateG0 || v.NotComparable || v.Arch == runner.ArchBoth {
+			continue
+		}
+		if was, ok := index[key{v.Window, v.Gate, v.Arch, v.Scope}]; ok && was != v.Value {
+			t.Fatalf("%d days %s %s %s %s: the value was %v and is %v with every build twice", v.Window, cand, v.Gate, v.Arch, v.Scope, was, v.Value)
+		}
+	}
 }
 
 func TestRepeatingEveryBuildOfACandidateChangesNoMedian(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(t *rapid.T) {
-		w := drawWorld(t)
-		cand := rapid.SampledFrom([]string{cOff, cPolicy}).Draw(t, "candidate")
-		doubled := w
-		doubled.Builds = slices.Clone(w.Builds)
-		for _, b := range w.Builds {
-			if b.Candidate == cand {
-				b.Run = "200"
-				doubled.Builds = append(doubled.Builds, b)
-			}
-		}
-		before, after := w.judge(verified()), doubled.judge(verified())
-		type key struct {
-			window            int
-			gate, arch, scope string
-		}
-		index := map[key]float64{}
-		for _, v := range before.Verdicts {
-			if v.Candidate == cand && v.Gate != runner.GateG0 && !v.NotComparable {
-				index[key{v.Window, v.Gate, v.Arch, v.Scope}] = v.Value
-			}
-		}
-		for _, v := range after.Verdicts {
-			if v.Candidate != cand || v.Gate == runner.GateG0 || v.NotComparable || v.Arch == runner.ArchBoth {
-				continue
-			}
-			if was, ok := index[key{v.Window, v.Gate, v.Arch, v.Scope}]; ok && was != v.Value {
-				t.Fatalf("%d days %s %s %s %s: the value was %v and is %v with every build twice", v.Window, cand, v.Gate, v.Arch, v.Scope, was, v.Value)
-			}
-		}
+		checkRepeating(t, drawWorld(t), rapid.SampledFrom([]string{cOff, cPolicy}).Draw(t, "candidate"))
 	})
 }
 
 // Where G2 is judged against the budget it is the largest value of the repetitions, whatever
 // order they are in.
+func checkLargestStall(t stopper, w world, builds []runner.TimedBuild) {
+	rep := w.judge(verified())
+	shuffled := w.memory()
+	shuffled.Builds = builds
+	other := runner.JudgeTiming(shuffled, verified())
+	for _, v := range rep.Verdicts {
+		if v.Gate != runner.GateG2 || v.Arch == runner.ArchBoth || v.Scope != "" || v.NotComparable {
+			continue
+		}
+		var stalls []int64
+		for _, b := range rep.Builds {
+			if b.Window == v.Window && b.Candidate == v.Candidate && b.Arch == v.Arch {
+				stalls = append(stalls, b.Stall)
+			}
+		}
+		if v.Value != float64(slices.Max(stalls)) {
+			t.Fatalf("%d days %s %s: value %v, the stalls are %v", v.Window, v.Candidate, v.Arch, v.Value, stalls)
+		}
+		if o, ok := verdictIn(other, v); !ok || o.Value != v.Value {
+			t.Fatalf("%d days %s %s: value %v and, with the builds in another order, %+v", v.Window, v.Candidate, v.Arch, v.Value, o)
+		}
+	}
+}
+
 func TestG2AgainstTheBudgetIsTheLargestStall(t *testing.T) {
 	t.Parallel()
 
 	rapid.Check(t, func(t *rapid.T) {
 		w := drawWorld(t)
-		rep := w.judge(verified())
-		shuffled := w.memory()
-		shuffled.Builds = rapid.Permutation(shuffled.Builds).Draw(t, "builds")
-		other := runner.JudgeTiming(shuffled, verified())
-		for _, v := range rep.Verdicts {
-			if v.Gate != runner.GateG2 || v.Arch == runner.ArchBoth || v.Scope != "" || v.NotComparable {
-				continue
-			}
-			var stalls []int64
-			for _, b := range rep.Builds {
-				if b.Window == v.Window && b.Candidate == v.Candidate && b.Arch == v.Arch {
-					stalls = append(stalls, b.Stall)
-				}
-			}
-			if v.Value != float64(slices.Max(stalls)) {
-				t.Fatalf("%d days %s %s: value %v, the stalls are %v", v.Window, v.Candidate, v.Arch, v.Value, stalls)
-			}
-			if o, ok := verdictIn(other, v); !ok || o.Value != v.Value {
-				t.Fatalf("%d days %s %s: value %v and, with the builds in another order, %+v", v.Window, v.Candidate, v.Arch, v.Value, o)
-			}
-		}
+		checkLargestStall(t, w, rapid.Permutation(w.memory().Builds).Draw(t, "builds"))
 	})
 }
 
@@ -220,41 +240,79 @@ func verdictIn(rep runner.TimingReport, like runner.TimingVerdict) (runner.Timin
 	return runner.TimingVerdict{}, false
 }
 
-// The generators reach every kind of scope: one model, models pooled, a row for each of
-// several models, and hardware that cannot be compared, and a fallback of G2.
-func TestThePropertyGeneratorsReachEveryScope(t *testing.T) {
+// Every property holds on one named input of each kind of scope, and each input reaches
+// its scope: one model, models pooled, a row for each of several models, hardware that
+// cannot be compared, and a fallback of G2. Nothing here is drawn, so what the claim
+// covers does not change from one run to the next.
+func TestThePropertiesHoldOnEveryKindOfScope(t *testing.T) {
 	t.Parallel()
 
-	var model, pooled, several, notComparable, fallback int
-	rapid.Check(t, func(t *rapid.T) {
-		rep := drawWorld(t).judge(verified())
-		perKey := map[string]int{}
-		for _, v := range rep.Verdicts {
-			if v.Gate != runner.GateG3Commit || v.Arch == runner.ArchBoth {
-				continue
-			}
-			switch {
-			case v.NotComparable:
-				notComparable++
-			case strings.HasPrefix(v.Scope, "pooled over "):
-				pooled++
-			default:
-				model++
-			}
-			perKey[fmt.Sprintf("%d %s %s", v.Window, v.Candidate, v.Arch)]++
-		}
-		for _, n := range perKey {
-			if n > 1 {
-				several++
-			}
-		}
-		if len(rep.Findings) > 0 {
-			fallback++
-		}
-	})
-	for name, n := range map[string]int{"one model": model, "pooled": pooled, "several models": several, "not comparable": notComparable, "G2 fallback": fallback} {
-		if n == 0 {
-			t.Errorf("no generated input had a scope of kind %q", name)
+	s := time.Second
+	models := func(b *fixtureBuild) { // the policy on the second model of x86_64
+		if b.Candidate == cPolicy && b.Arch == "x86_64" {
+			b.CPU = x86ModelB
 		}
 	}
+	alternating := func(b *fixtureBuild) {
+		if b.Arch == "x86_64" && b.Candidate != cJoiner {
+			b.CPU = []string{x86ModelA, x86ModelB}[b.Rep-1]
+		}
+	}
+	slow := func(b *fixtureBuild) { b.Retain = 70 * s }
+	g3rows := func(rep runner.TimingReport, cand, arch string) []runner.TimingVerdict {
+		return rowsFor(rep, 7, cand, runner.GateG3Commit, arch)
+	}
+	for _, c := range []struct {
+		name  string
+		world world
+		// reaches says whether the report has a row of the kind.
+		reaches func(runner.TimingReport) bool
+	}{
+		{"one model", grid(referenceAndJoiner, []int{7}, 3, nil), func(rep runner.TimingReport) bool {
+			r := g3rows(rep, cPolicy, "x86_64")
+			return len(r) == 1 && r[0].Scope == x86ModelA
+		}},
+		{"pooled", grid(referenceAndJoiner, []int{7}, 3, models), func(rep runner.TimingReport) bool {
+			r := g3rows(rep, cPolicy, "x86_64")
+			return len(r) == 1 && strings.HasPrefix(r[0].Scope, "pooled over ")
+		}},
+		{"several models", grid(referenceAndJoiner, []int{7}, 2, alternating), func(rep runner.TimingReport) bool {
+			r := g3rows(rep, cPolicy, "x86_64")
+			return len(r) == 2 && r[0].Scope == x86ModelA && r[1].Scope == x86ModelB
+		}},
+		{"not comparable", grid(referenceAndJoiner, []int{7}, 1, models), func(rep runner.TimingReport) bool {
+			r := g3rows(rep, cPolicy, "x86_64")
+			return len(r) == 1 && r[0].NotComparable
+		}},
+		{"G2 fallback", grid(referenceAndJoiner, []int{7}, 3, slow), func(rep runner.TimingReport) bool {
+			return len(rep.Findings) == 2 && strings.Contains(mustRowQuiet(rep, 7, cPolicy, runner.GateG2, "aarch64").LimitText, "no layout of the reference set fits")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if !c.reaches(c.world.judge(verified())) {
+				t.Fatalf("the input does not reach its scope:\n%s", timingText(c.world.judge(verified())))
+			}
+			in := c.world.memory()
+			reversed := runner.TimedInputs{Builds: slices.Clone(in.Builds), Plans: slices.Clone(in.Plans), Counters: slices.Clone(in.Counters)}
+			slices.Reverse(reversed.Builds)
+			slices.Reverse(reversed.Plans)
+			slices.Reverse(reversed.Counters)
+			checkOrderIndependence(t, in, reversed)
+			checkMedians(t, c.world)
+			checkConjunction(t, c.world)
+			for _, cand := range []string{cOff, cPolicy} {
+				checkRepeating(t, c.world, cand)
+			}
+			checkLargestStall(t, c.world, reversed.Builds)
+		})
+	}
+}
+
+// mustRowQuiet is the one verdict of a row, or the zero verdict.
+func mustRowQuiet(rep runner.TimingReport, window int, cand, gate, arch string) runner.TimingVerdict {
+	if rows := rowsFor(rep, window, cand, gate, arch); len(rows) == 1 {
+		return rows[0]
+	}
+	return runner.TimingVerdict{}
 }
