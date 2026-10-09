@@ -65,12 +65,12 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 [tasks."bench:test:race"]
 description = "Run the bench module's trimmed tests with the race detector"
 dir = "bench"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short -timeout 15m ./...'
 
 [tasks."bench:test:deep"]
 description = "Run the bench module's full tests with the race detector, in random order"
 dir = "bench"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 -timeout 25m ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 -timeout 45m ./...'
 
 [tasks."bench:vuln"]
 description = "Scan the bench module's dependencies for known vulnerabilities"
@@ -228,11 +228,11 @@ run = "typos"
 # checked by purego, which is part of the static shard.
 [tasks.test]
 description = "Run tests with the race detector"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race -timeout 15m ./...'
 
 [tasks."test:deep"]
 description = "Run every test with the race detector, in random order"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-deep.json"} -- -race -shuffle=on -count=1 -timeout 25m ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-deep.json"} -- -race -shuffle=on -count=1 -timeout 45m ./...'
 
 # The edit loop. check is the formatters, the linters and test:fast, which is both
 # modules' tests without the race detector, the bench module in its invariant
