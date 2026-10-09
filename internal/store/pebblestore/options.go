@@ -36,11 +36,18 @@ import (
 //     "retain.prefixes_kept_for_boots", "retain.records_replayed",
 //     "retain.baselines_written", "retain.range_deletes", "retain.seeks",
 //     "retain.state_keys" (the keys a retention reads to work out the writer's
-//     state, when it does; see [Store.Retain]) and, as a sample for each retention
+//     state, when it does; see [Store.Retain]) and, as samples for each retention
 //     that rewrites, "retain.max_prefix_records" (the most records replayed for one
-//     prefix); and, when Config.SettleRetention is on, "retain.flush_ns",
-//     "retain.settle_ns" and "retain.settle_deadline_hits" (the flush and the wait,
-//     and the waits that reached their deadline).
+//     prefix) and "retain.chunks" (how many chunks it committed); and, as a sample
+//     for each chunk, "retain.chunk_hold_ns" (the nanoseconds from the chunk's start
+//     to the end of its commit, which is how long a writer would wait for it if the
+//     lock were released between chunks); and, when Open finishes a retention that
+//     an earlier process left, "retain.resumed", counted once before that retention
+//     reports as any other does; "retain.superseded", counted when Open removes a
+//     marker that the stored horizons have all moved past; and, when
+//     Config.SettleRetention is on, "retain.flush_ns", "retain.settle_ns" and
+//     "retain.settle_deadline_hits" (the flush and the wait, and the waits that
+//     reached their deadline).
 type Recorder = pebblekv.Recorder
 
 // RetentionMode says how [Store.Retain] does its work.
@@ -85,11 +92,17 @@ type Options struct {
 	// holds are kept true all the same.
 	Checkpoints *CheckpointOptions
 
-	// retainBatchBytes overrides [defaultRetainBatchBytes], retainStopAfter makes
-	// a retention fail after that many commits of its rewriting, and
-	// afterRetainCommit runs after each of them: all for tests.
+	// retainBatchBytes overrides [defaultRetainBatchBytes] and retainChunkTime
+	// [defaultRetainChunkTime], the two limits of a chunk of a retention.
+	// retainStopAfter makes a retention fail after that many chunk commits, and
+	// resumeStopAfter does the same to the retention Open finishes, which
+	// retainStopAfter leaves alone; with either set, a retainChunkTime of zero means
+	// no limit of time, so that the commit a retention stops at does not depend on
+	// the clock. afterRetainCommit runs after each commit of either. All for tests.
 	retainBatchBytes  int
+	retainChunkTime   time.Duration
 	retainStopAfter   int
+	resumeStopAfter   int
 	afterRetainCommit func()
 	// beforeRecordApply returns an error in place of a record commit (a commit
 	// that failed without landing), afterRecordApply runs after one has landed

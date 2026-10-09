@@ -211,7 +211,17 @@ func TestACoalescedRunHasNoHoleWhereTheProducerHadNone(t *testing.T) {
 				every: 400 * time.Second, horizonAfter: map[int]int{360: 200},
 				beats: []beat{{0, "a"}, {60, "a"}, {120, "a"}, {180, "a"}, {240, "a"}, {300, "a"}, {360, "a"}, {420, "a"}},
 			},
-			from: 200, to: 700, want: " [0 a] [240 a] [420 a]",
+			from: 200, to: 700, want: " [0 a] [240..360 a] [420 a]",
+		},
+		// The stored copy lapsed (240) more than a TTL before the last refresh (540): the
+		// record that continues the run covers the lapse through that refresh, and not
+		// only a TTL from the lapse, which would end before the next run starts.
+		"a lapsed deadline more than a TTL before the next run": {
+			coalesceScenario: coalesceScenario{
+				every: 600 * time.Second, horizonAfter: map[int]int{540: 200},
+				beats: every(0, 600, 60, "a"),
+			},
+			from: 200, to: 900, want: " [0 a] [240..540 a] [600 a]",
 		},
 		// A refresh older than the horizon is one the store refuses: nothing is
 		// written to carry the run to it.

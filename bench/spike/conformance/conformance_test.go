@@ -3,9 +3,11 @@ package conformance_test
 import (
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1255,6 +1257,112 @@ func TestCheckConcurrentReads(t *testing.T) {
 				}
 			}
 			t.Errorf("an engine that %s: err = %v, want ErrTorn", name, err)
+		})
+	}
+}
+
+// refusesReads is an engine that refuses a read of an instant before its retention
+// horizon, as a store whose contract allows it does, instead of answering. It
+// publishes the horizon before it retains, as the contract says a store does.
+// wrongRefusal makes it refuse reads at or after the horizon instead, and
+// otherError refuses with an error that is not a refusal for the horizon.
+type refusesReads struct {
+	*oracle.Oracle
+	horizon                  atomic.Int64 // Unix nanoseconds; zero for none
+	refused                  atomic.Int64
+	wrongRefusal, otherError bool
+}
+
+func (r *refusesReads) Retain(h time.Time) error {
+	r.horizon.Store(h.UnixNano())
+	return r.Oracle.Retain(h)
+}
+
+// refuse is the error for a read of the instant t, or nil to answer it.
+func (r *refusesReads) refuse(t time.Time) error {
+	h := r.horizon.Load()
+	if h == 0 {
+		return nil
+	}
+	before := t.Before(time.Unix(0, h))
+	switch {
+	case r.otherError && before:
+		return errors.New("disk on fire")
+	case r.wrongRefusal && !before, !r.wrongRefusal && !r.otherError && before:
+		r.refused.Add(1)
+		return fmt.Errorf("read at %s: %w", t.Format(time.RFC3339), engine.ErrBeforeHorizon)
+	}
+	return nil
+}
+
+func (r *refusesReads) Neighbors(fp identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([]engine.Neighbor, error) {
+	if err := r.refuse(at); err != nil {
+		return nil, err
+	}
+	return r.Oracle.Neighbors(fp, d, at, sc)
+}
+
+func (r *refusesReads) NeighborsBatch(fps []identity.Fingerprint, d engine.Direction, at time.Time, sc engine.Scope) ([][]engine.Neighbor, error) {
+	if err := r.refuse(at); err != nil {
+		return nil, err
+	}
+	return r.Oracle.NeighborsBatch(fps, d, at, sc)
+}
+
+func (r *refusesReads) Alive(fp identity.Fingerprint, at time.Time, sc engine.Scope) (bool, error) {
+	if err := r.refuse(at); err != nil {
+		return false, err
+	}
+	return r.Oracle.Alive(fp, at, sc)
+}
+
+func (r *refusesReads) Window(fp identity.Fingerprint, d engine.Direction, from, to time.Time, sc engine.Scope) ([]engine.Record, error) {
+	if err := r.refuse(from); err != nil {
+		return nil, err
+	}
+	return r.Oracle.Window(fp, d, from, to, sc)
+}
+
+// A read of an instant before the horizon may be refused with ErrBeforeHorizon
+// instead of answered (the store contract allows it); the check accepts that. A
+// refusal of an instant at or after the horizon, or an error of any other kind,
+// still fails it.
+func TestConcurrentReadsAcceptARefusalBeforeTheHorizon(t *testing.T) {
+	t.Parallel()
+
+	e := &refusesReads{Oracle: oracle.New()}
+	if err := conformance.CheckConcurrentReads(e); err != nil {
+		t.Fatalf("an engine that refuses reads before the horizon was reported: %v", err)
+	}
+	// The control means something only if the engine refused some reads.
+	if e.refused.Load() == 0 {
+		t.Fatal("the engine refused no read, so the check was not put to the test")
+	}
+
+	for name, c := range map[string]struct {
+		mk   func() *refusesReads
+		want func(error) bool
+	}{
+		"refuses a read at or after the horizon": {
+			func() *refusesReads { return &refusesReads{Oracle: oracle.New(), wrongRefusal: true} },
+			func(err error) bool { return errors.Is(err, engine.ErrBeforeHorizon) },
+		},
+		"fails a read before the horizon with another error": {
+			func() *refusesReads { return &refusesReads{Oracle: oracle.New(), otherError: true} },
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "disk on fire") },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			// Which reads overlap the horizon depends on the interleaving; a few
+			// attempts make a miss on a loaded runner vanishingly unlikely.
+			var err error
+			for range 5 {
+				if err = conformance.CheckConcurrentReads(c.mk()); c.want(err) {
+					return
+				}
+			}
+			t.Errorf("an engine that %s: err = %v", name, err)
 		})
 	}
 }
