@@ -42,6 +42,15 @@ import (
 // the horizon of each layer it is after, and only of those: the others keep
 // theirs, and their data is left alone. It holds the store's lock for as long as
 // it runs, settling included, so Close must not be called meanwhile.
+//
+// What the writer remembers of each prefix (see checkpoint.go) is out of date once
+// a retention begins to rewrite, so it is dropped then. Where the checkpoint policy
+// is on and the database may hold a checkpoint, the retention works out what a
+// read of each prefix would find from the keys it leaves, and when it has done so
+// for every prefix, after its last commit, the writer's memory is complete again
+// and the first write to a prefix needs no read. The keys it reads for that are
+// counted as "retain.state_keys". A retention that stops or fails leaves the
+// memory empty, and the prefixes are read as they are touched.
 func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if s.closed.Load() {
 		return closedError("Retain")
@@ -86,8 +95,11 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 
 	hNs, where := pebblekv.Locate(horizon)
 	if where == pebblekv.Before || (where == pebblekv.Inside && hNs == 0) {
-		return nil // no instant a record can have is before it: nothing changes
+		return nil // no instant a record can have is before it: nothing changes, and nothing is forgotten
 	}
+	// What was remembered of each prefix is about to be out of date. It is worked
+	// out again below, and stays empty if the retention does not finish.
+	s.forgetAll()
 	// The newest instant strictly before the horizon, and where the baseline is
 	// keyed. After the end of the range the baseline is keyed at the last instant,
 	// inside what the range delete covers, so it is written after the delete.
@@ -107,7 +119,31 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	defer func() { _ = b.Close() }()
 
 	boots := s.policy.BootKey != ""
-	var visited, replayed, records, baselines, deletes, seeks, kept, commits int64
+	// What the writer would find if it read each prefix after this retention, worked
+	// out as the retention goes by, so that the first write to a prefix need not
+	// read it. Not working it out is always correct (the prefix is then read when it
+	// is next touched), so it is done only where it pays: with the checkpoint policy
+	// on, where a read would look (a checkpoint may be in the database), where a
+	// read is the kind that stops at the tail, where the horizon is inside the range
+	// (past it the retention rewrites every prefix in a way the keys it leaves do
+	// not describe), and where every layer moves (a layer left alone is not visited,
+	// and the map would lack its prefixes). The cost is a read of the keys at or
+	// after the horizon of each prefix, up to its newest checkpoint, counted as
+	// "retain.state_keys".
+	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && where == pebblekv.Inside && !slices.Contains(moved[:], false)
+	derived := derive
+	var stateKeys int64
+	var next map[string]*prefixState
+	if derive {
+		next = map[string]*prefixState{}
+	}
+	remember := func(prefix []byte, st *prefixState) {
+		if derive && !st.empty() { // an empty state is what a missing prefix means
+			c := *st
+			next[string(prefix)] = &c
+		}
+	}
+	var visited, replayed, records, baselines, deletes, seeks, kept, commits, maxPrefixRecords int64
 	commit := func() error {
 		if b.Empty() {
 			return nil
@@ -142,14 +178,31 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		}
 		dir := prefix[prefixLen-1]
 		visited++
+		// The keys that stay are read first, from the first key of the prefix, where
+		// the iterator is.
+		var stays, dropped prefixState
+		if derive {
+			var parsed bool
+			var n int64
+			stays, dropped, n, parsed, err = foldRetained(it, prefix, hNs)
+			if err != nil {
+				return err
+			}
+			stateKeys += n
+			if !parsed {
+				derive, next = false, nil // a key that cannot be read: learn nothing here
+			}
+		}
 		// Go to the newest record of this prefix strictly before the horizon. The
 		// seek may land in a later prefix, which the loop then takes up.
 		seeks++
 		ok = it.SeekGE(seekKey(prefix, oldMax))
 		if !ok || !hasPrefix(it.Key(), prefix) {
-			continue // nothing is rewritten here
+			remember(prefix, &stays) // nothing is rewritten here: a checkpoint at the horizon stays
+			continue
 		}
 		replayed++
+		var prefixRecords int64
 		decided := map[string]struct{}{}
 		var entries []entry
 		bootSeen := false
@@ -170,6 +223,7 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 			switch kind {
 			case kindRecord:
 				records++
+				prefixRecords++
 				ref, v, err := decodeRecordValue(dir, it.Value())
 				if err != nil {
 					return err
@@ -195,12 +249,30 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		if err := it.Error(); err != nil {
 			return err
 		}
+		maxPrefixRecords = max(maxPrefixRecords, prefixRecords)
 		if boots && dir == dirEntity && bootSeen {
 			// A later record of this entity may collide with a boot in what would
 			// be discarded, and the baseline keeps no boot history: the prefix
 			// stays whole, which the contract allows.
 			kept++
+			// Nothing in it changes, so what the writer would find is what a read of
+			// it finds now. Neither of the states worked out from the keys at or after
+			// the horizon is that: the checkpoint at the horizon stays, and older
+			// checkpoints and records may stay below it.
+			if derive {
+				res, n, unreadable, rerr := s.readPrefixState(prefix)
+				if rerr != nil {
+					return rerr
+				}
+				stateKeys += n
+				if unreadable != nil {
+					derive, next = false, nil // a key that cannot be read: learn nothing here
+				} else {
+					remember(prefix, &res)
+				}
+			}
 		} else {
+			remember(prefix, &dropped)
 			// Everything older than the horizon goes, the previous baseline
 			// included; what is still alive at the horizon is one new baseline, in
 			// the same commit and after the delete.
@@ -241,6 +313,14 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if err := commit(); err != nil {
 		return err
 	}
+	if derive {
+		// Only now, with every commit landed, is what was worked out true of the
+		// database. Every prefix was visited, so the map is complete.
+		s.states, s.complete = next, true
+	}
+	if derived {
+		s.rec.Count("retain.state_keys", stateKeys)
+	}
 	s.rec.Count("retain.prefixes_visited", visited)
 	s.rec.Count("retain.prefixes_replayed", replayed)
 	s.rec.Count("retain.prefixes_kept_for_boots", kept)
@@ -248,6 +328,7 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	s.rec.Count("retain.baselines_written", baselines)
 	s.rec.Count("retain.range_deletes", deletes)
 	s.rec.Count("retain.seeks", seeks)
+	s.rec.Sample("retain.max_prefix_records", maxPrefixRecords)
 	workEnd = time.Now()
 	// Settling changes no data. The iterator is closed first: it would pin the
 	// tables the compactions replace.

@@ -39,53 +39,61 @@ func writeTiny(t *testing.T, stores ...store.Store) []store.Record {
 
 // The parts of Breakdown add up to the bytes of every data key and value, counted
 // straight off the database: nothing is counted twice and nothing is left out,
-// including the baseline.
+// including the baseline and, where the store writes them, the checkpoints.
 func TestBreakdownAddsUpToTheBytesOnDisk(t *testing.T) {
 	t.Parallel()
-	s := openMem(t, Options{})
-	recs := writeTiny(t, s)
-	// Before any retention the stream's run extensions are there to be counted.
-	if parts, err := s.Instrument().Breakdown(); err != nil || !hasKind(parts, partExtension) {
-		t.Fatalf("no extension bytes in a stream with runs: %v, %v", parts, err)
-	}
-	if err := s.Retain(bg, recs[len(recs)/2].EventTime); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.kv.Settle(); err != nil {
-		t.Fatal(err)
-	}
+	for name, ckpt := range map[string]*CheckpointOptions{
+		"without checkpoints": {},
+		"with checkpoints":    {On: true, KMin: 4, Alpha: 1, Lag: time.Nanosecond},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s := openMem(t, Options{Checkpoints: ckpt})
+			recs := writeTiny(t, s)
+			// Before any retention the stream's run extensions are there to be counted.
+			if parts, err := s.Instrument().Breakdown(); err != nil || !hasKind(parts, partExtension) {
+				t.Fatalf("no extension bytes in a stream with runs: %v, %v", parts, err)
+			}
+			if err := s.Retain(bg, recs[len(recs)/2].EventTime); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.kv.Settle(); err != nil {
+				t.Fatal(err)
+			}
 
-	lo, hi := dataBounds()
-	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var raw int64
-	for ok := it.First(); ok; ok = it.Next() {
-		raw += int64(len(it.Key()) + len(it.Value()))
-	}
-	_ = it.Close()
+			lo, hi := dataBounds()
+			it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw int64
+			for ok := it.First(); ok; ok = it.Next() {
+				raw += int64(len(it.Key()) + len(it.Value()))
+			}
+			_ = it.Close()
 
-	parts, err := s.Instrument().Breakdown()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sum int64
-	kinds := map[string]bool{}
-	for p, n := range parts {
-		sum += n
-		kinds[p.Kind] = true
-	}
-	if sum != raw || raw == 0 {
-		t.Errorf("the parts add up to %d bytes, the keys and values to %d", sum, raw)
-	}
-	for _, k := range []string{partBaseline, partObserve, partPayloadForward, partPayloadReverse, partPayloadEntity} {
-		if !kinds[k] {
-			t.Errorf("no %s bytes after a retention: %v", k, kinds)
-		}
-	}
-	if kinds[partCheckpoint] {
-		t.Error("checkpoint bytes in a store that writes none")
+			parts, err := s.Instrument().Breakdown()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sum int64
+			kinds := map[string]bool{}
+			for p, n := range parts {
+				sum += n
+				kinds[p.Kind] = true
+			}
+			if sum != raw || raw == 0 {
+				t.Errorf("the parts add up to %d bytes, the keys and values to %d", sum, raw)
+			}
+			for _, k := range []string{partBaseline, partObserve, partPayloadForward, partPayloadReverse, partPayloadEntity} {
+				if !kinds[k] {
+					t.Errorf("no %s bytes after a retention: %v", k, kinds)
+				}
+			}
+			if kinds[partCheckpoint] != ckpt.On {
+				t.Errorf("checkpoint bytes present = %v, with the policy on = %v", kinds[partCheckpoint], ckpt.On)
+			}
+		})
 	}
 }
 

@@ -39,6 +39,27 @@ func newMemRecorder() *memRecorder {
 func (r *memRecorder) Count(name string, n int64)  { r.counters[name] += n }
 func (r *memRecorder) Sample(name string, v int64) { r.samples[name] = append(r.samples[name], v) }
 
+// Counter is the named count, zero if it was never counted.
+func (r *memRecorder) Counter(name string) int64 { return r.counters[name] }
+
+// newRef is the reference store, with no policy, closed when the test ends.
+func newRef(t *testing.T) *memstore.Store {
+	t.Helper()
+	ref, err := memstore.Open(memstore.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ref.Close() })
+	return ref
+}
+
+// off is the checkpoint policy that writes none, for a test of the instrument's
+// hook or of what a store with the policy off does: a nil policy is the default.
+func off() *CheckpointOptions { return &CheckpointOptions{} }
+
+// policy is a pointer to a checkpoint policy.
+func policy(c CheckpointOptions) *CheckpointOptions { return &c }
+
 func openMem(t *testing.T, opts Options) *Store {
 	t.Helper()
 	opts.Tuning = pebblekv.TinyTuning()
@@ -59,6 +80,7 @@ type stored struct {
 	ns      int64
 	seq     uint64
 	entries string
+	w       uint64 // of a checkpoint or the baseline
 }
 
 func (s stored) String() string {
@@ -93,6 +115,7 @@ func dump(t *testing.T, s *Store) []stored {
 			if err != nil {
 				t.Fatal(err)
 			}
+			st.w = sp.w
 			var names []string
 			for _, en := range sp.entries {
 				names = append(names, fmt.Sprintf("%s@%d", producerOf(st.dir, en.ref), en.eventNs))
@@ -237,11 +260,11 @@ func TestRecordsAtOneInstantAreAllKept(t *testing.T) {
 	}
 	ns := t0.UnixNano()
 	want := []stored{
-		{1, kindRecord, ns + 1e9, 5, "kubelet"},
-		{1, kindRecord, ns, 4, "other"},
-		{1, kindRecord, ns, 3, "kubelet"},
-		{1, kindRecord, ns, 2, "kubelet"},
-		{1, kindRecord, ns, 1, "kubelet"},
+		{dir: 1, kind: kindRecord, ns: ns + 1e9, seq: 5, entries: "kubelet"},
+		{dir: 1, kind: kindRecord, ns: ns, seq: 4, entries: "other"},
+		{dir: 1, kind: kindRecord, ns: ns, seq: 3, entries: "kubelet"},
+		{dir: 1, kind: kindRecord, ns: ns, seq: 2, entries: "kubelet"},
+		{dir: 1, kind: kindRecord, ns: ns, seq: 1, entries: "kubelet"},
 	}
 	if got := forward(dump(t, s)); !slices.Equal(got, want) {
 		t.Fatalf("stored under the forward prefix:\n got %v\nwant %v", got, want)
@@ -653,23 +676,38 @@ func TestADirectoryWithDataAndNoFormatIsNotClaimed(t *testing.T) {
 	_ = s.Close()
 }
 
-// A database that may hold checkpoints is refused: this version reads them
-// but cannot keep them up to date: it does not invalidate them when an older
-// record arrives.
-func TestADatabaseThatMayHoldCheckpointsIsRefused(t *testing.T) {
+// A database that holds checkpoints opens, whether or not the store writes any: the
+// store deletes the ones a later record makes untrue either way. The flag that says
+// so is the byte 1, written with the first checkpoint; a version of this package
+// that does not keep checkpoints true refuses a database that has it.
+func TestADatabaseThatHoldsCheckpointsOpensAndSaysSo(t *testing.T) {
 	t.Parallel()
 	fs := vfs.NewMem()
 	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: fs}
-	s, err := Open("db", Options{Config: cfg})
+	ckpt := &CheckpointOptions{On: true, KMin: 1}
+	s, err := Open("db", Options{Config: cfg, Checkpoints: ckpt})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.kv.Set(metaKey(metaCheckpoints), []byte{1}, pebble.Sync); err != nil {
+	if v, err := s.kv.GetMeta(metaKey(metaCheckpoints)); err != nil || v != nil {
+		t.Fatalf("a new database says %v (%v) about checkpoints", v, err)
+	}
+	if err := s.Write(bg, []store.Record{edgeRecord(1, "p", t0, lifecycle.Observe, 0)}); err != nil {
 		t.Fatal(err)
 	}
+	if v, err := s.kv.GetMeta(metaKey(metaCheckpoints)); err != nil || !slices.Equal(v, []byte{1}) {
+		t.Fatalf("after the first checkpoint the flag is %x (%v), want 01: the byte an earlier version refuses a database for", v, err)
+	}
 	_ = s.Close()
-	if _, err := Open("db", Options{Config: cfg}); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), "checkpoints") {
-		t.Fatalf("Open = %v, want an error wrapping ErrInvalid that names checkpoints", err)
+	for name, ckpt := range map[string]*CheckpointOptions{"on": ckpt, "off": {}, "default": nil} {
+		s, err := Open("db", Options{Config: cfg, Checkpoints: ckpt})
+		if err != nil {
+			t.Fatalf("%s: Open of a database that holds checkpoints = %v", name, err)
+		}
+		if !s.anyCkpt || !s.flagOnDisk {
+			t.Errorf("%s: anyCkpt %v, flagOnDisk %v after opening a database that has the flag", name, s.anyCkpt, s.flagOnDisk)
+		}
+		_ = s.Close()
 	}
 }
 

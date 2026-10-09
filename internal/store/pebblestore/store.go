@@ -55,8 +55,21 @@ type Store struct {
 
 	beforeRecordApply, afterRecordApply, rereadFails func() error
 	beforeHorizonApply, afterHorizonApply            func() error
+	// beforeCheckpointApply and afterCheckpointApply are the hooks of the checkpoint
+	// commit (see [Options]).
+	beforeCheckpointApply, afterCheckpointApply func() error
 	// checkValue is what the value of a record must pass before the batch is taken in.
 	checkValue func(pebblekv.Value) error
+
+	// ckpt is the policy checkpoints are written by.
+	ckpt CheckpointOptions
+	// fullStateRead makes the writer read the whole of a prefix to learn its state
+	// and never trust the map to be complete: for tests that compare the two.
+	fullStateRead bool
+	// timed says the store has a recorder to give the phases of a Write to, and so
+	// reads the clock; with none it never does.
+	timed bool
+	clock func() time.Time
 
 	// mu serializes Write and Retain, which the caller is already required to do;
 	// it keeps the horizon coherent if a caller forgets. It also guards the fields
@@ -65,10 +78,39 @@ type Store struct {
 	// failed is set when a commit's outcome could not be learned: the store then
 	// refuses every Write and Retain (reads continue) until it is reopened.
 	failed error
-	// anyCkpt says a checkpoint may be in the database, in which case a retention
-	// deletes the one at its horizon. Open refuses such a database for now, so it
-	// is false until checkpoints are written.
-	anyCkpt bool
+	// states is what the writer remembers of each prefix (see checkpoint.go).
+	// anyCkpt says a checkpoint may be in the database (one was, or a commit that
+	// reported failure may have landed), in which case a prefix first touched is
+	// read for the checkpoints it holds, and a retention deletes the one at its
+	// horizon. flagOnDisk says the meta key that records it is durably there; until
+	// a commit carrying it succeeds, every checkpoint batch carries it (see
+	// applyCheckpoints).
+	//
+	// complete says the map is not only right about the prefixes in it but
+	// exhaustive: a prefix it lacks holds no record and no checkpoint, so the
+	// writer knows its state (empty) without reading it. It holds from the opening
+	// of a database with no data, and from the end of a retention that worked out
+	// the state of every prefix in its own pass (see Retain). It does not hold, and
+	// the prefixes are read as they are touched, in a database that already holds
+	// data when it is opened; after a retention that does not work the state out (no
+	// checkpoint in the database yet, the policy off, a horizon after the range, a
+	// layer the retention leaves alone, a key that cannot be read, a store that
+	// always reads whole prefixes (tests), or a retention that stops or fails; a
+	// horizon before the first instant changes nothing and forgets nothing); after
+	// anything that drops what is remembered (a failed commit or read, or a Write
+	// that does not finish once it has begun to touch state); and after a write with
+	// checkpoints off and none in the database, which stores records and remembers
+	// nothing, so the prefixes it leaves are read if a checkpoint is later written.
+	//
+	// The price is memory: one entry per live prefix, kept for as long as the store
+	// is open, where the map would otherwise hold only the prefixes touched since
+	// the last retention.
+	states     map[string]*prefixState
+	complete   bool
+	anyCkpt    bool
+	flagOnDisk bool
+	// iterators counts the iterators the Write in progress opens for its state.
+	iterators int64
 	// last is how the last Retain spent its time (see [Instrument.LastRetain]).
 	last retainPhases
 }
@@ -93,12 +135,21 @@ type retainPhases struct {
 // its last sequence number and its retention horizons. A database is refused (with
 // an error wrapping [store.ErrInvalid]) if it was written in another format, by
 // another Pebble version or at another format major version (there is no option to
-// upgrade yet), or created with another lifecycle boot key; if it may hold
-// checkpoints, which this version cannot keep up to date (it does not invalidate
-// them when an older record arrives); or if it holds data keys and no format.
+// upgrade yet), or created with another lifecycle boot key; or if it holds data
+// keys and no format. A database that holds checkpoints opens, whatever
+// [Options.Checkpoints] says: the store deletes the ones a later record makes
+// untrue even when it writes none. An earlier version of this package, which
+// neither wrote nor invalidated them, refuses such a database.
 func Open(dir string, o Options) (*Store, error) {
 	if o.Retention != 0 && o.Retention != Synchronous {
 		return nil, fmt.Errorf("pebblestore: Open: retention mode %d: %w", o.Retention, store.ErrInvalid)
+	}
+	ckpt := DefaultCheckpoints()
+	if o.Checkpoints != nil {
+		ckpt = *o.Checkpoints
+	}
+	if err := ckpt.validate(); err != nil {
+		return nil, fmt.Errorf("pebblestore: Open: %w", err)
 	}
 	// Fold validates the policy before anything else, and the check itself is not
 	// exported.
@@ -118,6 +169,8 @@ func Open(dir string, o Options) (*Store, error) {
 		retainBytes: o.retainBatchBytes, stopAfter: o.retainStopAfter, afterRetainCommit: o.afterRetainCommit,
 		beforeRecordApply: o.beforeRecordApply, afterRecordApply: o.afterRecordApply, rereadFails: o.rereadFails,
 		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply,
+		beforeCheckpointApply: o.beforeCheckpointApply, afterCheckpointApply: o.afterCheckpointApply,
+		ckpt: ckpt, fullStateRead: o.fullStateRead, states: map[string]*prefixState{},
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
 	if o.checkValue != nil {
@@ -125,6 +178,13 @@ func Open(dir string, o Options) (*Store, error) {
 	}
 	if s.rec == nil {
 		s.rec = nopRecorder{}
+	} else {
+		// Only a store that has a recorder reads the clock for the phases of a Write.
+		s.timed = true
+	}
+	s.clock = time.Now
+	if o.clock != nil {
+		s.clock = o.clock
 	}
 	if s.retainBytes == 0 {
 		s.retainBytes = defaultRetainBatchBytes
@@ -229,16 +289,27 @@ func (s *Store) load() error {
 		}
 	}
 	s.lastMoved.Store(&latest)
-	// Nothing here writes checkpoints, and nothing here invalidates one when an
-	// older record arrives, so a database that may hold one would be answered
-	// from stale summaries.
+	// A database that holds a checkpoint says so, and this store then deletes the
+	// ones a later record makes untrue, whether or not it writes any.
 	raw, err = s.kv.GetMeta(metaKey(metaCheckpoints))
 	if err != nil {
 		return err
 	}
-	if raw != nil {
-		return fmt.Errorf("pebblestore: Open: the database may hold checkpoints, which this version cannot keep up to date: %w", store.ErrInvalid)
+	s.anyCkpt = raw != nil
+	s.flagOnDisk = s.anyCkpt
+	// A database that holds no data has no prefix to learn: every one a write meets
+	// is new, and there is no need to read it to find that out. (A store that reads
+	// the whole of every prefix, for tests, trusts nothing it has not read.)
+	lo, hi := dataBounds()
+	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
 	}
+	empty := !it.First()
+	if err := errors.Join(it.Error(), it.Close()); err != nil {
+		return err
+	}
+	s.complete = empty && !s.fullStateRead
 	return nil
 }
 
@@ -339,4 +410,22 @@ func (s *Store) settleRetention() error {
 	}
 	s.rec.Count("retain.settle_deadline_hits", hits)
 	return err
+}
+
+// now is the start of a timed span: the clock's reading, or the zero time when the
+// store has no recorder, in which case the clock is never read.
+func (s *Store) now() time.Time {
+	if !s.timed {
+		return time.Time{}
+	}
+	return s.clock()
+}
+
+// since is the nanoseconds from a reading of [Store.now] to now, or zero when the
+// store has no recorder.
+func (s *Store) since(t time.Time) int64 {
+	if !s.timed {
+		return 0
+	}
+	return s.clock().Sub(t).Nanoseconds()
 }
