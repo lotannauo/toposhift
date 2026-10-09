@@ -95,7 +95,7 @@ const (
 
 // FromRecord is the value of a record.
 func FromRecord(r store.Record) Value {
-	v := Value{Seq: r.Seq, Kind: r.Kind, TTL: r.TTL, Boot: r.Boot, Payload: r.Payload}
+	v := Value{Seq: r.Seq, Kind: r.Kind, TTL: r.TTL, Boot: r.Boot, Basis: uint8(r.EventTimeBasis), Payload: r.Payload}
 	if !r.Through.IsZero() {
 		v.HasThrough, v.Through = true, r.Through.UnixNano()
 	}

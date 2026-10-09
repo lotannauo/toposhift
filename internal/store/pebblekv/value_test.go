@@ -243,6 +243,24 @@ func TestValueRoundTripsAnyRecord(t *testing.T) {
 	})
 }
 
+// FromRecord carries the clock that stamped the event time, and the encoding
+// keeps it, for every basis there is.
+func TestFromRecordCarriesTheEventTimeBasis(t *testing.T) {
+	t.Parallel()
+	at := time.Unix(1_700_000_000, 0).UTC()
+	for b := store.BasisUnknown; b <= store.BasisProducerEvent; b++ {
+		r := store.Record{Seq: 4, Kind: lifecycle.Observe, EventTime: at, EventTimeBasis: b, Payload: []byte("x")}
+		v := FromRecord(r)
+		if v.Basis != uint8(b) {
+			t.Errorf("FromRecord dropped basis %v: got %d", b, v.Basis)
+		}
+		back, err := DecodeValue(v.Append(nil))
+		if err != nil || back.Basis != uint8(b) {
+			t.Errorf("basis %v did not survive the encoding: %+v, %v", b, back, err)
+		}
+	}
+}
+
 // FromRecord keeps a Through of exactly the event time, which is a run of one,
 // distinct from no Through at all, and keeps the boot.
 func TestFromRecordKeepsThroughAndBoot(t *testing.T) {
