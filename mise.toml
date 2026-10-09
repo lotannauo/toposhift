@@ -168,11 +168,21 @@ if [ "$root" != "$want" ] || [ "$bench" != "$want" ]; then
   exit 1
 fi
 # The libraries that compress Pebble's blocks shape the bytes it writes as much as
-# its own version does, so the two modules must agree on them too.
-for mod in github.com/golang/snappy github.com/klauspost/compress github.com/minio/minlz; do
-  root="$(go list -m -json "$mod" 2>/dev/null | jq -r '.Version // "absent"' || true)"
-  bench="$(cd bench && go list -m -json "$mod" 2>/dev/null | jq -r '.Version // "absent"' || true)"
+# its own version does, so the two modules must agree on them too. A go list that
+# fails fails the task: it is run on its own, not inside a pipeline.
+mods() {
+  all="$(go list -m -json all)"
+  printf '%s\n' "$all" | jq -r '"\(.Path) \(.Version // "")"'
+}
+rootmods="$(mods)"
+benchmods="$(cd bench && mods)"
+version_in() { printf '%s\n' "$1" | awk -v m="$2" '$1 == m { print $2 }'; }
+for mod in github.com/golang/snappy github.com/klauspost/compress github.com/minio/minlz github.com/DataDog/zstd; do
+  root="$(version_in "$rootmods" "$mod")"
+  bench="$(version_in "$benchmods" "$mod")"
   if [ "$root" != "$bench" ]; then
+    root="${root:-absent}"
+    bench="${bench:-absent}"
     echo "check:pebble-pin: $mod is $root in the root module and $bench in bench, they must match" >&2
     exit 1
   fi

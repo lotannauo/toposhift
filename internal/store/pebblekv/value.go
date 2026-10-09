@@ -103,7 +103,7 @@ func FromRecord(r store.Record) Value {
 }
 
 // Check reports why v cannot be encoded: a kind other than Observe or Delete, a
-// negative TTL or Through, an over-long boot, or a basis above 4. A record that
+// negative TTL or Through, a Through without HasThrough, an over-long boot, or a basis above 4. A record that
 // passed [store.Record.Validate] gives a value that passes.
 func (v Value) Check() error {
 	switch {
@@ -113,6 +113,8 @@ func (v Value) Check() error {
 		return fmt.Errorf("negative TTL: %w", ErrValue)
 	case v.HasThrough && v.Through < 0:
 		return fmt.Errorf("negative Through: %w", ErrValue)
+	case !v.HasThrough && v.Through != 0:
+		return fmt.Errorf("a Through without HasThrough: %w", ErrValue)
 	case len(v.Boot) > store.MaxBootLen:
 		return fmt.Errorf("boot of %d bytes: %w", len(v.Boot), ErrValue)
 	case v.Basis > maxBasis:

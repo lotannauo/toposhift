@@ -13,6 +13,7 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
+	"github.com/lotannauo/toposhift/internal/store/storetest"
 )
 
 func TestLocate(t *testing.T) {
@@ -134,6 +135,43 @@ func TestValueGoldenVectors(t *testing.T) {
 	}
 }
 
+// Every record that passes validation is a value that passes Check, and comes
+// back from its encoding unchanged: the panic in Append cannot be reached from a
+// valid record. The streams are fixed, with every feature of the generator on.
+func TestEveryValidRecordIsAValueThatCanBeKept(t *testing.T) {
+	t.Parallel()
+	for seed := uint64(1); seed <= 6; seed++ {
+		c := storetest.Tiny()
+		c.Seed = seed
+		c.Runs = true
+		c.RebootProbability, c.CloneProbability = 0.2, 0.5
+		c.LateProbability, c.ConfirmProbability = 0.2, 0.5
+		g, err := storetest.NewGenerator(c)
+		if err != nil {
+			t.Fatalf("seed %d: %v", seed, err)
+		}
+		records := g.All()
+		for b := store.BasisUnknown; b <= store.BasisProducerEvent; b++ {
+			r := records[0]
+			r.EventTimeBasis = b
+			records = append(records, r)
+		}
+		for _, r := range records {
+			if err := r.Validate(); err != nil {
+				t.Fatalf("seed %d: the generator made an invalid record: %v", seed, err)
+			}
+			v := FromRecord(r)
+			if err := v.Check(); err != nil {
+				t.Fatalf("seed %d: Check of a valid record's value: %v\n%+v", seed, err, r)
+			}
+			back, err := DecodeValue(v.Append(nil))
+			if err != nil || !sameValue(back, v) {
+				t.Fatalf("seed %d: the value did not survive its encoding: %+v, %v", seed, back, err)
+			}
+		}
+	}
+}
+
 // A value that would be stored as something else, or that could not be read back,
 // is never encoded: the basis would be masked to its low three bits, a kind of 4
 // would set the Through bit.
@@ -152,6 +190,7 @@ func TestAppendRefusesWhatItCannotKeep(t *testing.T) {
 		"kind 4":         {Seq: 1, Kind: 4},
 		"negative TTL":   {Seq: 1, Kind: lifecycle.Observe, TTL: -1},
 		"negative reach": {Seq: 1, Kind: lifecycle.Observe, HasThrough: true, Through: -1},
+		"a stray reach":  {Seq: 1, Kind: lifecycle.Observe, Through: 5},
 		"a long boot":    {Seq: 1, Kind: lifecycle.Observe, Boot: strings.Repeat("a", store.MaxBootLen+1)},
 	}
 	for name, v := range bad {
