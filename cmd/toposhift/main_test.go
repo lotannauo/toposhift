@@ -21,8 +21,8 @@ func TestRunExitCodes(t *testing.T) {
 		{"unknown command", []string{"frobnicate"}, 2, "", `unknown command "frobnicate"`},
 		{"help", []string{"help"}, 0, "Usage: toposhift", ""},
 		{"version", []string{"version"}, 0, "toposhift ", ""},
-		{"query is a stub", []string{"query"}, 1, "", "not implemented yet"},
-		{"replay is a stub", []string{"replay"}, 1, "", "not implemented yet"},
+		{"query needs an operation", []string{"query"}, 2, "", "give exactly one operation"},
+		{"replay needs a source", []string{"replay"}, 2, "", "say what to replay"},
 		{"serve rejects stray arguments", []string{"serve", "extra"}, 2, "", `unexpected argument "extra"`},
 		{"serve rejects unknown flags", []string{"serve", "--nope"}, 2, "", "flag provided but not defined"},
 	}
