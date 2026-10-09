@@ -2,6 +2,7 @@ package memstore_test
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -323,6 +324,64 @@ func TestEntityWindowReturnsEveryFieldOfAHostRecord(t *testing.T) {
 	if err != nil || len(edges) != 1 || edges[0].Boot != "" || !bytes.Equal(edges[0].Payload, placement.Payload) {
 		t.Errorf("Window = %+v, %v; want the placement without a boot", edges, err)
 	}
+}
+
+// TestEveryEventTimeBasisSurvivesAWriteAndTheWindows writes an observation and a
+// delete of an entity and of an edge for each basis, and reads them back.
+func TestEveryEventTimeBasisSurvivesAWriteAndTheWindows(t *testing.T) {
+	t.Parallel()
+	w := newTopology(t)
+	s := open(t)
+	bases := []store.EventTimeBasis{store.BasisUnknown, store.BasisObjectField, store.BasisObserved, store.BasisReceipt, store.BasisProducerEvent}
+	var entity, edges []store.Record
+	for i, b := range bases {
+		base := time.Duration(i) * 4 * time.Minute
+		seq := uint64(i*4 + 1)
+		mk := func(n uint64, sub store.Subject, layer catalog.Layer, d time.Duration, kind lifecycle.Kind) store.Record {
+			r := store.Record{
+				Layer: layer, Subject: sub, Producer: "k8s", EventTime: at(base + d), Seq: seq + n, Kind: kind, EventTimeBasis: b,
+			}
+			if kind == lifecycle.Observe {
+				r.Payload = []byte{byte(seq + n)}
+			}
+			return r
+		}
+		entity = append(entity,
+			mk(0, store.EntitySubject(w.pod), catalog.L2, time.Minute, lifecycle.Observe),
+			mk(2, store.EntitySubject(w.pod), catalog.L2, 3*time.Minute, lifecycle.Delete))
+		edges = append(edges,
+			mk(1, store.EdgeSubject(w.pod, w.node, catalog.ScheduledOn), catalog.L2, 2*time.Minute, lifecycle.Observe),
+			mk(3, store.EdgeSubject(w.pod, w.node, catalog.ScheduledOn), catalog.L2, 4*time.Minute, lifecycle.Delete))
+	}
+	sortBySeq := func(rs []store.Record) {
+		slices.SortFunc(rs, func(a, b store.Record) int { return cmp.Compare(a.Seq, b.Seq) })
+	}
+	all := slices.Concat(entity, edges)
+	sortBySeq(all) // a batch ascends in Seq
+	write(t, s, all...)
+
+	check := func(name string, got, want []store.Record) {
+		t.Helper()
+		sortBySeq(got)
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d records, want %d", name, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].Seq != want[i].Seq || got[i].EventTimeBasis != want[i].EventTimeBasis {
+				t.Errorf("%s: seq %d has basis %s, want seq %d with %s", name, got[i].Seq, got[i].EventTimeBasis, want[i].Seq, want[i].EventTimeBasis)
+			}
+		}
+	}
+	gotEntity, err := s.EntityWindow(context.Background(), w.pod, at(0), at(time.Hour), l2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("EntityWindow", gotEntity, entity)
+	gotEdges, err := s.Window(context.Background(), w.pod, store.Forward, at(0), at(time.Hour), l2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("Window", gotEdges, edges)
 }
 
 func TestEntityWindowIsHalfOpenSortedAndKeepsEveryRecord(t *testing.T) {

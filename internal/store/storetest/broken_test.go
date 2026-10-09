@@ -840,6 +840,12 @@ func mutants() map[string]mutant {
 		}
 		return recs, err
 	}
+	stripBasis := func(recs []store.Record, err error) ([]store.Record, error) {
+		for i := range recs {
+			recs[i].EventTimeBasis = store.BasisUnknown
+		}
+		return recs, err
+	}
 
 	return map[string]mutant{
 		// Boundary errors: an interval is half-open, so an edge that starts at t is
@@ -1333,6 +1339,21 @@ func mutants() map[string]mutant {
 				return stripBoot(r.EntityWindow(ctx, fp, from, to, sc))
 			}
 		}), by: []string{"quarantine"}, wrong: true},
+
+		// The event time basis a record carries.
+		"returns records from Window and EntityWindow without their event time basis": {make: over(func(b *broken) {
+			b.window = func(ctx context.Context, r store.Store, fp identity.Fingerprint, dir store.Direction, from, to time.Time, sc store.Scope) ([]store.Record, error) {
+				return stripBasis(r.Window(ctx, fp, dir, from, to, sc))
+			}
+			b.entityWindow = func(ctx context.Context, r store.Store, fp identity.Fingerprint, from, to time.Time, sc store.Scope) ([]store.Record, error) {
+				return stripBasis(r.EntityWindow(ctx, fp, from, to, sc))
+			}
+		}), by: []string{"write contract"}, wrong: true},
+		"accepts a record with an undefined event time basis": {make: over(func(b *broken) {
+			b.intercept = func(batch []store.Record) (bool, error) {
+				return slices.ContainsFunc(batch, func(r store.Record) bool { return !r.EventTimeBasis.Valid() }), nil
+			}
+		}), by: []string{"write contract"}, scriptedOnly: true},
 	}
 }
 

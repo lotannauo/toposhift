@@ -26,7 +26,8 @@ type run struct {
 	recorded    time.Time // the Through of the latest extension written
 	ttl         time.Duration
 	boot        string
-	payload     []byte // the run's own copy
+	basis       store.EventTimeBasis // of the refresh that started the run, whose time is the run's start
+	payload     []byte               // the run's own copy
 }
 
 // deadline is when the store's copy of the run lapses: the last extension written
@@ -35,9 +36,11 @@ type run struct {
 func (st *run) deadline() time.Time { return st.recorded.Add(st.ttl) }
 
 // describes is whether a refresh repeats what the run asserts: the same TTL,
-// payload and boot. A reboot is a new run.
+// payload and boot, and the same basis for its event time. A reboot is a new run,
+// and so is a change of basis: the run's first event time is the time it asserts,
+// and where that time came from is part of what the record says about it.
 func (st *run) describes(r store.Record) bool {
-	return st.ttl == r.TTL && st.boot == r.Boot && bytes.Equal(st.payload, r.Payload)
+	return st.ttl == r.TTL && st.boot == r.Boot && st.basis == r.EventTimeBasis && bytes.Equal(st.payload, r.Payload)
 }
 
 func newRun(r store.Record, replaced *run) *run {
@@ -46,7 +49,7 @@ func newRun(r store.Record, replaced *run) *run {
 	}
 	return &run{
 		prev: replaced, layer: r.Layer, start: r.EventTime, last: r.EventTime, recorded: r.EventTime,
-		ttl: r.TTL, boot: r.Boot, payload: slices.Clone(r.Payload),
+		ttl: r.TTL, boot: r.Boot, basis: r.EventTimeBasis, payload: slices.Clone(r.Payload),
 	}
 }
 
@@ -125,8 +128,10 @@ func (c *Coalescer) Runs() int { return len(c.runs) }
 // retained past that time it would be refused and the run would silently die at
 // its deadline. A run that started before the retention horizon of its layer is
 // therefore continued by a new run, asserted at the refresh's own event time. A new
-// run also starts when the description changes (a payload, a TTL or a boot), and when
-// the run has reached the age [Config.RunMaxAge] allows.
+// run also starts when the description changes (a payload, a TTL, a boot or the basis of
+// the event time), and when the run has reached the age [Config.RunMaxAge] allows. An
+// extension and the record that closes a run carry the basis of the refresh that started
+// it; a record that is passed on as given keeps its own.
 //
 // A new run replaces the old run's deadline, so existence stays continuous only
 // if the old run's stored deadline reaches the new run's start. Refreshes inside
@@ -207,6 +212,12 @@ func (c *Coalescer) Add(r store.Record, out []store.Record) []store.Record {
 // what it adds. The record starts no later than the stored deadline, so the two
 // runs touch, except when the deadline lapsed before the horizon: the gap before
 // the horizon stays, and the store keeps nothing there.
+//
+// The record carries the basis of the run, which names the clock that stamped the
+// run's refreshes. Its event time is the refresh's only when it is the run's start or
+// last refresh: when it is the stored deadline or the horizon, the coalescer computed
+// it, and the clock the basis names did not stamp it. That is accepted: a reader
+// treats the time of a closing or continuation record as derived.
 func (c *Coalescer) closeRun(key runKey, st *run, until time.Time, out []store.Record) []store.Record {
 	horizon := c.Horizon(st.layer)
 	if !st.deadline().Before(until) || until.After(st.last.Add(st.ttl)) || until.Before(horizon) {
@@ -214,7 +225,7 @@ func (c *Coalescer) closeRun(key runKey, st *run, until time.Time, out []store.R
 	}
 	rec := store.Record{
 		Layer: st.layer, Subject: key.subject, Producer: key.producer,
-		Kind: lifecycle.Observe, TTL: st.ttl, Payload: slices.Clone(st.payload), Boot: st.boot,
+		Kind: lifecycle.Observe, TTL: st.ttl, Payload: slices.Clone(st.payload), Boot: st.boot, EventTimeBasis: st.basis,
 	}
 	if !st.start.Before(horizon) {
 		rec.EventTime, rec.Through = st.start, st.last

@@ -288,6 +288,14 @@ func CheckWriteContract(s store.Store) error {
 			r.Boot = "  \t"
 			return r
 		},
+		// The kind 3 is reserved for an operator purge, whose meaning is not
+		// decided: it is refused, as is a basis no layout has a place for.
+		"a reserved kind": func(r store.Record) store.Record { r.Kind = 3; return r },
+		"an undefined event time basis": func(r store.Record) store.Record {
+			r.EventTimeBasis = store.BasisProducerEvent + 1
+			return r
+		},
+		"an event time basis of 255": func(r store.Record) store.Record { r.EventTimeBasis = 255; return r },
 	}
 	names := make([]string, 0, len(broken))
 	for name := range broken {
@@ -297,7 +305,7 @@ func CheckWriteContract(s store.Store) error {
 	for _, name := range names {
 		bad := broken[name](next)
 		// A valid record followed by an invalid one: the whole batch is refused.
-		if err := wantIs("a batch with "+name, s.Write(bg, cloneRecords([]store.Record{good, bad})), store.ErrInvalid); err != nil {
+		if err := wantInvalid("a batch with "+name, s.Write(bg, cloneRecords([]store.Record{good, bad}))); err != nil {
 			return err
 		}
 	}
@@ -347,7 +355,10 @@ func CheckWriteContract(s store.Store) error {
 			return err
 		}
 	}
-	last := own.Seq
+	last, err := checkBasisKept(s, pod, node, start.Add(35*time.Minute), own.Seq)
+	if err != nil {
+		return err
+	}
 
 	// The horizon only moves forward: a later, earlier-dated Retain must not
 	// bring back the window between the two.
@@ -410,6 +421,56 @@ func CheckWriteContract(s store.Store) error {
 		return fmt.Errorf("a refused record moved LastSeq to %d, want %d", got, top.Seq)
 	}
 	return nil
+}
+
+// checkBasisKept writes, for each valid event time basis, an observation and a
+// delete of the pod and of its edge to the node, with seqs after last, and
+// requires one read of each (EntityWindow for the pod, Window for the edge) to
+// return it with the basis it was written with. It
+// returns the last seq it used. Its records are at or after from, and span less
+// than an hour.
+func checkBasisKept(s store.Store, pod, node identity.Fingerprint, from time.Time, last uint64) (uint64, error) {
+	var batch []store.Record
+	seq := last
+	for i, basis := range []store.EventTimeBasis{store.BasisUnknown, store.BasisObjectField, store.BasisObserved, store.BasisReceipt, store.BasisProducerEvent} {
+		at := from.Add(time.Duration(i) * 10 * time.Minute)
+		mk := func(step int, sub store.Subject, layer catalog.Layer, kind lifecycle.Kind, payload []byte) store.Record {
+			seq++
+			return store.Record{
+				Layer: layer, Subject: sub, Producer: "basis", EventTime: at.Add(time.Duration(step) * time.Minute),
+				Seq: seq, Kind: kind, Payload: payload, EventTimeBasis: basis,
+			}
+		}
+		entity, edge := store.EntitySubject(pod), store.EdgeSubject(pod, node, catalog.ScheduledOn)
+		batch = append(batch,
+			mk(0, entity, catalog.L2, lifecycle.Observe, []byte("basis entity")),
+			mk(1, edge, catalog.L2, lifecycle.Observe, []byte("basis edge")),
+			mk(2, entity, catalog.L2, lifecycle.Delete, nil),
+			mk(3, edge, catalog.L2, lifecycle.Delete, nil),
+		)
+	}
+	if err := s.Write(bg, cloneRecords(batch)); err != nil {
+		return 0, fmt.Errorf("records with each event time basis were refused: %w", err)
+	}
+	for _, r := range batch {
+		a := readArgs{ctx: bg, fp: r.Subject.A, dir: store.Forward, t: r.EventTime, to: r.EventTime.Add(time.Nanosecond), sc: store.Current(r.Layer)}
+		kind := "Window"
+		if r.Subject.Kind == store.SubjectEntity {
+			kind = "EntityWindow"
+		}
+		got, err := ask(s, kind, a)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", kind, err)
+		}
+		i := slices.IndexFunc(got.records, func(x store.Record) bool { return x.Seq == r.Seq })
+		switch {
+		case i < 0:
+			return 0, fmt.Errorf("%w: %s did not return the %s of seq %d, written with event time basis %s", ErrMismatch, kind, r.Kind, r.Seq, r.EventTimeBasis)
+		case got.records[i].EventTimeBasis != r.EventTimeBasis:
+			return 0, fmt.Errorf("%w: %s returned event time basis %s for seq %d, written with %s", ErrMismatch, kind, got.records[i].EventTimeBasis, r.Seq, r.EventTimeBasis)
+		}
+	}
+	return seq, nil
 }
 
 // holds reports whether the store returns a record, under the latest token, by the

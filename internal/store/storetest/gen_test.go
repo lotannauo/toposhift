@@ -194,7 +194,8 @@ func genConfig() *rapid.Generator[storetest.Config] {
 func sameRecord(a, b store.Record) bool {
 	return a.Layer == b.Layer && a.Subject == b.Subject && a.Producer == b.Producer &&
 		a.EventTime.Equal(b.EventTime) && a.Seq == b.Seq && a.Kind == b.Kind && a.TTL == b.TTL &&
-		a.Through.Equal(b.Through) && bytes.Equal(a.Payload, b.Payload) && a.Boot == b.Boot
+		a.Through.Equal(b.Through) && bytes.Equal(a.Payload, b.Payload) && a.Boot == b.Boot &&
+		a.EventTimeBasis == b.EventTimeBasis
 }
 
 func sameRecords(a, b []store.Record) bool {
@@ -905,6 +906,50 @@ func TestGoldenDigests(t *testing.T) {
 				t.Errorf("digest of the %d records of %s = %s, want %s", len(recs), name, got, tt.want)
 			}
 		})
+	}
+}
+
+// The basis follows the producer, and is not drawn from the random source (a
+// stream keeps its records, and so its golden digests, when the basis is added).
+func TestEventTimeBasisFollowsTheProducer(t *testing.T) {
+	t.Parallel()
+	want := map[lifecycle.Producer]store.EventTimeBasis{
+		storetest.ProducerK8sObjects:    store.BasisObjectField,
+		storetest.ProducerKubelet:       store.BasisObserved,
+		storetest.ProducerNodeCollector: store.BasisReceipt,
+		storetest.ProducerTraces:        store.BasisReceipt,
+		storetest.ProducerClone:         store.BasisReceipt,
+		storetest.ProducerFabric:        store.BasisUnknown,
+	}
+	for name, c := range map[string]storetest.Config{"Tiny": storetest.Tiny(), "everything": everything()} {
+		seen := map[lifecycle.Producer]bool{}
+		for _, r := range allRecords(t, c) {
+			b, ok := want[r.Producer]
+			if !ok {
+				t.Fatalf("%s: a record from producer %q, which the test does not know", name, r.Producer)
+			}
+			if r.EventTimeBasis != b {
+				t.Fatalf("%s: seq %d from %s has basis %s, want %s", name, r.Seq, r.Producer, r.EventTimeBasis, b)
+			}
+			seen[r.Producer] = true
+		}
+		// Every producer appears, except the clone, which needs a reboot.
+		for p := range want {
+			if !seen[p] && (name == "everything" || p != storetest.ProducerClone) {
+				t.Errorf("%s: no record from producer %s", name, p)
+			}
+		}
+	}
+	// The four values the fixture maps appear in the tiny stream. BasisProducerEvent is
+	// not mapped: the memstore round trip and the write contract cover it.
+	seen := map[store.EventTimeBasis]bool{}
+	for _, r := range allRecords(t, storetest.Tiny()) {
+		seen[r.EventTimeBasis] = true
+	}
+	for _, b := range []store.EventTimeBasis{store.BasisUnknown, store.BasisObjectField, store.BasisObserved, store.BasisReceipt} {
+		if !seen[b] {
+			t.Errorf("no record of the tiny stream has basis %s", b)
+		}
 	}
 }
 

@@ -28,6 +28,8 @@ func Example() {
 		Seq:       43,
 		Kind:      lifecycle.Observe,
 		TTL:       time.Minute,
+		// The time came from a field of the object itself.
+		EventTimeBasis: store.BasisObjectField,
 	}
 	fmt.Println(rec.Subject.Relation, rec.Validate())
 

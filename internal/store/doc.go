@@ -20,6 +20,12 @@
 // token. A read pinned to token S sees exactly the records with Seq at or below
 // S.
 //
+// A record also says where its event time came from, in its EventTimeBasis: unknown
+// (the zero value) or one of the named values, which say which clock stamped it: the
+// object's own, a collector's, the producer's, or the store's ingest layer. The basis
+// is descriptive and changes no answer. A record does not carry its
+// ingest wall time.
+//
 // # Facts only
 //
 // A store holds what producers asserted, as [Record] values. Liveness expiry,
