@@ -1,8 +1,8 @@
 // Command toposhift is the single toposhift binary: server and client in one.
 //
 //	toposhift serve     run the ingest and query service (boots with no config)
-//	toposhift query     query the topology graph (not implemented yet)
-//	toposhift replay    replay recorded events into a store (not implemented yet)
+//	toposhift query     ask a store that replay filled a question, as JSON lines
+//	toposhift replay    replay an activity file into a store
 //	toposhift version   print build information
 package main
 
@@ -40,9 +40,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	switch args[0] {
 	case "serve":
 		return serve(ctx, args[1:], getenv, stderr)
-	case "query", "replay":
-		_, _ = fmt.Fprintf(stderr, "toposhift %s: not implemented yet\n", args[0])
-		return 1
+	case "query":
+		return queryCmd(ctx, args[1:], stdout, stderr)
+	case "replay":
+		return replayCmd(ctx, args[1:], stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version())
 		return 0
@@ -91,8 +92,8 @@ func usage(w io.Writer) {
 
 Commands:
   serve     run the ingest and query service (no configuration required)
-  query     query the topology graph (not implemented yet)
-  replay    replay recorded events into a store (not implemented yet)
+  query     ask a store that replay filled a question (run: toposhift query help)
+  replay    replay an activity file into a store (run: toposhift replay help)
   version   print build information
 `)
 }
