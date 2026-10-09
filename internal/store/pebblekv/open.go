@@ -175,9 +175,11 @@ type Config struct {
 	// the compactions are the same code, without the cost of a disk's flush.
 	FS vfs.FS
 
-	// logger replaces the log/slog logger of this package, for a test that wants
-	// Pebble quiet or wants to see what it reports. Nil is the default.
-	logger pebble.Logger
+	// Logger receives Pebble's messages. Nil is the default, which sends them to
+	// log/slog and, on a fatal condition, logs and ends the process with status 70.
+	// A test may install one that drops the messages, records them, or panics on a
+	// fatal condition instead of ending the process.
+	Logger pebble.Logger
 }
 
 // KV is an open database and the settings its layouts need next to it.
@@ -299,8 +301,8 @@ func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Optio
 		all = append(all, s)
 	}
 	var log pebble.Logger = logger{}
-	if cfg.logger != nil {
-		log = cfg.logger
+	if cfg.Logger != nil {
+		log = cfg.Logger
 	}
 	opts := &pebble.Options{
 		Comparer: layout.Comparer,

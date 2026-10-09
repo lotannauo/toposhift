@@ -47,7 +47,7 @@ const canonicalDir = "canonical.tmp"
 // writes to while it runs, after CompactAll; it needs the room for a second copy of
 // the tables while it runs.
 func (k *KV) Canonicalize(ctx context.Context) (err error) {
-	if k.cfg.ReadOnly {
+	if k.Config().ReadOnly {
 		return fmt.Errorf("pebblekv: canonicalizing: %w", pebble.ErrReadOnly)
 	}
 	if err := k.Quiesce(ctx); err != nil { // flushes the memtable, and nothing compacts under the copy
@@ -59,11 +59,12 @@ func (k *KV) Canonicalize(ctx context.Context) (err error) {
 	}
 	// An excise takes bare prefixes: from the prefix of the smallest key to just after
 	// the prefix of the largest, which holds every table whole.
-	cmp := k.opts.Comparer
+	opts := k.Options()
+	cmp := opts.Comparer
 	span := pebble.KeyRange{Start: slices.Clone(lo[:cmp.Split(lo)]), End: cmp.ImmediateSuccessor(nil, hi[:cmp.Split(hi)])}
 
-	fs := k.opts.FS
-	tmp := fs.PathJoin(k.dir, canonicalDir)
+	fs := opts.FS
+	tmp := fs.PathJoin(k.Dir(), canonicalDir)
 	if err := fs.RemoveAll(tmp); err != nil {
 		return fmt.Errorf("pebblekv: canonicalizing: %w", err)
 	}
@@ -103,9 +104,10 @@ type canonicalTables struct {
 
 // writeCanonical writes every live key and its value to tables under dir.
 func (k *KV) writeCanonical(ctx context.Context, fs vfs.FS, dir string) (out canonicalTables, err error) {
-	opts := k.opts.MakeWriterOptions(len(k.opts.Levels)-1, k.TableFormat())
-	target := uint64(max(k.cfg.Tuning.TargetFileSize, 1))
-	split := k.opts.Comparer.Split
+	pebbleOpts := k.Options()
+	opts := pebbleOpts.MakeWriterOptions(len(pebbleOpts.Levels)-1, k.TableFormat())
+	target := uint64(max(k.Config().Tuning.TargetFileSize, 1))
+	split := pebbleOpts.Comparer.Split
 
 	var w *sstable.Writer
 	finish := func() error {

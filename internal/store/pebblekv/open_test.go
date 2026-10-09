@@ -29,7 +29,7 @@ func bytewise(t *testing.T, fs vfs.FS, dir string, cfg Config) *KV {
 		cfg.Tuning = TinyTuning()
 	}
 	cfg.Schema = SchemaDefault
-	cfg.logger = quietLogger{}
+	cfg.Logger = quietLogger{}
 	kv, err := Open(dir, BytewiseLayout, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestOpenWriteReadReopen(t *testing.T) {
 			t.Parallel()
 			fs := vfs.NewMem()
 			cfg.FS = fs
-			cfg.logger = quietLogger{}
+			cfg.Logger = quietLogger{}
 			kv, err := Open("db", BytewiseLayout, cfg)
 			if err != nil {
 				t.Fatal(err)
@@ -300,5 +300,31 @@ func TestColdStartMakesTheNextReadLoadItsBlocksAgain(t *testing.T) {
 	kv.ColdStart()
 	if size := kv.Metrics().BlockCache.Size; size != 0 {
 		t.Errorf("the cache holds %d bytes after ColdStart", size)
+	}
+}
+
+// A nil Config.Logger is the package's own, which logs to log/slog and ends the
+// process on a fatal condition; a Logger that is set is the one Pebble gets.
+func TestConfigLoggerNilIsTheDefaultAndASetOneIsUsed(t *testing.T) {
+	t.Parallel()
+	cache := pebble.NewCache(1 << 20)
+	defer cache.Unref()
+	cfg := Config{Schema: SchemaDefault, Tuning: TinyTuning()}
+
+	o, err := buildOptions(BytewiseLayout, cfg, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := o.Logger.(logger); !ok {
+		t.Errorf("a nil Logger gave %T, want the default that ends the process on a fatal condition", o.Logger)
+	}
+
+	cfg.Logger = quietLogger{}
+	o, err = buildOptions(BytewiseLayout, cfg, cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := o.Logger.(quietLogger); !ok {
+		t.Errorf("a set Logger gave %T, want the one that was set", o.Logger)
 	}
 }

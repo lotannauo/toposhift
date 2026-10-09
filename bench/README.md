@@ -41,7 +41,12 @@ into its package, and so reruns it and everything that imports it.
   checks a candidate against the oracle on generated workloads.
 - `spike/pebblekv`: what the Pebble-backed candidates share: the numeric ids that
   keys carry (pinned by a golden file), the value codec, how a database is opened,
-  and the liveness rule applied to the versions a read finds.
+  and the liveness rule applied to the versions a read finds. The plumbing (opening and
+  tuning, the value codec, the ids, the meta keys, the settle after a retention, the
+  iterator recording) is the root module's `internal/store/pebblekv`, so the
+  benchmarks measure the code the product store runs on; this package adds the
+  cockroachkvs layout and what only a measurement needs (the waits, the snapshot,
+  the description of a database, the canonical rewrite).
 - `spike/pebblemvcc`: layout M, per-edge MVCC versions on Pebble's `cockroachkvs`
   (see its package documentation for the key layout, the read and the retention).
 - `spike/candidates`: the list of variants a measurement runs, each with the name it goes
