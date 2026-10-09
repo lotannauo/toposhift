@@ -255,9 +255,9 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	return s.settleRetention()
 }
 
-// publishHorizon commits the new horizon of every layer, with the sequence number
-// L, in a commit of its own and synced if the database is, and then publishes it
-// to readers and writers. The commit comes first: a horizon that is published but
+// publishHorizon commits the new horizon of the layers moved, and only those, with
+// the sequence number L, in a commit of its own and synced if the database is, and
+// then publishes it to readers and writers. The commit comes first: a horizon that is published but
 // not stored would be forgotten by a restart that then accepts a write below it.
 func (s *Store) publishHorizon(horizon time.Time, last uint64, moved [layers]bool) error {
 	raw, err := pebblekv.EncodeLayerHorizon(horizon, last)
@@ -292,11 +292,13 @@ func (s *Store) publishHorizon(horizon time.Time, last uint64, moved [layers]boo
 		}
 		if t, seq, derr := pebblekv.DecodeLayerHorizon(raw); derr == nil && t.Equal(horizon) && seq == last {
 			s.horizons.Store(&hs)
+			s.lastMoved.Store(&store.Horizon{Time: horizon, Seq: last})
 		}
 		s.failed = fmt.Errorf("a horizon commit failed (%w), so whether it is stored is decided only when the store is reopened: reopen the store", err)
 		return s.failedError("Retain")
 	}
 	s.horizons.Store(&hs)
+	s.lastMoved.Store(&store.Horizon{Time: horizon, Seq: last})
 	return nil
 }
 

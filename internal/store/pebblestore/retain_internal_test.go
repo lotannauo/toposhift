@@ -904,8 +904,8 @@ func TestRetainMovesOnlyTheLayersItIsAfter(t *testing.T) {
 			t.Errorf("LayerHorizon(%s) = %v, want %v", l, got, want)
 		}
 	}
-	if got := s.Horizon(); !got.Time.Equal(late) {
-		t.Errorf("Horizon = %v, want the latest, at %v", got, late)
+	if got := s.Horizon(); !got.Time.Equal(mid) || got.Seq != last {
+		t.Errorf("Horizon = %v, want the horizon the Retain moved, {%v, %d}", got, mid, last)
 	}
 	// Each layer is read by its own horizon.
 	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L1)); !errors.Is(err, store.ErrBeforeHorizon) {

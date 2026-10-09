@@ -45,7 +45,9 @@ type Store struct {
 	// [Store.horizonOf]. A Retain publishes a new array whole, after its commit and
 	// before it discards anything.
 	horizons atomic.Pointer[[layers]store.Horizon]
-	closed   atomic.Bool
+	// lastMoved is the horizon the last Retain that moved a layer published.
+	lastMoved atomic.Pointer[store.Horizon]
+	closed    atomic.Bool
 
 	retainBytes       int
 	stopAfter         int
@@ -220,6 +222,13 @@ func (s *Store) load() error {
 		hs[i] = store.Horizon{Time: t, Seq: hseq}
 	}
 	s.horizons.Store(&hs)
+	latest := hs[0]
+	for _, h := range hs[1:] {
+		if h.Time.After(latest.Time) {
+			latest = h
+		}
+	}
+	s.lastMoved.Store(&latest)
 	// Nothing here writes checkpoints, and nothing here invalidates one when an
 	// older record arrives, so a database that may hold one would be answered
 	// from stale summaries.
@@ -272,21 +281,12 @@ func (s *Store) horizonOf(l catalog.Layer) store.Horizon {
 func (s *Store) LastSeq() uint64 { return s.lastSeq.Load() }
 
 // Horizon implements [store.Store]: the horizon of the layer retained most
-// recently, and when one Retain moved several, the latest of them. Every layer
-// moves together in this version, so it is the one horizon they all have. It is
-// derived from the horizons of the layers, which are what is stored, so it is the
-// same after a reopening. (With retention offsets, a later change will keep the
-// value of the last Retain, which the layers' horizons alone no longer give.) After Close it returns the value it had.
-func (s *Store) Horizon() store.Horizon {
-	hs := s.horizons.Load()
-	latest := hs[0]
-	for _, h := range hs[1:] {
-		if h.Time.After(latest.Time) {
-			latest = h
-		}
-	}
-	return latest
-}
+// recently, and when one Retain moved several, the latest of them. It is the
+// horizon the last Retain that moved any layer published. Nothing stored says
+// which layers that Retain moved, so after a reopening it is the latest of the
+// layers' stored horizons, which is the same thing while every layer moves
+// together, as they do in this version. After Close it returns the value it had.
+func (s *Store) Horizon() store.Horizon { return *s.lastMoved.Load() }
 
 // LayerHorizon implements [store.Store]. A layer outside L0 to L3 has the zero
 // Horizon. After Close it returns the value it had.
