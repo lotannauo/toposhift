@@ -206,6 +206,13 @@ const RulesVersion = 5
 // decided. PostRetentionBatches is new and RulesVersion is 5, so the digest changes; no
 // other value changes.
 //
+// Log (2026-10-08, before any timing on CI hardware at 30 days; no field of Rules
+// changes): the 30-day timed builds run, every candidate alike, with the Go runtime's
+// memory limit set (GOMEMLIMIT, recorded in the description as go_memory_limit), because a
+// build that keeps the writer's state of every prefix exceeds the runners' memory without
+// it; it changes no stored byte, only when the collector runs, and builds with and without
+// it are never compared.
+//
 // Two properties of the statistic are part of the rule. It is an envelope: a population
 // is the largest of its queries (or the lower median) in each window, so a query that
 // becomes the largest only at the target window counts for about a quarter of its own

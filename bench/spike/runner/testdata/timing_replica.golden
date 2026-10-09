@@ -2,7 +2,7 @@ timed builds of the bench workflow, judged by rules ea47515f5ec1 (version 5, the
 the rule: G2 the largest over the repetitions of the retention plus the slowness of the first 100 batches after it, within 1m0s (or, where no layout of the reference set fits, within x2.0 the best); G3 the median 99th-percentile commit over the repetitions, within x2.0 the best median of the reference set, not decided where L/off varies by more than x1.5; G4 the median, within x2.0 the best median; a gate passes only if it passes on both architectures; timings are compared within one CPU model, or pooled when every candidate compared has at least 3 repetitions
 revision aaaaaaaaaaaa, family rmae, pins from the 2-day window, 6 builds from run 100
 revision aaaaaaaaaaaa is an ancestor of origin/main
-builds: no sync of the log, no rest after a retention, not rewritten into the canonical layout, metrics not sampled, settled each retention (deadline 2m0s); binaries aarch64 111111111111 and x86_64 222222222222 (go1.27.1)
+builds: no sync of the log, no rest after a retention, not rewritten into the canonical layout, metrics not sampled, settled each retention (deadline 2m0s), no Go memory limit; binaries aarch64 111111111111 and x86_64 222222222222 (go1.27.1)
 plans: 7 days 605648e19d4d (1000 records, rules ea47515f5ec1)
 
 builds (window, candidate, architecture, CPU model, repetitions):

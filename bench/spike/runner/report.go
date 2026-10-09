@@ -111,6 +111,11 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		if a, b := describedOr(ref.Manifest, MetricsKey, "0s"), describedOr(c.Manifest, MetricsKey, "0s"); a != b {
 			out = append(out, fmt.Sprintf("%s and %s were built with different metric sampling (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
 		}
+		// A memory limit makes the collector run sooner as the heap nears it, so builds
+		// under different limits (or one under none) were not slowed alike.
+		if a, b := describedOr(ref.Manifest, GoMemoryLimitKey, "none"), describedOr(c.Manifest, GoMemoryLimitKey, "none"); a != b {
+			out = append(out, fmt.Sprintf("%s and %s were built with different Go memory limits (%q and %q): their timings are not comparable", ref.Results.Candidate, name, a, b))
+		}
 		if diff := optionsDiff(ref.Manifest.Describe["pebble_options"], c.Manifest.Describe["pebble_options"]); diff != "" {
 			out = append(out, fmt.Sprintf("%s and %s ran with different Pebble options: %s", ref.Results.Candidate, name, diff))
 		}

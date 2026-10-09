@@ -123,6 +123,8 @@ type TimingDiagnostic struct {
 type TimingSettings struct {
 	Sync, RestAfterRetention, CanonicalLayout, MetricsEvery string
 	SettleTombstones, SettleDeadline, PostRetentionBatches  string
+	// GoMemoryLimit is the Go memory limit in bytes, or "none".
+	GoMemoryLimit string
 }
 
 // TimingBinary is a binary the builds of one architecture ran.
@@ -538,6 +540,13 @@ func (j *judge) checkSet(builds []*tbuild, prefix string) {
 	diff(func(m *Manifest) string { return m.Describe[PostRetentionKey] }, func(a, b, x, y string) string {
 		return fmt.Sprintf("%s and %s recorded different numbers of batches after a retention (%q and %q): their timings are not comparable", a, b, x, y)
 	})
+	// The limit is a setting of the run, chosen before it, like the absence of one: no
+	// precondition below refuses a build for the limit it recorded, and the judge does
+	// not check at which window a limit is used. It refuses only a mix within one
+	// judgement, because a limit changes when the collector runs and so the timings.
+	diff(func(m *Manifest) string { return describedOr(m, GoMemoryLimitKey, "none") }, func(a, b, x, y string) string {
+		return fmt.Sprintf("%s and %s were built with different Go memory limits (%q and %q): their timings are not comparable", a, b, x, y)
+	})
 	for _, b := range builds[1:] {
 		if d := optionsDiff(first.Manifest.Describe["pebble_options"], b.Manifest.Describe["pebble_options"]); d != "" {
 			add("%s and %s ran with different Pebble options: %s", first.label(), b.label(), d)
@@ -709,6 +718,7 @@ func (j *judge) describe() {
 			CanonicalLayout: describedOr(first, CanonicalKey, "false"), MetricsEvery: describedOr(first, MetricsKey, "0s"),
 			SettleTombstones: describedOr(first, SettleKey, "false"), SettleDeadline: first.Describe[settleDeadlineKey],
 			PostRetentionBatches: first.Describe[PostRetentionKey],
+			GoMemoryLimit:        describedOr(first, GoMemoryLimitKey, "none"),
 		}
 		seen := map[TimingBinary]bool{}
 		for _, b := range j.builds {

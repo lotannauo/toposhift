@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +32,10 @@ type Job struct {
 	PinsWindow   int    `json:"pins_window"`
 	Sync         string `json:"sync"`
 	MetricsEvery string `json:"metrics_every"`
+	// GoMemLimit is the Go memory limit the job ran under, as the workflow's input gave
+	// it (a whole number of MiB or GiB such as 11GiB). Empty, or missing from a job
+	// file made before the limit was recorded, means none.
+	GoMemLimit   string `json:"go_mem_limit"`
 	CPUModel     string `json:"cpu_model"`
 	NProc        int    `json:"nproc"`
 	MemTotalKB   int64  `json:"mem_total_kb"`
@@ -321,10 +327,41 @@ func checkJob(j Job, m *Manifest, jobPath, manifestPath string) error {
 	if d != every {
 		return bad("metrics_every", j.MetricsEvery, fmt.Sprintf("not the manifest's (%q in %s)", described, manifestPath))
 	}
+	limit, err := parseGoMemLimit(j.GoMemLimit)
+	if err != nil {
+		return bad("go_mem_limit", j.GoMemLimit, "not empty or a whole number of MiB or GiB such as 11GiB")
+	}
+	if want := describedOr(m, GoMemoryLimitKey, "none"); memoryLimitText(limit) != want {
+		return bad("go_mem_limit", j.GoMemLimit, fmt.Sprintf("not the manifest's (%q in %s)", want, manifestPath))
+	}
 	if m.Timing.Writes.Count == 0 {
 		return fmt.Errorf("runner: %s: the manifest records no batch timings", manifestPath)
 	}
 	return nil
+}
+
+// goMemLimit is the form of the workflow's go_mem_limit input.
+var goMemLimit = regexp.MustCompile(`^([1-9][0-9]{0,5})(MiB|GiB)$`)
+
+// parseGoMemLimit reads a job's go_mem_limit into bytes: a whole number of MiB or GiB,
+// exactly as the workflow validates it, or math.MaxInt64 (the runtime's value for no
+// limit) for an empty one.
+func parseGoMemLimit(s string) (int64, error) {
+	if s == "" {
+		return math.MaxInt64, nil
+	}
+	m := goMemLimit.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("runner: %q: not a whole number of MiB or GiB", s)
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if m[2] == "GiB" {
+		return n << 30, nil
+	}
+	return n << 20, nil
 }
 
 // LoadCountersRuns finds the counters runs under roots: every directory with a results
