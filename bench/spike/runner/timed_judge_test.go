@@ -106,6 +106,13 @@ func TestTimingRefusesInputsThatCannotBeJudgedTogether(t *testing.T) {
 		{name: "metric sampling mixed", world: func(w world) world {
 			return w.with(one, func(b *fixtureBuild) { b.Metrics = "30s" })
 		}, want: "built with different metric sampling"},
+		{name: "Go memory limits mixed", world: func(w world) world {
+			return w.with(one, func(b *fixtureBuild) { b.MemLimit = "11811160064" })
+		}, want: `built with different Go memory limits ("none" and "11811160064"): their timings are not comparable`},
+		{name: "two Go memory limits mixed", world: func(w world) world {
+			w = w.with(func(fixtureBuild) bool { return true }, func(b *fixtureBuild) { b.MemLimit = "11811160064" })
+			return w.with(one, func(b *fixtureBuild) { b.MemLimit = "12884901888" })
+		}, want: `built with different Go memory limits ("11811160064" and "12884901888")`},
 		{name: "settling mixed", world: func(w world) world {
 			return w.with(one, func(b *fixtureBuild) { b.Settle = "false" })
 		}, want: `built with and without settling a retention's tombstones ("true" and "false")`},
@@ -1502,5 +1509,42 @@ func TestTimingSaysWhenNoSettleDeadlineWasRecorded(t *testing.T) {
 	text := timingText(full(3).with(every, func(b *fixtureBuild) { b.Deadline = "-" }).judge(verified()))
 	if !strings.Contains(text, "settled each retention (no deadline recorded)") || strings.Contains(text, "(deadline )") {
 		t.Errorf("the builds line:\n%s", text)
+	}
+}
+
+// Builds that all ran under one Go memory limit are judged as builds without one are,
+// and the builds line says the limit; a limit makes no precondition fail.
+func TestTimingJudgesBuildsThatAllRanUnderOneGoMemoryLimit(t *testing.T) {
+	t.Parallel()
+
+	without := full(3).judge(verified())
+	with := full(3).with(every, func(b *fixtureBuild) { b.MemLimit = "11811160064" }).judge(verified())
+	if !with.Judged || len(with.Problems) != 0 || len(with.NotJudged) != 0 {
+		t.Fatalf("judged %v, problems %q, not judged %q", with.Judged, with.Problems, with.NotJudged)
+	}
+	if !reflect.DeepEqual(with.Verdicts, without.Verdicts) {
+		t.Error("the verdicts of builds under a limit are not those of the same builds without one")
+	}
+	if got := with.Settings.GoMemoryLimit; got != "11811160064" {
+		t.Errorf("the settings hold the limit %q", got)
+	}
+	if text := timingText(with); !strings.Contains(text, "Go memory limit 11 GiB; binaries") || strings.Contains(text, "no Go memory limit") {
+		t.Errorf("the builds line of builds under a limit:\n%s", text)
+	}
+	if text := timingText(without); !strings.Contains(text, "no Go memory limit; binaries") {
+		t.Errorf("the builds line of builds without a limit:\n%s", text)
+	}
+	if got := without.Settings.GoMemoryLimit; got != "none" {
+		t.Errorf("builds without the key have the limit %q, want none", got)
+	}
+}
+
+// A limit recorded as none is the same as a manifest without the key.
+func TestTimingTakesNoneAndNoKeyAlike(t *testing.T) {
+	t.Parallel()
+
+	w := full(3).with(func(b fixtureBuild) bool { return b.Candidate == cOff }, func(b *fixtureBuild) { b.MemLimit = "none" })
+	if rep := w.judge(verified()); !rep.Judged || len(rep.Problems) != 0 {
+		t.Errorf("judged %v, problems %q", rep.Judged, rep.Problems)
 	}
 }

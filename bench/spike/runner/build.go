@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -85,6 +87,10 @@ const (
 	// PostRetentionKey is the key of a manifest's Describe that gives how many batches
 	// after each retention the build timed one by one (Timing.PostRetention).
 	PostRetentionKey = "post_retention_batches"
+	// GoMemoryLimitKey is the key of a manifest's Describe that gives the Go runtime's
+	// memory limit the build ran under (GOMEMLIMIT), in bytes, or "none". A manifest
+	// without it was built before the limit was recorded, and ran with none.
+	GoMemoryLimitKey = "go_memory_limit"
 	// SettleKey is the key of a manifest's Describe that says whether each retention of
 	// the build settled its tombstones before returning. It is the engine's own
 	// description, not one the runner adds.
@@ -344,6 +350,8 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	m.Describe[CanonicalKey] = strconv.FormatBool(opts.CanonicalLayout)
 	m.Describe[MetricsKey] = opts.MetricsEvery.String()
 	m.Describe[PostRetentionKey] = strconv.Itoa(postBatches)
+	// A negative argument reads the limit and leaves it as it is.
+	m.Describe[GoMemoryLimitKey] = memoryLimitText(debug.SetMemoryLimit(-1))
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err
@@ -483,4 +491,13 @@ func readUncompacted(e measurable, rec *Capture, plan *Plan, name string) (reads
 		}
 	}
 	return reads, wrong, nil
+}
+
+// memoryLimitText is how a manifest records the Go memory limit: the bytes in
+// decimal, or "none" for no limit (math.MaxInt64, the runtime's value for none).
+func memoryLimitText(n int64) string {
+	if n == math.MaxInt64 || n <= 0 {
+		return "none"
+	}
+	return strconv.FormatInt(n, 10)
 }

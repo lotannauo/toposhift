@@ -50,6 +50,10 @@ on:
         description: Pass -metrics-every with this Go duration (for example 30s) to every build, or leave empty. Needs the change that adds that flag; before it merges the build step fails at once with "flag provided but not defined".
         type: string
         default: ""
+      go_mem_limit:
+        description: Run every build with this Go memory limit (GOMEMLIMIT), as a whole number of MiB or GiB such as 11GiB, or leave empty for none. Never applied to the plans. Builds with different limits are never compared.
+        type: string
+        default: ""
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -92,6 +96,7 @@ jobs:
       pins_window: ${{ steps.matrix.outputs.pins_window }}
       sync: ${{ steps.matrix.outputs.sync }}
       metrics_every: ${{ steps.matrix.outputs.metrics_every }}
+      go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
       plans_key: ${{ steps.matrix.outputs.plans_key }}
     steps:
       - name: Harden runner
@@ -113,6 +118,7 @@ jobs:
           PINS_WINDOW: ${{ inputs.pins_window }}
           SYNC: ${{ inputs.sync }}
           METRICS_EVERY: ${{ inputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ inputs.go_mem_limit }}
         run: |
           set -euo pipefail
 
@@ -156,6 +162,14 @@ jobs:
             re='^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'
             [[ $metrics_every =~ $re ]] ||
               fail "metrics_every: empty or a Go duration such as 30s"
+          fi
+
+          # A whole number of MiB or GiB, the form the judge parses back.
+          go_mem_limit="${GO_MEM_LIMIT//[[:space:]]/}"
+          if [ -n "$go_mem_limit" ]; then
+            re='^[1-9][0-9]{0,5}(MiB|GiB)$'
+            [[ $go_mem_limit =~ $re ]] ||
+              fail "go_mem_limit: empty or a whole number of MiB or GiB such as 11GiB"
           fi
 
           re='^[1-9][0-9]?$'
@@ -230,6 +244,7 @@ jobs:
             echo "pins_window=$PINS_WINDOW"
             echo "sync=$SYNC"
             echo "metrics_every=$metrics_every"
+            echo "go_mem_limit=$go_mem_limit"
             echo "plans_key=bench-plans-${RUN_ID}-${RUN_ATTEMPT}"
           } >>"$GITHUB_OUTPUT"
 
@@ -239,6 +254,7 @@ jobs:
             echo "- family: \`$FAMILY\` (scenario flags \`$family_flags\`)"
             echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
             echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
+            echo "- Go memory limit: \`${go_mem_limit:-none}\`"
             echo
             echo "| runner | window (days) | candidate | repetition |"
             echo "|---|---|---|---|"
@@ -505,6 +521,7 @@ jobs:
           CANDIDATE: ${{ matrix.candidate }}
           SYNC: ${{ needs.setup.outputs.sync }}
           METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
@@ -514,6 +531,10 @@ jobs:
           fi
           if [ -n "$METRICS_EVERY" ]; then
             extra+=(-metrics-every "$METRICS_EVERY")
+          fi
+          # Explicit, so that an empty input leaves the variable unset.
+          if [ -n "$GO_MEM_LIMIT" ]; then
+            export GOMEMLIMIT="$GO_MEM_LIMIT"
           fi
           /usr/bin/time -v -o "$RUNNER_TEMP/logs/time.txt" \
             "$RUNNER_TEMP/spikebench" build -out "$WORK" -candidate "$CANDIDATE" "${extra[@]}" \
@@ -526,6 +547,7 @@ jobs:
           PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
           SYNC: ${{ needs.setup.outputs.sync }}
           METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
           OS: ${{ matrix.os }}
           WINDOW: ${{ matrix.window }}
           CANDIDATE: ${{ matrix.candidate }}
@@ -574,12 +596,13 @@ jobs:
             --arg family "$FAMILY" --argjson window "$WINDOW" --arg candidate "$CANDIDATE" \
             --argjson rep "$REP" --argjson pins_window "$PINS_WINDOW" \
             --arg sync "$SYNC" --arg metrics_every "$METRICS_EVERY" \
+            --arg go_mem_limit "$GO_MEM_LIMIT" \
             --arg cpu_model "$cpu" --argjson nproc "$cpus" --argjson mem_total_kb "$mem_kb" \
             --arg image_os "$image_os" --arg image_version "$image_version" \
             --arg runner_name "$runner_name" --arg kernel "$kernel" \
             --arg run_id "$RUN_ID" --arg run_attempt "$RUN_ATTEMPT" \
             --arg binary_sha256 "$binary_sha256" \
-            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
+            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
             >"$OUT/job.json"
 
           cp -r "$LOGS" "$OUT/logs"

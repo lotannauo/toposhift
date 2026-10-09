@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,6 +124,10 @@ type fixtureBuild struct {
 	// leaves the key out).
 	Settle, Deadline, PostBatches string
 	Options                       string
+	// MemLimit is the description go_memory_limit: bytes in decimal or "none". The
+	// default leaves the key out, as a manifest made before the limit was recorded does;
+	// the job's go_mem_limit follows it.
+	MemLimit string
 	// Stream names the stream of the plan (default: one per window), ManifestStream
 	// the one the manifest says it holds (default: the plan's).
 	Stream, ManifestStream string
@@ -261,8 +266,9 @@ func (b fixtureBuild) manifest() *runner.Manifest {
 	for k, v := range map[string]string{
 		runner.SyncKey: b.Sync, runner.RestKey: b.Rest, runner.CanonicalKey: b.Canonical, runner.MetricsKey: b.Metrics,
 		runner.SettleKey: b.Settle, "settle_deadline": b.Deadline, runner.PostRetentionKey: b.PostBatches,
+		runner.GoMemoryLimitKey: b.MemLimit,
 	} {
-		if v != "-" {
+		if v != "-" && v != "" {
 			describe[k] = v
 		}
 	}
@@ -305,10 +311,23 @@ func (b fixtureBuild) job() runner.Job {
 	}
 	return runner.Job{
 		SHA: b.Revision, OS: b.osName(), Arch: b.Arch, Family: b.Family, Window: b.Window, Candidate: b.Candidate,
-		Rep: b.Rep, PinsWindow: b.PinsWindow, Sync: sync, MetricsEvery: metrics,
+		Rep: b.Rep, PinsWindow: b.PinsWindow, Sync: sync, MetricsEvery: metrics, GoMemLimit: memLimitInput(b.MemLimit),
 		CPUModel: b.CPU, NProc: 4, MemTotalKB: 16 << 20, ImageOS: "ubuntu24", ImageVersion: "20260101.1.0",
 		RunnerName: "Test Runner", Kernel: "6.0.0-test", RunID: b.Run, RunAttempt: "1", BinarySHA256: b.Executable,
 	}
+}
+
+// memLimitInput is the workflow's go_mem_limit for a limit in bytes: whole GiB, else
+// whole MiB. No limit gives the empty string.
+func memLimitInput(bytes string) string {
+	n, err := strconv.ParseInt(bytes, 10, 64)
+	switch {
+	case err != nil:
+		return ""
+	case n%(1<<30) == 0:
+		return fmt.Sprintf("%dGiB", n>>30)
+	}
+	return fmt.Sprintf("%dMiB", n>>20)
 }
 
 func writeJSON(t *testing.T, path string, v any) {

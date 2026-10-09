@@ -356,6 +356,9 @@ hardware); otherwise it says `not judged:` and why. A plan made under earlier ru
 not settle a retention's tombstones or did not record the batches after one are shown and not judged. The command reads files,
 runs git only with `-git`, never touches the network and writes nothing but `-json`.
 
+Builds may run under a Go memory limit (the workflow's `go_mem_limit` input, applied to the builds and not to the
+plans), which is recorded in the manifest as `go_memory_limit` and in `job.json`; the judge and the report refuse a mix of builds under different limits.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

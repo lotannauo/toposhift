@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -49,10 +50,10 @@ func WriteTiming(w io.Writer, rep TimingReport) {
 	default:
 		fmt.Fprintf(w, "WARNING: the revision was not checked against %s (give -git): these results are unverified\n", ref)
 	}
-	fmt.Fprintf(w, "builds: %s, %s, %s, %s, %s; binaries %s (%s)\n",
+	fmt.Fprintf(w, "builds: %s, %s, %s, %s, %s, %s; binaries %s (%s)\n",
 		settingWords("sync", rep.Settings.Sync), settingWords("rest", rep.Settings.RestAfterRetention),
 		settingWords("canonical", rep.Settings.CanonicalLayout), settingWords("metrics", rep.Settings.MetricsEvery),
-		settleWords(rep.Settings), binaryWords(rep.Binaries), goVersions(rep.Binaries))
+		settleWords(rep.Settings), memoryLimitWords(rep.Settings.GoMemoryLimit), binaryWords(rep.Binaries), goVersions(rep.Binaries))
 	var plans []string
 	for _, p := range rep.Plans {
 		if p.Found {
@@ -212,6 +213,24 @@ func settleWords(s TimingSettings) string {
 		return "settled each retention (deadline " + s.SettleDeadline + ")"
 	}
 	return "did not settle"
+}
+
+// memoryLimitWords says a recorded Go memory limit (bytes in decimal, or "none") in the
+// largest whole unit it is a multiple of.
+func memoryLimitWords(limit string) string {
+	if limit == "none" {
+		return "no Go memory limit"
+	}
+	n, err := strconv.ParseInt(limit, 10, 64)
+	switch {
+	case err != nil || n <= 0:
+		return fmt.Sprintf("Go memory limit %q", limit)
+	case n%(1<<30) == 0:
+		return fmt.Sprintf("Go memory limit %d GiB", n>>30)
+	case n%(1<<20) == 0:
+		return fmt.Sprintf("Go memory limit %d MiB", n>>20)
+	}
+	return fmt.Sprintf("Go memory limit %d bytes", n)
 }
 
 func binaryWords(bs []TimingBinary) string {
