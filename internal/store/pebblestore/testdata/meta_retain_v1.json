@@ -1,0 +1,177 @@
+{
+  "about": "Golden vectors of the meta value at the key 'retain'. The expectations were computed independently of the code: version byte 1, uvarint generation, uvarint layer count, per layer the layer byte, a uvarint length and the binary form of the horizon, then L as 8 bytes big endian, then a uvarint length and the resume key, then the phase byte.",
+  "key": "0072657461696e",
+  "vectors": [
+    {
+      "name": "one layer, rewriting from the first key",
+      "generation": 1,
+      "layers": [
+        {
+          "layer": 3,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 77
+        }
+      ],
+      "resume": "01",
+      "phase": 1,
+      "encoded": "010101030f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "four layers, rewriting from a prefix successor",
+      "generation": 2,
+      "layers": [
+        {
+          "layer": 1,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 77
+        },
+        {
+          "layer": 2,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 77
+        },
+        {
+          "layer": 3,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 77
+        },
+        {
+          "layer": 4,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 77
+        }
+      ],
+      "resume": "03101112131415161718191a1b1c1d1e1f202103",
+      "phase": 1,
+      "encoded": "010204010f010000000edce5e80000000000ffff000000000000004d020f010000000edce5e80000000000ffff000000000000004d030f010000000edce5e80000000000ffff000000000000004d040f010000000edce5e80000000000ffff000000000000004d1403101112131415161718191a1b1c1d1e1f20210301"
+    },
+    {
+      "name": "one layer, settling, with a generation of two bytes",
+      "generation": 300,
+      "layers": [
+        {
+          "layer": 3,
+          "horizon": "2023-11-14T22:13:20.123456789Z",
+          "last": 1099511627776
+        }
+      ],
+      "resume": "",
+      "phase": 2,
+      "encoded": "01ac0201030f010000000edce5e800075bcd15ffff00000100000000000002"
+    },
+    {
+      "name": "four layers at the epoch, settling",
+      "generation": 1,
+      "layers": [
+        {
+          "layer": 1,
+          "horizon": "1970-01-01T00:00:00Z",
+          "last": 0
+        },
+        {
+          "layer": 2,
+          "horizon": "1970-01-01T00:00:00Z",
+          "last": 0
+        },
+        {
+          "layer": 3,
+          "horizon": "1970-01-01T00:00:00Z",
+          "last": 0
+        },
+        {
+          "layer": 4,
+          "horizon": "1970-01-01T00:00:00Z",
+          "last": 0
+        }
+      ],
+      "resume": "",
+      "phase": 2,
+      "encoded": "010104010f010000000e7791f70000000000ffff0000000000000000020f010000000e7791f70000000000ffff0000000000000000030f010000000e7791f70000000000ffff0000000000000000040f010000000e7791f70000000000ffff00000000000000000002"
+    },
+    {
+      "name": "two layers that are not neighbours, rewriting",
+      "generation": 129,
+      "layers": [
+        {
+          "layer": 2,
+          "horizon": "2023-11-14T22:13:20.123456789Z",
+          "last": 5
+        },
+        {
+          "layer": 4,
+          "horizon": "2023-11-14T22:13:20Z",
+          "last": 6
+        }
+      ],
+      "resume": "03101112131415161718191a1b1c1d1e1f202103",
+      "phase": 1,
+      "encoded": "01810102020f010000000edce5e800075bcd15ffff0000000000000005040f010000000edce5e80000000000ffff00000000000000061403101112131415161718191a1b1c1d1e1f20210301"
+    }
+  ],
+  "refused": [
+    {
+      "name": "a byte after the end",
+      "encoded": "010101030f010000000edce5e80000000000ffff000000000000004d01010100"
+    },
+    {
+      "name": "phase 0",
+      "encoded": "010101030f010000000edce5e80000000000ffff000000000000004d010100"
+    },
+    {
+      "name": "phase 3",
+      "encoded": "010101030f010000000edce5e80000000000ffff000000000000004d010103"
+    },
+    {
+      "name": "another format byte",
+      "encoded": "020101030f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "no bytes",
+      "encoded": ""
+    },
+    {
+      "name": "generation 0",
+      "encoded": "010001030f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "generation 1 written in two bytes",
+      "encoded": "01810001030f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "no layers",
+      "encoded": "010100010101"
+    },
+    {
+      "name": "five layers",
+      "encoded": "010105010f010000000edce5e80000000000ffff000000000000004d020f010000000edce5e80000000000ffff000000000000004d030f010000000edce5e80000000000ffff000000000000004d040f010000000edce5e80000000000ffff000000000000004d040f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "a layer that is not one",
+      "encoded": "010101090f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "a layer that is not after the one before it",
+      "encoded": "010102030f010000000edce5e80000000000ffff000000000000004d030f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "layers in descending order",
+      "encoded": "010102040f010000000edce5e80000000000ffff000000000000004d020f010000000edce5e80000000000ffff000000000000004d010101"
+    },
+    {
+      "name": "a horizon cut short",
+      "encoded": "010101030f010000000edce5"
+    },
+    {
+      "name": "a sequence number cut short",
+      "encoded": "010101030f010000000edce5e80000000000ffff"
+    },
+    {
+      "name": "a resume key cut short",
+      "encoded": "010101030f010000000edce5e80000000000ffff000000000000004d01"
+    },
+    {
+      "name": "the layer count written in two bytes",
+      "encoded": "01018100030f010000000edce5e80000000000ffff000000000000004d010101"
+    }
+  ]
+}
