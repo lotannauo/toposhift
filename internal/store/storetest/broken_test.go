@@ -919,9 +919,8 @@ func mutants() map[string]mutant {
 		"returns Horizon() as the horizon of every layer, even one outside L0 to L3": {make: over(func(b *broken) {
 			b.layerHorizonIsHorizon = true
 		}), by: []string{"layer horizons"}},
-		// The generator does emit L3 records, but whether a refused batch is reached
-		// that records them and not only those of other layers depends on random
-		// draws, so only the scripted check is held to catch this.
+		// Whether some batch has records before the horizon only in L3 depends on the
+		// generated stream, so only the scripted check is held to catch this.
 		"refuses a write by the horizon of the next layer, so the last layer's is never consulted": {make: over(func(b *broken) {
 			b.writeLayer = func(l catalog.Layer) catalog.Layer { return l + 1 }
 		}), by: []string{"layer horizons"}, scriptedOnly: true},

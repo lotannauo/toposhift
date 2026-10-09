@@ -36,7 +36,7 @@
 // whose horizon never moves. With the zero options all four horizons are equal
 // and the store behaves as if it had one. [Store.Horizon] is the horizon of the
 // layer retained most recently; when one Retain moved several, the latest of
-// them (they share its Seq), and the lower layer when their times tie.
+// them (they share its Seq).
 // [Store.LayerHorizon] is the horizon of one layer.
 //
 // # Order of checks

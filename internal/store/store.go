@@ -265,9 +265,9 @@ type Store interface {
 	// earlier tokens, are not given: for each layer l whose horizon this Retain
 	// moved, a read in l whose instant (or, for Window and EntityWindow, whose
 	// from) is before h_l, or whose AsOf is below L (the Seq of l's horizon), is
-	// refused with an error wrapping [ErrBeforeHorizon]. A kept layer's answers
-	// are never refused for the horizon, and a layer this Retain did not move
-	// keeps its earlier horizon. From then on Write refuses a record with an event
+	// refused with an error wrapping [ErrBeforeHorizon]. Retain never moves a
+	// kept layer's horizon (it is zero unless an earlier configuration retained
+	// the layer), and a layer this Retain did not move keeps its earlier horizon. From then on Write refuses a record with an event
 	// time before the horizon of its own layer. With every offset zero each
 	// retained layer's horizon is horizon itself, and the layers behave as one.
 	//

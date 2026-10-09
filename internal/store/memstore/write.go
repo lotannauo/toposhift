@@ -100,7 +100,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 // after the layer's horizon; the horizon of a kept layer never moves. Horizons
 // are stored in UTC and without a monotonic clock reading, so comparisons are by
 // instant only. Horizon then reports the latest of the horizons this Retain
-// moved (they share its Seq; a tie in time goes to the lower layer), and is
+// moved (they share its Seq), and is
 // unchanged if none moved.
 func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	s.mu.Lock()
