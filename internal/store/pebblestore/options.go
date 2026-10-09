@@ -91,6 +91,18 @@ type Options struct {
 	// a database may be opened with another, or with none, and the checkpoints it
 	// holds are kept true all the same.
 	Checkpoints *CheckpointOptions
+	// Offsets is the retention offset of each layer, indexed by layer minus L0
+	// (Offsets[0] is L0's). Retain(h) sets the horizon of a retained layer to h
+	// minus its offset, so a layer with a longer offset keeps more history. The zero
+	// value is no offset: every layer's horizon is h. An offset must not be
+	// negative; Open refuses one. Offsets are not stored: a database may be opened
+	// with others, and every horizon it holds stays as it is (a horizon never moves
+	// backward).
+	Offsets [4]time.Duration
+	// Keep says, per layer and indexed like Offsets, that the layer is kept: Retain
+	// never moves its horizon, whatever its offset. A layer that an earlier
+	// opening retained keeps the horizon it was given.
+	Keep [4]bool
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes] and retainChunkTime
 	// [defaultRetainChunkTime], the two limits of a chunk of a retention.

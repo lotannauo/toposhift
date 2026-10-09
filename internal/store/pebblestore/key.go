@@ -59,6 +59,12 @@ const (
 	// metaRetain is the marker of a retention that has begun and not finished: see
 	// [retainMarker]. It is absent when no retention is unfinished.
 	metaRetain = "retain"
+	// metaHorizonLast is the horizon [Store.Horizon] returns: the one of the layer
+	// retained most recently, stored the way a layer's horizon is (the instant, then
+	// the Seq). Every Retain that moves a layer writes it in the commit of the
+	// horizons. It is a hint, trusted only while it agrees with the horizons stored
+	// beside it: see [lastHorizon].
+	metaHorizonLast = pebblekv.MetaHorizon + "/last"
 )
 
 func metaKey(name string) []byte { return append([]byte{metaLead}, name...) }

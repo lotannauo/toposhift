@@ -39,11 +39,12 @@
 //
 // # Retention
 //
-// Retain(h) publishes the horizon, then rewrites each prefix that has history
-// before h: it replays it, writes a baseline at h holding every reference that is
-// still alive at h, and range-deletes everything older, the delete and the baseline
-// in one commit. The baseline is not derived data: it is the only record of the
-// state before h. With Config.SettleRetention the database is then flushed and
+// Retain(h) publishes the horizon of each layer it moves (see Layers below), then
+// rewrites each prefix of those layers that has history before its layer's horizon
+// h: it replays it, writes a baseline at h holding every reference that is still
+// alive at h, and range-deletes everything older, the delete and the baseline in one
+// commit. The baseline is not derived data: it is the only record of the state
+// before h. With Config.SettleRetention the database is then flushed and
 // waited on until its compactions have run. Retention is synchronous:
 // [Synchronous] is the only [RetentionMode].
 //
@@ -63,6 +64,27 @@
 // beside it is refused. Running a pass again over prefixes it has rewritten changes
 // no key. A Retain with a later horizon while a marker is present starts again from
 // the first key, under the next generation.
+//
+// # Layers
+//
+// Every layer has a horizon of its own ([Store.LayerHorizon]), stored under its own
+// meta key "horizon/<layer>" and judged on its own by reads and writes. Each has a
+// retention offset ([Options.Offsets]) or is kept ([Options.Keep]), fixed when the
+// store is opened: Retain(h) moves the horizon of a layer that is not kept to h less
+// its offset, if that is later than the layer's own, and leaves the others, with
+// their data, as they are. With every offset zero the layers move together. Neither
+// option is stored: a store opened with other offsets or kept layers keeps every
+// horizon it holds, and a horizon never moves backward.
+//
+// [Store.Horizon] is the horizon of the layer retained most recently, which the four
+// horizons alone do not say, since two retentions with no write between them share
+// a Seq. The commit of the horizons therefore also writes the meta key
+// "horizon/last", holding that horizon in the encoding of a layer's. A store reads it
+// back only if it equals the stored horizon of some layer and its Seq is the largest
+// of them; otherwise (a database from before the key, or one a binary that does not
+// write it has retained since) the Horizon is derived from the layers, as the one
+// with the largest Seq and then the latest time, and the next Retain that moves a
+// layer writes the key again.
 //
 // # Quarantine
 //
@@ -101,10 +123,7 @@
 // # Not here yet
 //
 // The asynchronous retainer (a lock released between chunks, a rewrite when a write
-// touches a prefix the pass has not reached, a background settle), retention
-// offsets and kept layers, and a boot history kept in baselines are later changes.
-//
-// Every layer has a horizon of its own ([Store.LayerHorizon]), stored under its own
-// key and judged on its own by reads and writes, but with no offsets or kept layers
-// they all move together.
+// touches a prefix the pass has not reached, a background settle) and a boot history
+// kept in baselines are later changes. The product's default offsets are not set
+// here either: [DefaultOptions] has every offset zero and no layer kept.
 package pebblestore

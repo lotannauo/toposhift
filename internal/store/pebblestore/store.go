@@ -40,15 +40,18 @@ type Store struct {
 	// lastSeq is the highest Seq committed. It is raised only after the commit
 	// that carries it, so a read pinned to it never sees less than it names.
 	lastSeq atomic.Uint64
-	// horizons are the retention horizons, indexed by layer (L0 first). They move
-	// together in this version (no layer has a retention offset or is kept), but
-	// every read and write is judged by the horizon of its own layer, through
+	// horizons are the retention horizons, indexed by layer (L0 first). Every read
+	// and write is judged by the horizon of its own layer, through
 	// [Store.horizonOf]. A Retain publishes a new array whole, after its commit and
 	// before it discards anything.
 	horizons atomic.Pointer[[layers]store.Horizon]
 	// lastMoved is the horizon the last Retain that moved a layer published.
 	lastMoved atomic.Pointer[store.Horizon]
 	closed    atomic.Bool
+	// offsets and keep are the retention offset of each layer and whether it is
+	// kept (see [Options]). They are fixed when the store is opened.
+	offsets [layers]time.Duration
+	keep    [layers]bool
 
 	retainBytes       int
 	chunkTime         time.Duration
@@ -97,18 +100,21 @@ type Store struct {
 	// exhaustive: a prefix it lacks holds no record and no checkpoint, so the
 	// writer knows its state (empty) without reading it. It holds from the opening
 	// of a database with no data, and from the end of a retention that worked out
-	// the state of every prefix in its own pass (see Retain). It does not hold, and
-	// the prefixes are read as they are touched, in a database that already holds
-	// data when it is opened; after a retention that does not work the state out (no
+	// the state of every prefix it rewrote in its own pass (see Retain), if it held
+	// before or if the retention rewrote every layer. It does not hold, and the
+	// prefixes are read as they are touched, in a database that already holds data
+	// when it is opened; after a retention that does not work the state out (no
 	// checkpoint in the database yet, the policy off, a horizon after the range, a
-	// layer the retention leaves alone, a key that cannot be read, a store that
-	// always reads whole prefixes (tests), a retention that stops or fails, or one
-	// that Open finishes for an earlier process; a horizon before the first instant
-	// changes nothing and forgets nothing); after anything that drops what is
-	// remembered (a failed commit or read, or a Write
-	// that does not finish once it has begun to touch state); and after a write with
+	// key that cannot be read, a store that always reads whole prefixes (tests), a
+	// retention that stops or fails, or one that Open finishes for an earlier
+	// process), which forgets the layers it rewrote and keeps what it knew of the
+	// others; after a retention that leaves a layer alone, if it did not hold
+	// before, since the pass vouches for no prefix of that layer; and after anything
+	// that drops what is remembered (a failed commit or read, or a Write that does
+	// not finish once it has begun to touch state), and after a write with
 	// checkpoints off and none in the database, which stores records and remembers
 	// nothing, so the prefixes it leaves are read if a checkpoint is later written.
+	// A horizon before the first instant changes nothing and forgets nothing.
 	//
 	// The price is memory: one entry per live prefix, kept for as long as the store
 	// is open, where the map would otherwise hold only the prefixes touched since
@@ -163,6 +169,12 @@ type retainPhases struct {
 // untrue even when it writes none. An earlier version of this package, which
 // neither wrote nor invalidated them, refuses such a database.
 func Open(dir string, o Options) (*Store, error) {
+	for i, off := range o.Offsets {
+		if off < 0 {
+			return nil, fmt.Errorf("pebblestore: Open: the retention offset of layer %s is %s, which is negative: %w",
+				catalog.L0+catalog.Layer(i), off, store.ErrInvalid)
+		}
+	}
 	if o.Retention != 0 && o.Retention != Synchronous {
 		return nil, fmt.Errorf("pebblestore: Open: retention mode %d: %w", o.Retention, store.ErrInvalid)
 	}
@@ -194,6 +206,7 @@ func Open(dir string, o Options) (*Store, error) {
 		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply,
 		beforeCheckpointApply: o.beforeCheckpointApply, afterCheckpointApply: o.afterCheckpointApply,
 		ckpt: ckpt, fullStateRead: o.fullStateRead, states: map[string]*prefixState{},
+		offsets: o.Offsets, keep: o.Keep,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
 	if o.checkValue != nil {
@@ -327,12 +340,11 @@ func (s *Store) load() (*retainMarker, error) {
 		hs[i] = store.Horizon{Time: t, Seq: hseq}
 	}
 	s.horizons.Store(&hs)
-	latest := hs[0]
-	for _, h := range hs[1:] {
-		if h.Time.After(latest.Time) {
-			latest = h
-		}
+	rawLast, err := s.kv.GetMeta(metaKey(metaHorizonLast))
+	if err != nil {
+		return nil, err
 	}
+	latest := lastHorizon(rawLast, hs)
 	s.lastMoved.Store(&latest)
 	// A database that holds a checkpoint says so, and this store then deletes the
 	// ones a later record makes untrue, whether or not it writes any.
@@ -463,11 +475,43 @@ func (s *Store) LastSeq() uint64 { return s.lastSeq.Load() }
 
 // Horizon implements [store.Store]: the horizon of the layer retained most
 // recently, and when one Retain moved several, the latest of them. It is the
-// horizon the last Retain that moved any layer published. Nothing stored says
-// which layers that Retain moved, so after a reopening it is the latest of the
-// layers' stored horizons, which is the same thing while every layer moves
-// together, as they do in this version. After Close it returns the value it had.
+// horizon the last Retain that moved any layer published, and a reopening reads it
+// back from the meta key "horizon/last" (see [lastHorizon]). After Close it returns
+// the value it had.
 func (s *Store) Horizon() store.Horizon { return *s.lastMoved.Load() }
+
+// lastHorizon is the horizon [Store.Horizon] returns for a database whose layers
+// hold the horizons hs and whose "horizon/last" holds raw (nil if the key is
+// absent). The stored value is trusted only if it is exactly one of the layers'
+// horizons (the same instant and the same Seq) and its Seq is the largest among
+// them: then it is the one the last Retain that moved a layer named. Otherwise (the
+// key is absent, as in a database from before it; or a Retain by a binary that
+// does not write it has moved a layer since; or the bytes are not a horizon) the
+// answer is derived from the layers alone: the stored horizon with the largest
+// Seq, and among those the latest instant. That is the right answer unless two
+// Retains with no write between them moved different layers, which the key exists
+// to tell apart, and the next Retain that moves a layer rewrites the key.
+func lastHorizon(raw []byte, hs [layers]store.Horizon) store.Horizon {
+	derived := hs[0]
+	for _, h := range hs[1:] {
+		if h.Seq > derived.Seq || (h.Seq == derived.Seq && h.Time.After(derived.Time)) {
+			derived = h
+		}
+	}
+	if raw == nil {
+		return derived
+	}
+	t, seq, err := pebblekv.DecodeLayerHorizon(raw)
+	if err != nil || seq != derived.Seq {
+		return derived // not a horizon, or one that a later Retain has passed
+	}
+	for _, h := range hs {
+		if h.Seq == seq && h.Time.Equal(t) {
+			return h
+		}
+	}
+	return derived
+}
 
 // LayerHorizon implements [store.Store]. A layer outside L0 to L3 has the zero
 // Horizon. After Close it returns the value it had.

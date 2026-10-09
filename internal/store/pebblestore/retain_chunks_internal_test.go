@@ -938,12 +938,6 @@ func TestOpenRefusesAMarkerThatDoesNotFit(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
-		"layers moved to different horizons": func(t *testing.T, s *Store, m retainMarker) {
-			m.layers[1].horizon = m.layers[1].horizon.Add(time.Hour)
-			raw, _ := pebblekv.EncodeLayerHorizon(m.layers[1].horizon, m.layers[1].last)
-			set(t, s, metaKey(pebblekv.HorizonMetaName(catalog.L1)), raw)
-			setMarker(t, s, m)
-		},
 		"a marker that is not one": func(t *testing.T, s *Store, m retainMarker) {
 			raw, _ := appendRetainMarker(nil, m)
 			set(t, s, metaKey(metaRetain), append(raw, 0))

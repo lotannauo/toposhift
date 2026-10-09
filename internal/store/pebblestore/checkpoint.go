@@ -56,12 +56,13 @@ import (
 // foldRetained), and when it has done that for every prefix the map is complete,
 // and a prefix missing from it is known to be empty without a read (see
 // Store.complete). A database opened empty starts complete. Some retentions do
-// not work the state out, and then the map is empty and the prefixes are read as
-// they are touched: a database that has no checkpoint yet, a policy that is off,
-// a horizon after the range of instants, a retention that leaves a layer alone, a
-// key that cannot be read, a store that always reads whole prefixes (tests), and a
-// retention that stops or fails. A retention
-// that changes nothing (a horizon before the first instant a record can have)
+// not work the state out, and then the prefixes of the layers they rewrote are
+// forgotten and read as they are touched: a database that has no checkpoint yet, a
+// policy that is off, a horizon after the range of instants, a key that cannot be
+// read, a store that always reads whole prefixes (tests), and a retention that stops
+// or fails. A layer a retention leaves alone keeps what is remembered of it, and the
+// map is complete afterwards only if it was before or every layer was rewritten. A
+// retention that changes nothing (a horizon before the first instant a record can have)
 // forgets nothing. That read stops at the newest checkpoint (and the newest
 // record, if it is older): it is as long as the tail the policy lets grow, not
 // the prefix's history. The older checkpoints are looked up only when something
@@ -192,6 +193,22 @@ func (s *Store) forget(prefix string) {
 // afterwards, so the map is not complete.
 func (s *Store) forgetAll() {
 	s.states = map[string]*prefixState{}
+	s.complete = false
+}
+
+// forgetLayers drops what is remembered of every prefix in the layers a retention
+// is about to rewrite. What is remembered of the other layers stays, as true as it
+// was; but the map is no longer complete, because the prefixes dropped may hold
+// keys.
+func (s *Store) forgetLayers(ls []retainLayer) {
+	for k := range s.states {
+		for _, l := range ls {
+			if layerOfPrefix([]byte(k)) == l.layer {
+				delete(s.states, k)
+				break
+			}
+		}
+	}
 	s.complete = false
 }
 
