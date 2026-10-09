@@ -119,8 +119,18 @@ fi
 # install job, a developer's laptop) would compile in. So this builds the whole
 # module with cgo off, builds the binary with the tag as well, and checks that
 # neither way of asking for pure Go leaves the cgo library in the package graph.
+#
+# One more rule keeps out what activity files must not bring in. With cgo off
+# and with cgo on, none of gRPC, Arrow Flight, Arrow's C data interface or parquet/pqarrow is in
+# the graph: activity files are written with arrow-go's low-level Parquet
+# packages, and pqarrow imports Arrow Flight, which brings gRPC into every
+# binary that links it. That no package needs cgo is what the cgo-off build at
+# the top proves: a package whose files all import "C" fails it, and go list
+# reports no cgo files at all when cgo is off, so listing them would prove
+# nothing. (With cgo on, Pebble's own manual memory package has cgo files, which
+# is why that graph is not checked for them.)
 [tasks.purego]
-description = "Build with CGO disabled and check no cgo zstd is linked"
+description = "Build with CGO disabled and check no cgo zstd, gRPC, Arrow Flight, Arrow cdata or pqarrow is linked"
 run = '''
 set -eu
 export CGO_ENABLED=0
@@ -147,6 +157,17 @@ if [ "$nocgo_default" != 0 ] || [ "$cgo_tagged" != 0 ]; then
   echo "purego: the cgo zstd is linked with cgo off, or with the pebblegozstd tag" >&2
   exit 1
 fi
+# The ban is checked with cgo off and with cgo on, so that an import behind a
+# build tag that only cgo sets is found as well.
+for cgo in 0 1; do
+  all="$(CGO_ENABLED=$cgo go list -deps ./...)" || { echo "purego: go list failed" >&2; exit 1; }
+  bad="$(printf '%s\n' "$all" | grep -E '^(google\.golang\.org/grpc|github\.com/apache/arrow-go/v18/(arrow/flight|arrow/cdata|parquet/pqarrow))(/|$)' || true)"
+  if [ -n "$bad" ]; then
+    echo "purego: with CGO_ENABLED=$cgo these packages must not be in the build:" >&2
+    printf '%s\n' "$bad" >&2
+    exit 1
+  fi
+done
 '''
 
 # What Pebble writes depends on its version, and the format of a database is
