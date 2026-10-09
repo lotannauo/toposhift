@@ -29,7 +29,9 @@ var ErrTorn = errors.New("a concurrent read matched no committed state")
 // instant). An answer that mixes the world before a batch with the world after
 // it, or one that sees a batch the token had not reached, matches none. Reads
 // asked about an instant before a retention that began during them are not
-// held to anything. Use a fresh engine.
+// held to anything, and an engine may refuse them with [engine.ErrBeforeHorizon]
+// instead; a refusal of an instant at or after the horizon announced so far, or any
+// other error, fails the check. Use a fresh engine.
 func CheckConcurrentReads(cand engine.Engine) error {
 	cfg := workload.Tiny()
 	cfg.Seed = 77
@@ -252,6 +254,19 @@ func concurrentRead(cand engine.Engine, ora *oracle.Oracle, rng *rand.Rand, cfg 
 	got, err := ask(cand, engine.Latest)
 	after := cand.LastSeq()
 	if err != nil {
+		// An engine may refuse a read of an instant a retention may have taken, instead of
+		// answering it. The horizon is announced before Retain begins, so the horizon the
+		// engine has published is never later than the one announced (read here, after
+		// the read, because a horizon loaded before the read could be earlier than the one the
+		// engine had published by then): a refusal of an instant before it is legal, and one
+		// at or after it, or any other error, is not. The check asks only with engine.Latest,
+		// so ErrBeforeHorizon here always means the instant, never a snapshot token.
+		if errors.Is(err, engine.ErrBeforeHorizon) {
+			if h := horizon.Load(); h != 0 && t.Before(time.Unix(0, h)) {
+				return nil
+			}
+			return fmt.Errorf("concurrent read: refused as before the horizon, though %s is not before the horizon announced so far: %w", t.Format(time.RFC3339), err)
+		}
 		return fmt.Errorf("concurrent read: %w", err)
 	}
 	if after < before {
