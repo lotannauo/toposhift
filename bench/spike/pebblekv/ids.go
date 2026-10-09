@@ -3,137 +3,96 @@
 // the value codec, the way a database is opened, and the liveness rule a layout
 // applies to the versions it reads.
 //
-// It is the spike's, not the product's. The product's store needs the same
-// things, but its numeric ids must come from a catalog that carries stable ids
-// (a prerequisite the plan records); here they are derived from the shipped
-// catalog's declaration order and pinned by a golden test, so a catalog change
-// that would renumber stored keys fails loudly instead of silently orphaning
-// them.
+// The plumbing itself (opening and tuning, the layouts, the value codec, the
+// ids, the meta keys, the settle and the iterator recording) is the root
+// module's internal/store/pebblekv, so that the benchmarks measure the code the
+// product store runs on. What is here is what only a measurement needs: the cockroachkvs
+// layout, the waits that make a size repeatable, the snapshot and description of
+// a database, the canonical rewrite and the digest, and the conversion of the
+// benchmarks' records to the root's values and ids.
 package pebblekv
 
 import (
-	"encoding/binary"
 	"fmt"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
+	rootkv "github.com/lotannauo/toposhift/internal/store/pebblekv"
 )
 
 // FingerprintKeyLen is the bytes a fingerprint takes in a key: a 16-bit entity
 // type id and the digest.
-const FingerprintKeyLen = 2 + identity.FingerprintBytes
+const FingerprintKeyLen = rootkv.FingerprintKeyLen
 
-// IDs maps entity types and relations to the small integers keys carry.
+// IDs maps entity types and relations to the small integers keys carry. It is
+// the root module's [rootkv.IDs] with the ids as plain integers, which is what
+// the layouts' keys hold, and with the benchmarks' [engine.ErrInvalid] for a type
+// the catalog does not know.
 type IDs struct {
-	entityID     map[catalog.EntityType]uint16
-	entityName   []catalog.EntityType // entityName[id-1]
-	relationID   map[catalog.RelationType]uint16
-	relationName []catalog.RelationType // relationName[id-1]
+	root *rootkv.IDs
 }
 
-// NewIDs numbers the catalog's entity types and relations from 1 in declaration
-// order, which the catalog promises is stable across runs. Appending a type to
-// the catalog gives it the next id and renumbers nothing; reordering or removing
-// one renumbers, and the golden test is how that is noticed.
-func NewIDs(c *catalog.Catalog) *IDs {
-	ids := &IDs{
-		entityID:   make(map[catalog.EntityType]uint16),
-		relationID: make(map[catalog.RelationType]uint16),
-	}
-	for e := range c.Entities() {
-		ids.entityName = append(ids.entityName, e.Type())
-		ids.entityID[e.Type()] = uint16(len(ids.entityName))
-	}
-	for r := range c.Relations() {
-		ids.relationName = append(ids.relationName, r.Type())
-		ids.relationID[r.Type()] = uint16(len(ids.relationName))
-	}
-	return ids
-}
+// NewIDs numbers the types and relations of a catalog by their stable ids.
+func NewIDs(c *catalog.Catalog) *IDs { return &IDs{root: rootkv.NewIDs(c)} }
 
 // Default numbers the shipped catalog.
 var Default = NewIDs(catalog.Default())
 
 // EntityID returns the id of an entity type.
 func (ids *IDs) EntityID(t catalog.EntityType) (uint16, bool) {
-	id, ok := ids.entityID[t]
-	return id, ok
+	id, ok := ids.root.EntityID(t)
+	return uint16(id), ok
 }
 
 // EntityType returns the entity type with the given id.
 func (ids *IDs) EntityType(id uint16) (catalog.EntityType, bool) {
-	if id == 0 || int(id) > len(ids.entityName) {
-		return "", false
-	}
-	return ids.entityName[id-1], true
+	return ids.root.EntityType(catalog.EntityID(id))
 }
 
 // RelationID returns the id of a relation.
 func (ids *IDs) RelationID(r catalog.RelationType) (uint16, bool) {
-	id, ok := ids.relationID[r]
-	return id, ok
+	id, ok := ids.root.RelationID(r)
+	return uint16(id), ok
 }
 
 // Relation returns the relation with the given id.
 func (ids *IDs) Relation(id uint16) (catalog.RelationType, bool) {
-	if id == 0 || int(id) > len(ids.relationName) {
-		return "", false
-	}
-	return ids.relationName[id-1], true
+	return ids.root.Relation(catalog.RelationID(id))
 }
 
-// EntityTypes lists the entity types in id order, id 1 first.
-func (ids *IDs) EntityTypes() []catalog.EntityType {
-	return append([]catalog.EntityType(nil), ids.entityName...)
-}
+// EntityTypes lists the entity types in id order, the lowest id first.
+func (ids *IDs) EntityTypes() []catalog.EntityType { return ids.root.EntityTypes() }
 
-// Relations lists the relations in id order, id 1 first.
-func (ids *IDs) Relations() []catalog.RelationType {
-	return append([]catalog.RelationType(nil), ids.relationName...)
-}
+// Relations lists the relations in id order, the lowest id first.
+func (ids *IDs) Relations() []catalog.RelationType { return ids.root.Relations() }
 
 // AppendFingerprint appends the key form of fp: the entity type's id, big
 // endian, then the digest. It wraps [engine.ErrInvalid] for a type the catalog
 // does not know, which no engine can store.
 func (ids *IDs) AppendFingerprint(dst []byte, fp identity.Fingerprint) ([]byte, error) {
-	id, ok := ids.entityID[fp.Type()]
-	if !ok {
+	if _, ok := ids.root.EntityID(fp.Type()); !ok {
 		return dst, fmt.Errorf("entity type %q is not in the catalog: %w", fp.Type(), engine.ErrInvalid)
 	}
-	dst = binary.BigEndian.AppendUint16(dst, id)
-	h := fp.Hash()
-	return append(dst, h[:]...), nil
+	return ids.root.AppendFingerprint(dst, fp)
 }
 
 // Fingerprint is the inverse of [IDs.AppendFingerprint], reading the first
 // [FingerprintKeyLen] bytes of b.
-func (ids *IDs) Fingerprint(b []byte) (identity.Fingerprint, error) {
-	if len(b) < FingerprintKeyLen {
-		return identity.Fingerprint{}, fmt.Errorf("fingerprint key is %d bytes, want %d", len(b), FingerprintKeyLen)
-	}
-	typ, ok := ids.EntityType(binary.BigEndian.Uint16(b))
-	if !ok {
-		return identity.Fingerprint{}, fmt.Errorf("entity type id %d is not in the catalog", binary.BigEndian.Uint16(b))
-	}
-	return identity.FingerprintFromHash(typ, [identity.FingerprintBytes]byte(b[2:FingerprintKeyLen]))
-}
+func (ids *IDs) Fingerprint(b []byte) (identity.Fingerprint, error) { return ids.root.Fingerprint(b) }
 
-// AppendRelation appends the key form of a relation: its id, big endian.
+// AppendRelation appends the key form of a relation: its id, big endian. It wraps
+// [engine.ErrInvalid] for a relation the catalog does not know.
 func (ids *IDs) AppendRelation(dst []byte, r catalog.RelationType) ([]byte, error) {
-	id, ok := ids.relationID[r]
-	if !ok {
+	if _, ok := ids.root.RelationID(r); !ok {
 		return dst, fmt.Errorf("relation %q is not in the catalog: %w", r, engine.ErrInvalid)
 	}
-	return binary.BigEndian.AppendUint16(dst, id), nil
+	return ids.root.AppendRelation(dst, r)
 }
 
 // LayerByte is the key form of a layer: its number, 1 to 4. Zero is left for
 // keys that are not data (see the layouts' meta keys).
-func LayerByte(l catalog.Layer) byte { return byte(l) }
+func LayerByte(l catalog.Layer) byte { return rootkv.LayerByte(l) }
 
 // LayerFromByte is the inverse of [LayerByte].
-func LayerFromByte(b byte) (catalog.Layer, bool) {
-	l := catalog.Layer(b)
-	return l, l >= catalog.L0 && l <= catalog.L3
-}
+func LayerFromByte(b byte) (catalog.Layer, bool) { return rootkv.LayerFromByte(b) }

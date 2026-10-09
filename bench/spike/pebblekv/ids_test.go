@@ -24,11 +24,10 @@ type idsDoc struct {
 	Layers    map[catalog.Layer]byte          `json:"layers"`
 }
 
-// The numeric ids are in every stored key. This is the standing reminder of the
-// plan's prerequisite that the catalog carry stable ids: until it does, a
-// catalog change that renumbers anything fails here instead of silently
-// orphaning stored data. Adding a type or relation at the end is the one change
-// that keeps every existing id, and still needs the file regenerated:
+// The numeric ids are in every stored key, and they are the catalog's stable ids.
+// A catalog change that renumbers anything fails here instead of silently
+// orphaning stored data. Adding a type or relation is the one change that keeps
+// every existing id, and still needs the file regenerated:
 //
 //	go test ./spike/pebblekv -run TestIDsAreFrozen -update
 func TestIDsAreFrozen(t *testing.T) {
@@ -37,11 +36,13 @@ func TestIDsAreFrozen(t *testing.T) {
 		Relations: map[catalog.RelationType]uint16{},
 		Layers:    map[catalog.Layer]byte{},
 	}
-	for i, e := range pebblekv.Default.EntityTypes() {
-		doc.Entities[e] = uint16(i + 1)
+	for _, e := range pebblekv.Default.EntityTypes() {
+		id, _ := pebblekv.Default.EntityID(e)
+		doc.Entities[e] = id
 	}
-	for i, r := range pebblekv.Default.Relations() {
-		doc.Relations[r] = uint16(i + 1)
+	for _, r := range pebblekv.Default.Relations() {
+		id, _ := pebblekv.Default.RelationID(r)
+		doc.Relations[r] = id
 	}
 	for _, l := range []catalog.Layer{catalog.L0, catalog.L1, catalog.L2, catalog.L3} {
 		doc.Layers[l] = pebblekv.LayerByte(l)

@@ -2,17 +2,16 @@ package pebblekv
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
+	rootkv "github.com/lotannauo/toposhift/internal/store/pebblekv"
 )
 
 // What a measurement reads off a database: how much work each read did, what the
@@ -148,7 +147,7 @@ func (s Snapshot) Flat() map[string]int64 {
 // It returns when ctx is done with its error, so the caller sets the patience:
 // minutes are right for a gigabyte.
 func (k *KV) Quiesce(ctx context.Context) error {
-	if k.cfg.ReadOnly {
+	if k.Config().ReadOnly {
 		return ctx.Err() // nothing runs in a read-only database, and nothing is left in memory
 	}
 	if err := k.Flush(); err != nil {
@@ -164,13 +163,14 @@ func (k *KV) waitAtRest(ctx context.Context) error {
 		poll   = 20 * time.Millisecond
 		stable = time.Second
 	)
+	autoCompactions := !k.Config().DisableAutoCompactions
 	var last Snapshot
 	var since time.Time
 	for {
 		s := k.Snapshot()
 		m := k.Metrics()
 		busy := m.Compact.NumInProgress != 0 || m.Flush.NumInProgress != 0 || !s.StatsComplete ||
-			(!k.cfg.DisableAutoCompactions && s.MarkedFiles != 0)
+			(autoCompactions && s.MarkedFiles != 0)
 		if busy || s.Flushes != last.Flushes || s.Compactions != last.Compactions || s.LiveTableBytes != last.LiveTableBytes {
 			since = time.Time{}
 		} else if since.IsZero() {
@@ -193,35 +193,6 @@ func (k *KV) waitAtRest(ctx context.Context) error {
 		case <-time.After(poll):
 		}
 	}
-}
-
-// SettleAfterRetention is the end of a retention under [Config.SettleRetention]: it
-// flushes and waits until the database is at rest, at most deadline
-// ([DefaultSettleDeadline] when zero). The deadline bounds the wait, not the flush,
-// which runs first and has no limit. It returns how long the flush and the wait
-// took, and whether the deadline passed first, which is not an error: the writer
-// resumes and what is not settled is paid by the reads and writes after it.
-func (k *KV) SettleAfterRetention(deadline time.Duration) (flush, settle time.Duration, deadlineHit bool, err error) {
-	if k.cfg.ReadOnly {
-		return 0, 0, false, nil
-	}
-	if deadline == 0 {
-		deadline = DefaultSettleDeadline
-	}
-	start := time.Now()
-	if err := k.Flush(); err != nil {
-		return time.Since(start), 0, false, err
-	}
-	flush = time.Since(start)
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
-	start = time.Now()
-	err = k.waitAtRest(ctx)
-	settle = time.Since(start)
-	if errors.Is(err, context.DeadlineExceeded) {
-		return flush, settle, true, nil
-	}
-	return flush, settle, false, err
 }
 
 // CompactAll flushes the memtable and compacts everything the database holds
@@ -315,90 +286,15 @@ func awaitingStats(levels [][]pebble.SSTableInfo) int {
 	return n
 }
 
-// CloseClean flushes the memtable and closes the database, so that opening it
-// again recovers nothing from the log. Closing without it leaves the memtable's
-// contents in the log, and opening replays them and writes them to a table of its
-// own at that moment (see [KV.RecoveredBytes]): the data ends up in tables either
-// way, but a built database that a measurement opens should not do any work, or
-// have tables of a different shape from the ones its own flushes made, at open.
-func (k *KV) CloseClean() error {
-	if err := k.Flush(); err != nil {
-		_ = k.Close()
-		return err
-	}
-	return k.Close()
-}
-
-// RecoveredBytes is how many bytes of tables opening this database wrote from
-// its log. It is zero for a database that was closed with [KV.CloseClean] (or
-// flushed and then closed), and a measurement that opens a built database
-// refuses one that is not zero.
-func (k *KV) RecoveredBytes() uint64 { return k.recovered }
-
-// iterNames are the names one kind of read records under.
-type iterNames struct {
-	reads, blockBytes, blockBytesCached, blockReadNs                 string
-	points, keyBytes, valueBytes                                     string
-	seeks, steps, internalSeeks, internalSteps                       string
-	coveredByTombstones, separatedValues, separatedValueBytesFetched string
-}
-
-var iterNameCache sync.Map // op -> *iterNames
-
-func namesFor(op string) *iterNames {
-	if n, ok := iterNameCache.Load(op); ok {
-		return n.(*iterNames)
-	}
-	p := "read." + op + "."
-	n := &iterNames{
-		reads: p + "reads", blockBytes: p + "block_bytes", blockBytesCached: p + "block_bytes_cached", blockReadNs: p + "block_read_ns",
-		points: p + "points", keyBytes: p + "key_bytes", valueBytes: p + "value_bytes",
-		seeks: p + "seeks", steps: p + "steps", internalSeeks: p + "internal_seeks", internalSteps: p + "internal_steps",
-		coveredByTombstones: p + "covered_by_tombstones", separatedValues: p + "separated_values",
-		separatedValueBytesFetched: p + "separated_value_bytes_fetched",
-	}
-	got, _ := iterNameCache.LoadOrStore(op, n)
-	return got.(*iterNames)
-}
-
-// RecordIter reports what one read did to the recorder, from the statistics
-// Pebble keeps on the iterator, under names that start "read.<op>.": the count of
-// reads, and for each a sample of
-//
-//   - block_bytes, block_bytes_cached, block_read_ns: bytes of blocks the read
-//     loaded (compressed, index and data blocks), how many of them were in the
-//     block cache, and the time spent fetching the others;
-//   - points, key_bytes, value_bytes: the points the read iterated over and their
-//     sizes (a point is iterated more than once if the read goes back to it);
-//   - seeks, steps: calls the read made to the iterator, SeekGE, SeekPrefixGE and
-//     First as seeks, Next as steps, and internal_seeks, internal_steps for the
-//     calls the iterator made on its own inner iterators in turn, which is what
-//     the reading really cost;
-//   - covered_by_tombstones: points iterated over that a range tombstone covered;
-//   - separated_values, separated_value_bytes_fetched: points whose value lives in
-//     a value block, and the bytes fetched from them.
-//
-// These are in one unit for every layout, which the layouts' own counters
-// (versions or records stepped over) are not: they count what each layout means
-// by a step. Call it once per read, before closing the iterator.
+// RecordIter reports what one read did to the recorder, under names that start
+// "read.<op>."; see the root module's definition. Call it once per read, before
+// closing the iterator. Unlike the root's, it panics on a nil recorder: a layout
+// that forgets its recorder must not produce a timed run with no read counters.
 func RecordIter(rec engine.Recorder, op string, it *pebble.Iterator) {
-	s := it.Stats()
-	n := namesFor(op)
-	in := s.InternalStats
-	rec.Count(n.reads, 1)
-	rec.Sample(n.blockBytes, int64(in.BlockBytes))
-	rec.Sample(n.blockBytesCached, int64(in.BlockBytesInCache))
-	rec.Sample(n.blockReadNs, int64(in.BlockReadDuration))
-	rec.Sample(n.points, int64(in.PointCount))
-	rec.Sample(n.keyBytes, int64(in.KeyBytes))
-	rec.Sample(n.valueBytes, int64(in.ValueBytes))
-	rec.Sample(n.seeks, int64(s.ForwardSeekCount[pebble.InterfaceCall]+s.ReverseSeekCount[pebble.InterfaceCall]))
-	rec.Sample(n.steps, int64(s.ForwardStepCount[pebble.InterfaceCall]+s.ReverseStepCount[pebble.InterfaceCall]))
-	rec.Sample(n.internalSeeks, int64(s.ForwardSeekCount[pebble.InternalIterCall]+s.ReverseSeekCount[pebble.InternalIterCall]))
-	rec.Sample(n.internalSteps, int64(s.ForwardStepCount[pebble.InternalIterCall]+s.ReverseStepCount[pebble.InternalIterCall]))
-	rec.Sample(n.coveredByTombstones, int64(in.PointsCoveredByRangeTombstones))
-	rec.Sample(n.separatedValues, int64(in.SeparatedPointValue.Count))
-	rec.Sample(n.separatedValueBytesFetched, int64(in.SeparatedPointValue.ValueBytesFetched))
+	if rec == nil {
+		panic("pebblekv: RecordIter needs a recorder")
+	}
+	rootkv.RecordIter(rec, op, it)
 }
 
 // The parts a layout's logical bytes are divided into by [engine.Breakdowner].
@@ -447,9 +343,10 @@ func RecordParts(v Value, dir byte, total int) (kind string, kindBytes int, payl
 // collectors that ran). The second half is empty until a table exists, and is
 // what shows a variant is in effect and not only asked for.
 func (k *KV) Describe() (map[string]string, error) {
-	t := k.cfg.Tuning
+	cfg := k.Config()
+	t := cfg.Tuning
 	// The runner reads the key settle_tombstones by its literal.
-	deadline := k.cfg.SettleDeadline
+	deadline := cfg.SettleDeadline
 	if deadline == 0 {
 		deadline = DefaultSettleDeadline
 	}
@@ -461,14 +358,14 @@ func (k *KV) Describe() (map[string]string, error) {
 		"l_base_max_bytes":        fmt.Sprint(t.LBaseMaxBytes),
 		"l0_compaction_threshold": fmt.Sprint(t.L0CompactionThreshold),
 		"cache_bytes":             fmt.Sprint(t.CacheBytes),
-		"sync":                    fmt.Sprint(k.cfg.Sync),
-		"auto_compactions":        fmt.Sprint(!k.cfg.DisableAutoCompactions),
-		"read_only":               fmt.Sprint(k.cfg.ReadOnly),
-		"read_compactions":        fmt.Sprint(!k.cfg.DisableReadCompactions),
-		"time_filter_asked":       fmt.Sprint(k.cfg.TimeFilter),
-		"recovered_bytes":         fmt.Sprint(k.recovered),
+		"sync":                    fmt.Sprint(cfg.Sync),
+		"auto_compactions":        fmt.Sprint(!cfg.DisableAutoCompactions),
+		"read_only":               fmt.Sprint(cfg.ReadOnly),
+		"read_compactions":        fmt.Sprint(!cfg.DisableReadCompactions),
+		"time_filter_asked":       fmt.Sprint(cfg.TimeFilter),
+		"recovered_bytes":         fmt.Sprint(k.RecoveredBytes()),
 		"pebble_options":          k.options,
-		"settle_tombstones":       fmt.Sprint(k.cfg.SettleRetention),
+		"settle_tombstones":       fmt.Sprint(cfg.SettleRetention),
 		"settle_deadline":         deadline.String(),
 	}
 	props, err := k.TableProperties()
