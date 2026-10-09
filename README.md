@@ -27,6 +27,14 @@ curl http://127.0.0.1:7070/healthz
 
 If mise cannot install a tool on your platform, install that tool with your package manager at the pinned version.
 
+## Install
+
+```sh
+CGO_ENABLED=0 go install github.com/lotannauo/toposhift/cmd/toposhift@latest
+```
+
+The documented install builds without cgo. A cgo build links Pebble's optional C zstd, which the store does not use (block compression is Pebble's default, Snappy).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

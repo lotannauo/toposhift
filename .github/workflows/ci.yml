@@ -287,6 +287,10 @@ jobs:
           # database for it, since both can lag a fresh merge. Dependencies
           # still come through the proxy and are still checksum-verified.
           GOPRIVATE: github.com/lotannauo/toposhift
+          # Install the way the documented install builds: without cgo. The
+          # runner has a C compiler, and Pebble would otherwise compile in its
+          # optional cgo zstd, which the store does not use.
+          CGO_ENABLED: "0"
         run: |
           export GOBIN="${RUNNER_TEMP}/bin"
           go install "github.com/lotannauo/toposhift/cmd/toposhift@${SHA}"
