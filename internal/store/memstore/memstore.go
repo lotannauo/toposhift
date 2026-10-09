@@ -19,6 +19,15 @@ type Options struct {
 	// Policy is the lifecycle policy entity existence is folded with. It is fixed
 	// for the life of the store. The zero value tracks no boots.
 	Policy lifecycle.Policy
+	// Offsets is the retention offset of each layer, indexed by layer minus L0
+	// (Offsets[0] is L0's). Retain(h) sets the horizon of a retained layer to h
+	// minus its offset, so a layer with a longer offset keeps more history. The
+	// zero value is no offset: every layer's horizon is h. An offset must not be
+	// negative.
+	Offsets [4]time.Duration
+	// Keep says, per layer and indexed like Offsets, that the layer is kept: its
+	// horizon never moves, whatever its offset.
+	Keep [4]bool
 }
 
 // Store is the reference implementation of [store.Store]. It is safe for
@@ -30,7 +39,10 @@ type Store struct {
 	closed  bool
 	policy  lifecycle.Policy
 	lastSeq uint64
-	horizon store.Horizon
+	offsets [4]time.Duration
+	keep    [4]bool
+	hz      [4]store.Horizon // the horizon of each layer, indexed by layer minus L0
+	horizon store.Horizon    // the horizon of the layer retained most recently
 
 	bySubject map[store.Subject][]stored         // subject -> its records, ascending Seq
 	layers    map[store.Subject]catalog.Layer    // the one layer each subject is stored in
@@ -97,10 +109,26 @@ type edge struct {
 	peer    identity.Fingerprint
 }
 
+// layerIndex is the position of a layer in the per-layer arrays, and whether the
+// layer is one of L0 to L3.
+func layerIndex(l catalog.Layer) (int, bool) {
+	if l < catalog.L0 || l > catalog.L3 {
+		return 0, false
+	}
+	return int(l - catalog.L0), true
+}
+
 // Open returns a new, empty store. It refuses a policy the lifecycle
 // specification refuses, with an error wrapping [store.ErrInvalid] and
-// [lifecycle.ErrInvalid].
+// [lifecycle.ErrInvalid], and a negative retention offset, with an error
+// wrapping [store.ErrInvalid].
 func Open(opts Options) (*Store, error) {
+	for i, o := range opts.Offsets {
+		if o < 0 {
+			return nil, fmt.Errorf("memstore: Open: the retention offset of layer %s is %s, which is negative: %w",
+				catalog.L0+catalog.Layer(i), o, store.ErrInvalid)
+		}
+	}
 	// Fold validates the policy before anything else, and the check itself is
 	// not exported.
 	if _, err := lifecycle.Fold(nil, opts.Policy); err != nil {
@@ -108,7 +136,7 @@ func Open(opts Options) (*Store, error) {
 	}
 	policy := opts.Policy
 	policy.Rank = maps.Clone(policy.Rank)
-	s := &Store{policy: policy}
+	s := &Store{policy: policy, offsets: opts.Offsets, keep: opts.Keep}
 	s.reset()
 	return s, nil
 }
@@ -129,11 +157,24 @@ func (s *Store) LastSeq() uint64 {
 	return s.lastSeq
 }
 
-// Horizon implements [store.Store]. After Close it returns the value it had.
+// Horizon implements [store.Store]: the horizon of the layer retained most
+// recently. After Close it returns the value it had.
 func (s *Store) Horizon() store.Horizon {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.horizon
+}
+
+// LayerHorizon implements [store.Store]. A layer outside L0 to L3 gets the zero
+// Horizon. After Close it returns the value it had.
+func (s *Store) LayerHorizon(layer catalog.Layer) store.Horizon {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i, ok := layerIndex(layer)
+	if !ok {
+		return store.Horizon{}
+	}
+	return s.hz[i]
 }
 
 // Close implements [store.Store]. The first call marks the store closed and

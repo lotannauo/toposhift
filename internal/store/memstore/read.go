@@ -30,22 +30,25 @@ func checkArgs(op string, sc store.Scope, dir store.Direction, hasDir bool, fps 
 	return nil
 }
 
-// checkWhen checks the context and then the horizon for a read of instant t in
-// the scope. While the horizon is zero nothing is refused for it.
+// checkWhen checks the context and then the horizon of the scope's layer for a
+// read of instant t in the scope, whose layer is valid. While that horizon is
+// zero nothing is refused for it.
 func (s *Store) checkWhen(ctx context.Context, op string, t time.Time, sc store.Scope) error {
 	if err := ctx.Err(); err != nil {
 		return contextError(op, err)
 	}
-	if s.horizon.IsZero() {
+	i, _ := layerIndex(sc.Layer)
+	hz := s.hz[i]
+	if hz.IsZero() {
 		return nil
 	}
-	if t.Before(s.horizon.Time) {
-		return fmt.Errorf("memstore: %s: instant %s is before the horizon %s: %w",
-			op, formatTime(t), formatTime(s.horizon.Time), store.ErrBeforeHorizon)
+	if t.Before(hz.Time) {
+		return fmt.Errorf("memstore: %s: instant %s is before the horizon %s of layer %s: %w",
+			op, formatTime(t), formatTime(hz.Time), sc.Layer, store.ErrBeforeHorizon)
 	}
-	if sc.AsOf < s.horizon.Seq {
-		return fmt.Errorf("memstore: %s: token %d is below the horizon's seq %d: %w",
-			op, sc.AsOf, s.horizon.Seq, store.ErrBeforeHorizon)
+	if sc.AsOf < hz.Seq {
+		return fmt.Errorf("memstore: %s: token %d is below the seq %d of the horizon of layer %s: %w",
+			op, sc.AsOf, hz.Seq, sc.Layer, store.ErrBeforeHorizon)
 	}
 	return nil
 }

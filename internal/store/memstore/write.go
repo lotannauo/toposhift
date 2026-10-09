@@ -57,9 +57,11 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 			return fail("seq %d is the snapshot token Latest, which no record may carry", r.Seq)
 		}
 		prev = r.Seq
-		if !s.horizon.IsZero() && r.EventTime.Before(s.horizon.Time) {
-			return fmt.Errorf("memstore: Write: batch[%d] seq %d: event time %s is before the horizon %s: %w",
-				i, r.Seq, formatTime(r.EventTime), formatTime(s.horizon.Time), store.ErrBeforeHorizon)
+		// Validate has checked the record's layer.
+		li, _ := layerIndex(r.Layer)
+		if hz := s.hz[li]; !hz.IsZero() && r.EventTime.Before(hz.Time) {
+			return fmt.Errorf("memstore: Write: batch[%d] seq %d: event time %s is before the horizon %s of layer %s: %w",
+				i, r.Seq, formatTime(r.EventTime), formatTime(hz.Time), r.Layer, store.ErrBeforeHorizon)
 		}
 		known, ok := s.layers[r.Subject]
 		if !ok {
@@ -92,10 +94,14 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 }
 
 // Retain implements [store.Store]. The store keeps everything, which answers
-// every question at or after the horizon trivially; Retain only publishes the
-// horizon, so that reads and writes before it are refused. The horizon is
-// stored in UTC and without a monotonic clock reading, so comparisons are by
-// instant only.
+// every question at or after a horizon trivially; Retain only publishes the
+// horizons, so that reads and writes before them are refused. The horizon of a
+// retained layer is the instant minus the layer's offset, moved only if that is
+// after the layer's horizon; the horizon of a kept layer never moves. Horizons
+// are stored in UTC and without a monotonic clock reading, so comparisons are by
+// instant only. Horizon then reports the latest of the horizons this Retain
+// moved (they share its Seq), and is
+// unchanged if none moved.
 func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,8 +111,20 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return contextError("Retain", err)
 	}
-	if horizon.After(s.horizon.Time) {
-		s.horizon = store.Horizon{Time: horizon.UTC(), Seq: s.lastSeq}
+	var latest store.Horizon
+	for i := range s.hz {
+		if s.keep[i] {
+			continue
+		}
+		if h := horizon.Add(-s.offsets[i]); h.After(s.hz[i].Time) {
+			s.hz[i] = store.Horizon{Time: h.UTC(), Seq: s.lastSeq}
+			if s.hz[i].Time.After(latest.Time) {
+				latest = s.hz[i]
+			}
+		}
+	}
+	if !latest.IsZero() {
+		s.horizon = latest
 	}
 	return nil
 }
