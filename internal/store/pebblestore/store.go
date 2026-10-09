@@ -40,10 +40,10 @@ type Store struct {
 	// that carries it, so a read pinned to it never sees less than it names.
 	lastSeq atomic.Uint64
 	// horizons are the retention horizons, indexed by layer (L0 first). They move
-	// together in this version; a layer's horizon is read through [Store.horizonOf]
-	// all the same, so that a layer with a horizon of its own changes one function.
-	// A Retain publishes a new array whole, after its commit and before it discards
-	// anything.
+	// together in this version (no layer has a retention offset or is kept), but
+	// every read and write is judged by the horizon of its own layer, through
+	// [Store.horizonOf]. A Retain publishes a new array whole, after its commit and
+	// before it discards anything.
 	horizons atomic.Pointer[[layers]store.Horizon]
 	closed   atomic.Bool
 
@@ -53,6 +53,8 @@ type Store struct {
 
 	beforeRecordApply, afterRecordApply, rereadFails func() error
 	beforeHorizonApply, afterHorizonApply            func() error
+	// checkValue is what the value of a record must pass before the batch is taken in.
+	checkValue func(pebblekv.Value) error
 
 	// mu serializes Write and Retain, which the caller is already required to do;
 	// it keeps the horizon coherent if a caller forgets. It also guards the fields
@@ -110,12 +112,15 @@ func Open(dir string, o Options) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		kv: kv, ids: pebblekv.Default, rec: o.Recorder, policy: o.Policy,
+		kv: kv, ids: pebblekv.Default, checkValue: pebblekv.Value.Check, rec: o.Recorder, policy: o.Policy,
 		retainBytes: o.retainBatchBytes, stopAfter: o.retainStopAfter, afterRetainCommit: o.afterRetainCommit,
 		beforeRecordApply: o.beforeRecordApply, afterRecordApply: o.afterRecordApply, rereadFails: o.rereadFails,
 		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
+	if o.checkValue != nil {
+		s.checkValue = o.checkValue
+	}
 	if s.rec == nil {
 		s.rec = nopRecorder{}
 	}
@@ -266,9 +271,26 @@ func (s *Store) horizonOf(l catalog.Layer) store.Horizon {
 // LastSeq implements [store.Store]. After Close it returns the value it had.
 func (s *Store) LastSeq() uint64 { return s.lastSeq.Load() }
 
-// Horizon implements [store.Store]. After Close it returns the value it had. The
-// layers' horizons move together, so it is the one horizon of all of them.
-func (s *Store) Horizon() store.Horizon { return s.horizonOf(catalog.L0) }
+// Horizon implements [store.Store]: the horizon of the layer retained most
+// recently, and when one Retain moved several, the latest of them. Every layer
+// moves together in this version, so it is the one horizon they all have. It is
+// derived from the horizons of the layers, which are what is stored, so it is the
+// same after a reopening. (With retention offsets, a later change will keep the
+// value of the last Retain, which the layers' horizons alone no longer give.) After Close it returns the value it had.
+func (s *Store) Horizon() store.Horizon {
+	hs := s.horizons.Load()
+	latest := hs[0]
+	for _, h := range hs[1:] {
+		if h.Time.After(latest.Time) {
+			latest = h
+		}
+	}
+	return latest
+}
+
+// LayerHorizon implements [store.Store]. A layer outside L0 to L3 has the zero
+// Horizon. After Close it returns the value it had.
+func (s *Store) LayerHorizon(layer catalog.Layer) store.Horizon { return s.horizonOf(layer) }
 
 // Close implements [store.Store]. It closes the database and its cache; a second
 // call returns nil. It does not take the lock Write and Retain hold, so it must

@@ -49,8 +49,14 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	// is unchanged. Every lock is released by defer: a panic that a caller
 	// recovers cannot leave the store locked.
 	invalid := make([]error, len(batch))
-	for i := range batch {
-		invalid[i] = batch[i].Validate()
+	for i, r := range batch {
+		invalid[i] = r.Validate()
+		if invalid[i] == nil {
+			// The codec is the last defence against a value it cannot encode.
+			if err := s.checkValue(pebblekv.FromRecord(r)); err != nil {
+				invalid[i] = fmt.Errorf("record seq %d: %w: %w", r.Seq, err, store.ErrInvalid)
+			}
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

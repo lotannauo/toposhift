@@ -739,3 +739,245 @@ func TestAFailedHorizonCommitStopsTheStore(t *testing.T) {
 		})
 	}
 }
+
+// LayerHorizon is the horizon of one layer, a layer outside L0 to L3 has none, and
+// Horizon is the latest of them; all of it comes back from a reopening, derived
+// from the horizon each layer has stored.
+func TestEveryLayerHasItsHorizonAndItComesBack(t *testing.T) {
+	t.Parallel()
+	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: vfs.NewMem()}
+	s, err := Open("db", Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for l := catalog.L0; l <= catalog.L3; l++ {
+		if h := s.LayerHorizon(l); !h.IsZero() {
+			t.Errorf("a new store has the horizon %v in %s", h, l)
+		}
+	}
+	if err := s.Write(bg, []store.Record{edgeRecord(1, "p", t0, lifecycle.Observe, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	h := t0.Add(time.Minute)
+	if err := s.Retain(bg, h); err != nil {
+		t.Fatal(err)
+	}
+	want := store.Horizon{Time: h, Seq: 1}
+	check := func(s *Store, when string) {
+		t.Helper()
+		for l := catalog.L0; l <= catalog.L3; l++ {
+			if got := s.LayerHorizon(l); !got.Time.Equal(want.Time) || got.Seq != want.Seq {
+				t.Errorf("%s: LayerHorizon(%s) = %v, want %v", when, l, got, want)
+			}
+		}
+		for _, l := range []catalog.Layer{0, catalog.L3 + 1, 255} {
+			if got := s.LayerHorizon(l); !got.IsZero() {
+				t.Errorf("%s: LayerHorizon(%d) = %v, want the zero horizon", when, l, got)
+			}
+		}
+		if got := s.Horizon(); !got.Time.Equal(want.Time) || got.Seq != want.Seq {
+			t.Errorf("%s: Horizon = %v, want %v", when, got, want)
+		}
+	}
+	check(s, "after Retain")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	check(s, "after Close")
+	s, err = Open("db", Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	check(s, "after reopening")
+}
+
+// Horizon is the one with the latest time among the layers' (and so is derived
+// from what is stored) when the layers' stored horizons differ, as a store with
+// retention offsets leaves them, and reads and writes are judged by their own
+// layer's.
+func TestHorizonIsTheLatestAndEachLayerJudgesItsOwn(t *testing.T) {
+	t.Parallel()
+	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: vfs.NewMem()}
+	s, err := Open("db", Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Layers that were retained to different horizons, as a store with offsets
+	// leaves them: the horizon of each layer is stored under its own key.
+	early, late := t0.Add(time.Minute), t0.Add(time.Hour)
+	for l, h := range map[catalog.Layer]store.Horizon{
+		catalog.L0: {Time: early, Seq: 1}, catalog.L1: {Time: late, Seq: 2}, catalog.L2: {Time: early, Seq: 1}, catalog.L3: {Time: early, Seq: 1},
+	} {
+		raw, err := pebblekv.EncodeLayerHorizon(h.Time, h.Seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.kv.Set(metaKey(pebblekv.HorizonMetaName(l)), raw, pebble.Sync); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	s, err = Open("db", Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if got := s.Horizon(); !got.Time.Equal(late) || got.Seq != 2 {
+		t.Errorf("Horizon = %v, want the latest, {%v, 2}", got, late)
+	}
+	if got := s.LayerHorizon(catalog.L2); !got.Time.Equal(early) || got.Seq != 1 {
+		t.Errorf("LayerHorizon(L2) = %v", got)
+	}
+	mid := t0.Add(30 * time.Minute) // after L2's horizon, before L1's
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L2)); err != nil {
+		t.Errorf("a read in L2 at an instant after L2's horizon = %v", err)
+	}
+	if err := s.Write(bg, []store.Record{edgeRecord(1, "p", mid, lifecycle.Observe, 0)}); err != nil {
+		t.Errorf("a write in L2 after L2's horizon = %v", err)
+	}
+	r := edgeRecord(2, "p", mid, lifecycle.Observe, 0)
+	r.Layer = catalog.L1
+	if err := s.Write(bg, []store.Record{r}); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a write in L1 before L1's horizon = %v, want ErrBeforeHorizon", err)
+	}
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L1)); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a read in L1 before L1's horizon = %v, want ErrBeforeHorizon", err)
+	}
+}
+
+// mixedHorizons opens a store whose layers hold different horizons, as a store with
+// offsets leaves them: L1 is retained to late, the others to early.
+func mixedHorizons(t *testing.T, early, late time.Time) (*Store, *memRecorder) {
+	t.Helper()
+	cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: vfs.NewMem()}
+	s, err := Open("db", Options{Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for l, h := range map[catalog.Layer]store.Horizon{
+		catalog.L0: {Time: early, Seq: 0}, catalog.L1: {Time: late, Seq: 0}, catalog.L2: {Time: early, Seq: 0}, catalog.L3: {Time: early, Seq: 0},
+	} {
+		raw, err := pebblekv.EncodeLayerHorizon(h.Time, h.Seq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.kv.Set(metaKey(pebblekv.HorizonMetaName(l)), raw, pebble.Sync); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = s.Close()
+	rec := newMemRecorder()
+	s, err = Open("db", Options{Config: cfg, Recorder: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s, rec
+}
+
+// A Retain moves exactly the layers whose horizon it is after: the others keep
+// their horizon and their data, and it is the same after a reopening.
+func TestRetainMovesOnlyTheLayersItIsAfter(t *testing.T) {
+	t.Parallel()
+	early, mid, late := t0.Add(time.Minute), t0.Add(30*time.Minute), t0.Add(time.Hour)
+	s, rec := mixedHorizons(t, early, late)
+	// One edge in L1, which cannot be older than its horizon, and one in L2 before
+	// the instant the Retain will name.
+	l1 := edgeRecord(1, "p", late, lifecycle.Observe, 0)
+	l1.Layer, l1.Subject = catalog.L1, store.EdgeSubject(fingerprintOf(catalog.K8sPod, 0x40), nodeFP, catalog.ScheduledOn)
+	l2 := edgeRecord(2, "p", early.Add(time.Minute), lifecycle.Observe, 0)
+	if err := s.Write(bg, []store.Record{l1, l2}); err != nil {
+		t.Fatal(err)
+	}
+	last := s.LastSeq()
+	dataBefore := len(dump(t, s))
+
+	if err := s.Retain(bg, mid); err != nil {
+		t.Fatal(err)
+	}
+	moved := store.Horizon{Time: mid, Seq: last}
+	for l, want := range map[catalog.Layer]store.Horizon{
+		catalog.L0: moved, catalog.L1: {Time: late}, catalog.L2: moved, catalog.L3: moved,
+	} {
+		if got := s.LayerHorizon(l); !got.Time.Equal(want.Time) || got.Seq != want.Seq {
+			t.Errorf("LayerHorizon(%s) = %v, want %v", l, got, want)
+		}
+	}
+	if got := s.Horizon(); !got.Time.Equal(late) {
+		t.Errorf("Horizon = %v, want the latest, at %v", got, late)
+	}
+	// Each layer is read by its own horizon.
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L1)); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a read in L1 at mid = %v, want ErrBeforeHorizon (its horizon is late)", err)
+	}
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L2)); err != nil {
+		t.Errorf("a read in L2 at its new horizon = %v", err)
+	}
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid.Add(-time.Nanosecond), store.Current(catalog.L2)); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a read in L2 just before its new horizon = %v, want ErrBeforeHorizon", err)
+	}
+	if _, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Scope{Layer: catalog.L2, AsOf: last - 1}); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a read in L2 with a token below its new Seq = %v, want ErrBeforeHorizon", err)
+	}
+	if got, err := s.Neighbors(bg, podFP, store.Forward, mid, store.Current(catalog.L2)); err != nil || len(got) != 1 {
+		t.Errorf("the edge of L2 after the retention = %v, %v; want it, carried by the baseline", got, err)
+	}
+	// Only the prefixes of the layers that moved were visited (L2's two), and they
+	// were rewritten; L1's keys are as they were.
+	if rec.counters["retain.prefixes_visited"] != 2 || rec.counters["retain.baselines_written"] != 2 {
+		t.Errorf("counters after the retention: %v; want 2 prefixes visited and 2 baselines", rec.counters)
+	}
+	if after := len(dump(t, s)); after != dataBefore {
+		t.Errorf("data keys went from %d to %d: L1's two stay, L2's two records become two baselines", dataBefore, after)
+	}
+	// It is the same after a reopening.
+	cfgFS := s.kv.Config().FS
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := Open("db", Options{Config: pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: cfgFS}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s2.Close() }()
+	for l, want := range map[catalog.Layer]store.Horizon{
+		catalog.L0: moved, catalog.L1: {Time: late}, catalog.L2: moved, catalog.L3: moved,
+	} {
+		if got := s2.LayerHorizon(l); !got.Time.Equal(want.Time) || got.Seq != want.Seq {
+			t.Errorf("after reopening, LayerHorizon(%s) = %v, want %v", l, got, want)
+		}
+	}
+}
+
+// A Retain at or before every layer's horizon moves nothing and commits nothing.
+func TestARetainBehindEveryHorizonCommitsNothing(t *testing.T) {
+	t.Parallel()
+	early, late := t0.Add(time.Minute), t0.Add(time.Hour)
+	s, rec := mixedHorizons(t, early, late)
+	var committed int
+	s.beforeHorizonApply = func() error { committed++; return nil }
+	s.afterRetainCommit = func() { committed++ }
+	l1 := edgeRecord(1, "p", late, lifecycle.Observe, 0)
+	l1.Layer = catalog.L1
+	if err := s.Write(bg, []store.Record{l1}); err != nil {
+		t.Fatal(err)
+	}
+	before := dump(t, s)
+	for _, h := range []time.Time{early, early.Add(-time.Hour), {}} {
+		if err := s.Retain(bg, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if committed != 0 || len(rec.counters) != 1 || s.LastSeq() != 1 {
+		t.Errorf("Retain behind every horizon committed %d times, counted %v, LastSeq %d", committed, rec.counters, s.LastSeq())
+	}
+	if !slices.Equal(dump(t, s), before) {
+		t.Error("it changed the data")
+	}
+	for l, want := range map[catalog.Layer]time.Time{catalog.L0: early, catalog.L1: late, catalog.L2: early, catalog.L3: early} {
+		if got := s.LayerHorizon(l); !got.Time.Equal(want) || got.Seq != 0 {
+			t.Errorf("LayerHorizon(%s) = %v, want {%v, 0}", l, got, want)
+		}
+	}
+}

@@ -73,6 +73,10 @@
 // # Not here yet
 //
 // Checkpoints are never written, so the writer keeps no per-prefix state; the
-// asynchronous retainer, a horizon of its own for each layer, and a boot history
+// asynchronous retainer, retention offsets and kept layers, and a boot history
 // kept in baselines are later changes.
+//
+// Every layer has a horizon of its own ([Store.LayerHorizon]), stored under its own
+// key and judged on its own by reads and writes, but with no offsets or kept layers
+// they all move together.
 package pebblestore

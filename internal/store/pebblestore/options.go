@@ -64,9 +64,11 @@ type Options struct {
 	// and an error it returns stands for a commit that failed but is visible, and
 	// rereadFails makes the read of the last sequence number after a failed commit
 	// fail: all for tests.
-	beforeRecordApply                     func() error
-	afterRecordApply                      func() error
-	rereadFails                           func() error
+	beforeRecordApply func() error
+	afterRecordApply  func() error
+	rereadFails       func() error
+	// checkValue replaces the check of the value of each record, for tests.
+	checkValue                            func(pebblekv.Value) error
 	beforeHorizonApply, afterHorizonApply func() error
 }
 

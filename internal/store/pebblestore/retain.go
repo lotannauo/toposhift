@@ -18,9 +18,9 @@ import (
 // Retain implements [store.Store]. It lets the store discard history before
 // horizon, in four steps.
 //
-// First the horizon of every layer is committed on its own, with the last sequence
-// number L at that moment, and published to readers and writers: from then on a
-// write older than it, and a read of an instant before it or of a token below L,
+// First the horizon of every layer it moves is committed on its own, with the
+// last sequence number L at that moment, and published to readers and writers:
+// from then on a write older than it, and a read of an instant before it or of a token below L,
 // is refused, so nothing can arrive for a prefix whose past is being collapsed,
 // and no read can ask for what is being discarded. If the process stops after it,
 // the prefixes not yet rewritten keep their old records, which no answer at or
@@ -38,9 +38,10 @@ import (
 //
 // A prefix with a boot in a record it would discard is kept whole when the store's
 // policy names a boot key (see the package comment). A Retain that does not move
-// the horizon changes nothing and does not raise LastSeq. It holds the store's
-// lock for as long as it runs, settling included, so Close must not be called
-// meanwhile.
+// any layer's horizon changes nothing and does not raise LastSeq. A Retain moves
+// the horizon of each layer it is after, and only of those: the others keep
+// theirs, and their data is left alone. It holds the store's lock for as long as
+// it runs, settling included, so Close must not be called meanwhile.
 func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if s.closed.Load() {
 		return closedError("Retain")
@@ -66,11 +67,20 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		s.last.work = workEnd.Sub(start)
 	}()
 	horizon = horizon.UTC()
-	if !horizon.After(s.Horizon().Time) {
+	// The layers whose horizon this moves: those it is after. A layer whose horizon
+	// is at or after it keeps its own, and its data is not touched.
+	var moved [layers]bool
+	anyMoved := false
+	for i, h := range s.horizons.Load() {
+		if horizon.After(h.Time) {
+			moved[i], anyMoved = true, true
+		}
+	}
+	if !anyMoved {
 		return nil
 	}
 	last := s.lastSeq.Load()
-	if err := s.publishHorizon(horizon, last); err != nil {
+	if err := s.publishHorizon(horizon, last, moved); err != nil {
 		return err
 	}
 
@@ -125,6 +135,11 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 			return fmt.Errorf("pebblestore: key %x is shorter than a prefix", key)
 		}
 		prefix := slices.Clone(key[:prefixLen])
+		if l, known := pebblekv.LayerFromByte(prefix[0]); !known || !moved[int(l)-int(catalog.L0)] {
+			seeks++
+			ok = it.SeekGE([]byte{prefix[0] + 1}) // the whole layer is left as it is
+			continue
+		}
 		dir := prefix[prefixLen-1]
 		visited++
 		// Go to the newest record of this prefix strictly before the horizon. The
@@ -244,15 +259,22 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 // L, in a commit of its own and synced if the database is, and then publishes it
 // to readers and writers. The commit comes first: a horizon that is published but
 // not stored would be forgotten by a restart that then accepts a write below it.
-func (s *Store) publishHorizon(horizon time.Time, last uint64) error {
+func (s *Store) publishHorizon(horizon time.Time, last uint64, moved [layers]bool) error {
 	raw, err := pebblekv.EncodeLayerHorizon(horizon, last)
 	if err != nil {
 		return err
 	}
 	b := s.kv.NewBatch()
 	defer func() { _ = b.Close() }()
-	var hs [layers]store.Horizon
+	hs := *s.horizons.Load() // a copy, with the moved layers replaced
+	first := -1
 	for i := range hs {
+		if !moved[i] {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
 		hs[i] = store.Horizon{Time: horizon, Seq: last}
 		if err := b.Set(metaKey(pebblekv.HorizonMetaName(catalog.L0+catalog.Layer(i))), raw, nil); err != nil {
 			return err
@@ -263,7 +285,7 @@ func (s *Store) publishHorizon(horizon time.Time, last uint64) error {
 		// (see [Store.uncertainCommit]); until then the store stops writing and
 		// retaining. The horizon is published if the database shows it, because
 		// refusing reads and writes before it is the safe side of not knowing.
-		raw, rerr := s.kv.GetMeta(metaKey(pebblekv.HorizonMetaName(catalog.L0)))
+		raw, rerr := s.kv.GetMeta(metaKey(pebblekv.HorizonMetaName(catalog.L0 + catalog.Layer(first))))
 		if rerr != nil {
 			s.failed = fmt.Errorf("a horizon commit failed (%w), and the horizon cannot be read back (%w): reopen the store", err, rerr)
 			return s.failedError("Retain")

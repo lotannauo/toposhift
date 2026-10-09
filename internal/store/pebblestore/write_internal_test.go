@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -303,5 +304,46 @@ func TestWriteChecksClosedThenContextThenEmpty(t *testing.T) {
 	_ = s.Close()
 	if err := s.Write(done, nil); !errors.Is(err, store.ErrClosed) {
 		t.Errorf("an empty batch to a closed store with a done context = %v, want ErrClosed", err)
+	}
+}
+
+var errValue = errors.New("injected value check failure")
+
+// A record whose value the codec would refuse is refused with ErrInvalid at its own
+// turn, whole batch and no Seq consumed; a record before it that breaks another
+// rule is refused for that rule first, as the reference store orders its checks.
+func TestAValueTheCodecWouldRefuseIsRefusedAtItsTurn(t *testing.T) {
+	t.Parallel()
+	var seen []uint64
+	s := openMem(t, Options{checkValue: func(v pebblekv.Value) error {
+		seen = append(seen, v.Seq)
+		if v.Seq == 2 {
+			return errValue
+		}
+		return nil
+	}})
+	good, bad := edgeRecord(1, "p", t0, lifecycle.Observe, 0), edgeRecord(2, "p", t0.Add(time.Second), lifecycle.Observe, 0)
+	err := s.Write(bg, []store.Record{good, bad})
+	if !errors.Is(err, store.ErrInvalid) || !errors.Is(err, errValue) || errors.Is(err, store.ErrBeforeHorizon) {
+		t.Fatalf("Write = %v, want an error wrapping ErrInvalid and the check's", err)
+	}
+	if s.LastSeq() != 0 || len(dump(t, s)) != 0 {
+		t.Errorf("a refused batch left LastSeq %d and %v", s.LastSeq(), dump(t, s))
+	}
+	if !slices.Equal(seen, []uint64{1, 2}) {
+		t.Errorf("the check saw seqs %v, want each record's value", seen)
+	}
+	// A record that breaks an earlier rule (the Seq) is refused for it first.
+	if err := s.Write(bg, []store.Record{good}); err != nil {
+		t.Fatal(err)
+	}
+	err = s.Write(bg, []store.Record{edgeRecord(1, "p", t0, lifecycle.Observe, 0), bad})
+	if !errors.Is(err, store.ErrInvalid) || errors.Is(err, errValue) {
+		t.Errorf("a repeated Seq before a bad value = %v, want the Seq's error", err)
+	}
+	// And the real check accepts what Validate accepts.
+	ok := openMem(t, Options{})
+	if err := ok.Write(bg, []store.Record{good, bad}); err != nil {
+		t.Errorf("Write with the real check = %v", err)
 	}
 }
