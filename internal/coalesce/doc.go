@@ -5,11 +5,19 @@
 //
 // A producer that watches a subject through a TTL repeats the same observation every
 // interval. Stored one by one, those repeats would dwarf everything else the store
-// holds. A run is the repeats of one description (TTL, payload and boot) of one subject
-// by one producer, and ingest keeps it as one record: an Observe at the run's first
-// event time, with Through set to the latest refresh and a later Seq. The store never
+// holds. A run is the repeats of one description (TTL, payload, boot and the basis of
+// the event time) of one subject by one producer, and ingest keeps it as one record: an
+// Observe at the run's first event time, with Through set to the latest refresh and a
+// later Seq. The store never
 // overwrites, so every extension is a stored record of its own; the refreshes a run
-// absorbs, under the extension interval below, are the ones never stored.
+// absorbs, under the extension interval below, are the ones never stored. The basis of
+// the event time ([store.EventTimeBasis]) is part of the description because a run
+// asserts its first event time: every record the coalescer writes for a run carries the
+// basis of the refresh that started it, and a refresh that says its time came from
+// elsewhere starts a new run instead of being absorbed into one that says otherwise.
+// Ingest must therefore keep a producer's basis stable across its pure refreshes: a
+// producer whose basis alternates is never coalesced, every refresh starts a run, and
+// storage grows with every refresh.
 // [Coalescer.Add] decides, for each record in arrival order, whether it starts a run,
 // extends one, closes one, or is already stood for.
 //

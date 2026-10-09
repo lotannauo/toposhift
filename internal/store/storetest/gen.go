@@ -429,10 +429,27 @@ func entityLayer(t catalog.EntityType) catalog.Layer {
 	return e.Layer()
 }
 
+// basisOf is the basis a generated record carries, by producer. It is a test
+// fixture, chosen so that four of the five values appear in a stream and a store that
+// loses one is noticed; it is not the ingest layer's policy for any producer. It draws
+// nothing from the random source, so a stream keeps its records and draws.
+func basisOf(p lifecycle.Producer) store.EventTimeBasis {
+	switch p {
+	case ProducerK8sObjects:
+		return store.BasisObjectField
+	case ProducerKubelet:
+		return store.BasisObserved
+	case ProducerNodeCollector, ProducerTraces, ProducerClone:
+		return store.BasisReceipt
+	}
+	return store.BasisUnknown
+}
+
 // post queues a record. Its arrival is its event time, or later if it is a late
 // churn record. The late draw is made only for churn records, and only if lateness
 // is on.
 func (b *builder) post(rec store.Record, o origin, refresh bool) {
+	rec.EventTimeBasis = basisOf(rec.Producer)
 	it := item{arrival: rec.EventTime, rec: rec, origin: o, event: -1, refresh: refresh}
 	if o == originChurn {
 		it.event = b.event

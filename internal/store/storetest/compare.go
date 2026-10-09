@@ -641,7 +641,7 @@ func diffRecords(got, want []store.Record) string {
 		g, w := got[i], want[i]
 		if g.Layer != w.Layer || g.Subject != w.Subject || g.Producer != w.Producer || !g.EventTime.Equal(w.EventTime) ||
 			g.Seq != w.Seq || g.Kind != w.Kind || g.TTL != w.TTL || !g.Through.Equal(w.Through) || !bytes.Equal(g.Payload, w.Payload) ||
-			g.Boot != w.Boot {
+			g.Boot != w.Boot || g.EventTimeBasis != w.EventTimeBasis {
 			return fmt.Sprintf("record %d is %+v, reference says %+v", i, g, w)
 		}
 	}

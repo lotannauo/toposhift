@@ -54,6 +54,52 @@ var (
 	MaxEventTime = time.Unix(0, math.MaxInt64).UTC() // 2262-04-11
 )
 
+// EventTimeBasis says which clock stamped a record's event time: the object's, the
+// producer's, a collector's, or this store's. It is descriptive: no fold, existence
+// or answer depends on it; it tells a later reader whose clock to distrust. The zero
+// value is unknown.
+type EventTimeBasis uint8
+
+const (
+	// BasisUnknown means the producer or the ingest layer did not say.
+	BasisUnknown EventTimeBasis = iota
+	// BasisObjectField is a time the object itself carries, such as a Kubernetes
+	// creationTimestamp or a condition's lastTransitionTime.
+	BasisObjectField
+	// BasisObserved is the time a collector observed the event, on the collector's
+	// clock (OTLP observed_time_unix_nano; the only timestamp k8sobjects sets).
+	BasisObserved
+	// BasisReceipt is the time this store's ingest layer received the record, on its
+	// own clock (a pure refresh).
+	BasisReceipt
+	// BasisProducerEvent is the time the producer stamped on the event itself, on
+	// the producer's clock (OTLP time_unix_nano: a state change that keeps the
+	// producer's time).
+	BasisProducerEvent
+)
+
+// String returns the basis as the name a file or a log shows: "unknown",
+// "object_field", "observed", "receipt" or "producer_event". Any other value is
+// "EventTimeBasis(n)".
+func (b EventTimeBasis) String() string {
+	switch b {
+	case BasisUnknown:
+		return "unknown"
+	case BasisObjectField:
+		return "object_field"
+	case BasisObserved:
+		return "observed"
+	case BasisReceipt:
+		return "receipt"
+	case BasisProducerEvent:
+		return "producer_event"
+	}
+	return fmt.Sprintf("EventTimeBasis(%d)", uint8(b))
+}
+
+// Valid reports whether b is one of the defined bases.
+func (b EventTimeBasis) Valid() bool { return b <= BasisProducerEvent }
+
 // Record is one stored assertion: a lifecycle assertion about a subject, in
 // the form a storage layout holds it. It carries both time axes: EventTime is
 // when the statement was true, and Seq is the ingest sequence number, which is
@@ -69,7 +115,9 @@ type Record struct {
 	EventTime time.Time
 	// Seq is the ingest sequence number: unique, and ascending in write order.
 	Seq uint64
-	// Kind says whether the producer observed the subject or deleted it.
+	// Kind says whether the producer observed the subject or deleted it: Observe
+	// or Delete. The value 3 is reserved for an operator purge, and is refused
+	// until its meaning is decided.
 	Kind lifecycle.Kind
 	// TTL is how long an observation stays live without a refresh.
 	TTL time.Duration
@@ -89,6 +137,11 @@ type Record struct {
 	// tells boots apart, and reports two live boots of one host as a clone
 	// collision, from this field.
 	Boot string
+	// EventTimeBasis says where EventTime came from. It is descriptive: no fold,
+	// existence or answer depends on it, and it is not an attribute of the
+	// assertion. A record of any kind may carry any valid basis. The zero value
+	// is [BasisUnknown].
+	EventTimeBasis EventTimeBasis
 }
 
 // Validate checks the rules a storage layout relies on. The assertion rules
@@ -128,6 +181,9 @@ func (r Record) Validate() error {
 	}
 	if r.Layer < catalog.L0 || r.Layer > catalog.L3 {
 		return fail("layer %s", r.Layer)
+	}
+	if !r.EventTimeBasis.Valid() {
+		return fail("event time basis %s", r.EventTimeBasis)
 	}
 	if r.EventTime.Before(MinEventTime) || r.EventTime.After(MaxEventTime) {
 		return fail("event time %s is outside the representable range", r.EventTime.Format(time.RFC3339))

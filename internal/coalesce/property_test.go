@@ -114,7 +114,47 @@ type seen struct {
 	ttl     time.Duration
 	boot    string
 	payload string
+	basis   store.EventTimeBasis
 	last    time.Time
+}
+
+// subjectProducer is what a run is keyed by.
+type subjectProducer struct {
+	s store.Subject
+	p lifecycle.Producer
+}
+
+// described is a record's description, without its time: what a run repeats.
+type described struct {
+	key     subjectProducer
+	ttl     time.Duration
+	boot    string
+	payload string
+}
+
+// atTime is a description at an instant: the refresh, or the run starting at it.
+type atTime struct {
+	d  described
+	at int64
+}
+
+func describedOf(r store.Record) described {
+	return described{subjectProducer{r.Subject, r.Producer}, r.TTL, r.Boot, string(r.Payload)}
+}
+
+// varyBasis returns the stream with a deterministic third of its refreshes given the
+// basis BasisProducerEvent, chosen by position and never by a draw, so a producer
+// changes its basis from one refresh to the next. The generated producers otherwise
+// keep one basis each.
+func varyBasis(stream []store.Record) []store.Record {
+	out := make([]store.Record, len(stream))
+	for i, r := range stream {
+		if r.Kind == lifecycle.Observe && r.TTL > 0 && r.Through.IsZero() && (uint64(i)*0x9E3779B97F4A7C15)>>40%3 == 0 {
+			r.EventTimeBasis = store.BasisProducerEvent
+		}
+		out[i] = r
+	}
+	return out
 }
 
 // feed runs the stream through a new coalescer, telling it the retention once the
@@ -128,20 +168,20 @@ func feed(t fataler, cfg coalesce.Config, stream []store.Record, ret retention) 
 	}
 	var o outcome
 	told := false
-	last := map[struct {
-		s store.Subject
-		p lifecycle.Producer
-	}]seen{}
+	last := map[subjectProducer]seen{}
+	// The bases of the inputs fed so far: at an instant, and at any.
+	basesAt := map[atTime]uint8{}
+	bases := map[described]uint8{}
 	for _, r := range stream {
+		d := describedOf(r)
+		basesAt[atTime{d, r.EventTime.UnixNano()}] |= 1 << r.EventTimeBasis
+		bases[d] |= 1 << r.EventTimeBasis
 		outs := co.Add(r, nil)
 
 		if r.Kind == lifecycle.Observe && r.TTL > 0 {
-			key := struct {
-				s store.Subject
-				p lifecycle.Producer
-			}{r.Subject, r.Producer}
+			key := subjectProducer{r.Subject, r.Producer}
 			prev, had := last[key]
-			same := had && prev.ttl == r.TTL && prev.boot == r.Boot && prev.payload == string(r.Payload)
+			same := had && prev.ttl == r.TTL && prev.boot == r.Boot && prev.payload == string(r.Payload) && prev.basis == r.EventTimeBasis
 			switch {
 			case len(outs) == 0:
 				o.absorbed++
@@ -150,7 +190,7 @@ func feed(t fataler, cfg coalesce.Config, stream []store.Record, ret retention) 
 				o.continuations++
 			}
 			if !same || r.EventTime.After(prev.last) {
-				last[key] = seen{r.TTL, r.Boot, string(r.Payload), r.EventTime}
+				last[key] = seen{r.TTL, r.Boot, string(r.Payload), r.EventTimeBasis, r.EventTime}
 			}
 		}
 
@@ -163,6 +203,19 @@ func feed(t fataler, cfg coalesce.Config, stream []store.Record, ret retention) 
 			}
 			if !x.Through.IsZero() {
 				o.extensions++
+			}
+			// A record carries the basis of the refresh that started its run, which is at
+			// its event time, or its own basis if it was passed on. A record the coalescer
+			// timed itself (the continuation of a run across the horizon) is at a time no
+			// input has: it carries the basis of some input of that description.
+			xd := describedOf(x)
+			mask, where := basesAt[atTime{xd, x.EventTime.UnixNano()}], "at its event time"
+			if mask == 0 {
+				mask, where = bases[xd], "at any time"
+			}
+			if mask&(1<<x.EventTimeBasis) == 0 {
+				t.Fatalf("an output at %s has basis %s, which no input of its description has %s (mask %b)",
+					x.EventTime.Format(time.TimeOnly), x.EventTimeBasis, where, mask)
 			}
 			if h := co.Horizon(x.Layer); x.EventTime.Before(h) && !r.EventTime.Before(h) {
 				t.Fatalf("output at %s is before the horizon %s of its layer, for a refresh at %s",
@@ -337,6 +390,27 @@ func check(t fataler, cfg coalesce.Config, exact bool, o outcome, ret retention,
 	}
 }
 
+// With the basis of the event time changing from one refresh to the next, a producer's
+// run is split at each change and the coalesced stream still folds like the raw one:
+// the same existence, boots and clone collisions, as in the properties above, which
+// keep one basis for each producer.
+func TestABasisChangeSplitsRunsWithoutChangingTheFold(t *testing.T) {
+	t.Parallel()
+
+	rapid.Check(t, func(t *rapid.T) {
+		c, stream := drawStream(t)
+		stream = varyBasis(stream)
+		ret := drawRetention(t, c)
+		cfg := coalesce.Config{}
+		exact := ret == retention{} && rapid.Bool().Draw(t, "exact")
+		if !exact {
+			cfg = coalesce.DefaultConfig()
+			cfg.RunMaxAge = min(time.Duration(rapid.IntRange(1, 30).Draw(t, "maxAgeMinutes"))*time.Minute, max(time.Minute, c.Duration-c.HeartbeatInterval))
+		}
+		check(t, cfg, exact, feed(t, cfg, stream, ret), ret, new(tally))
+	})
+}
+
 // drawStream draws a config and builds its stream.
 func drawStream(t *rapid.T) (storetest.Config, []store.Record) {
 	c := drawConfig(t)
@@ -487,6 +561,20 @@ func TestTheGeneratedStreamsReachRebootsAndCollisions(t *testing.T) {
 			for _, r := range []retention{{}, ret} {
 				o := feed(t, cfg, stream, r)
 				check(t, cfg, cfg == coalesce.Config{}, o, r, &tl)
+				// The same stream with its refreshes changing basis splits the runs, so the
+				// coalescer writes more, and folds to the same answers.
+				varied := feed(t, cfg, varyBasis(stream), r)
+				check(t, cfg, cfg == coalesce.Config{}, varied, r, new(tally))
+				if cfg != (coalesce.Config{}) && len(varied.out) <= len(o.out) {
+					t.Errorf("%s: a changing basis wrote %d records, no more than the %d of a steady one", r, len(varied.out), len(o.out))
+				}
+				seenBases := map[store.EventTimeBasis]bool{}
+				for _, x := range varied.out {
+					seenBases[x.EventTimeBasis] = true
+				}
+				if !seenBases[store.BasisProducerEvent] || len(seenBases) < 3 {
+					t.Errorf("%s: the varied stream wrote records of %d bases, want the changed one among at least three", r, len(seenBases))
+				}
 			}
 			if tl.rebootsSeen == 0 || tl.collisions == 0 {
 				t.Errorf("%d second boots and %d clone collisions in a stream asked to have both", tl.rebootsSeen, tl.collisions)

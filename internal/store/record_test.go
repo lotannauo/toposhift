@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -259,5 +260,122 @@ func TestAHostRecordCarriesItsBoot(t *testing.T) {
 	// coalesce across it.
 	if got := lifecycle.Coalesce([]lifecycle.Assertion{obs(10, "boot-1").Assertion(), obs(20, "boot-2").Assertion()}); len(got) != 2 {
 		t.Errorf("refreshes across a boot change coalesced to %d assertions, want 2", len(got))
+	}
+}
+
+func TestEventTimeBasisNamesAndValidity(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		b     store.EventTimeBasis
+		name  string
+		valid bool
+	}{
+		{store.BasisUnknown, "unknown", true},
+		{store.BasisObjectField, "object_field", true},
+		{store.BasisObserved, "observed", true},
+		{store.BasisReceipt, "receipt", true},
+		{store.BasisProducerEvent, "producer_event", true},
+		{5, "EventTimeBasis(5)", false},
+		{255, "EventTimeBasis(255)", false},
+	} {
+		if got := c.b.String(); got != c.name {
+			t.Errorf("basis %d: String = %q, want %q", uint8(c.b), got, c.name)
+		}
+		if got := c.b.Valid(); got != c.valid {
+			t.Errorf("basis %d: Valid = %v, want %v", uint8(c.b), got, c.valid)
+		}
+	}
+	if store.BasisUnknown != 0 {
+		t.Errorf("the zero basis is %s, want unknown", store.EventTimeBasis(0))
+	}
+}
+
+func TestValidateChecksTheEventTimeBasis(t *testing.T) {
+	t.Parallel()
+
+	pod, node := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p"), fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	records := map[string]store.Record{
+		"an entity observation": {
+			Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: "k8s", EventTime: at, Seq: 1,
+			Kind: lifecycle.Observe, Payload: []byte("p"),
+		},
+		"an entity delete": {
+			Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: "k8s", EventTime: at, Seq: 2,
+			Kind: lifecycle.Delete,
+		},
+		"an edge observation": {
+			Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "k8s", EventTime: at, Seq: 3,
+			Kind: lifecycle.Observe, Payload: []byte("e"),
+		},
+		"an edge delete": {
+			Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: "k8s", EventTime: at, Seq: 4,
+			Kind: lifecycle.Delete,
+		},
+	}
+	for name, r := range records {
+		for _, b := range []store.EventTimeBasis{store.BasisUnknown, store.BasisObjectField, store.BasisObserved, store.BasisReceipt, store.BasisProducerEvent} {
+			r.EventTimeBasis = b
+			if err := r.Validate(); err != nil {
+				t.Errorf("%s with basis %s was rejected: %v", name, b, err)
+			}
+		}
+		for _, b := range []store.EventTimeBasis{store.BasisProducerEvent + 1, 255} {
+			r.EventTimeBasis = b
+			err := r.Validate()
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s with basis %d: err = %v, want ErrInvalid", name, uint8(b), err)
+			} else if !strings.Contains(err.Error(), b.String()) {
+				t.Errorf("%s with basis %d: err = %q, want it to name the value", name, uint8(b), err)
+			}
+		}
+	}
+
+	// A bad basis is refused for itself, before the fold: a record that is also
+	// wrong for the fold reports the basis.
+	r := records["an entity observation"]
+	r.EventTimeBasis, r.Producer = store.BasisProducerEvent+1, ""
+	if err := r.Validate(); err == nil || !strings.Contains(err.Error(), "event time basis") || errors.Is(err, lifecycle.ErrInvalid) {
+		t.Errorf("a bad basis and an empty producer: err = %v, want the basis reported before the fold", err)
+	}
+}
+
+// The value 3 is reserved for an operator purge. It is refused until its
+// meaning is decided, and there is no constant for it.
+func TestValidateRefusesTheReservedKind(t *testing.T) {
+	t.Parallel()
+
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	r := store.Record{
+		Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: "k8s", EventTime: time.Unix(10, 0).UTC(), Seq: 1,
+		Kind: 3,
+	}
+	for _, b := range []store.EventTimeBasis{store.BasisUnknown, store.BasisReceipt} {
+		r.EventTimeBasis = b
+		if err := r.Validate(); !errors.Is(err, store.ErrInvalid) {
+			t.Errorf("kind 3 with basis %s: err = %v, want ErrInvalid", b, err)
+		}
+	}
+}
+
+func TestAssertionIgnoresTheEventTimeBasis(t *testing.T) {
+	t.Parallel()
+
+	pod := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	for _, kind := range []lifecycle.Kind{lifecycle.Observe, lifecycle.Delete} {
+		r := store.Record{
+			Subject: store.EntitySubject(pod), Producer: "k8s", EventTime: time.Unix(10, 0).UTC(), Seq: 3, Kind: kind,
+		}
+		if kind == lifecycle.Observe {
+			r.TTL, r.Payload = time.Minute, []byte("abc")
+		}
+		want := r.Assertion()
+		for _, b := range []store.EventTimeBasis{store.BasisObjectField, store.BasisObserved, store.BasisReceipt, store.BasisProducerEvent} {
+			r.EventTimeBasis = b
+			if got := r.Assertion(); !reflect.DeepEqual(got, want) {
+				t.Errorf("%s with basis %s: assertion = %+v, want %+v", kind, b, got, want)
+			}
+		}
 	}
 }

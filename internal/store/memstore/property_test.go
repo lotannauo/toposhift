@@ -262,7 +262,8 @@ func sameNeighbors(a, b []store.Neighbor) bool { return len(a) == len(b) && slic
 func sameRecord(a, b store.Record) bool {
 	return a.Layer == b.Layer && a.Subject == b.Subject && a.Producer == b.Producer &&
 		a.EventTime.Equal(b.EventTime) && a.Seq == b.Seq && a.Kind == b.Kind && a.TTL == b.TTL &&
-		a.Through.Equal(b.Through) && bytes.Equal(a.Payload, b.Payload) && a.Boot == b.Boot
+		a.Through.Equal(b.Through) && bytes.Equal(a.Payload, b.Payload) && a.Boot == b.Boot &&
+		a.EventTimeBasis == b.EventTimeBasis
 }
 
 func sameRecords(a, b []store.Record) bool { return slices.EqualFunc(a, b, sameRecord) }
@@ -445,6 +446,8 @@ func (u universe) genRecord(t *rapid.T) store.Record {
 		Producer:  rapid.SampledFrom([]lifecycle.Producer{"p", "q"}).Draw(t, "producer"),
 		EventTime: base.Add(time.Duration(rapid.IntRange(-2, 4).Draw(t, "seconds")) * time.Second),
 		Kind:      rapid.SampledFrom([]lifecycle.Kind{lifecycle.Observe, lifecycle.Observe, lifecycle.Observe, lifecycle.Delete}).Draw(t, "kind"),
+		// Any kind of record may carry any valid basis.
+		EventTimeBasis: store.EventTimeBasis(rapid.IntRange(0, int(store.BasisProducerEvent)).Draw(t, "basis")),
 	}
 	if r.Kind == lifecycle.Observe {
 		r.TTL = time.Duration(rapid.IntRange(0, 3).Draw(t, "ttl")) * time.Second

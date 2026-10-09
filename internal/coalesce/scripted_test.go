@@ -176,6 +176,9 @@ func describe(rs []store.Record) string {
 		if r.Boot != "" {
 			extra += " boot=" + r.Boot
 		}
+		if r.EventTimeBasis != store.BasisUnknown {
+			extra += " basis=" + r.EventTimeBasis.String()
+		}
 		out += fmt.Sprintf(" [%d%s %s%s]", int(r.EventTime.Sub(base)/time.Second), through, r.Payload, extra)
 	}
 	return out
@@ -667,6 +670,137 @@ func TestARefreshWithAnotherBootStartsANewRun(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// withBasis is r with the basis of its event time.
+func withBasis(r store.Record, b store.EventTimeBasis) store.Record {
+	r.EventTimeBasis = b
+	return r
+}
+
+func TestAnExtensionAndTheRecordThatClosesARunCarryTheBasisItBeganWith(t *testing.T) {
+	t.Parallel()
+
+	fp := node(t, "node-0")
+	const (
+		receipt = store.BasisReceipt
+		object  = store.BasisObjectField
+	)
+	tests := map[string]struct {
+		config  coalesce.Config
+		horizon int // told after the last beat but one, or 0
+		beats   []store.Record
+		want    string
+	}{
+		"an extension carries the basis of its run": {
+			config: coalesce.Config{},
+			beats: []store.Record{
+				withBasis(refresh(t, fp, 0, "a"), receipt), withBasis(refresh(t, fp, 60, "a"), receipt),
+				withBasis(refresh(t, fp, 120, "a"), receipt),
+			},
+			want: " [0 a basis=receipt] [0..60 a basis=receipt] [0..120 a basis=receipt]",
+		},
+		// An unknown basis is a basis too: the output has none to show.
+		"the unknown basis is unchanged": {
+			config: coalesce.Config{},
+			beats:  []store.Record{refresh(t, fp, 0, "a"), refresh(t, fp, 60, "a")},
+			want:   " [0 a] [0..60 a]",
+		},
+		// Refreshes 60 to 180 were absorbed; the stored deadline (240) falls short of the
+		// refresh seen at 300, whose time came from elsewhere. The old run is carried to
+		// its last refresh with its own basis, then the new run begins with its.
+		"a change of basis starts a run and the closing record carries the old basis": {
+			config: coalesce.Config{ExtendTTLFraction: 0.9},
+			beats: []store.Record{
+				withBasis(refresh(t, fp, 0, "a"), receipt), withBasis(refresh(t, fp, 60, "a"), receipt),
+				withBasis(refresh(t, fp, 120, "a"), receipt), withBasis(refresh(t, fp, 180, "a"), receipt),
+				withBasis(refresh(t, fp, 300, "a"), object),
+			},
+			want: " [0 a basis=receipt] [0..180 a basis=receipt] [300 a basis=object_field]",
+		},
+		"going from unknown to a basis starts a run": {
+			config: coalesce.Config{},
+			beats: []store.Record{
+				refresh(t, fp, 0, "a"), withBasis(refresh(t, fp, 60, "a"), receipt), withBasis(refresh(t, fp, 120, "a"), receipt),
+			},
+			want: " [0 a] [60 a basis=receipt] [60..120 a basis=receipt]",
+		},
+		// A late refresh of the old run, inside the span the previous run covered, is
+		// absorbed only with the basis that run had.
+		"a late refresh is covered only by its own basis": {
+			config: coalesce.Config{},
+			beats: []store.Record{
+				withBasis(refresh(t, fp, 0, "a"), receipt), withBasis(refresh(t, fp, 60, "a"), receipt),
+				withBasis(refresh(t, fp, 120, "a"), object),
+				withBasis(refresh(t, fp, 30, "a"), receipt), withBasis(refresh(t, fp, 30, "a"), store.BasisObserved),
+			},
+			want: " [0 a basis=receipt] [0..60 a basis=receipt] [120 a basis=object_field] [30 a basis=observed]",
+		},
+		// The run began before the horizon, so it cannot be extended: the record that
+		// carries it to the new run begins at its last refresh, with its basis.
+		"a run continued across the horizon keeps its basis": {
+			config:  coalesce.Config{ExtendTTLFraction: 0.9},
+			horizon: 100,
+			beats: []store.Record{
+				withBasis(refresh(t, fp, 0, "a"), receipt), withBasis(refresh(t, fp, 60, "a"), receipt),
+				withBasis(refresh(t, fp, 120, "a"), receipt), withBasis(refresh(t, fp, 180, "a"), receipt),
+				withBasis(refresh(t, fp, 300, "a"), object),
+			},
+			want: " [0 a basis=receipt] [180 a basis=receipt] [300 a basis=object_field]",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			co := mustNew(t, tt.config)
+			var got []store.Record
+			for i, r := range tt.beats {
+				if tt.horizon != 0 && i == len(tt.beats)-1 {
+					co.SetHorizonAll(offset(tt.horizon))
+				}
+				got = co.Add(r, got)
+			}
+			if d := describe(got); d != tt.want {
+				t.Errorf("wrote%s, want%s", d, tt.want)
+			}
+			for i, o := range got {
+				o.Seq = uint64(i + 1)
+				if err := o.Validate(); err != nil {
+					t.Errorf("record %d is invalid: %v", i, err)
+				}
+			}
+		})
+	}
+}
+
+// A record that is passed on as given keeps its own basis, and a run forgotten by
+// Prune leaves nothing of the basis it had.
+func TestRecordsPassedOnAndPrunedRunsKeepNoBasisOfAnotherRun(t *testing.T) {
+	t.Parallel()
+
+	fp := node(t, "node-0")
+	co := mustNew(t, coalesce.Config{})
+	var got []store.Record
+	got = co.Add(withBasis(refresh(t, fp, 0, "a"), store.BasisReceipt), got)
+	del := store.Record{
+		Layer: layerOf(t, fp), Subject: store.EntitySubject(fp), Producer: producer, EventTime: offset(30),
+		Kind: lifecycle.Delete, EventTimeBasis: store.BasisObserved,
+	}
+	got = co.Add(del, got)
+	long := withBasis(refresh(t, fp, 40, "a"), store.BasisObjectField)
+	long.Through = offset(100)
+	got = co.Add(long, got)
+	if want := " [0 a basis=receipt] [30  ttl=0s basis=observed] [40..100 a basis=object_field]"; describe(got) != want {
+		t.Errorf("wrote%s, want%s", describe(got), want)
+	}
+
+	got = co.Add(withBasis(refresh(t, fp, 200, "a"), store.BasisReceipt), nil)
+	co.Prune(offset(1000))
+	got = co.Add(withBasis(refresh(t, fp, 1100, "a"), store.BasisObjectField), got)
+	if want := " [200 a basis=receipt] [1100 a basis=object_field]"; describe(got) != want {
+		t.Errorf("after Prune wrote%s, want%s", describe(got), want)
 	}
 }
 

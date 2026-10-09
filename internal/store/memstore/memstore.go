@@ -52,12 +52,13 @@ type stored struct {
 	payload        []byte
 	boot           string // the boot id of a host observation, or empty
 	kind           lifecycle.Kind
+	basis          store.EventTimeBasis // where the event time came from
 }
 
 func keep(r store.Record) stored {
 	st := stored{
 		producer: r.Producer, seq: r.Seq, event: r.EventTime.UnixNano(),
-		ttl: r.TTL, payload: slices.Clone(r.Payload), boot: r.Boot, kind: r.Kind,
+		ttl: r.TTL, payload: slices.Clone(r.Payload), boot: r.Boot, kind: r.Kind, basis: r.EventTimeBasis,
 	}
 	if !r.Through.IsZero() {
 		st.through, st.hasThrough = r.Through.UnixNano(), true
@@ -71,6 +72,7 @@ func (st stored) record(s store.Subject, layer catalog.Layer) store.Record {
 	r := store.Record{
 		Layer: layer, Subject: s, Producer: st.producer, EventTime: time.Unix(0, st.event).UTC(),
 		Seq: st.seq, Kind: st.kind, TTL: st.ttl, Payload: st.payload, Boot: st.boot,
+		EventTimeBasis: st.basis,
 	}
 	if st.hasThrough {
 		r.Through = time.Unix(0, st.through).UTC()
