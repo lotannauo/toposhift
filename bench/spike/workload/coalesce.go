@@ -124,12 +124,14 @@ func (g *Generator) coalesce(r engine.Record, out []engine.Record) []engine.Reco
 //
 // A run the store can still extend is extended: the same record the coalescer
 // would have written at the refresh it absorbed last. A run that began before the
-// horizon is continued by one asserted at that last refresh, or at the horizon
-// itself if the refresh was before it: the producer's promise from there is
-// replaced at until by the new run's, so only the existence from there to until is
-// what it adds. The record starts no later than the stored deadline, so the two
-// runs touch, except when the deadline lapsed before the horizon: the gap before
-// the horizon stays, and the store keeps nothing there.
+// horizon is continued by one that starts at the earlier of its last refresh and
+// the lapse of its stored copy, or at the horizon if that is later, and carries a
+// Through (the last refresh) only when it starts before that refresh. The producer's
+// promise from the last refresh is replaced at until by the new run's, so only the
+// existence from the record's start to until is what it adds. The record starts no
+// later than the stored deadline, so the two runs touch, except when the deadline
+// lapsed before the horizon: the gap before the horizon stays, and the store keeps
+// nothing there.
 func (g *Generator) closeRun(key runKey, st *run, until time.Time, out []engine.Record) []engine.Record {
 	if !st.deadline().Before(until) || until.After(st.last.Add(st.ttl)) || until.Before(g.horizon) {
 		return out
@@ -150,6 +152,15 @@ func (g *Generator) closeRun(key runKey, st *run, until time.Time, out []engine.
 		at = g.horizon
 	}
 	rec.EventTime = at
+	if at.Before(st.last) {
+		// The record begins at the lapse of the store's copy, or at the horizon, before the
+		// run's last refresh. Without a Through it would stand for [at, at+TTL) only, which
+		// ends before last+TTL when the copy lapsed more than a TTL before the last
+		// refresh (an extension interval longer than the TTL) and leaves a hole before the
+		// next run. Every refresh of the run, from its start to last, came within the TTL
+		// of the one before it, so the producer was seen continuously from at to last.
+		rec.Through = st.last
+	}
 	return append(out, rec)
 }
 
