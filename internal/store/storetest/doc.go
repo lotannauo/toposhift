@@ -19,10 +19,12 @@
 //     Write, LastSeq and Horizon, and offers records before the horizon and asks
 //     reads one nanosecond and one token below it, which both must refuse;
 //   - the contract checks [CheckWriteContract], [CheckReadContract], [CheckClose],
-//     [CheckContext] and [CheckHorizon]: whole-or-absent batches, empty batches,
-//     payload bytes shared with the caller, arguments and the order in which they
-//     are checked, a token above LastSeq, the behavior after Close, cancelled
-//     contexts, and the rules of the retention horizon;
+//     [CheckContext], [CheckHorizon] and [CheckLayerHorizons]: whole-or-absent
+//     batches, empty batches, payload bytes shared with the caller, arguments and
+//     the order in which they are checked, a token above LastSeq, the behavior
+//     after Close, cancelled contexts, the rules of the retention horizon, and the
+//     horizon of each layer (the suite opens every store with all retention
+//     offsets zero, so the four are equal);
 //   - the scripted scenarios [CheckInstant], [CheckEntityWindow], [CheckProducers],
 //     [CheckRelations] and [CheckExtremes], which put records of one producer at
 //     one instant, several producers on one subject, two relations on one pair, and
