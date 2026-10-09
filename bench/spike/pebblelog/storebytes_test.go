@@ -133,9 +133,20 @@ var storeBytesWants = map[string]storeBytesWant{
 	"hot default":      {14739, 14320, 7, 412, "4734025957b286b3df7abc85cd533733cd08129cd6175666b304a457810ec731"},
 }
 
+// storeBytesEngine is what the driver needs of an engine: the spike's, or the
+// promoted store behind a shim.
+type storeBytesEngine interface {
+	Write([]engine.Record) error
+	Retain(time.Time) error
+	Close() error
+}
+
+// storeBytesOpener opens an engine with the fixed options of a case.
+type storeBytesOpener func(dir string, fs vfs.FS, v storeBytesVariant, rec engine.Recorder) (storeBytesEngine, error)
+
 // openStoreBytes opens an engine with the fixed options of a case. A nil fs is the
 // real file system.
-func openStoreBytes(dir string, fs vfs.FS, v storeBytesVariant, rec engine.Recorder) (*pebblelog.Engine, error) {
+func openStoreBytes(dir string, fs vfs.FS, v storeBytesVariant, rec engine.Recorder) (storeBytesEngine, error) {
 	return pebblelog.Open(dir, pebblelog.Options{
 		Config:      pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: fs},
 		Checkpoints: v.checkpoints,
@@ -147,7 +158,7 @@ func openStoreBytes(dir string, fs vfs.FS, v storeBytesVariant, rec engine.Recor
 // storeBytesBatch records, moves the horizon and reopens the engine at the fixed
 // instants, closes and reopens it once more at the end, and returns the digest of
 // the data keyspace and how many times it retained.
-func writeStoreBytes(t *testing.T, cfg workload.Config, v storeBytesVariant, dir string, fs vfs.FS) storeBytesRun {
+func writeStoreBytes(t *testing.T, cfg workload.Config, v storeBytesVariant, dir string, fs vfs.FS, opener storeBytesOpener) storeBytesRun {
 	t.Helper()
 	g, err := workload.New(cfg)
 	if err != nil {
@@ -164,7 +175,7 @@ func writeStoreBytes(t *testing.T, cfg workload.Config, v storeBytesVariant, dir
 	rec := &engine.MemRecorder{}
 	reopened := false
 
-	e, err := openStoreBytes(dir, fs, v, rec)
+	e, err := opener(dir, fs, v, rec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +190,7 @@ func writeStoreBytes(t *testing.T, cfg workload.Config, v storeBytesVariant, dir
 			open = false
 			t.Fatal(err)
 		}
-		if e, err = openStoreBytes(dir, fs, v, rec); err != nil {
+		if e, err = opener(dir, fs, v, rec); err != nil {
 			open = false
 			t.Fatal(err)
 		}
@@ -275,7 +286,7 @@ func TestStoredBytesAreUnchanged(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				cfg := stream.config()
-				run := writeStoreBytes(t, cfg, v, "db", vfs.NewMem())
+				run := writeStoreBytes(t, cfg, v, "db", vfs.NewMem(), openStoreBytes)
 				d := run.digest
 
 				// A digest of an empty or trivial store would pass any
@@ -323,7 +334,7 @@ func TestStoredBytesAreUnchanged(t *testing.T) {
 					if err := os.MkdirAll(dir, 0o755); err != nil {
 						t.Fatal(err)
 					}
-					onDisk := writeStoreBytes(t, cfg, v, filepath.Join(dir, "db"), nil)
+					onDisk := writeStoreBytes(t, cfg, v, filepath.Join(dir, "db"), nil, openStoreBytes)
 					if onDisk != run {
 						t.Errorf("the store on disk is %+v, the one in memory %+v", onDisk, run)
 					}
