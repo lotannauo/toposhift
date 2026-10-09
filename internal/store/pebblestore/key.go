@@ -45,8 +45,10 @@ const (
 
 // The meta keys this layout writes, besides the ones pebblekv names.
 const (
-	// metaCheckpoints says a checkpoint may be in the database. Nothing in this
-	// package writes it.
+	// metaCheckpoints says a checkpoint may be in the database: it is the byte 1,
+	// written in the commit of the first checkpoint, and never removed. A version of
+	// this package that does not invalidate checkpoints refuses a database that has
+	// it.
 	metaCheckpoints = "checkpoints"
 	// metaBootKey is the boot key the database's lifecycle policy was created with.
 	metaBootKey = "bootKey"

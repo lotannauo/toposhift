@@ -32,7 +32,10 @@
 // checkpoints a read is as long as the history older than t in its prefix.
 //
 // The reader also understands checkpoints, derived summaries of a prefix's history
-// that a read may stop at; this version never writes one.
+// that a read may stop at. The writer keeps a policy ([CheckpointOptions]) and
+// writes them; see checkpoint.go for what keeps them true. They are never facts:
+// losing one is harmless, and a stale one is a wrong answer, so a record that makes
+// one untrue deletes it in the same commit.
 //
 // # Retention
 //
@@ -48,8 +51,7 @@
 //
 // A store opened with a policy that names a boot key reports two live boots of
 // one host as a [store.QuarantineError], decided by folding everything the scope
-// sees of the entity. Two rules make that correct and simple, and both are
-// interim:
+// sees of the entity. Two interim rules make that correct and simple:
 //   - Alive reads the whole history of the entity (its records and the baseline's
 //     entries) and folds it, where without a boot key it stops at the first live
 //     reference. Its cost grows with the entity's history.
@@ -58,11 +60,20 @@
 //     keeps no boot history, so the records stay, and every later collision is
 //     judged against them. The history of a host with boots is never reclaimed.
 //
+// Because Alive folds the whole prefix, no read would use a checkpoint of an
+// entity's own prefix, so under a boot key the checkpoint policy places none there.
+// This is a choice of cost, not one of the rules above. Edge prefixes are
+// unchanged, and a checkpoint that exists on an entity prefix (written by the
+// instrument) is still deleted when a record makes it untrue.
+//
 // # Durability
 //
 // With Config.Sync, record commits and the commit that publishes a horizon are
-// synced. The commits that rewrite history below a published horizon are not.
-// Without it, no commit is. Pebble applies a batch to its memtable before it
+// synced. The commits that write checkpoints, which are derived, and the commits
+// that rewrite history below a published horizon are not: the log is replayed as a
+// prefix, so a checkpoint is lost only together with everything committed after
+// it, never while a later record that deleted it survives. Without it, no commit
+// is. Pebble applies a batch to its memtable before it
 // reports a failed sync, and replays a batch written to its log after a failed
 // apply, so an error from a record commit does not say whether the batch is
 // stored: the store sets LastSeq to what it shows, refuses further writes and
@@ -72,8 +83,7 @@
 //
 // # Not here yet
 //
-// Checkpoints are never written, so the writer keeps no per-prefix state; the
-// asynchronous retainer, retention offsets and kept layers, and a boot history
+// The asynchronous retainer, retention offsets and kept layers, and a boot history
 // kept in baselines are later changes.
 //
 // Every layer has a horizon of its own ([Store.LayerHorizon]), stored under its own

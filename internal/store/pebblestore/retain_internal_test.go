@@ -465,7 +465,11 @@ func TestARetentionThatStopsHalfwayLeavesCorrectAnswers(t *testing.T) {
 		t.Skip("trimmed run: this check runs in the full tier")
 	}
 	t.Parallel()
-	for _, stopAfter := range []int{1, 2, 4} {
+	stops := []int{1, 2, 4}
+	if raceEnabled {
+		stops = []int{2} // one goroutine: the race detector finds nothing here and costs minutes; plain runs take all three
+	}
+	for _, stopAfter := range stops {
 		t.Run(fmt.Sprintf("after %d commits", stopAfter), func(t *testing.T) {
 			t.Parallel()
 			fs := vfs.NewMem()

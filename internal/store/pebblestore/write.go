@@ -23,10 +23,14 @@ import (
 // checked again just before the commit, and never after it: a context error means
 // nothing was stored.
 //
-// The batch is one commit, carrying both copies of every edge and the new last
-// sequence number. If the commit reports an error, the store sets LastSeq to what
-// the database shows and refuses every later Write and Retain until it is
-// reopened: the outcome is final only then, when the log is replayed (see
+// The batch is one commit, carrying both copies of every edge, the new last
+// sequence number and the deletion of every checkpoint a record of the batch makes
+// untrue (in both copies of an edge). Then, if the checkpoint policy finds a prefix
+// due, a second commit writes the checkpoints; it is not synced, and an error in it
+// is counted ("checkpoint.errors"), never returned, because the records are already
+// stored. If the first commit reports an error, the store sets LastSeq to what the
+// database shows and refuses every later Write and Retain until it is reopened: the
+// outcome is final only then, when the log is replayed (see
 // [Store.uncertainCommit]). In practice Pebble ends the process on such an error
 // (see package pebblekv), so this is the last line of defence.
 //
@@ -34,6 +38,7 @@ import (
 // when the other layer was written by an earlier batch: the contract leaves that
 // precondition to the caller, because finding out costs a lookup per record.
 func (s *Store) Write(ctx context.Context, batch []store.Record) error {
+	var ph writePhases
 	if s.closed.Load() {
 		return closedError("Write")
 	}
@@ -48,6 +53,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	// record is reported at that record's turn below, so the order of the checks
 	// is unchanged. Every lock is released by defer: a panic that a caller
 	// recovers cannot leave the store locked.
+	validateStart := s.now()
 	invalid := make([]error, len(batch))
 	for i, r := range batch {
 		invalid[i] = r.Validate()
@@ -58,13 +64,17 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 			}
 		}
 	}
+	ph.validate = s.since(validateStart)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failed != nil {
 		return s.failedError("Write")
 	}
 
-	type put struct{ key, value []byte }
+	type put struct {
+		prefix, key, value []byte
+		ns                 int64
+	}
 	prev := s.lastSeq.Load()
 	inBatch := make(map[store.Subject]catalog.Layer)
 	puts := make([]put, 0, 2*len(batch))
@@ -103,13 +113,52 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		v := pebblekv.FromRecord(r)
 		ns := r.EventTime.UnixNano()
 		for _, sd := range sides {
-			puts = append(puts, put{recordKey(sd.prefix, ns, r.Seq), appendRecordValue(nil, sd.ref, v)})
+			puts = append(puts, put{sd.prefix, recordKey(sd.prefix, ns, r.Seq), appendRecordValue(nil, sd.ref, v), ns})
 		}
 	}
 
 	b := s.kv.NewBatch()
 	defer func() { _ = b.Close() }()
+	// A record with an event time before a checkpoint's makes that checkpoint
+	// untrue, so it is deleted in the same commit as the record. From here on the
+	// list of checkpoints in memory may be ahead of the database, and it is dropped
+	// unless the Write goes through to its end: on any error, a context that ends
+	// before the commit, or a panic that a caller recovers. (After a commit that
+	// failed the store is stopped, and a reopening reads the state afresh; the drop
+	// matters for the errors that leave it running.)
+	finished := false
+	defer func() {
+		if !finished {
+			s.forgetAll()
+		}
+	}()
+	s.iterators = 0
+	// Nothing is remembered, and nothing can need invalidating, in a database that
+	// has no checkpoints and is not writing any.
+	track := s.ckpt.On || s.anyCkpt
+	if !track {
+		s.complete = false // records are about to be stored that the map will not know of
+	}
+	touched := map[string]struct{}{}
 	for _, p := range puts {
+		if track {
+			started := s.now()
+			st, err := s.state(p.prefix)
+			ph.state += s.since(started)
+			if err != nil {
+				return fmt.Errorf("pebblestore: Write: %w", err)
+			}
+			started = s.now()
+			err = s.invalidate(b, p.prefix, st, p.ns)
+			ph.invalidate += s.since(started)
+			if err != nil {
+				return fmt.Errorf("pebblestore: Write: %w", err)
+			}
+			st.latest = max(st.latest, p.ns)
+			st.since++
+			st.sinceBytes += len(p.value)
+			touched[string(p.prefix)] = struct{}{}
+		}
 		if err := b.Set(p.key, p.value, nil); err != nil {
 			return fmt.Errorf("pebblestore: Write: %w", err)
 		}
@@ -122,13 +171,35 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	if err := ctx.Err(); err != nil {
 		return contextError("Write", err)
 	}
+	started := s.now()
 	err := s.commitRecords(b)
+	ph.recordCommit = s.since(started)
 	if err != nil {
 		return s.uncertainCommit("Write", err)
 	}
 	s.lastSeq.Store(prev)
 	s.rec.Count("write.records", int64(len(puts)))
+	// The second commit: the checkpoints this write made due. It finishes before
+	// Write returns, and its failure is counted, never returned.
+	s.writeCheckpoints(touched, &ph)
+	finished = true
+	if s.iterators > 0 {
+		s.rec.Count("write.iterators", s.iterators)
+	}
+	if s.timed {
+		s.rec.Sample("write.phase_ns.validate", ph.validate)
+		s.rec.Sample("write.phase_ns.state", ph.state)
+		s.rec.Sample("write.phase_ns.invalidate", ph.invalidate)
+		s.rec.Sample("write.phase_ns.record_commit", ph.recordCommit)
+		s.rec.Sample("write.phase_ns.ckpt_build", ph.ckptBuild)
+		s.rec.Sample("write.phase_ns.ckpt_commit", ph.ckptCommit)
+	}
 	return nil
+}
+
+// writePhases is where the time of one Write went, in nanoseconds; see [Recorder].
+type writePhases struct {
+	validate, state, invalidate, recordCommit, ckptBuild, ckptCommit int64
 }
 
 // commitRecords commits a batch of records, synced if the database is.
