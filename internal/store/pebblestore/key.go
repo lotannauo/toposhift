@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
@@ -55,6 +56,9 @@ const (
 	// metaPebble is the Pebble version and format major version the database was
 	// created with.
 	metaPebble = "pebble"
+	// metaRetain is the marker of a retention that has begun and not finished: see
+	// [retainMarker]. It is absent when no retention is unfinished.
+	metaRetain = "retain"
 )
 
 func metaKey(name string) []byte { return append([]byte{metaLead}, name...) }
@@ -202,4 +206,181 @@ func (s *Store) sidesOf(r store.Record) ([]side, error) {
 		return out, nil
 	}
 	return nil, fmt.Errorf("subject kind %d: %w", r.Subject.Kind, store.ErrInvalid)
+}
+
+// The phases of a retention, as the marker records them.
+const (
+	// phaseRewrite is the rewriting of the prefixes, from the marker's resume key.
+	phaseRewrite = 1
+	// phaseSettle is the wait after every prefix is rewritten: only the settling, if
+	// the store settles, and the removal of the marker remain.
+	phaseSettle = 2
+)
+
+// retainFormat is the first byte of the marker's value.
+const retainFormat = 1
+
+// retainLayer is what the marker says of one layer the retention moves: its new
+// horizon and the last sequence number L at the instant the horizon was published.
+type retainLayer struct {
+	layer   catalog.Layer
+	horizon time.Time
+	last    uint64
+}
+
+// retainMarker is the content of the meta key "retain": a retention that has
+// published its horizons and not yet finished its work, written in the same
+// synced commit as the horizons it stands for. It is derived: it says nothing
+// about the history, only how far this store has got in cleaning it up, and it is
+// absent when the store is idle.
+//
+// The value is
+//
+//	0x01 | uvarint generation | uvarint layers
+//	     | per layer: layer byte, uvarint length and binary form of the horizon, L as 8 bytes big endian
+//	     | uvarint length and bytes of the resume key | phase byte
+//
+// the layers in ascending order. While the phase is [phaseRewrite], resume is the
+// first key not yet looked at: every prefix before it has been rewritten, and none
+// at or after it has. In [phaseSettle] it is empty.
+type retainMarker struct {
+	generation uint64
+	layers     []retainLayer
+	resume     []byte
+	phase      byte
+}
+
+// check says whether m is one the encoding can carry and a store writes.
+func (m retainMarker) check() error {
+	if m.generation == 0 {
+		return fmt.Errorf("generation 0")
+	}
+	if len(m.layers) == 0 || len(m.layers) > layers {
+		return fmt.Errorf("%d layers", len(m.layers))
+	}
+	for i, l := range m.layers {
+		if _, ok := pebblekv.LayerFromByte(pebblekv.LayerByte(l.layer)); !ok {
+			return fmt.Errorf("layer %d is not one", l.layer)
+		}
+		if i > 0 && l.layer <= m.layers[i-1].layer {
+			return fmt.Errorf("layer %d does not follow layer %d", l.layer, m.layers[i-1].layer)
+		}
+	}
+	if m.phase != phaseRewrite && m.phase != phaseSettle {
+		return fmt.Errorf("phase %d", m.phase)
+	}
+	return nil
+}
+
+// appendRetainMarker appends the encoding of m.
+func appendRetainMarker(dst []byte, m retainMarker) ([]byte, error) {
+	if err := m.check(); err != nil {
+		return nil, fmt.Errorf("pebblestore: retention marker with %w", err)
+	}
+	dst = append(dst, retainFormat)
+	dst = binary.AppendUvarint(dst, m.generation)
+	dst = binary.AppendUvarint(dst, uint64(len(m.layers)))
+	for _, l := range m.layers {
+		h, err := l.horizon.MarshalBinary()
+		if err != nil {
+			return nil, fmt.Errorf("pebblestore: retention marker horizon: %w", err)
+		}
+		dst = append(dst, pebblekv.LayerByte(l.layer))
+		dst = binary.AppendUvarint(dst, uint64(len(h)))
+		dst = append(dst, h...)
+		dst = binary.BigEndian.AppendUint64(dst, l.last)
+	}
+	dst = binary.AppendUvarint(dst, uint64(len(m.resume)))
+	dst = append(dst, m.resume...)
+	return append(dst, m.phase), nil
+}
+
+// decodeRetainMarker reads a marker written by [appendRetainMarker]. It refuses
+// what that never writes: another format byte, a phase that is not one, layers out
+// of order, a number that is not in its shortest form, and bytes after the end.
+// The resume key aliases b.
+func decodeRetainMarker(b []byte) (retainMarker, error) {
+	fail := func(why string) (retainMarker, error) {
+		return retainMarker{}, fmt.Errorf("retention marker %s: %w", why, pebblekv.ErrValue)
+	}
+	if len(b) == 0 || b[0] != retainFormat {
+		return fail("header")
+	}
+	rest := b[1:]
+	uv := func() (uint64, bool) {
+		n, w := binary.Uvarint(rest)
+		if w <= 0 || w != uvarintLen(n) {
+			return 0, false
+		}
+		rest = rest[w:]
+		return n, true
+	}
+	take := func(n uint64) ([]byte, bool) {
+		if n > uint64(len(rest)) {
+			return nil, false
+		}
+		out := rest[:n]
+		rest = rest[n:]
+		return out, true
+	}
+	var m retainMarker
+	var ok bool
+	if m.generation, ok = uv(); !ok {
+		return fail("generation")
+	}
+	count, ok := uv()
+	if !ok || count == 0 || count > layers {
+		return fail("layer count")
+	}
+	for range count {
+		lb, ok := take(1)
+		if !ok {
+			return fail("layer")
+		}
+		layer, known := pebblekv.LayerFromByte(lb[0])
+		if !known {
+			return fail("layer")
+		}
+		hn, ok := uv()
+		if !ok {
+			return fail("horizon length")
+		}
+		hb, ok := take(hn)
+		if !ok {
+			return fail("horizon")
+		}
+		var h time.Time
+		if err := h.UnmarshalBinary(hb); err != nil {
+			return fail("horizon form")
+		}
+		nb, ok := take(8)
+		if !ok {
+			return fail("sequence number")
+		}
+		m.layers = append(m.layers, retainLayer{layer: layer, horizon: h, last: binary.BigEndian.Uint64(nb)})
+	}
+	rn, ok := uv()
+	if !ok {
+		return fail("resume key length")
+	}
+	if m.resume, ok = take(rn); !ok {
+		return fail("resume key")
+	}
+	ph, ok := take(1)
+	if !ok {
+		return fail("phase")
+	}
+	m.phase = ph[0]
+	if len(rest) != 0 {
+		return fail("trailing bytes")
+	}
+	if err := m.check(); err != nil {
+		return fail(err.Error())
+	}
+	return m, nil
+}
+
+// uvarintLen is the length of the shortest encoding of n.
+func uvarintLen(n uint64) int {
+	return len(binary.AppendUvarint(make([]byte, 0, binary.MaxVarintLen64), n))
 }

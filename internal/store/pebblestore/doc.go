@@ -40,12 +40,29 @@
 // # Retention
 //
 // Retain(h) publishes the horizon, then rewrites each prefix that has history
-// before h in one commit: it replays it, writes a baseline at h holding every
-// reference that is still alive at h, and range-deletes everything older. The
-// baseline is not derived data: it is the only record of the state before h. With
-// Config.SettleRetention the database is then flushed and waited on until its
-// compactions have run. Retention is synchronous: [Synchronous] is the only
-// [RetentionMode].
+// before h: it replays it, writes a baseline at h holding every reference that is
+// still alive at h, and range-deletes everything older, the delete and the baseline
+// in one commit. The baseline is not derived data: it is the only record of the
+// state before h. With Config.SettleRetention the database is then flushed and
+// waited on until its compactions have run. Retention is synchronous:
+// [Synchronous] is the only [RetentionMode].
+//
+// The rewriting goes in key order, in chunks that end between prefixes (at 4 MiB
+// or 20 ms, whichever comes first), each read through an iterator of its own and
+// committed, not synced. The commit that publishes the horizons also writes a
+// marker, the meta key "retain": the generation of the retention, the layers it
+// moves with their horizons and last sequence numbers, where the rewriting
+// resumes, and whether it is rewriting or only settling. Every chunk moves the
+// resume key to the first key after its last prefix in the very commit that
+// rewrote the prefixes before it, so that whatever a crash keeps of the log, a
+// prefix before the resume key is rewritten whole and one at or after it is as it
+// was. The marker is derived, never a fact; it is deleted when the retention ends,
+// and only by the generation that wrote it. A store opened with a marker present
+// finishes that retention before Open returns, from the resume key, and with the
+// writer remembering nothing; a marker that disagrees with the horizons stored
+// beside it is refused. Running a pass again over prefixes it has rewritten changes
+// no key. A Retain with a later horizon while a marker is present starts again from
+// the first key, under the next generation.
 //
 // # Quarantine
 //
@@ -83,8 +100,9 @@
 //
 // # Not here yet
 //
-// The asynchronous retainer, retention offsets and kept layers, and a boot history
-// kept in baselines are later changes.
+// The asynchronous retainer (a lock released between chunks, a rewrite when a write
+// touches a prefix the pass has not reached, a background settle), retention
+// offsets and kept layers, and a boot history kept in baselines are later changes.
 //
 // Every layer has a horizon of its own ([Store.LayerHorizon]), stored under its own
 // key and judged on its own by reads and writes, but with no offsets or kept layers
