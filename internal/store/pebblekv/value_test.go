@@ -135,11 +135,14 @@ func TestValueGoldenVectors(t *testing.T) {
 	}
 }
 
-// Every record that passes validation is a value that passes Check, and comes
-// back from its encoding unchanged: the panic in Append cannot be reached from a
-// valid record. The streams are fixed, with every feature of the generator on.
-func TestEveryValidRecordIsAValueThatCanBeKept(t *testing.T) {
+// Every record of the generated streams passes validation, is a value that passes
+// Check, and comes back from its encoding unchanged: the panic in Append is not
+// reached from them. The streams are fixed, with every feature of the generator
+// on, and the test fails if they stop containing a delete, a Through, a boot or a
+// TTL.
+func TestEveryGeneratedRecordIsAValueThatCanBeKept(t *testing.T) {
 	t.Parallel()
+	var deletes, throughs, boots, ttls int
 	for seed := uint64(1); seed <= 6; seed++ {
 		c := storetest.Tiny()
 		c.Seed = seed
@@ -161,6 +164,10 @@ func TestEveryValidRecordIsAValueThatCanBeKept(t *testing.T) {
 				t.Fatalf("seed %d: the generator made an invalid record: %v", seed, err)
 			}
 			v := FromRecord(r)
+			deletes += btoi(v.Kind == lifecycle.Delete)
+			throughs += btoi(v.HasThrough)
+			boots += btoi(v.Boot != "")
+			ttls += btoi(v.TTL > 0)
 			if err := v.Check(); err != nil {
 				t.Fatalf("seed %d: Check of a valid record's value: %v\n%+v", seed, err, r)
 			}
@@ -170,6 +177,16 @@ func TestEveryValidRecordIsAValueThatCanBeKept(t *testing.T) {
 			}
 		}
 	}
+	if deletes == 0 || throughs == 0 || boots == 0 || ttls == 0 {
+		t.Errorf("the streams no longer cover every feature: %d deletes, %d throughs, %d boots, %d TTLs", deletes, throughs, boots, ttls)
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // A value that would be stored as something else, or that could not be read back,

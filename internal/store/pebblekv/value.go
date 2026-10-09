@@ -103,8 +103,9 @@ func FromRecord(r store.Record) Value {
 }
 
 // Check reports why v cannot be encoded: a kind other than Observe or Delete, a
-// negative TTL or Through, a Through without HasThrough, an over-long boot, or a basis above 4. A record that
-// passed [store.Record.Validate] gives a value that passes.
+// negative TTL or Through, a Through without HasThrough, an over-long boot, or a
+// basis above 4. A record that passed [store.Record.Validate] gives a value that
+// passes.
 func (v Value) Check() error {
 	switch {
 	case v.Kind != lifecycle.Observe && v.Kind != lifecycle.Delete:
