@@ -134,6 +134,41 @@ func TestValueGoldenVectors(t *testing.T) {
 	}
 }
 
+// A value that would be stored as something else, or that could not be read back,
+// is never encoded: the basis would be masked to its low three bits, a kind of 4
+// would set the Through bit.
+func TestAppendRefusesWhatItCannotKeep(t *testing.T) {
+	t.Parallel()
+	ok := Value{Seq: 1, Kind: lifecycle.Observe}
+	if err := ok.Check(); err != nil {
+		t.Fatalf("Check of a good value = %v", err)
+	}
+	bad := map[string]Value{
+		"basis 5":        {Seq: 1, Kind: lifecycle.Observe, Basis: 5},
+		"basis 8":        {Seq: 1, Kind: lifecycle.Observe, Basis: 8},
+		"basis 12":       {Seq: 1, Kind: lifecycle.Observe, Basis: 12},
+		"kind 0":         {Seq: 1},
+		"kind 3":         {Seq: 1, Kind: 3},
+		"kind 4":         {Seq: 1, Kind: 4},
+		"negative TTL":   {Seq: 1, Kind: lifecycle.Observe, TTL: -1},
+		"negative reach": {Seq: 1, Kind: lifecycle.Observe, HasThrough: true, Through: -1},
+		"a long boot":    {Seq: 1, Kind: lifecycle.Observe, Boot: strings.Repeat("a", store.MaxBootLen+1)},
+	}
+	for name, v := range bad {
+		if err := v.Check(); !errors.Is(err, ErrValue) {
+			t.Errorf("%s: Check = %v, want ErrValue", name, err)
+		}
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: Append did not panic", name)
+				}
+			}()
+			v.Append(nil)
+		}()
+	}
+}
+
 func TestValueRejects(t *testing.T) {
 	t.Parallel()
 	good := Value{Seq: 9, Kind: lifecycle.Observe, TTL: time.Second, HasThrough: true, Through: 5}.Append(nil)
@@ -187,7 +222,8 @@ func TestValueRejects(t *testing.T) {
 
 // A boot of exactly store.MaxBootLen bytes is a value; one byte more is not, so a
 // stored value cannot carry a boot the store would refuse. (The golden vectors
-// hold the 256 byte case; this holds the edge itself, written by Append.)
+// hold the 256 byte case; this holds the edge itself, written by Append, and the
+// refusal of one byte more.)
 func TestTheLongestBootIsTheStoresLimit(t *testing.T) {
 	t.Parallel()
 	if store.MaxBootLen != 256 {
@@ -195,12 +231,17 @@ func TestTheLongestBootIsTheStoresLimit(t *testing.T) {
 	}
 	for n, wantOK := range map[int]bool{1: true, 255: true, 256: true, 257: false, 1000: false} {
 		v := Value{Seq: 1, Kind: lifecycle.Observe, Boot: strings.Repeat("b", n), Payload: []byte("p")}
-		back, err := DecodeValue(v.Append(nil))
-		if wantOK && (err != nil || !sameValue(back, v)) {
-			t.Errorf("a boot of %d bytes: %+v, %v", n, back, err)
+		if !wantOK {
+			// Append refuses it (TestAppendRefusesWhatItCannotKeep), and DecodeValue
+			// refuses the bytes of one (TestValueRejects).
+			if err := v.Check(); !errors.Is(err, ErrValue) {
+				t.Errorf("a boot of %d bytes passed Check: err = %v, want ErrValue", n, err)
+			}
+			continue
 		}
-		if !wantOK && !errors.Is(err, ErrValue) {
-			t.Errorf("a boot of %d bytes decoded: err = %v, want ErrValue", n, err)
+		back, err := DecodeValue(v.Append(nil))
+		if err != nil || !sameValue(back, v) {
+			t.Errorf("a boot of %d bytes: %+v, %v", n, back, err)
 		}
 	}
 }

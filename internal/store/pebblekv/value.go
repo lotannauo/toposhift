@@ -102,11 +102,32 @@ func FromRecord(r store.Record) Value {
 	return v
 }
 
-// Append appends the encoding of v to dst. The kind must be Observe or Delete,
-// the TTL and Through must not be negative, and the basis must be 0 to 4: a
-// record that passed [store.Record.Validate] satisfies the first two, and the
-// caller that maps a record to a value the last.
+// Check reports why v cannot be encoded: a kind other than Observe or Delete, a
+// negative TTL or Through, an over-long boot, or a basis above 4. A record that
+// passed [store.Record.Validate] gives a value that passes.
+func (v Value) Check() error {
+	switch {
+	case v.Kind != lifecycle.Observe && v.Kind != lifecycle.Delete:
+		return fmt.Errorf("kind %d: %w", v.Kind, ErrValue)
+	case v.TTL < 0:
+		return fmt.Errorf("negative TTL: %w", ErrValue)
+	case v.HasThrough && v.Through < 0:
+		return fmt.Errorf("negative Through: %w", ErrValue)
+	case len(v.Boot) > store.MaxBootLen:
+		return fmt.Errorf("boot of %d bytes: %w", len(v.Boot), ErrValue)
+	case v.Basis > maxBasis:
+		return fmt.Errorf("event-time basis %d: %w", v.Basis, ErrValue)
+	}
+	return nil
+}
+
+// Append appends the encoding of v to dst. It panics if [Value.Check] fails: a
+// value that cannot be decoded, or one that decodes to something else, must never
+// be written, and a caller that built one has a bug.
 func (v Value) Append(dst []byte) []byte {
+	if err := v.Check(); err != nil {
+		panic("pebblekv: Append of an invalid value: " + err.Error())
+	}
 	flags := byte(v.Kind)
 	if v.HasThrough {
 		flags |= flagHasThrough
@@ -114,7 +135,7 @@ func (v Value) Append(dst []byte) []byte {
 	if v.Boot != "" {
 		flags |= flagHasBoot
 	}
-	flags |= (v.Basis & (flagBasisMask >> flagBasisShift)) << flagBasisShift
+	flags |= v.Basis << flagBasisShift
 	dst = append(dst, ValueFormat, flags)
 	dst = binary.AppendUvarint(dst, v.Seq)
 	dst = binary.AppendUvarint(dst, uint64(v.TTL))
