@@ -173,6 +173,7 @@ func Run(t *testing.T, f Factory) {
 		{"close", lifecycle.Policy{}, CheckClose},
 		{"context", lifecycle.Policy{}, CheckContext},
 		{"horizon", lifecycle.Policy{}, CheckHorizon},
+		{"layer horizons", lifecycle.Policy{}, CheckLayerHorizons},
 		{"instant", lifecycle.Policy{}, CheckInstant},
 		{"producers", lifecycle.Policy{}, CheckProducers},
 		{"relations", lifecycle.Policy{}, CheckRelations},

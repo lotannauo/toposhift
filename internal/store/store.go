@@ -48,7 +48,8 @@ type Scope struct {
 	// Seq <= AsOf had been written, which is lifecycle.Visible. [Latest] sees
 	// every record in the snapshot the read is answered from; a caller that needs
 	// several reads to see one world passes [Store.LastSeq] taken before them.
-	// A token below [Horizon.Seq] is refused with [ErrBeforeHorizon].
+	// A token below the Seq of [Store.LayerHorizon](Layer) is refused with
+	// [ErrBeforeHorizon].
 	AsOf uint64
 }
 
@@ -72,11 +73,12 @@ type Neighbor struct {
 	Relation catalog.RelationType
 }
 
-// Horizon is the retention horizon a store has applied: Time is the instant
-// before which history may be gone, and Seq is the highest token that was
-// committed when the horizon was applied (the L of [Store.Retain]). The zero
-// Horizon means no retention has happened yet, and while the horizon is zero no
-// read is refused for the horizon.
+// Horizon is a retention horizon a store has applied to one layer: Time is the
+// instant before which that layer's history may be gone, and Seq is the highest
+// token that was committed when the horizon was applied (the L of
+// [Store.Retain]). The zero Horizon means no retention has happened in the layer
+// yet, and while a layer's horizon is zero no read of it is refused for the
+// horizon.
 type Horizon struct {
 	// Time is the instant before which history may have been discarded.
 	Time time.Time
@@ -93,13 +95,15 @@ func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 // and the records up to a snapshot token. The instant may be any time, inside
 // the representable range or not: before [MinEventTime] nothing exists, and
 // after [MaxEventTime] the answer is the state after every record. The one
-// limit is the retention horizon: a read whose instant t (for [Store.Window] and
-// [Store.EntityWindow], whose from) is before [Store.Horizon] Time, or whose AsOf
-// is below the horizon's Seq, is refused with an error wrapping
-// [ErrBeforeHorizon], because the history it asks about may be gone. An AsOf of
-// [Latest] is never below the horizon, and while [Store.Horizon] is zero no read
-// is refused for the horizon. A token above [Store.LastSeq] that is not [Latest]
-// is treated as LastSeq at the snapshot the read is answered from.
+// limit is the retention horizon of the layer the read names: a read whose
+// instant t (for [Store.Window] and [Store.EntityWindow], whose from) is before
+// the Time of [Store.LayerHorizon] of Scope.Layer, or whose AsOf is below that
+// horizon's Seq, is refused with an error wrapping [ErrBeforeHorizon], because
+// the history it asks about may be gone. An AsOf of [Latest] is never below the
+// horizon, and while the horizon of Scope.Layer is zero no read of it is refused
+// for the horizon. A write is refused by the horizon of each record's own layer.
+// A token above [Store.LastSeq] that is not [Latest] is treated as LastSeq at
+// the snapshot the read is answered from.
 //
 // Existence of an entity is folded by the lifecycle specification with the
 // store's lifecycle.Policy, which is fixed when the store is opened and may name
@@ -143,10 +147,10 @@ func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 //
 // After [Store.Close], every method that returns an error, other than Close,
 // returns one wrapping [ErrClosed]; this check comes first, so even an empty
-// Write is refused. LastSeq and Horizon return the values they had when the store
-// closed. A second Close returns nil. Close must not be called concurrently with
-// calls still in flight: the caller stops using the store first, and the store
-// is not required to wait for or interrupt them.
+// Write is refused. LastSeq, Horizon and LayerHorizon return the values they had
+// when the store closed. A second Close returns nil. Close must not be called
+// concurrently with calls still in flight: the caller stops using the store
+// first, and the store is not required to wait for or interrupt them.
 type Store interface {
 	// Write stores a batch. Records must be in ascending Seq, and above every
 	// Seq already written; Seq starts at 1, because token 0 means "nothing".
@@ -154,10 +158,11 @@ type Store interface {
 	// like Seq 0, because Latest names no record.
 	// The store writes both directions of every edge.
 	// A batch with any invalid record, or any record before the retention
-	// horizon ([ErrBeforeHorizon]), is refused whole: nothing from it is
-	// stored, and its sequence numbers stay unused. A store whose layout has a
-	// finite capacity may also refuse a valid record with [ErrInvalid] when it is
-	// reached. An empty batch changes nothing and returns nil.
+	// horizon of its own layer ([ErrBeforeHorizon]), is refused whole: nothing
+	// from it is stored, and its sequence numbers stay unused. A store whose
+	// layout has a finite capacity may also refuse a valid record with
+	// [ErrInvalid] when it is reached. An empty batch changes nothing and returns
+	// nil.
 	//
 	// A batch is whole or absent on any error. A context error or a validation
 	// error always means nothing was stored. For any other error the caller
@@ -176,11 +181,23 @@ type Store interface {
 	// returns the value it had.
 	LastSeq() uint64
 
-	// Horizon returns the retention horizon the store has applied, which is the
-	// zero Horizon until the first [Store.Retain] that moves it. Reads before it
-	// are refused with [ErrBeforeHorizon]; while it is zero no read is refused
-	// for the horizon. After Close it returns the value it had.
+	// Horizon returns the horizon of the layer retained most recently; when one
+	// [Store.Retain] moved several, the latest of them (they share its Seq). It is
+	// the zero Horizon until the first Retain that moves a horizon. With every
+	// retention offset zero all layers share one horizon, and this is it. Reads and
+	// writes are refused by [Store.LayerHorizon], not by this value. After Close it
+	// returns the value it had.
 	Horizon() Horizon
+
+	// LayerHorizon returns the retention horizon of one layer, which is the zero
+	// Horizon until a [Store.Retain] moves it. A read is refused by the horizon of
+	// its Scope.Layer, and a write by the horizon of each record's own Layer; a
+	// layer whose retention is kept never has its horizon moved. A layer outside
+	// L0 to L3 is an invalid argument and returns the zero Horizon. After Close it
+	// returns the value it had. A store that keeps its history across a reopen
+	// keeps every layer's horizon too, whatever offsets or kept layers it is
+	// reopened with; a horizon never moves backward.
+	LayerHorizon(layer catalog.Layer) Horizon
 
 	// Neighbors returns the edges in the scope that are alive at t and touch fp
 	// in the given direction, ordered by peer fingerprint then relation. An edge
@@ -233,37 +250,48 @@ type Store interface {
 	// [*QuarantineError]. From >= to gives an empty result and a nil error.
 	EntityWindow(ctx context.Context, fp identity.Fingerprint, from, to time.Time, s Scope) ([]Record, error)
 
-	// Retain lets the store discard history before horizon. Called when the
-	// highest committed Seq is L, it must leave every answer unchanged for an
-	// instant at or after horizon and a token at or above L. That includes
-	// Window and EntityWindow: every record with an event time at or after
-	// horizon stays, so a window starting at or after it is unchanged. Only
-	// records strictly before horizon may go, and the store may replace them with
-	// a baseline standing for the state they left (a baseline must preserve a
-	// quarantine, see [Store.Alive]). Answers for earlier instants, or earlier
-	// tokens, are not given: a read whose instant (or, for Window and
-	// EntityWindow, whose from) is before horizon, or whose AsOf is below L, is
-	// refused with an error wrapping [ErrBeforeHorizon]. From then on Write
-	// refuses records with an event time before horizon.
+	// Retain lets the store discard history before the horizons it sets. Each
+	// layer l has a retention offset O_l, fixed when the store is opened, or is
+	// kept. Retain(horizon) sets the horizon of each retained layer to
+	// h_l = horizon - O_l, never moving one backward; the horizon of a kept layer
+	// never moves. Called when the highest committed Seq is L, for each layer l
+	// whose horizon this Retain moved it must leave every answer in l unchanged
+	// for an instant at or after h_l and a token at or above L. That includes
+	// Window and EntityWindow: every record of layer l with an event time at or
+	// after h_l stays, so a window starting at or after it is unchanged. Only
+	// records of layer l strictly before h_l may go, and the store may replace
+	// them with a baseline standing for the state they left (a baseline must
+	// preserve a quarantine, see [Store.Alive]). Answers for earlier instants, or
+	// earlier tokens, are not given: for each layer l whose horizon this Retain
+	// moved, a read in l whose instant (or, for Window and EntityWindow, whose
+	// from) is before h_l, or whose AsOf is below L (the Seq of l's horizon), is
+	// refused with an error wrapping [ErrBeforeHorizon]. Retain never moves a
+	// kept layer's horizon (it is zero unless an earlier configuration retained
+	// the layer), and a layer this Retain did not move keeps its earlier horizon. From then on Write refuses a record with an event
+	// time before the horizon of its own layer. With every offset zero each
+	// retained layer's horizon is horizon itself, and the layers behave as one.
 	//
-	// The new horizon is published, so that the refusal applies, before any
-	// history is discarded. A Retain that returns an error has either moved the
-	// horizon whole or not at all; discarding may be partial only below a horizon
-	// that is already published.
+	// The new horizons are published, so that the refusal applies, before any
+	// history is discarded. A store may discard in the background after Retain
+	// returns, provided the horizon is published first. Close stops that work and
+	// waits for it. A Retain that returns an error has either moved the horizons
+	// whole or not at all; discarding may be partial only below a horizon that is
+	// already published.
 	//
-	// The horizon only moves forward: a Retain that does not move it changes
-	// nothing, and L is not raised by it. While [Store.Horizon] is zero no read is
-	// refused for the horizon. Reads may overlap a Retain; for an instant at or
-	// after horizon and a token at or above L they see the same answer before,
-	// during and after it. A read whose instant lies between the old and the new
-	// horizon while a Retain is in progress may be answered or refused, but is
-	// never answered wrongly. LastSeq does not change.
+	// A horizon only moves forward: a Retain that does not move any horizon
+	// changes nothing, and L is not raised by it. While a layer's horizon is zero
+	// no read of that layer is refused for the horizon. Reads may overlap a
+	// Retain; for an instant at or after h_l and a token at or above L they see
+	// the same answer before, during and after it. A read whose instant lies
+	// between the old and the new horizon of its layer while a Retain is in
+	// progress may be answered or refused, but is never answered wrongly. LastSeq
+	// does not change.
 	Retain(ctx context.Context, horizon time.Time) error
 
 	// Close releases the store. After it, every method that returns an error,
-	// other than Close, returns one wrapping [ErrClosed]; LastSeq and Horizon
-	// return their last values; a second Close returns nil. Close must not be
-	// called concurrently with calls in flight: the caller stops using the store
-	// first.
+	// other than Close, returns one wrapping [ErrClosed]; LastSeq, Horizon and
+	// LayerHorizon return their last values; a second Close returns nil. Close
+	// must not be called concurrently with calls in flight: the caller stops using
+	// the store first.
 	Close() error
 }

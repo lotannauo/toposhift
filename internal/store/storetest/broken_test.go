@@ -97,6 +97,12 @@ type broken struct {
 	refuseAtHorizonInstant, refuseAtHorizonToken           bool
 	refuseBeforeEpoch, retainRaisesSeq, horizonReportsLast bool
 	refuseHighToken, horizonBeforeArgs, horizonBackward    bool
+	// layerHorizonIsHorizon makes LayerHorizon return Horizon() whatever the layer
+	// is, a layer outside L0 to L3 included.
+	layerHorizonIsHorizon bool
+	// writeLayer, if set, names the layer whose horizon a Write consults in place of
+	// a record's own.
+	writeLayer func(catalog.Layer) catalog.Layer
 
 	// Damage to closing.
 	closedAnswers, closedEmptyWriteOK, closedLastSeqZero  bool
@@ -185,8 +191,11 @@ func (b *broken) Write(ctx context.Context, batch []store.Record) error {
 			return err
 		}
 	}
-	if !b.noWriteHorizon && !b.hz.IsZero() {
-		stale := func(r store.Record) bool { return r.EventTime.Before(b.hz.Time) }
+	if !b.noWriteHorizon {
+		stale := func(r store.Record) bool {
+			hz := b.layerHorizon(b.writeHorizonLayer(r.Layer))
+			return !hz.IsZero() && r.EventTime.Before(hz.Time)
+		}
 		if slices.ContainsFunc(batch, stale) {
 			rest := slices.DeleteFunc(slices.Clone(batch), stale)
 			if !b.acceptMixed || len(rest) == 0 {
@@ -308,6 +317,11 @@ func (b *broken) LastSeq() uint64 {
 func (b *broken) Horizon() store.Horizon {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	return b.horizon()
+}
+
+// horizon is what Horizon reports. The caller holds a lock.
+func (b *broken) horizon() store.Horizon {
 	if b.closed && b.closedHorizonZero {
 		return store.Horizon{}
 	}
@@ -316,6 +330,35 @@ func (b *broken) Horizon() store.Horizon {
 		hz.Seq = b.lastSeq
 	}
 	return hz
+}
+
+// LayerHorizon is the one horizon of the double for each of the four layers,
+// because the double has no retention offsets, and the zero Horizon for any other
+// layer.
+func (b *broken) LayerHorizon(layer catalog.Layer) store.Horizon {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.layerHorizon(layer)
+}
+
+// layerHorizon is what LayerHorizon reports. The caller holds a lock.
+func (b *broken) layerHorizon(layer catalog.Layer) store.Horizon {
+	if b.layerHorizonIsHorizon {
+		return b.horizon()
+	}
+	if layer < catalog.L0 || layer > catalog.L3 {
+		return store.Horizon{}
+	}
+	return b.horizon()
+}
+
+// writeHorizonLayer is the layer whose horizon a Write consults for a record of
+// layer l.
+func (b *broken) writeHorizonLayer(l catalog.Layer) catalog.Layer {
+	if b.writeLayer != nil {
+		return b.writeLayer(l)
+	}
+	return l
 }
 
 func (b *broken) Close() error {
@@ -788,6 +831,7 @@ var detectors = map[string]struct {
 	"close":          {storetest.CheckClose, lifecycle.Policy{}},
 	"context":        {storetest.CheckContext, lifecycle.Policy{}},
 	"horizon":        {storetest.CheckHorizon, lifecycle.Policy{}},
+	"layer horizons": {storetest.CheckLayerHorizons, lifecycle.Policy{}},
 	"instant":        {storetest.CheckInstant, lifecycle.Policy{}},
 	"producers":      {storetest.CheckProducers, lifecycle.Policy{}},
 	"relations":      {storetest.CheckRelations, lifecycle.Policy{}},
@@ -868,7 +912,19 @@ func mutants() map[string]mutant {
 		}), by: []string{"extremes"}, wrong: true, scriptedOnly: true},
 
 		"accepts records before the horizon": {make: over(func(b *broken) { b.noWriteHorizon = true }), by: []string{"horizon"}},
-		"alters the caller's payload bytes":  {make: over(func(b *broken) { b.write = scribbling }), by: []string{"write contract"}},
+
+		// The horizon of each layer. With every offset zero the four are equal, so
+		// the damage shows only in what a layer outside L0 to L3 has, and in a
+		// layer whose horizon a write consults being the wrong one.
+		"returns Horizon() as the horizon of every layer, even one outside L0 to L3": {make: over(func(b *broken) {
+			b.layerHorizonIsHorizon = true
+		}), by: []string{"layer horizons"}},
+		// Whether some batch has records before the horizon only in L3 depends on the
+		// generated stream, so only the scripted check is held to catch this.
+		"refuses a write by the horizon of the next layer, so the last layer's is never consulted": {make: over(func(b *broken) {
+			b.writeLayer = func(l catalog.Layer) catalog.Layer { return l + 1 }
+		}), by: []string{"layer horizons"}, scriptedOnly: true},
+		"alters the caller's payload bytes": {make: over(func(b *broken) { b.write = scribbling }), by: []string{"write contract"}},
 		// The first retention is honest. The second forgets what the first kept
 		// standing for the history before it: it keeps only the records at or after
 		// the first horizon, so whatever was alive across it is lost.

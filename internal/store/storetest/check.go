@@ -184,6 +184,9 @@ func Check(cand store.Store, w Workload, opts Options) error {
 					got, h.Format(time.RFC3339), h.UTC().Format(time.RFC3339), want.Seq)
 			}
 			horizon = want
+			if err := compareLayerHorizons(cand, ref); err != nil {
+				return fmt.Errorf("after Retain(%s): %w", h.Format(time.RFC3339), err)
+			}
 			if got, want := cand.LastSeq(), ref.LastSeq(); got != want {
 				return fmt.Errorf("retaining moved LastSeq: store %d, reference %d", got, want)
 			}
@@ -195,6 +198,9 @@ func Check(cand store.Store, w Workload, opts Options) error {
 			nextReopen++
 			if cand, err = reopen(cand, opts, written, horizon); err != nil {
 				return fmt.Errorf("after %d records: %w", len(written), err)
+			}
+			if err := compareLayerHorizons(cand, ref); err != nil {
+				return fmt.Errorf("after reopening at %d records: %w", len(written), err)
 			}
 			if err := compare(cand, ref, rng, opts, state()); err != nil {
 				return fmt.Errorf("after reopening at %d records: %w", len(written), err)
@@ -208,6 +214,18 @@ func Check(cand store.Store, w Workload, opts Options) error {
 	}
 	if err := compare(cand, ref, rng, opts, state()); err != nil {
 		return fmt.Errorf("at the end (%d records): %w", len(written), err)
+	}
+	return nil
+}
+
+// compareLayerHorizons requires the store under test to report the reference's
+// horizon for each of the four layers, and the zero Horizon, as the reference
+// does, for layers outside L0 to L3.
+func compareLayerHorizons(cand, ref store.Store) error {
+	for _, l := range append(slices.Clone(allLayers), outsideLayers...) {
+		if got, want := cand.LayerHorizon(l), ref.LayerHorizon(l); !sameHorizon(got, want) {
+			return fmt.Errorf("LayerHorizon(%s) = %v; reference says %v", l, got, want)
+		}
 	}
 	return nil
 }

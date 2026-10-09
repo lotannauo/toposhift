@@ -21,6 +21,7 @@ var _ store.Store = (*stubStore)(nil)
 func (*stubStore) Write(context.Context, []store.Record) error { return store.ErrClosed }
 func (*stubStore) LastSeq() uint64                             { return 0 }
 func (*stubStore) Horizon() store.Horizon                      { return store.Horizon{} }
+func (*stubStore) LayerHorizon(catalog.Layer) store.Horizon    { return store.Horizon{} }
 func (*stubStore) Neighbors(context.Context, identity.Fingerprint, store.Direction, time.Time, store.Scope) ([]store.Neighbor, error) {
 	return nil, store.ErrClosed
 }
