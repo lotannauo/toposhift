@@ -155,7 +155,7 @@ fi
 # and needs a new measurement; it is made in this task, in go.mod, in bench/go.mod
 # and in internal/store/pebblekv/pins_test.go together.
 [tasks."check:pebble-pin"]
-description = "Fail unless the root and bench modules both use the pinned Pebble version"
+description = "Fail unless the root and bench modules both use the pinned Pebble version and the same compression libraries"
 run = '''
 set -eu
 want=v2.1.7
@@ -167,6 +167,26 @@ if [ "$root" != "$want" ] || [ "$bench" != "$want" ]; then
   echo "check:pebble-pin: Pebble is $root in the root module and $bench in bench, both must be $want" >&2
   exit 1
 fi
+# The libraries that compress Pebble's blocks shape the bytes it writes as much as
+# its own version does, so the two modules must agree on them too. A go list that
+# fails fails the task: it is run on its own, not inside a pipeline.
+mods() {
+  all="$(go list -m -json all)" || exit 1
+  printf '%s\n' "$all" | jq -r '"\(.Path) \(.Version // "")"'
+}
+rootmods="$(mods)" || exit 1
+benchmods="$(cd bench && mods)" || exit 1
+version_in() { printf '%s\n' "$1" | awk -v m="$2" '$1 == m { print $2 }'; }
+for mod in github.com/golang/snappy github.com/klauspost/compress github.com/minio/minlz github.com/DataDog/zstd; do
+  root="$(version_in "$rootmods" "$mod")"
+  bench="$(version_in "$benchmods" "$mod")"
+  if [ "$root" != "$bench" ]; then
+    root="${root:-absent}"
+    bench="${bench:-absent}"
+    echo "check:pebble-pin: $mod is $root in the root module and $bench in bench, they must match" >&2
+    exit 1
+  fi
+done
 '''
 
 [tasks."lint:workflows"]
@@ -243,7 +263,8 @@ fi
 '''
 
 [tasks.build]
-description = "Build the toposhift binary into ./bin"
+description = "Build the toposhift binary into ./bin, without cgo"
+env = { CGO_ENABLED = "0" }
 run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
 # ci is exactly three shards, and CI runs each shard as its own job on both
