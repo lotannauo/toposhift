@@ -92,17 +92,79 @@ go build ./...
 # The check below must be able to fail: with cgo on and no tag, Pebble does link
 # the cgo zstd. The package list is captured first, so a failing go list stops
 # the task (a pipeline into grep -q would hide it, and grep -q closing the pipe
-# early makes pipefail unusable).
+# early makes pipefail unusable). A go list that fails inside $(...) within [ ]
+# would not stop the task, and the positive control would pass on nothing, so
+# deps stops the task itself, and its results are taken in assignments first.
 deps() {
-  list="$(CGO_ENABLED="$1" go list -deps -tags "$2" ./...)"
+  list="$(CGO_ENABLED="$1" go list -deps -tags "$2" ./...)" || { echo "bench:purego: go list failed" >&2; echo ERR; exit 1; }
   printf '%s\n' "$list" | grep -c 'github.com/DataDog/zstd' || true
 }
-if [ "$(deps 1 "")" = 0 ]; then
+cgo_default="$(deps 1 "")"
+nocgo_default="$(deps 0 "")"
+cgo_tagged="$(deps 1 pebblegozstd)"
+if [ "$cgo_default" = 0 ]; then
   echo "bench:purego: the cgo zstd is not in a default build, so this check no longer proves anything" >&2
   exit 1
 fi
-if [ "$(deps 0 "")" != 0 ] || [ "$(deps 1 pebblegozstd)" != 0 ]; then
+if [ "$nocgo_default" != 0 ] || [ "$cgo_tagged" != 0 ]; then
   echo "bench:purego: the cgo zstd is linked with cgo off, or with the pebblegozstd tag" >&2
+  exit 1
+fi
+'''
+
+# The product is built with CGO disabled, and the module that holds
+# the store must keep building that way. Pebble picks its zstd by a build
+# constraint: pure Go when cgo is off or the pebblegozstd tag is set, the cgo
+# DataDog/zstd otherwise, which a machine with a C compiler (the post-merge go
+# install job, a developer's laptop) would compile in. So this builds the whole
+# module with cgo off, builds the binary with the tag as well, and checks that
+# neither way of asking for pure Go leaves the cgo library in the package graph.
+[tasks.purego]
+description = "Build with CGO disabled and check no cgo zstd is linked"
+run = '''
+set -eu
+export CGO_ENABLED=0
+go build ./...
+go build -tags pebblegozstd -o /dev/null ./cmd/toposhift
+# The check below must be able to fail: with cgo on and no tag, Pebble does link
+# the cgo zstd. The package list is captured first, so a failing go list stops
+# the task (a pipeline into grep -q would hide it, and grep -q closing the pipe
+# early makes pipefail unusable). A go list that fails inside $(...) within [ ]
+# would not stop the task, and the positive control would pass on nothing, so
+# deps stops the task itself, and its results are taken in assignments first.
+deps() {
+  list="$(CGO_ENABLED="$1" go list -deps -tags "$2" ./...)" || { echo "purego: go list failed" >&2; echo ERR; exit 1; }
+  printf '%s\n' "$list" | grep -c 'github.com/DataDog/zstd' || true
+}
+cgo_default="$(deps 1 "")"
+nocgo_default="$(deps 0 "")"
+cgo_tagged="$(deps 1 pebblegozstd)"
+if [ "$cgo_default" = 0 ]; then
+  echo "purego: the cgo zstd is not in a default build, so this check no longer proves anything" >&2
+  exit 1
+fi
+if [ "$nocgo_default" != 0 ] || [ "$cgo_tagged" != 0 ]; then
+  echo "purego: the cgo zstd is linked with cgo off, or with the pebblegozstd tag" >&2
+  exit 1
+fi
+'''
+
+# What Pebble writes depends on its version, and the format of a database is
+# decided by the version that wrote it, so the root and bench modules must build
+# on one Pebble, the one the measurements were made on. A bump changes the bytes
+# and needs a new measurement; it is made in this task, in go.mod, in bench/go.mod
+# and in internal/store/pebblekv/pins_test.go together.
+[tasks."check:pebble-pin"]
+description = "Fail unless the root and bench modules both use the pinned Pebble version"
+run = '''
+set -eu
+want=v2.1.7
+# A replaced module is not the pinned version, whatever version it reports.
+version='if .Replace then "replaced" else .Version end'
+root="$(go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
+bench="$(cd bench && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
+if [ "$root" != "$want" ] || [ "$bench" != "$want" ]; then
+  echo "check:pebble-pin: Pebble is $root in the root module and $bench in bench, both must be $want" >&2
   exit 1
 fi
 '''
@@ -120,6 +182,9 @@ run = "typos"
 
 # The test tasks write a JSON report when TEST_REPORT_DIR is set (CI does, to show
 # the slowest tests in the job summary); otherwise they only print.
+# The race detector needs cgo on Linux, so test and test:deep cannot run with
+# CGO_ENABLED=0 as test:fast:root does. The cgo-free build of everything is
+# checked by purego, which is part of the static shard.
 [tasks.test]
 description = "Run tests with the race detector"
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test.json"} -- -race ./...'
@@ -147,8 +212,9 @@ description = "Both modules' tests without the race detector, the bench module w
 depends = ["test:fast:root", "test:fast:bench"]
 
 [tasks."test:fast:root"]
-description = "The root module's tests without the race detector"
+description = "The root module's tests without the race detector, cgo off"
 hide = true
+env = { CGO_ENABLED = "0" }
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-fast.json"} -- ./...'
 
 # The same command, flags and environment as bench:test, so the two share results.
@@ -192,8 +258,8 @@ description = "Everything CI runs on a pull request"
 depends = ["ci:static", "ci:bench", "ci:race"]
 
 [tasks."ci:static"]
-description = "CI shard: formatting, lint, spelling, vulnerabilities, workflows and secrets"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows and secrets"
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
 
 [tasks."ci:bench"]
 description = "CI shard: the bench module's full tests and its cgo-free build"
