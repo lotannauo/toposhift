@@ -101,12 +101,59 @@ jobs:
           GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
         run: |
           mkdir -p "$TEST_REPORT_DIR"
-          mise run "ci:${SHARD}"
+          if [ "$SHARD" = race ]; then
+            # Evidence for a killed run: one line a minute while the tests run,
+            # and a full snapshot if this step is signalled. Neither can change
+            # the step's result.
+            # shellcheck disable=SC2329 # called from the trap below
+            snapshot() {
+              echo "::group::runner state ($1)"
+              date -u +%FT%TZ || true; uptime || true
+              free -m || true
+              df -h / "$RUNNER_TEMP" || true
+              ps -eo pid,ppid,etimes,stat,rss,comm --sort=-rss | head -n 15 || true
+              sudo -n dmesg -T 2>/dev/null | grep -iE 'oom|killed process' | tail -n 20 || true
+              echo "::endgroup::"
+            }
+            sample() {
+              while sleep 60 >/dev/null 2>&1; do
+                echo "[sampler] $(date -u +%T) load=$(cut -d' ' -f1 /proc/loadavg) $(free -m | awk '/^Mem:/{print "mem_avail_mb="$7} /^Swap:/{print "swap_used_mb="$3}' | tr '\n' ' ')root_avail=$(df -h --output=avail / | tail -n 1 | tr -d ' ')" || true
+              done
+            }
+            sample & sampler=$!
+            mise run "ci:${SHARD}" & tests=$!
+            trap 'snapshot "signal received"; kill -TERM "$tests" 2>/dev/null || true; wait "$tests" || true; kill "$sampler" 2>/dev/null || true; exit 143' INT TERM
+            status=0
+            wait "$tests" || status=$?
+            kill "$sampler" 2>/dev/null || true
+            exit "$status"
+          else
+            mise run "ci:${SHARD}"
+          fi
+
+      - name: Show the runner's state
+        if: ${{ always() && matrix.shard == 'race' }}
+        continue-on-error: true
+        run: |
+          {
+            echo "### Runner state at the end"
+            echo '```'
+            uptime || true
+            free -m || true
+            df -h / || true
+            echo "kernel OOM or killed-process lines: $(sudo -n dmesg 2>/dev/null | grep -ciE 'oom|killed process' || true)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY" || true
+          sudo -n dmesg -T 2>/dev/null | grep -iE 'oom|killed process' | tail -n 20 || true
+          ps -eo pid,etimes,rss,comm --sort=-rss | head -n 10 || true
 
       # What was slow, from the test reports the run wrote, so a test that grows
-      # shows up in the job summary before the job as a whole does.
+      # shows up in the job summary before the job as a whole does. It runs
+      # whatever happened, and a report a kill left truncated must not turn the
+      # job red or hide the real failure.
       - name: Report the slowest tests
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
+        continue-on-error: true
         env:
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
         run: |
@@ -221,10 +268,51 @@ jobs:
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
         run: |
           mkdir -p "$TEST_REPORT_DIR"
-          mise run ci:deep
+          # Evidence for a killed run: one line a minute while the tests run, and
+          # a full snapshot if this step is signalled. Neither can change the
+          # step's result.
+          # shellcheck disable=SC2329 # called from the trap below
+          snapshot() {
+            echo "::group::runner state ($1)"
+            date -u +%FT%TZ || true; uptime || true
+            free -m || true
+            df -h / "$RUNNER_TEMP" || true
+            ps -eo pid,ppid,etimes,stat,rss,comm --sort=-rss | head -n 15 || true
+            sudo -n dmesg -T 2>/dev/null | grep -iE 'oom|killed process' | tail -n 20 || true
+            echo "::endgroup::"
+          }
+          sample() {
+            while sleep 60 >/dev/null 2>&1; do
+              echo "[sampler] $(date -u +%T) load=$(cut -d' ' -f1 /proc/loadavg) $(free -m | awk '/^Mem:/{print "mem_avail_mb="$7} /^Swap:/{print "swap_used_mb="$3}' | tr '\n' ' ')root_avail=$(df -h --output=avail / | tail -n 1 | tr -d ' ')" || true
+            done
+          }
+          sample & sampler=$!
+          mise run ci:deep & tests=$!
+          trap 'snapshot "signal received"; kill -TERM "$tests" 2>/dev/null || true; wait "$tests" || true; kill "$sampler" 2>/dev/null || true; exit 143' INT TERM
+          status=0
+          wait "$tests" || status=$?
+          kill "$sampler" 2>/dev/null || true
+          exit "$status"
+
+      - name: Show the runner's state
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          {
+            echo "### Runner state at the end"
+            echo '```'
+            uptime || true
+            free -m || true
+            df -h / || true
+            echo "kernel OOM or killed-process lines: $(sudo -n dmesg 2>/dev/null | grep -ciE 'oom|killed process' || true)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY" || true
+          sudo -n dmesg -T 2>/dev/null | grep -iE 'oom|killed process' | tail -n 20 || true
+          ps -eo pid,etimes,rss,comm --sort=-rss | head -n 10 || true
 
       - name: Report the slowest tests
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
+        continue-on-error: true
         env:
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
         run: |
