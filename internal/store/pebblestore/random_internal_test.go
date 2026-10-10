@@ -193,7 +193,7 @@ func TestRandomBootHistories(t *testing.T) {
 	t.Run("seeds", func(t *testing.T) {
 		seeds := int64(16)
 		if raceEnabled {
-			seeds = 4 // one goroutine: the race detector finds nothing here and costs minutes; plain runs take all seeds
+			seeds = 3 // one goroutine: the race detector finds nothing here and costs minutes; plain runs take all seeds
 		}
 		for seed := int64(0); seed < seeds; seed++ {
 			t.Run(fmt.Sprint(seed), func(t *testing.T) {

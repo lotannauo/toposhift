@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -147,10 +148,11 @@ func TestAPrefixKeptWholeForBootsHasItsOwnStateWorkedOut(t *testing.T) {
 	}
 }
 
-// A retention that leaves a layer alone does not visit its prefixes, so it cannot
-// vouch that the map holds every prefix: it learns nothing, and a late record to
-// the layer it left still deletes the checkpoints it makes untrue.
-func TestARetentionThatLeavesALayerAloneLearnsNothing(t *testing.T) {
+// A retention that leaves a layer alone does not visit its prefixes, so it keeps
+// what is remembered of them (a prefix of that layer is still known, and the map is
+// as complete as it was), and a late record to the layer it left still deletes the
+// checkpoints it makes untrue.
+func TestARetentionThatLeavesALayerAloneKeepsWhatIsRememberedOfIt(t *testing.T) {
 	t.Parallel()
 	early, mid, late := t0.Add(time.Minute), t0.Add(30*time.Minute), t0.Add(time.Hour)
 	fs := vfs.NewMem()
@@ -209,6 +211,11 @@ func TestARetentionThatLeavesALayerAloneLearnsNothing(t *testing.T) {
 	if len(checkpointsOnDisk(t, s)[string(l1Prefix)]) != 1 {
 		t.Fatal("no checkpoint in L1")
 	}
+	l1State := s.states[string(l1Prefix)]
+	if l1State == nil {
+		t.Fatal("the writer does not remember the prefix of L1")
+	}
+	l1Before := *l1State
 	for _, x := range []store.Store{s, ref} {
 		if err := x.Retain(bg, mid); err != nil {
 			t.Fatal(err)
@@ -217,11 +224,14 @@ func TestARetentionThatLeavesALayerAloneLearnsNothing(t *testing.T) {
 	if s.LayerHorizon(catalog.L1).Time.Equal(mid) || !s.LayerHorizon(catalog.L2).Time.Equal(mid) {
 		t.Fatalf("the retention moved the wrong layers: L1 %v, L2 %v", s.LayerHorizon(catalog.L1), s.LayerHorizon(catalog.L2))
 	}
-	if len(s.states) != 0 || s.complete {
-		t.Fatalf("after a retention that left L1 alone the map holds %d prefixes (complete %v)", len(s.states), s.complete)
+	if got := s.states[string(l1Prefix)]; got != l1State || !reflect.DeepEqual(*got, l1Before) {
+		t.Fatalf("the retention changed what is remembered of the layer it left alone: %+v, was %+v", got, l1Before)
 	}
-	if _, ok := rec.counters["retain.state_keys"]; ok {
-		t.Error("a retention that works nothing out counted the keys it read for it")
+	if !s.complete {
+		t.Error("the map was complete before a retention that worked out every layer it rewrote, and is not after")
+	}
+	if rec.counters["retain.state_keys"] == 0 {
+		t.Error("a retention that works the state of the layers it rewrites out counted no keys")
 	}
 	// A late record in L1, before the checkpoint there.
 	late1 := l1(4, "p", late.Add(30*time.Second), lifecycle.Delete)

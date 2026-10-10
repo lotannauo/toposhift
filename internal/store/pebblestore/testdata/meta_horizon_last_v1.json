@@ -1,0 +1,382 @@
+{
+  "about": "Golden vectors of the meta value at the key 'horizon/last', and of the Horizon a store reports from it and the four layers' stored horizons. A horizon is stored as time.Time's binary form (version byte 1, seconds since year 1 as 8 bytes big endian, nanoseconds as 4, the zone offset in minutes as 2, 0xffff for UTC) then its Seq as 8 bytes big endian; the key holds exactly that encoding. The value is trusted only if it equals one of the layers' stored horizons and its Seq is the largest among them; otherwise Horizon is the stored layer horizon with the largest Seq and, among those, the latest time. A layer that was never retained has no key, which stands for the zero horizon. The expectations were computed independently of the code.",
+  "key": "00686f72697a6f6e2f6c617374",
+  "vectors": [
+    {
+      "name": "no layer was retained and the key is absent: the zero horizon",
+      "layers": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "last": null,
+      "want": {
+        "horizon": "0001-01-01T00:00:00Z",
+        "seq": 0
+      }
+    },
+    {
+      "name": "the key is absent and the layers moved together: that horizon",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 77,
+          "encoded": "010000000edce5e80000000000ffff000000000000004d"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 77,
+          "encoded": "010000000edce5e80000000000ffff000000000000004d"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 77,
+          "encoded": "010000000edce5e80000000000ffff000000000000004d"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 77,
+          "encoded": "010000000edce5e80000000000ffff000000000000004d"
+        }
+      ],
+      "last": null,
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 77
+      }
+    },
+    {
+      "name": "the key is absent and the layers differ: the largest Seq wins over a later time",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T21:13:20Z",
+          "seq": 9,
+          "encoded": "010000000edce5d9f000000000ffff0000000000000009"
+        },
+        null
+      ],
+      "last": null,
+      "want": {
+        "horizon": "2023-11-14T21:13:20Z",
+        "seq": 9
+      }
+    },
+    {
+      "name": "the key is absent and the Seq is shared: the latest time wins",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T21:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5d9f000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        }
+      ],
+      "last": null,
+      "want": {
+        "horizon": "2023-11-14T23:13:20Z",
+        "seq": 5
+      }
+    },
+    {
+      "name": "the key names the layer retained last, whose horizon is earlier than another's with the same Seq",
+      "layers": [
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        }
+      ],
+      "last": "010000000edce5e80000000000ffff0000000000000005",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 5
+      }
+    },
+    {
+      "name": "the zero horizon, and no layer was retained",
+      "layers": [
+        null,
+        null,
+        null,
+        null
+      ],
+      "last": "01000000000000000000000000ffff0000000000000000",
+      "want": {
+        "horizon": "0001-01-01T00:00:00Z",
+        "seq": 0
+      }
+    },
+    {
+      "name": "a horizon inside the range, with Seq 1",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 1,
+          "encoded": "010000000edce5e80000000000ffff0000000000000001"
+        },
+        null,
+        null,
+        null
+      ],
+      "last": "010000000edce5e80000000000ffff0000000000000001",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 1
+      }
+    },
+    {
+      "name": "a horizon inside the range, with Seq 2^63",
+      "layers": [
+        {
+          "horizon": "2023-11-14T21:13:20Z",
+          "seq": 9,
+          "encoded": "010000000edce5d9f000000000ffff0000000000000009"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 9223372036854775808,
+          "encoded": "010000000edce5e80000000000ffff8000000000000000"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 9223372036854775808,
+          "encoded": "010000000edce5f61000000000ffff8000000000000000"
+        },
+        null
+      ],
+      "last": "010000000edce5e80000000000ffff8000000000000000",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 9223372036854775808
+      }
+    },
+    {
+      "name": "a horizon inside the range, with the largest Seq",
+      "layers": [
+        null,
+        null,
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 18446744073709551615,
+          "encoded": "010000000edce5e80000000000ffffffffffffffffffff"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 18446744073709551614,
+          "encoded": "010000000edce5f61000000000fffffffffffffffffffe"
+        }
+      ],
+      "last": "010000000edce5e80000000000ffffffffffffffffffff",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 18446744073709551615
+      }
+    },
+    {
+      "name": "a horizon after the end of the representable range",
+      "layers": [
+        null,
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 3,
+          "encoded": "010000000edce5e80000000000ffff0000000000000003"
+        },
+        null,
+        {
+          "horizon": "2262-04-12T00:47:16Z",
+          "seq": 3,
+          "encoded": "01000000109d53821400000000ffff0000000000000003"
+        }
+      ],
+      "last": "01000000109d53821400000000ffff0000000000000003",
+      "want": {
+        "horizon": "2262-04-12T00:47:16Z",
+        "seq": 3
+      }
+    },
+    {
+      "name": "a horizon with a fraction of a second",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20.123456789Z",
+          "seq": 8,
+          "encoded": "010000000edce5e800075bcd15ffff0000000000000008"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 8,
+          "encoded": "010000000edce5e80000000000ffff0000000000000008"
+        },
+        null,
+        null
+      ],
+      "last": "010000000edce5e800075bcd15ffff0000000000000008",
+      "want": {
+        "horizon": "2023-11-14T22:13:20.123456789Z",
+        "seq": 8
+      }
+    },
+    {
+      "name": "a value that equals no layer's horizon is ignored",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        }
+      ],
+      "last": "010000000edce5f61000000000ffff0000000000000005",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 5
+      }
+    },
+    {
+      "name": "a value with the time of a layer's horizon and another Seq is ignored",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 6,
+          "encoded": "010000000edce5e80000000000ffff0000000000000006"
+        },
+        null,
+        null
+      ],
+      "last": "010000000edce5e80000000000ffff0000000000000004",
+      "want": {
+        "horizon": "2023-11-14T22:13:20Z",
+        "seq": 6
+      }
+    },
+    {
+      "name": "a value whose Seq is below a layer's is ignored, though it equals another layer's horizon",
+      "layers": [
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 6,
+          "encoded": "010000000edce5f61000000000ffff0000000000000006"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        null
+      ],
+      "last": "010000000edce5e80000000000ffff0000000000000005",
+      "want": {
+        "horizon": "2023-11-14T23:13:20Z",
+        "seq": 6
+      }
+    },
+    {
+      "name": "a value that is not a horizon is ignored",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        null,
+        null
+      ],
+      "last": "010000",
+      "want": {
+        "horizon": "2023-11-14T23:13:20Z",
+        "seq": 5
+      }
+    },
+    {
+      "name": "an empty value is ignored",
+      "layers": [
+        {
+          "horizon": "2023-11-14T22:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5e80000000000ffff0000000000000005"
+        },
+        {
+          "horizon": "2023-11-14T23:13:20Z",
+          "seq": 5,
+          "encoded": "010000000edce5f61000000000ffff0000000000000005"
+        },
+        null,
+        null
+      ],
+      "last": "",
+      "want": {
+        "horizon": "2023-11-14T23:13:20Z",
+        "seq": 5
+      }
+    }
+  ]
+}

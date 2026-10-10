@@ -167,7 +167,7 @@ func TestTheWriterStateEqualsAWholeRead(t *testing.T) {
 	const steps = 160
 	seeds := int64(120)
 	if raceEnabled {
-		seeds = 12 // one goroutine: the race detector finds nothing here and costs minutes; plain runs take all seeds
+		seeds = 6 // one goroutine: the race detector finds nothing here and costs minutes; plain runs take all seeds
 	}
 	// What the histories exercised, summed over the seeds: checkpoints the tail
 	// read left unknown, lookups and invalidations.

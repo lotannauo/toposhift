@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sync"
@@ -53,7 +54,8 @@ import (
 // A prefix with a boot in a record it would discard is kept whole when the store's
 // policy names a boot key (see the package comment). A Retain that does not move
 // any layer's horizon changes nothing and does not raise LastSeq. A Retain moves
-// the horizon of each layer it is after, and only of those: the others keep
+// the horizon of each layer that is not kept to the horizon less the layer's
+// offset, and only where that is later than the layer's own: the others keep
 // theirs, and their data is left alone. It holds the store's lock for as long as
 // it runs, settling included, so Close must not be called meanwhile; the lock is
 // not released between chunks.
@@ -92,60 +94,78 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		s.last.work = workEnd.Sub(start)
 	}()
 	horizon = horizon.UTC()
-	// The layers whose horizon this moves: those it is after. A layer whose horizon
-	// is at or after it keeps its own, and its data is not touched.
+	// The layers whose horizon this moves, and the horizon each is moved to: the
+	// horizon less the layer's offset, for each layer that is not kept, and only
+	// where that is after the layer's own. A layer whose horizon it would not move
+	// keeps its own, and its data is not touched.
 	var moved [layers]bool
+	var to [layers]time.Time
 	anyMoved := false
-	for i, h := range s.horizons.Load() {
-		if horizon.After(h.Time) {
-			moved[i], anyMoved = true, true
+	for i, cur := range s.horizons.Load() {
+		if s.keep[i] {
+			continue
+		}
+		if h := horizon.Add(-s.offsets[i]); h.After(cur.Time) {
+			moved[i], to[i], anyMoved = true, h, true
 		}
 	}
 	if !anyMoved {
 		return nil
 	}
 	last := s.lastSeq.Load()
-	hNs, where := pebblekv.Locate(horizon)
 	// No instant a record can have is before a horizon at the start of the range, or
-	// before it: such a retention changes nothing, and so leaves no marker.
+	// before it: a layer moved to one changes nothing, and so is not in the marker.
+	// A retention that moves layers only so far leaves no marker.
 	var marker *retainMarker
-	if where != pebblekv.Before && (where != pebblekv.Inside || hNs != 0) {
-		lo, _ := dataBounds()
-		marker = &retainMarker{generation: s.retainGen + 1, resume: lo, phase: phaseRewrite}
-		for i, mv := range moved {
-			if mv {
-				marker.layers = append(marker.layers, retainLayer{layer: catalog.L0 + catalog.Layer(i), horizon: horizon, last: last})
-			}
+	allInside := true
+	for i, mv := range moved {
+		if !mv {
+			continue
 		}
+		hNs, where := pebblekv.Locate(to[i])
+		if where == pebblekv.Before || (where == pebblekv.Inside && hNs == 0) {
+			continue
+		}
+		allInside = allInside && where == pebblekv.Inside
+		if marker == nil {
+			lo, _ := dataBounds()
+			marker = &retainMarker{generation: s.retainGen + 1, resume: lo, phase: phaseRewrite}
+		}
+		marker.layers = append(marker.layers, retainLayer{layer: catalog.L0 + catalog.Layer(i), horizon: to[i], last: last})
 	}
-	if err := s.publishHorizon(horizon, last, moved, marker); err != nil {
+	if err := s.publishHorizon(to, last, moved, marker); err != nil {
 		return err
 	}
 	if marker == nil {
 		return nil // nothing changes, and nothing is forgotten
 	}
 	s.retainGen = marker.generation
-	// What was remembered of each prefix is about to be out of date. It is worked
-	// out again below, and stays empty if the retention does not finish.
-	s.forgetAll()
+	// What was remembered of each prefix of a layer about to be rewritten is out of
+	// date. It is worked out again below, and stays forgotten if the retention does
+	// not finish. What is remembered of the other layers is as true as it was.
+	wasComplete := s.complete
+	s.forgetLayers(marker.layers)
 
 	// What the writer would find if it read each prefix after this retention, worked
 	// out as the retention goes by, so that the first write to a prefix need not
 	// read it. Not working it out is always correct (the prefix is then read when it
 	// is next touched), so it is done only where it pays: with the checkpoint policy
 	// on, where a read would look (a checkpoint may be in the database), where a
-	// read is the kind that stops at the tail, where the horizon is inside the range
-	// (past it the retention rewrites every prefix in a way the keys it leaves do
-	// not describe), and where every layer moves (a layer left alone is not visited,
-	// and the map would lack its prefixes). The cost is a read of the keys at or
-	// after the horizon of each prefix, up to its newest checkpoint, counted as
-	// "retain.state_keys".
-	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && where == pebblekv.Inside && !slices.Contains(moved[:], false)
+	// read is the kind that stops at the tail, and where every horizon the pass
+	// rewrites to is inside the range (past it the retention rewrites every prefix
+	// in a way the keys it leaves do not describe). The prefixes of the layers the
+	// pass leaves alone keep what is remembered of them, and the map is complete
+	// afterwards if it was before or if the pass rewrote every layer, since it
+	// vouches for the layers it rewrites and for no other. The cost is a read of
+	// the keys at or after the horizon of each prefix, up to its newest checkpoint,
+	// counted as "retain.state_keys".
+	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && allInside
 	p, err := s.newPass(ctx, *marker, derive, s.stopAfter)
 	if err != nil {
 		return err
 	}
 	defer p.close()
+	p.wasComplete = wasComplete
 	err = p.run()
 	workEnd = p.workEnd
 	return err
@@ -176,6 +196,19 @@ func (s *Store) resumeRetention(m retainMarker) error {
 	return err
 }
 
+// passLayer is what a pass needs to rewrite one layer.
+type passLayer struct {
+	horizon time.Time
+	last    uint64
+	hNs     int64
+	where   pebblekv.Where
+	// oldMax is the newest instant strictly before the horizon, and baseNs where the
+	// baseline is keyed. After the end of the range the baseline is keyed at the
+	// last instant, inside what the range delete covers, so it is written after the
+	// delete.
+	oldMax, baseNs int64
+}
+
 // retainPass is the work of one generation of the marker: the rewriting of every
 // prefix of the layers it moves, in chunks, and what follows. It is built from the
 // marker alone, so that the pass Open resumes is the pass that was stopped.
@@ -187,22 +220,19 @@ type retainPass struct {
 	marker    retainMarker
 	stopAfter int
 
-	horizon time.Time
-	last    uint64
-	moved   [layers]bool
-	hNs     int64
-	where   pebblekv.Where
-	// oldMax is the newest instant strictly before the horizon, and baseNs where the
-	// baseline is keyed. After the end of the range the baseline is keyed at the
-	// last instant, inside what the range delete covers, so it is written after the
-	// delete.
-	oldMax, baseNs int64
-	boots          bool
+	// moved says which layers the pass rewrites, and lay holds what it needs of each
+	// (the layers may be moved to different horizons).
+	moved [layers]bool
+	lay   [layers]passLayer
+	boots bool
 
 	// derive says the writer's state is being worked out as the pass goes by; next
 	// is what has been worked out; derived says it was meant to be, for the count
-	// of the keys read.
+	// of the keys read. wasComplete says the writer's map was complete when the
+	// retention began, and so is again when the pass ends having worked out the
+	// state of the layers it rewrote.
 	derive, derived bool
+	wasComplete     bool
 	next            map[string]*prefixState
 	stateKeys       int64
 
@@ -215,25 +245,22 @@ type retainPass struct {
 }
 
 // newPass makes the pass the marker stands for, or refuses a marker that does not
-// stand for one this version can do: layers moved to different horizons, which
-// nothing writes yet, or a horizon that rewrites nothing, which has no marker.
+// stand for one: a layer moved to a horizon that rewrites nothing, which has no
+// place in a marker.
 func (s *Store) newPass(ctx context.Context, m retainMarker, derive bool, stopAfter int) (*retainPass, error) {
 	p := &retainPass{s: s, ctx: ctx, marker: m, stopAfter: stopAfter, derive: derive, derived: derive, boots: s.policy.BootKey != ""}
-	first := m.layers[0]
-	p.horizon, p.last = first.horizon.UTC(), first.last
 	for _, l := range m.layers {
-		if !l.horizon.Equal(first.horizon) || l.last != first.last {
-			return nil, fmt.Errorf("pebblestore: the retention marker moves layers to different horizons, which this version never writes: %w", store.ErrInvalid)
+		i := int(l.layer) - int(catalog.L0)
+		lp := passLayer{horizon: l.horizon.UTC(), last: l.last}
+		lp.hNs, lp.where = pebblekv.Locate(lp.horizon)
+		if lp.where == pebblekv.Before || (lp.where == pebblekv.Inside && lp.hNs == 0) {
+			return nil, fmt.Errorf("pebblestore: the retention marker has a horizon that rewrites nothing: %w", store.ErrInvalid)
 		}
-		p.moved[int(l.layer)-int(catalog.L0)] = true
-	}
-	p.hNs, p.where = pebblekv.Locate(p.horizon)
-	if p.where == pebblekv.Before || (p.where == pebblekv.Inside && p.hNs == 0) {
-		return nil, fmt.Errorf("pebblestore: the retention marker has a horizon that rewrites nothing: %w", store.ErrInvalid)
-	}
-	p.oldMax, p.baseNs = p.hNs-1, p.hNs
-	if p.where == pebblekv.After {
-		p.oldMax, p.baseNs = math.MaxInt64, math.MaxInt64
+		lp.oldMax, lp.baseNs = lp.hNs-1, lp.hNs
+		if lp.where == pebblekv.After {
+			lp.oldMax, lp.baseNs = math.MaxInt64, math.MaxInt64
+		}
+		p.moved[i], p.lay[i] = true, lp
 	}
 	if p.derive {
 		p.next = map[string]*prefixState{}
@@ -255,8 +282,11 @@ func (p *retainPass) run() error {
 	}
 	if p.derive {
 		// Only now, with every commit landed, is what was worked out true of the
-		// database. Every prefix was visited, so the map is complete.
-		s.states, s.complete = p.next, true
+		// database. Every prefix of the layers rewritten was visited, so the map is
+		// complete if it was before, and also if every layer was rewritten, since
+		// then nothing is left that it has not been told of.
+		maps.Copy(s.states, p.next)
+		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
 	}
 	if p.derived {
 		s.rec.Count("retain.state_keys", p.stateKeys)
@@ -382,7 +412,9 @@ func (p *retainPass) remember(prefix []byte, st *prefixState) {
 // nothing in the prefix is older than the horizon, wherever the seek past that
 // instant landed, which is also after it; ok is false when no key is left.
 func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool, err error) {
-	s, b, hNs, horizon := p.s, p.b, p.hNs, p.horizon
+	s, b := p.s, p.b
+	lp := &p.lay[int(layerOfPrefix(prefix))-int(catalog.L0)]
+	hNs, horizon := lp.hNs, lp.horizon
 	dir := prefix[prefixLen-1]
 	p.visited++
 	// The keys that stay are read first, from the first key of the prefix, where
@@ -403,7 +435,7 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 	// Go to the newest record of this prefix strictly before the horizon. The
 	// seek may land in a later prefix, which the loop then takes up.
 	p.seeks++
-	ok = it.SeekGE(seekKey(prefix, p.oldMax))
+	ok = it.SeekGE(seekKey(prefix, lp.oldMax))
 	if !ok || !hasPrefix(it.Key(), prefix) {
 		p.remember(prefix, &stays) // nothing is rewritten here: a checkpoint at the horizon stays
 		return ok, nil
@@ -483,11 +515,11 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 		// Everything older than the horizon goes, the previous baseline
 		// included; what is still alive at the horizon is one new baseline, in
 		// the same commit and after the delete.
-		if err := b.DeleteRange(seekKey(prefix, p.oldMax), prefixSucc(prefix), nil); err != nil {
+		if err := b.DeleteRange(seekKey(prefix, lp.oldMax), prefixSucc(prefix), nil); err != nil {
 			return false, err
 		}
 		p.deletes++
-		if s.anyCkpt && p.where == pebblekv.Inside {
+		if s.anyCkpt && lp.where == pebblekv.Inside {
 			// A checkpoint exactly at the horizon would sort before the
 			// baseline. The writer never writes one at or below the horizon,
 			// and the ones in the prefixes this retention rewrites go.
@@ -496,11 +528,11 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 			}
 		}
 		if len(entries) > 0 {
-			val, err := appendStamp(nil, stamp{kind: kindBaseline, foldVersion: foldVersion, through: p.last, w: p.last, horizon: horizon, entries: entries})
+			val, err := appendStamp(nil, stamp{kind: kindBaseline, foldVersion: foldVersion, through: lp.last, w: lp.last, horizon: horizon, entries: entries})
 			if err != nil {
 				return false, err
 			}
-			if err := b.Set(stampKey(prefix, p.baseNs, kindBaseline), val, nil); err != nil {
+			if err := b.Set(stampKey(prefix, lp.baseNs, kindBaseline), val, nil); err != nil {
 				return false, err
 			}
 			p.baselines++
@@ -536,34 +568,49 @@ func (s *Store) releaseMarker(gen uint64) error {
 	return s.kv.Apply(b, pebble.NoSync)
 }
 
-// publishHorizon commits the new horizon of the layers moved, and only those, with
-// the sequence number L, in a commit of its own and synced if the database is, and
-// then publishes it to readers and writers. The marker of the retention that will
-// rewrite below it, if there is one, is in the same commit: a horizon that is stored
-// without it would leave a restart nothing to finish, and a marker without the
-// horizon would send the restart to rewrite below one it does not refuse writes
-// under. The commit comes first: a horizon that is published but not stored would
-// be forgotten by a restart that then accepts a write below it.
-func (s *Store) publishHorizon(horizon time.Time, last uint64, moved [layers]bool, marker *retainMarker) error {
-	raw, err := pebblekv.EncodeLayerHorizon(horizon, last)
-	if err != nil {
-		return err
-	}
+// publishHorizon commits the new horizon of the layers moved, and only those, each
+// with the sequence number L, and the "horizon/last" key naming the latest of them,
+// in a commit of its own and synced if the database is, and then publishes it to
+// readers and writers. The marker of the retention that will rewrite below it, if
+// there is one, is in the same commit: a horizon that is stored without it would
+// leave a restart nothing to finish, and a marker without the horizon would send
+// the restart to rewrite below one it does not refuse writes under. The commit
+// comes first: a horizon that is published but not stored would be forgotten by a
+// restart that then accepts a write below it.
+//
+// The latest of the horizons moved is the one with the latest instant, the lowest
+// layer's among equals, which is what the contract's Horizon returns after a
+// Retain that moved several.
+func (s *Store) publishHorizon(to [layers]time.Time, last uint64, moved [layers]bool, marker *retainMarker) error {
 	b := s.kv.NewBatch()
 	defer func() { _ = b.Close() }()
 	hs := *s.horizons.Load() // a copy, with the moved layers replaced
 	first := -1
+	var latest store.Horizon
 	for i := range hs {
 		if !moved[i] {
 			continue
 		}
-		if first < 0 {
-			first = i
+		raw, err := pebblekv.EncodeLayerHorizon(to[i], last)
+		if err != nil {
+			return err
 		}
-		hs[i] = store.Horizon{Time: horizon, Seq: last}
+		if first < 0 {
+			first, latest = i, store.Horizon{Time: to[i], Seq: last}
+		} else if to[i].After(latest.Time) {
+			latest = store.Horizon{Time: to[i], Seq: last}
+		}
+		hs[i] = store.Horizon{Time: to[i], Seq: last}
 		if err := b.Set(metaKey(pebblekv.HorizonMetaName(catalog.L0+catalog.Layer(i))), raw, nil); err != nil {
 			return err
 		}
+	}
+	raw, err := pebblekv.EncodeLayerHorizon(latest.Time, latest.Seq)
+	if err != nil {
+		return err
+	}
+	if err := b.Set(metaKey(metaHorizonLast), raw, nil); err != nil {
+		return err
 	}
 	if marker != nil {
 		raw, err := appendRetainMarker(nil, *marker)
@@ -578,21 +625,22 @@ func (s *Store) publishHorizon(horizon time.Time, last uint64, moved [layers]boo
 		// Whether the commit is stored is decided only when the store is reopened
 		// (see [Store.uncertainCommit]); until then the store stops writing and
 		// retaining. The horizon is published if the database shows it, because
-		// refusing reads and writes before it is the safe side of not knowing.
+		// refusing reads and writes before it is the safe side of not knowing. The
+		// commit is whole or absent, so the first layer it moved says which.
 		raw, rerr := s.kv.GetMeta(metaKey(pebblekv.HorizonMetaName(catalog.L0 + catalog.Layer(first))))
 		if rerr != nil {
 			s.failed = fmt.Errorf("a horizon commit failed (%w), and the horizon cannot be read back (%w): reopen the store", err, rerr)
 			return s.failedError("Retain")
 		}
-		if t, seq, derr := pebblekv.DecodeLayerHorizon(raw); derr == nil && t.Equal(horizon) && seq == last {
+		if t, seq, derr := pebblekv.DecodeLayerHorizon(raw); derr == nil && t.Equal(to[first]) && seq == last {
 			s.horizons.Store(&hs)
-			s.lastMoved.Store(&store.Horizon{Time: horizon, Seq: last})
+			s.lastMoved.Store(&latest)
 		}
 		s.failed = fmt.Errorf("a horizon commit failed (%w), so whether it is stored is decided only when the store is reopened: reopen the store", err)
 		return s.failedError("Retain")
 	}
 	s.horizons.Store(&hs)
-	s.lastMoved.Store(&store.Horizon{Time: horizon, Seq: last})
+	s.lastMoved.Store(&latest)
 	return nil
 }
 

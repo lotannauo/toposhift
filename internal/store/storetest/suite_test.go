@@ -118,7 +118,11 @@ func TestTrimmedIsShort(t *testing.T) {
 
 func TestCheckPassesAnHonestStoreWithRetention(t *testing.T) {
 	t.Parallel()
-	for _, w := range storetest.Workloads() {
+	workloads := storetest.Workloads()
+	if storetest.RaceEnabled {
+		workloads = workloads[len(workloads)-1:] // one goroutine: the race detector finds nothing more; plain builds run all
+	}
+	for _, w := range workloads {
 		m, err := memstore.Open(memstore.Options{Policy: w.Policy})
 		if err != nil {
 			t.Fatal(err)

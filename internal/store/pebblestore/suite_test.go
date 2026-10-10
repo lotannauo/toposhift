@@ -82,25 +82,66 @@ func onDisk(settle bool, ck *pebblestore.CheckpointOptions) storetest.Factory {
 // the tables are reopened.
 func TestConforms(t *testing.T) {
 	t.Parallel()
-	matrix := map[string]storetest.Factory{
+	if pebblestore.RaceEnabled {
+		// Almost all of the suite is one goroutine, where the race detector finds nothing
+		// a plain build does not and costs minutes, so under it the suite is cut to what
+		// can race: Close and the contexts and one quarantining workload in memory, and
+		// the reads beside writes and retentions on real files (the settling variants
+		// below keep them in memory). Plain builds run every variant in full.
+		t.Run("default/in memory", func(t *testing.T) { t.Parallel(); runForTheRaceDetector(t, inMemory(false, policyDefault), false) })
+		t.Run("default/files", func(t *testing.T) { t.Parallel(); runForTheRaceDetector(t, onDisk(false, policyDefault), true) })
+		return
+	}
+	for name, f := range map[string]storetest.Factory{
 		"default/files":     onDisk(false, policyDefault),
 		"default/in memory": inMemory(false, policyDefault),
 		"k8/files":          onDisk(false, policyK8),
 		"k8/in memory":      inMemory(false, policyK8),
-	}
-	if pebblestore.RaceEnabled {
-		// The suite's one concurrent part runs in every variant and the policy changes
-		// nothing about it, so the race detector gets the default policy in memory and
-		// on one real file system; the other variants run in plain builds.
-		delete(matrix, "k8/files")
-		delete(matrix, "k8/in memory")
-	}
-	for name, f := range matrix {
+	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			storetest.Run(t, f)
 		})
 	}
+}
+
+// runForTheRaceDetector is the part of storetest.Run that has goroutines or a Close
+// to race with, for a race build: the closing and the contexts, the one workload
+// that quarantines, and, with concurrent, the reads beside writes and retentions.
+func runForTheRaceDetector(t *testing.T, f storetest.Factory, concurrent bool) {
+	t.Helper()
+	open := func(t *testing.T, p lifecycle.Policy) store.Store {
+		s, err := f.Open(t.TempDir(), p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	}
+	if concurrent {
+		t.Run("concurrent reads", func(t *testing.T) {
+			t.Parallel()
+			if err := storetest.CheckConcurrentReads(open(t, lifecycle.Policy{})); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for name, check := range map[string]func(store.Store) error{"close": storetest.CheckClose, "context": storetest.CheckContext} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if err := check(open(t, lifecycle.Policy{})); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	workloads := storetest.Workloads()
+	w := workloads[len(workloads)-1]
+	t.Run("workload "+w.Name, func(t *testing.T) {
+		t.Parallel()
+		if err := storetest.Check(open(t, w.Policy), w, storetest.Options{RetainAt: []float64{0.5}}); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 // A retention that settles the database waits for its compactions, which costs a

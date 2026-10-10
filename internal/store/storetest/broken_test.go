@@ -1451,6 +1451,9 @@ func TestHarnessCatchesBrokenStores(t *testing.T) {
 			if m.scriptedOnly && scripted && (!m.wrong || scriptedMismatch) {
 				return // nothing the generated workloads do reaches what it gets wrong
 			}
+			if storetest.RaceEnabled && scripted {
+				return // one goroutine: the race detector finds nothing the generated workloads add; plain builds run them
+			}
 
 			// The generated workloads must catch it too, unless nothing they do can
 			// reach what it gets wrong: that is what keeps their probing honest. They

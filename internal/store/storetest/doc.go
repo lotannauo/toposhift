@@ -41,6 +41,14 @@
 //     records, LastSeq, horizon and quarantines;
 //   - random workloads drawn with rapid.
 //
+// A store that supports retention offsets and kept layers ([LayeredFactory]) also
+// runs [RunLayers], which is [CheckLayerOffsets]: the horizon of each layer after
+// Retains that move some layers and not others, the refusal of each read and write by
+// the horizon of its own layer, and, for a durable store, the same across reopenings
+// with other offsets and kept layers. It compares a store with the contract's rule
+// and with an oracle that has discarded nothing, not with a reference store opened
+// with the same options, because a reference cannot be closed and opened again.
+//
 // Under go test -short the suite is trimmed (see [Trimmed]): one workload, the one
 // that quarantines hosts, the scripted checks, a shorter second phase of the
 // concurrency check, and no reopen or random workloads. -short is what a caller
