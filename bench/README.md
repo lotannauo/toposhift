@@ -59,6 +59,17 @@ into its package, and so reruns it and everything that imports it.
   bytewise key order, newest first, with the retention baseline (see its package
   documentation). With checkpoints off a read replays the history older than the
   instant; with them on, interleaved checkpoints let it stop early.
+- `spike/rootlog`: the same layout L built through the root module's store
+  (`internal/store/pebblestore`), so that what the spike measured can be repeated on
+  the code the product runs. Its candidates are `Lroot/off` and `Lroot/k<K>a<alpha>[l<lag>]`
+  (the grammar of `L/...`), found by `candidates.Lookup` and not in the default set. The
+  store is opened with the runner's database configuration unchanged, no boot key in the
+  lifecycle policy (a boot key changes the timings and the read counters) and the
+  checkpoint policy stated outright, and its database is given the waits, the snapshot
+  and the canonical rewrite through `pebblekv.Wrap`. The manifests and results of an
+  `Lroot` build and an `L` build of one plan list the same counters, with the store's few
+  extra names, and the data keys the two leave (`dbhash -data`) are byte for byte equal;
+  the gates do not compare the two with each other, since the names differ.
 
 ### The workload's shapes of real churn
 

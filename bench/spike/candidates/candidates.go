@@ -17,6 +17,15 @@
 //	L/k64a4l1h30m       the same 1 h 30 min behind: behind every run that can still be
 //	                    extended when the coalescer bounds a run's age (RunMaxAge) and
 //	                    the bound plus the extension interval is at most the lag
+//	Lroot/off           layout L built through the root module's store, with no
+//	                    checkpoints
+//	Lroot/k64a2l1ns     the same with checkpoints, named as the L variants are, under the
+//	                    prefix Lroot/ (any policy of layout L)
+//
+// The Lroot variants are for repeating what the spike measured on the code the
+// product runs. They are found by [Lookup] and are not in [All], so a default
+// measurement does not run them; a manifest of one is not compared with a manifest
+// of an L variant by the gates.
 //
 // A lag is written as Go writes a duration, without the units that are zero at its
 // end (30m, not 30m0s; 1h, not 1h0m0s).
@@ -38,6 +47,8 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
 	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
 	"github.com/lotannauo/toposhift/bench/spike/pebblemvcc"
+	"github.com/lotannauo/toposhift/bench/spike/rootlog"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // Options are the settings of a run, as opposed to the candidate.
@@ -115,16 +126,41 @@ func LNoCheckpoints() Variant {
 // records since its last, scaled by alpha, with the instant lag behind the newest
 // (see [pebblelog.CheckpointOptions]).
 func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
-	name := fmt.Sprintf("L/k%da%s", kMin, strconv.FormatFloat(alpha, 'g', -1, 64))
-	if lag != 0 {
-		name += "l" + lagName(lag)
-	}
-	return Variant{Name: name, Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: "L/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
 		return pebblelog.Open(dir, pebblelog.Options{
 			Config: o.config(), Recorder: o.Recorder,
 			Checkpoints: pebblelog.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
 		})
 	}}
+}
+
+// LrootNoCheckpoints is layout L built through the root module's store with no
+// checkpoints, stated outright to the store.
+func LrootNoCheckpoints() Variant {
+	return Variant{Name: "Lroot/off", Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder})
+	}}
+}
+
+// LrootCheckpoints is layout L built through the root module's store with the
+// checkpoint policy of [LCheckpoints].
+func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
+	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+		return rootlog.Open(dir, rootlog.Options{
+			Config: o.config(), Recorder: o.Recorder,
+			Checkpoints: pebblestore.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
+		})
+	}}
+}
+
+// checkpointSuffix is the part of a checkpoint variant's name after its prefix:
+// k<K>a<alpha>[l<lag>].
+func checkpointSuffix(kMin int, alpha float64, lag time.Duration) string {
+	name := fmt.Sprintf("k%da%s", kMin, strconv.FormatFloat(alpha, 'g', -1, 64))
+	if lag != 0 {
+		name += "l" + lagName(lag)
+	}
+	return name
 }
 
 // lagName is the duration as Go writes it, without the zero units at its end.
@@ -194,29 +230,36 @@ func Names() []string {
 	return out
 }
 
-var checkpointName = regexp.MustCompile(`^L/k([0-9]+)a([0-9.]+)(?:l(.+))?$`)
+var checkpointName = regexp.MustCompile(`^(L|Lroot)/k([0-9]+)a([0-9.]+)(?:l(.+))?$`)
 
 // Lookup finds a variant by name. Besides the names in [All] it accepts any
 // checkpoint policy of layout L (L/k32a2, L/k128a0.5l1ns), which is how a sweep
-// names the points it runs.
+// names the points it runs, and the root-store variants (Lroot/off and any
+// checkpoint policy under the prefix Lroot/).
 func Lookup(name string) (Variant, error) {
 	for _, v := range All() {
 		if v.Name == name {
 			return v, nil
 		}
 	}
+	if name == "Lroot/off" {
+		return LrootNoCheckpoints(), nil
+	}
 	if m := checkpointName.FindStringSubmatch(name); m != nil {
-		k, err := strconv.Atoi(m[1])
-		alpha, err2 := strconv.ParseFloat(m[2], 64)
+		k, err := strconv.Atoi(m[2])
+		alpha, err2 := strconv.ParseFloat(m[3], 64)
 		var lag time.Duration
 		var err3 error
-		if m[3] != "" {
-			lag, err3 = time.ParseDuration(m[3])
+		if m[4] != "" {
+			lag, err3 = time.ParseDuration(m[4])
 		}
 		if err != nil || err2 != nil || err3 != nil || k < 1 || alpha <= 0 || lag < 0 {
 			return Variant{}, fmt.Errorf("candidates: %q is not a checkpoint policy (K at least 1, alpha above 0, lag not negative)", name)
 		}
 		v := LCheckpoints(k, alpha, lag)
+		if m[1] == "Lroot" {
+			v = LrootCheckpoints(k, alpha, lag)
+		}
 		if v.Name != name { // a spelling that is not the canonical one would name the same point twice
 			return Variant{}, fmt.Errorf("candidates: write %q as %q", name, v.Name)
 		}
