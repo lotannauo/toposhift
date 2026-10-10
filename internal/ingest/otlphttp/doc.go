@@ -52,7 +52,9 @@
 //     {} for JSON. A request is accepted whole or refused whole; there is no
 //     partial success.
 //   - 400 for a body that does not decode (including a bad or truncated gzip
-//     stream).
+//     stream), and for a request the sink refuses whole by returning a
+//     [RefusedError]; the status carries the sink's message, and the client is
+//     expected not to send the request again.
 //   - 404 for a path other than /v1/logs, and 405, with Allow: POST, for a
 //     method other than POST.
 //   - 413 for a body above [Options.MaxBodyBytes], measured twice against the
@@ -62,12 +64,21 @@
 //     costs at most the limit, in time and in memory.
 //   - 415 for a Content-Type that is neither protobuf nor JSON, or a
 //     Content-Encoding that is neither gzip nor identity.
-//   - 503 with Retry-After when the sink returns [ErrBusy]; the client is
+//   - 503 with Retry-After: 1 when the sink returns [ErrBusy]; the client is
 //     expected to send the same request again later.
+//   - 503 with Retry-After: 30 when the sink returns an [UnavailableError],
+//     which says ingest is off; the message says what to do about it. It
+//     takes precedence over the other sink errors, also when one error holds
+//     both.
 //   - 500 for any other sink error. The text of the error stays in the server.
 //
 // A refusal with a status body carries a google.rpc.Status (code and message)
-// in the encoding of the request: protobuf, or JSON for a JSON request. 404
+// in the encoding of the request: protobuf, or JSON for a JSON request. The
+// code follows the HTTP status (400 is 3, INVALID_ARGUMENT; 503 is 14,
+// UNAVAILABLE; and so on). The message is valid UTF-8 (bytes that are not are
+// replaced by U+FFFD) and has at most [MaxStatusMessageBytes] bytes, 1,024: a
+// longer one, whether the sink's or the text of a decoder error, is cut at a
+// UTF-8 rune boundary and ends with an ellipsis, which is part of the 1,024. 404
 // and 405 are about the route, not about an export, and have a plain text body.
 //
 // # Why the limit is 64 MiB
