@@ -62,6 +62,13 @@ jobs:
           fetch-depth: ${{ matrix.shard != 'static' && 1 || 0 }}
           persist-credentials: false
 
+      # go test keys a cached result by the modification times of the files and
+      # directories a test read; checkout writes every file at the current time, so
+      # no result could be reused. Times derived from the content make equal trees
+      # look equal.
+      - name: Give checked-out files times derived from their content
+        run: python3 .github/scripts/stable-mtimes.py
+
       # Not cached: the tools install in about 4 s, and a cached copy took about
       # 160 MB of the repository's 10 GB of cache per architecture for every edit
       # of mise.toml.
