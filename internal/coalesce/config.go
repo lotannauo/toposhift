@@ -22,6 +22,9 @@ type Config struct {
 	// time, with a new run at the refresh's own time. Zero is no bound; otherwise at least
 	// a minute.
 	RunMaxAge time.Duration
+	// RunAgeFromTTL bounds each run's age by its own extension interval; see the package doc.
+	// Exclusive with RunMaxAge, and it needs ExtendTTLFraction or ExtendEvery.
+	RunAgeFromTTL bool
 }
 
 // DefaultConfig is the setting the layout was measured with at a 15-minute pod
@@ -45,6 +48,10 @@ func (c Config) Validate() error {
 		return bad("ExtendTTLFraction and ExtendEvery are two ways to bound extension: use one")
 	case c.RunMaxAge < 0 || (c.RunMaxAge > 0 && c.RunMaxAge < time.Minute):
 		return bad("RunMaxAge %s must be zero or at least a minute", c.RunMaxAge)
+	case c.RunAgeFromTTL && c.RunMaxAge > 0:
+		return bad("RunAgeFromTTL and RunMaxAge are exclusive")
+	case c.RunAgeFromTTL && c.ExtendTTLFraction == 0 && c.ExtendEvery == 0:
+		return bad("RunAgeFromTTL needs an extension interval")
 	}
 	return nil
 }
@@ -58,13 +65,28 @@ func (c Config) ExtensionInterval(ttl time.Duration) time.Duration {
 	return c.ExtendEvery
 }
 
+// ageBound is the age at which a run with this TTL, counted from its first event
+// time, is continued by a new run: its own extension interval when RunAgeFromTTL is
+// on, otherwise RunMaxAge. Zero is no bound.
+func (c Config) ageBound(ttl time.Duration) time.Duration {
+	if c.RunAgeFromTTL {
+		return c.ExtensionInterval(ttl)
+	}
+	return c.RunMaxAge
+}
+
 // Describe names the settings, for a caller to record next to its producers'
 // intervals: "extend_ttl_fraction", "extend_every" and "run_max_age" (Go duration
-// strings, and %g for the fraction).
+// strings, and %g for the fraction), and "run_age_from_ttl" ("true") only when
+// RunAgeFromTTL is on.
 func (c Config) Describe() map[string]string {
-	return map[string]string{
+	d := map[string]string{
 		"extend_ttl_fraction": fmt.Sprintf("%g", c.ExtendTTLFraction),
 		"extend_every":        c.ExtendEvery.String(),
 		"run_max_age":         c.RunMaxAge.String(),
 	}
+	if c.RunAgeFromTTL {
+		d["run_age_from_ttl"] = "true"
+	}
+	return d
 }

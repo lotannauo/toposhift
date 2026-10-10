@@ -33,9 +33,9 @@
 // as given and ends the subject's run, as a delete does, so its Through is never
 // overwritten or absorbed.
 //
-// # The three settings
+// # The settings
 //
-// [Config] has three settings, each a trade.
+// [Config] has four settings, each a trade.
 //
 // ExtendTTLFraction and ExtendEvery (exclusive) limit how often a run is re-asserted: a
 // refresh closer than the extension interval to the last extension is absorbed without
@@ -66,6 +66,22 @@
 // newest checkpoint of the neighbourhood they are keyed in (in the layout measured,
 // about 110 staggered live runs on one hot node left it with none).
 //
+// RunAgeFromTTL bounds each run's age by that run's own extension interval, the
+// extension interval of its TTL (ExtendTTLFraction times the TTL, or ExtendEvery),
+// instead of by one RunMaxAge for every run, and it needs one of the two. The age is
+// checked before the extension, so no refresh extends a run: its first refresh at least
+// one extension interval later starts a new run at that refresh's own time, and the
+// refreshes before it are absorbed. If that refresh comes after the run's stored copy
+// has lapsed (more than one TTL after the run's start, as when a pull is missed), the run
+// is closed first, by one record that carries a Through, as any run is. With a fraction
+// of a half and a TTL of 15 minutes the bound is 7.5 minutes, so with a refresh every 5
+// minutes a new run starts at every second refresh, every 10 minutes, and no record
+// carries a Through; at a steady cadence every extension a run would have written
+// becomes the start of a run, one for one, and a run is never keyed further back than
+// one extension interval. The bound follows the TTL, so it needs no setting per producer, and
+// it is never the 30 minutes of [DefaultConfig]. A record with no TTL forms no run. It is
+// exclusive with RunMaxAge, and off by default: [DefaultConfig] does not set it.
+//
 // # The horizon
 //
 // A store retains each layer back to a horizon and refuses a record before it. An
@@ -75,6 +91,19 @@
 // [Coalescer.SetHorizon] (or [Coalescer.SetHorizonAll], for a store that retains every
 // layer under one). No record it returns for a refresh at or after a layer's horizon is
 // before that horizon.
+//
+// A record that already carries a Through is not a refresh, and is passed on as given
+// (see "Only this coalescer extends a run"), with this one change at its layer's horizon
+// h. If it starts before h and its Through is at or after h, the store would refuse it
+// for its start, so it is re-timed to h and keeps its Through, as closeRun does for a
+// run that began before the horizon. It keeps its basis, though its new event time is
+// the horizon's and not that clock's, as for the records closeRun computes. If its Through is also before h, it is wholly
+// before what the store keeps: the coalescer neither drops nor hides it, but passes it
+// on unchanged and leaves its runs alone, because a record the store will never hold
+// must not end a live run. Refusing such a record as late, and counting it, belongs to
+// the late path of the ingest layer, which runs after the coalescer on every kind of
+// record. A delete or a record with no TTL before the horizon, which has no Through, is
+// passed on as given, and left to that path as well.
 //
 // # A restart loses the runs and the horizons
 //
