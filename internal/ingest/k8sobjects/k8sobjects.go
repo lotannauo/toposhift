@@ -84,9 +84,10 @@
 // The state is in memory. A pod seen before a restart is unseen after it, and its
 // DELETED is addressed from the deleted object itself: the delete of each of its
 // containers that has a runtime id, of their part_of edges, and of its scheduled_on
-// edge if the node name resolves at the observed time or, failing that, at the
-// time the pod was scheduled (otherwise the edge is counted with
-// [SkipUnseenDelete]). A Delete of a reference this producer never
+// edge if the node name resolves at the time the pod was scheduled, or at the
+// observed time when the object has no scheduling time (otherwise the edge is
+// counted with [SkipUnseenDelete]). The observed time is not tried after a
+// scheduling time fails: the name may by then belong to a newer node. A Delete of a reference this producer never
 // held changes nothing.
 //
 // A Translator is not safe for concurrent use.
@@ -741,19 +742,19 @@ func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, 
 			t.deleteEntity(b, ctrs[name].fp, observed, store.BasisObserved)
 		}
 		if v.NodeName != "" {
-			sp, ok := t.lookup(v.NodeName, observed)
-			if !ok {
-				// The node may be gone by now (a pod failed by the garbage collector
-				// outlives its node): try again when the pod was scheduled.
-				c := clock{observed: observed}
-				if tm, ok := parseTime(v.Creation); ok && c.plausible(tm) {
-					c.creation = tm
-				}
-				if from, _ := b.edgeStart(v, c, observed, store.BasisObserved); !from.Equal(observed) {
-					sp, ok = t.lookup(v.NodeName, from)
-				}
+			// The node is the one that bore the name when the pod was scheduled. A
+			// pod failed by the garbage collector outlives its node, and the name may
+			// by now belong to a new one, so the observed time is used only when the
+			// object has no scheduling time to go by.
+			c := clock{observed: observed}
+			if tm, ok := parseTime(v.Creation); ok && c.plausible(tm) {
+				c.creation = tm
 			}
-			if ok {
+			when, basis := b.edgeStart(v, c, observed, store.BasisObserved)
+			if basis != store.BasisObjectField {
+				when = observed
+			}
+			if sp, ok := t.lookup(v.NodeName, when); ok {
 				t.deleteEdge(b, fp, sp.fp, catalog.ScheduledOn, observed, store.BasisObserved)
 			} else {
 				b.skip(SkipUnseenDelete)

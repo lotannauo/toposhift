@@ -331,7 +331,9 @@ func TestLapsedPodReturnsWithoutNewEdges(t *testing.T) {
 			}
 		}
 	}
-	// The references are stored throughout, lapse included.
+	// The references are stored throughout, lapse included. This is a raw-store
+	// assertion: a read that cascades from existence hides them while the pod has
+	// lapsed, and shows them again when it is observed again.
 	for _, when := range []time.Time{at(5, 0), at(40, 0), at(75, 0)} {
 		ns, err := s.Neighbors(ctx, pod, store.Forward, when, scope)
 		if err != nil || len(ns) != 1 || ns[0].Peer != nodeRef || ns[0].Relation != catalog.ScheduledOn {
@@ -369,6 +371,19 @@ func TestUnseenDeleteOfAPodOutlivingItsNode(t *testing.T) {
 	if edge.Subject != store.EdgeSubject(podFP(t, "p1"), nodeFP(t, "n-1"), catalog.ScheduledOn) || edge.Kind != lifecycle.Delete ||
 		!edge.EventTime.Equal(at(11, 0)) || edge.EventTimeBasis != store.BasisObserved {
 		t.Errorf("edge record = %+v, want a delete at the observed time", edge)
+	}
+
+	// The node was deleted and created again under its name before the pod's
+	// DELETED. The edge that existed was to the first node, never to the second.
+	tr = newTranslator(t, 0)
+	translate(t, tr, watchRec(at(10, 0), "DELETED", nodeObj))
+	translate(t, tr, watchRec(at(10, 30), "ADDED", nodeObject("n-2", node, at(10, 20), "1")))
+	r = translate(t, tr, watchRec(at(11, 0), "DELETED", p.object()))
+	if len(r.Records) != 2 || len(r.Skipped) != 0 {
+		t.Fatalf("got %s, skips %v; want the edge's delete and the pod's", joinSubjects(r.Records), r.Skipped)
+	}
+	if edge := r.Records[0]; edge.Subject != store.EdgeSubject(podFP(t, "p1"), nodeFP(t, "n-1"), catalog.ScheduledOn) {
+		t.Errorf("edge delete names %+v, want the first node n-1 and never the new one", edge.Subject)
 	}
 
 	// With no scheduling time to go by, it is still counted, not guessed.
