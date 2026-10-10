@@ -21,6 +21,14 @@
 // one is seen it is counted as a skip. A pod that names a node has a scheduled_on edge to it, stored
 // on the pod side.
 //
+// An edge takes the TTL of the entity it is stored on, and with a TTL it is
+// re-asserted with each record of that entity (both part_of and scheduled_on, with
+// the payload they were established with), so that it lapses with the entity when
+// a Delete is lost: the store has no read-time cascade from an entity to its
+// edges. A re-assertion is never timed before the edge's own latest assertion. A
+// Delete carries no TTL, and a Delete is still written for the containers, their
+// part_of edges and the scheduled_on edge of a pod at the pod's own DELETED.
+//
 // # Event time
 //
 //   - The first record of a UID the translator has not seen, whether a watch
@@ -44,6 +52,18 @@
 //   - A record's event time is never earlier than the previous record's of the
 //     same UID: an earlier one is raised to it, with that record's basis, and
 //     counted with [SkipClampedTime].
+//   - An Observe, of an entity or an edge, whose event time is before the
+//     record's observed time also carries Through equal to the observed time. A
+//     Kubernetes object with a given UID exists continuously from its creation
+//     to its deletion, and UIDs are never reused, so a producer that observes it
+//     at T and learns it was created at C can assert its existence from C
+//     through T. Without it, a pod first seen hours after its creation would show
+//     as absent from C plus the TTL until its next record. The event time, the
+//     basis and the TTL are unchanged. An Observe timed at or after the observed
+//     time (a clock ahead by up to [MaxClockAhead]) has no Through, and a Delete
+//     never has one. An edge resolved when its node arrives is asserted through
+//     the pod's latest observation, not the node's: the node's arrival says
+//     nothing about the pod.
 //
 // deletionTimestamp says that deletion was requested, not that it happened. It
 // is part of the description and never ends anything: a pod and its edges end at
@@ -58,9 +78,10 @@
 // descriptive fields. The fields that change on every heartbeat or write
 // (resourceVersion, managedFields, lastHeartbeatTime, lastProbeTime) are not in
 // it, and neither is the observed time or any other collector field. A record
-// that changes none of the listed fields produces no record when the translator
-// is in watch mode ([Config.EntityTTL] zero), because a reference with no TTL
-// needs no refresh.
+// that changes none of the listed fields produces no record only with a zero TTL
+// ([Config.EntityTTL] zero, which means no pull interval), because a reference
+// with no TTL needs no refresh. With a TTL every pod and node record is an
+// Observe, so that each pull refreshes it.
 //
 // # Nodes by name
 //
@@ -79,6 +100,25 @@
 // that record's time: later than the truth, so the gap is unattributed and not
 // guessed. A pending edge whose pod is deleted first is dropped and counted.
 //
+// A node name is resolved only within one translator, which is one producer. If
+// more than one node UID bears the name at the time, it resolves to none, the edge
+// stays pending, and each such lookup is counted with [SkipAmbiguousNodeName]. With
+// a TTL, a node whose DELETED was lost does not hold its name for ever: its
+// interval, which has no end until its DELETED, ends a TTL after the last
+// instant its records asserted it. That end is derived when the name is looked up
+// and never stored, so a node that is seen again extends it.
+//
+// # Pull generations
+//
+// The pull records of one kind (pods, nodes) from one list share an observed time,
+// so a change in the observed time between pull records of a kind starts a new
+// generation. With [Config.PullInterval] above zero, a generation whose observed
+// time is more than one and a half intervals after the previous one's is counted
+// once with [NotePullGap] in [Result.Notes]: the collector is pulling less often
+// than the translator was told (an upstream default of an hour is the usual
+// cause). Watch records never count, the first generation never counts, and pods
+// and nodes are tracked apart. The caller logs notes; this package does not.
+//
 // # After a restart
 //
 // The state is in memory. A pod seen before a restart is unseen after it, and its
@@ -87,8 +127,8 @@
 // edge if the node name resolves at the time the pod was scheduled, or at the
 // observed time when the object has no scheduling time (otherwise the edge is
 // counted with [SkipUnseenDelete]). The observed time is not tried after a
-// scheduling time fails: the name may by then belong to a newer node. A Delete of a reference this producer never
-// held changes nothing.
+// scheduling time fails: the name may by then belong to a newer node. A Delete of
+// a reference this producer never held changes nothing.
 //
 // A Translator is not safe for concurrent use.
 package k8sobjects
@@ -98,6 +138,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -107,6 +148,18 @@ import (
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
+)
+
+// The multiples of the pull interval that bound the TTL of a translator that is
+// given one.
+const (
+	// DefaultTTLMultiple is the TTL, in pull intervals, of a translator whose
+	// [Config.EntityTTL] is zero and whose [Config.PullInterval] is not.
+	DefaultTTLMultiple = 3
+	// MinTTLMultiple is the least TTL, in pull intervals, that [New] accepts
+	// with a pull interval: a TTL under two intervals would let one late pull
+	// lapse every object.
+	MinTTLMultiple = 2
 )
 
 // MaxClockAhead is how far past a record's observed time a time taken from an
@@ -155,6 +208,18 @@ const (
 	// same UID, because an older time would make the fold show the older
 	// description after the newer one.
 	SkipClampedTime = "event time raised to the previous record's"
+	// SkipAmbiguousNodeName is a lookup of a node name that more than one node UID
+	// bears at the time asked. It resolves to none, and is counted once per lookup.
+	SkipAmbiguousNodeName = "node name borne by more than one node"
+)
+
+// The reasons a translator gives for a note: something the caller should know
+// that is not a record set aside.
+const (
+	// NotePullGap is a new generation of pull records of one kind whose observed
+	// time is more than one and a half pull intervals after the previous
+	// generation's.
+	NotePullGap = "gap between pull generations over 1.5 times the pull interval"
 )
 
 // ErrNoObservedTime is returned for a record that sets no observed time, the one
@@ -169,20 +234,33 @@ type Config struct {
 	// Resolver turns the identifying attributes into fingerprints. Required;
 	// usually identity.NewResolver(catalog.Default()).
 	Resolver *identity.Resolver
-	// EntityTTL is the TTL of every pod and node observation. Zero is watch
+	// EntityTTL is the TTL of every Observe the translator writes. Zero is watch
 	// semantics: a reference ends only by a Delete, and a record whose
 	// description did not change is not emitted. With a TTL above zero, every pod
 	// and node record, from a watch or a list and changed or not, is an Observe
 	// with that TTL, so each list refreshes it. A container takes the same TTL
-	// and is re-asserted with each record of its pod. Edges always have TTL
-	// zero: they end by a Delete, or with the existence of the pod.
+	// and is re-asserted with each record of its pod, and so does an edge (part_of
+	// with its container's, scheduled_on with its pod's), so that all of them
+	// lapse when the pod's records stop and its Delete was lost. A Delete carries
+	// no TTL.
+	//
+	// With a PullInterval above zero, a zero EntityTTL is DefaultTTLMultiple
+	// pull intervals, and an EntityTTL under MinTTLMultiple pull intervals is
+	// refused by [New]. With a zero PullInterval the TTL is used as given.
 	EntityTTL time.Duration
+	// PullInterval is the interval at which the collector lists the objects. Zero
+	// says nothing about it: the TTL is EntityTTL as given, and no gap between
+	// pull generations is reported. A translator has one TTL for all its life, so
+	// a changed interval needs a new Translator, built by the caller; the TTL
+	// applies from the next record.
+	PullInterval time.Duration
 }
 
 // Result is what one log record stands for.
 type Result struct {
 	// Records are the store records, in the order they should be sequenced. They
-	// have no Seq, no Boot and no Through.
+	// have no Seq and no Boot, and no Through except for an Observe timed before
+	// its observation, whose Through is the observed time.
 	Records []store.Record
 	// Pending are the scheduled_on edges this call could not resolve because the
 	// node name is not yet known to the index. The translator keeps them and
@@ -190,6 +268,9 @@ type Result struct {
 	Pending []PendingEdge
 	// Skipped says what was set aside and why, sorted by reason.
 	Skipped []Skip
+	// Notes say what the caller should know and log, sorted by reason. They do
+	// not change the records.
+	Notes []Skip
 }
 
 // Skip is a count of things set aside for one reason.
@@ -218,12 +299,30 @@ type Translator struct {
 	producer lifecycle.Producer
 	resolver *identity.Resolver
 	ttl      time.Duration
+	interval time.Duration
+
+	// pulls is the newest pull generation seen, by kind.
+	pulls [numKinds]pullGen
 
 	pods    map[string]*podState
 	nodes   map[string]*nodeState
 	deleted map[string]struct{}
 	byName  map[string][]*nodeSpan
 	pending map[string]PendingEdge
+}
+
+// The kinds whose pull generations are tracked.
+const (
+	kindPod = iota
+	kindNode
+	numKinds
+)
+
+// pullGen is the observed time of the newest generation of pull records of one
+// kind, if there is one.
+type pullGen struct {
+	seen     bool
+	observed time.Time
 }
 
 type podState struct {
@@ -233,8 +332,11 @@ type podState struct {
 	// for the UID.
 	last      time.Time
 	lastBasis store.EventTimeBasis
-	edge      podEdge
-	ctrs      map[string]ctrState
+	// observed is the latest observed time of the pod's records that are not its
+	// DELETED: the last instant the producer saw the pod.
+	observed time.Time
+	edge     podEdge
+	ctrs     map[string]ctrState
 }
 
 // podEdge is the scheduled_on edge of a pod. With a name and a zero node it is
@@ -242,11 +344,22 @@ type podState struct {
 type podEdge struct {
 	nodeName string
 	node     identity.Fingerprint
+	// payload is what the edge was established with, kept so that a re-assertion
+	// repeats it exactly and not what the name resolves to now. since and
+	// sinceBasis are the time and basis of the edge's latest Observe, which a
+	// re-assertion is never timed before.
+	payload    []byte
+	since      time.Time
+	sinceBasis store.EventTimeBasis
 }
 
 type ctrState struct {
 	id string
 	fp identity.Fingerprint
+	// since and sinceBasis are the time and basis of the latest Observe of the
+	// container's part_of edge.
+	since      time.Time
+	sinceBasis store.EventTimeBasis
 }
 
 type nodeState struct {
@@ -258,10 +371,28 @@ type nodeState struct {
 }
 
 // nodeSpan is the interval one node UID bore a name: from its first observation
-// to its deletion (zero while open).
+// to its deletion (zero while open). last is the latest instant an Observe of
+// the node asserted it (its Through, or its event time), from which a span that
+// is still open is taken to end a TTL later.
 type nodeSpan struct {
 	fp       identity.Fingerprint
 	from, to time.Time
+	last     time.Time
+}
+
+// end is when the span ends, or the zero time if it does not. A span ends at its
+// node's DELETED. With a TTL, one that is still open ends a TTL after the node was
+// last asserted, so that a node whose DELETED was lost does not hold its name for
+// ever. The end is derived here and never stored: a later record of the node moves
+// it.
+func (sp *nodeSpan) end(ttl time.Duration) time.Time {
+	if !sp.to.IsZero() {
+		return sp.to
+	}
+	if ttl > 0 {
+		return sp.last.Add(ttl)
+	}
+	return time.Time{}
 }
 
 // New returns a translator with no state.
@@ -273,11 +404,26 @@ func New(c Config) (*Translator, error) {
 		return nil, errors.New("k8sobjects: resolver is required")
 	case c.EntityTTL < 0:
 		return nil, errors.New("k8sobjects: entity TTL is negative")
+	case c.PullInterval < 0:
+		return nil, errors.New("k8sobjects: pull interval is negative")
+	}
+	ttl := c.EntityTTL
+	if c.PullInterval > 0 {
+		if c.PullInterval > math.MaxInt64/DefaultTTLMultiple {
+			return nil, fmt.Errorf("k8sobjects: pull interval %s is too long", c.PullInterval)
+		}
+		switch {
+		case ttl == 0:
+			ttl = DefaultTTLMultiple * c.PullInterval
+		case ttl < MinTTLMultiple*c.PullInterval:
+			return nil, fmt.Errorf("k8sobjects: entity TTL %s is under %d times the pull interval %s", ttl, MinTTLMultiple, c.PullInterval)
+		}
 	}
 	return &Translator{
 		producer: c.Producer,
 		resolver: c.Resolver,
-		ttl:      c.EntityTTL,
+		ttl:      ttl,
+		interval: c.PullInterval,
 		pods:     make(map[string]*podState),
 		nodes:    make(map[string]*nodeState),
 		deleted:  make(map[string]struct{}),
@@ -308,6 +454,17 @@ type batch struct {
 	recs  []store.Record
 	pend  []PendingEdge
 	skips map[string]int
+	notes map[string]int
+	// observed is the observed time of the record being translated, which an
+	// Observe timed before it takes as its Through.
+	observed time.Time
+}
+
+func (b *batch) note(reason string) {
+	if b.notes == nil {
+		b.notes = make(map[string]int)
+	}
+	b.notes[reason]++
 }
 
 func (b *batch) skip(reason string) {
@@ -321,6 +478,9 @@ func (b *batch) result() Result {
 	r := Result{Records: b.recs, Pending: b.pend}
 	for _, reason := range slices.Sorted(maps.Keys(b.skips)) {
 		r.Skipped = append(r.Skipped, Skip{Reason: reason, Count: b.skips[reason]})
+	}
+	for _, reason := range slices.Sorted(maps.Keys(b.notes)) {
+		r.Notes = append(r.Notes, Skip{Reason: reason, Count: b.notes[reason]})
 	}
 	return r
 }
@@ -398,6 +558,7 @@ func (t *Translator) Translate(res capture.Resource, lr capture.LogRecord) (Resu
 		return Result{}, ErrNoObservedTime
 	}
 	observed := time.Unix(0, int64(lr.ObservedTimeUnixNano)).UTC()
+	b.observed = observed
 
 	var body object
 	if lr.Body != nil {
@@ -429,9 +590,13 @@ func (t *Translator) Translate(res capture.Resource, lr capture.LogRecord) (Resu
 	var err error
 	switch kind {
 	case "Pod":
-		err = t.pod(&b, watchType, o, namespaceOf(res), observed)
+		if err = t.pod(&b, watchType, o, namespaceOf(res), observed); err == nil && watchType == "" {
+			t.pullSeen(&b, kindPod, observed)
+		}
 	case "Node":
-		err = t.node(&b, watchType, o, observed)
+		if err = t.node(&b, watchType, o, observed); err == nil && watchType == "" {
+			t.pullSeen(&b, kindNode, observed)
+		}
 	default:
 		b.skip(SkipUnsupportedKind)
 	}
@@ -439,6 +604,23 @@ func (t *Translator) Translate(res capture.Resource, lr capture.LogRecord) (Resu
 		return Result{}, err
 	}
 	return b.result(), nil
+}
+
+// pullSeen takes a pull record of a kind. A change in the observed time between
+// the pull records of a kind starts a new generation; one that begins more than one
+// and a half pull intervals after the previous one is a gap, counted once. A record
+// observed before the newest generation is not a new one and changes nothing.
+func (t *Translator) pullSeen(b *batch, kind int, observed time.Time) {
+	g := &t.pulls[kind]
+	switch {
+	case !g.seen:
+		g.seen, g.observed = true, observed
+	case observed.After(g.observed):
+		if d := observed.Sub(g.observed); t.interval > 0 && d > t.interval+t.interval/2 {
+			b.note(NotePullGap)
+		}
+		g.observed = observed
+	}
 }
 
 // namespaceOf is the namespace the receiver puts on the resource, used only for
@@ -469,7 +651,7 @@ func layerOf(fp identity.Fingerprint) catalog.Layer {
 	return e.Layer()
 }
 
-func (t *Translator) emit(b *batch, subj store.Subject, kind lifecycle.Kind, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte) {
+func (t *Translator) emit(b *batch, subj store.Subject, kind lifecycle.Kind, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte, observed time.Time) {
 	r := store.Record{
 		Layer:          layerOf(subj.A),
 		Subject:        subj,
@@ -481,24 +663,29 @@ func (t *Translator) emit(b *batch, subj store.Subject, kind lifecycle.Kind, at 
 	if kind == lifecycle.Observe {
 		r.TTL = ttl
 		r.Payload = bytes.Clone(payload)
+		if at.Before(observed) {
+			// The object is known to have existed continuously from its event time,
+			// and was observed at the given time.
+			r.Through = observed
+		}
 	}
 	b.recs = append(b.recs, r)
 }
 
-func (t *Translator) observeEntity(b *batch, fp identity.Fingerprint, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte) {
-	t.emit(b, store.EntitySubject(fp), lifecycle.Observe, at, basis, ttl, payload)
+func (t *Translator) observeEntity(b *batch, fp identity.Fingerprint, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte, observed time.Time) {
+	t.emit(b, store.EntitySubject(fp), lifecycle.Observe, at, basis, ttl, payload, observed)
 }
 
 func (t *Translator) deleteEntity(b *batch, fp identity.Fingerprint, at time.Time, basis store.EventTimeBasis) {
-	t.emit(b, store.EntitySubject(fp), lifecycle.Delete, at, basis, 0, nil)
+	t.emit(b, store.EntitySubject(fp), lifecycle.Delete, at, basis, 0, nil, b.observed)
 }
 
-func (t *Translator) observeEdge(b *batch, from, to identity.Fingerprint, rel catalog.RelationType, at time.Time, basis store.EventTimeBasis, payload []byte) {
-	t.emit(b, store.EdgeSubject(from, to, rel), lifecycle.Observe, at, basis, 0, payload)
+func (t *Translator) observeEdge(b *batch, from, to identity.Fingerprint, rel catalog.RelationType, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte, observed time.Time) {
+	t.emit(b, store.EdgeSubject(from, to, rel), lifecycle.Observe, at, basis, ttl, payload, observed)
 }
 
 func (t *Translator) deleteEdge(b *batch, from, to identity.Fingerprint, rel catalog.RelationType, at time.Time, basis store.EventTimeBasis) {
-	t.emit(b, store.EdgeSubject(from, to, rel), lifecycle.Delete, at, basis, 0, nil)
+	t.emit(b, store.EdgeSubject(from, to, rel), lifecycle.Delete, at, basis, 0, nil, b.observed)
 }
 
 // raise holds an event time at the previous record's of the same UID, with its
@@ -563,10 +750,13 @@ func (t *Translator) pod(b *batch, watchType string, o object, ns string, observ
 		st = &podState{fp: fp, ctrs: make(map[string]ctrState)}
 		t.pods[v.UID] = st
 	}
+	if observed.After(st.observed) {
+		st.observed = observed
+	}
 
 	n := len(b.recs)
 	if changed || t.ttl > 0 {
-		t.observeEntity(b, fp, at, basis, t.ttl, v.payload)
+		t.observeEntity(b, fp, at, basis, t.ttl, v.payload, b.observed)
 	}
 	t.reconcileContainers(b, st, v, at, basis)
 	t.reconcileEdge(b, st, v, c, at, basis)
@@ -618,7 +808,8 @@ func (t *Translator) containersOf(b *batch, v podView, count bool) map[string]ct
 
 // reconcileContainers ends the containers of the pod that are gone or have a new
 // id, and begins those that are new. With a TTL, it also re-asserts the ones that
-// stay, so that they lapse when the pod's records stop.
+// stay, each followed by its part_of edge, so that they lapse when the pod's records
+// stop. The edge is not re-asserted before its own latest assertion.
 func (t *Translator) reconcileContainers(b *batch, st *podState, v podView, at time.Time, basis store.EventTimeBasis) {
 	want := t.containersOf(b, v, true)
 	for _, name := range slices.Sorted(maps.Keys(st.ctrs)) {
@@ -633,14 +824,18 @@ func (t *Translator) reconcileContainers(b *batch, st *podState, v podView, at t
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		w := want[name]
 		payload := canonical(object{"name": name, "pod_uid": v.UID})
-		if _, ok := st.ctrs[name]; ok {
+		if old, ok := st.ctrs[name]; ok {
 			if t.ttl > 0 {
-				t.observeEntity(b, w.fp, at, basis, t.ttl, payload)
+				t.observeEntity(b, w.fp, at, basis, t.ttl, payload, b.observed)
+				old.since, old.sinceBasis = b.raise(at, basis, old.since, old.sinceBasis)
+				t.observeEdge(b, w.fp, st.fp, catalog.PartOf, old.since, old.sinceBasis, t.ttl, []byte("{}"), b.observed)
+				st.ctrs[name] = old
 			}
 			continue
 		}
-		t.observeEntity(b, w.fp, at, basis, t.ttl, payload)
-		t.observeEdge(b, w.fp, st.fp, catalog.PartOf, at, basis, []byte("{}"))
+		t.observeEntity(b, w.fp, at, basis, t.ttl, payload, b.observed)
+		t.observeEdge(b, w.fp, st.fp, catalog.PartOf, at, basis, t.ttl, []byte("{}"), b.observed)
+		w.since, w.sinceBasis = at, basis
 		st.ctrs[name] = w
 	}
 }
@@ -682,14 +877,25 @@ func (b *batch) edgeStart(v podView, c clock, at time.Time, basis store.EventTim
 // edge ends and a new one begins. An edge that is still pending is tried again at
 // each later record of the pod, and begins at that record's time: later than the
 // truth, so the gap is unattributed and not guessed.
+//
+// With a TTL, an edge established by an earlier record is re-asserted with each
+// record of the pod, with the payload it was established with, at the record's
+// time or at the edge's own latest assertion if that is later (the edge begins at
+// the PodScheduled time, which a clock ahead may place after the next record's).
+// An edge begun by this record is not asserted twice.
 func (t *Translator) reconcileEdge(b *batch, st *podState, v podView, c clock, at time.Time, basis store.EventTimeBasis) {
 	if v.NodeName == st.edge.nodeName {
-		if v.NodeName != "" && st.edge.node.IsZero() {
-			if sp, ok := t.lookup(v.NodeName, at); ok {
-				t.observeEdge(b, st.fp, sp.fp, catalog.ScheduledOn, at, basis, edgePayload(v.NodeName, sp))
-				st.edge.node = sp.fp
+		switch {
+		case v.NodeName == "":
+		case st.edge.node.IsZero():
+			if sp, ok := t.lookup(b, v.NodeName, at); ok {
+				t.beginEdge(b, st, sp, v.NodeName, at, basis, b.observed)
 				delete(t.pending, v.UID)
 			}
+		case t.ttl > 0:
+			e := &st.edge
+			e.since, e.sinceBasis = b.raise(at, basis, e.since, e.sinceBasis)
+			t.observeEdge(b, st.fp, e.node, catalog.ScheduledOn, e.since, e.sinceBasis, t.ttl, e.payload, b.observed)
 		}
 		return
 	}
@@ -699,14 +905,22 @@ func (t *Translator) reconcileEdge(b *batch, st *podState, v podView, c clock, a
 		return
 	}
 	from, fromBasis := b.edgeStart(v, c, at, basis)
-	if sp, ok := t.lookup(v.NodeName, from); ok {
-		t.observeEdge(b, st.fp, sp.fp, catalog.ScheduledOn, from, fromBasis, edgePayload(v.NodeName, sp))
-		st.edge.node = sp.fp
+	if sp, ok := t.lookup(b, v.NodeName, from); ok {
+		t.beginEdge(b, st, sp, v.NodeName, from, fromBasis, b.observed)
 		return
 	}
 	p := PendingEdge{Pod: st.fp, PodUID: v.UID, NodeName: v.NodeName, Time: from, Basis: fromBasis}
 	t.pending[v.UID] = p
 	b.pend = append(b.pend, p)
+}
+
+// beginEdge asserts the scheduled_on edge of the pod to the node of sp, and keeps
+// what a re-assertion needs. An edge timed before observed is asserted through it.
+func (t *Translator) beginEdge(b *batch, st *podState, sp *nodeSpan, name string, at time.Time, basis store.EventTimeBasis, observed time.Time) {
+	payload := edgePayload(name, sp)
+	t.observeEdge(b, st.fp, sp.fp, catalog.ScheduledOn, at, basis, t.ttl, payload, observed)
+	st.edge.node, st.edge.payload = sp.fp, payload
+	st.edge.since, st.edge.sinceBasis = at, basis
 }
 
 // dropEdge ends the established edge of the pod, or forgets its pending one.
@@ -727,12 +941,13 @@ func (t *Translator) dropEdge(b *batch, st *podState, at time.Time, basis store.
 }
 
 // deletePod ends a pod at its own DELETED, at the observed time, with its
-// containers and its edge.
+// containers and its edge. A Delete carries no TTL and no Through.
 //
 // A DELETED for a pod the translator has not seen (it was seen before a restart,
 // and the state is in memory) is addressed from the deleted object itself: its
 // containers that have a runtime id, and its edge if the node name resolves at the
-// observed time. A Delete of a reference this producer never held changes nothing.
+// time the pod was scheduled, or at the observed time only when the object has no
+// scheduling time. A Delete of a reference this producer never held changes nothing.
 func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, v podView, observed time.Time) {
 	t.deleted[v.UID] = struct{}{}
 	if st == nil {
@@ -754,7 +969,7 @@ func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, 
 			if basis != store.BasisObjectField {
 				when = observed
 			}
-			if sp, ok := t.lookup(v.NodeName, when); ok {
+			if sp, ok := t.lookup(b, v.NodeName, when); ok {
 				t.deleteEdge(b, fp, sp.fp, catalog.ScheduledOn, observed, store.BasisObserved)
 			} else {
 				b.skip(SkipUnseenDelete)
@@ -834,16 +1049,23 @@ func (t *Translator) node(b *batch, watchType string, o object, observed time.Ti
 		t.nodes[v.UID] = st
 	}
 	emitted := false
+	asserted := at // the latest instant this Observe asserts the node
 	if changed || t.ttl > 0 {
-		t.observeEntity(b, fp, at, basis, t.ttl, v.payload)
+		t.observeEntity(b, fp, at, basis, t.ttl, v.payload, b.observed)
 		emitted = true
+		if at.Before(observed) {
+			asserted = observed
+		}
 	}
 	st.view = v
 	if emitted && at.After(st.last) {
 		st.last, st.lastBasis = at, basis
 	}
+	if emitted && st.span != nil && asserted.After(st.span.last) {
+		st.span.last = asserted
+	}
 	if first && v.Name != "" {
-		st.span = &nodeSpan{fp: fp, from: at}
+		st.span = &nodeSpan{fp: fp, from: at, last: asserted}
 		t.byName[v.Name] = append(t.byName[v.Name], st.span)
 		t.resolvePending(b, v.Name)
 	}
@@ -851,23 +1073,35 @@ func (t *Translator) node(b *batch, watchType string, o object, observed time.Ti
 }
 
 // lookup resolves a node name at a time: the one node interval that covers it. No
-// interval, or more than one, resolves nothing.
-func (t *Translator) lookup(name string, at time.Time) (*nodeSpan, bool) {
+// interval resolves nothing, and neither do two or more, which is counted with
+// [SkipAmbiguousNodeName]: the name is never guessed.
+func (t *Translator) lookup(b *batch, name string, at time.Time) (*nodeSpan, bool) {
 	var hit *nodeSpan
+	covering := 0
 	for _, sp := range t.byName[name] {
-		if at.Before(sp.from) || (!sp.to.IsZero() && !at.Before(sp.to)) {
+		if at.Before(sp.from) {
 			continue
 		}
-		if hit != nil {
-			return nil, false
+		if end := sp.end(t.ttl); !end.IsZero() && !at.Before(end) {
+			continue
 		}
-		hit = sp
+		covering++
+		if hit == nil {
+			hit = sp
+		}
+	}
+	if covering > 1 {
+		b.skip(SkipAmbiguousNodeName)
+		return nil, false
 	}
 	return hit, hit != nil
 }
 
 // resolvePending emits the edges of the pending pods that the node name now
-// resolves, at each pod record's own event time.
+// resolves, at each pod record's own event time. An edge resolved when its node
+// arrives is asserted through the pod's latest observation, not the node's: the
+// node's arrival says nothing about whether the pod still exists. It has no
+// Through if that observation is not after the edge's time.
 func (t *Translator) resolvePending(b *batch, name string) {
 	var ps []PendingEdge
 	for _, p := range t.pending {
@@ -877,12 +1111,12 @@ func (t *Translator) resolvePending(b *batch, name string) {
 	}
 	sortPending(ps)
 	for _, p := range ps {
-		sp, ok := t.lookup(name, p.Time)
+		sp, ok := t.lookup(b, name, p.Time)
 		if !ok {
 			continue
 		}
-		t.observeEdge(b, p.Pod, sp.fp, catalog.ScheduledOn, p.Time, p.Basis, edgePayload(name, sp))
-		t.pods[p.PodUID].edge.node = sp.fp
+		pod := t.pods[p.PodUID]
+		t.beginEdge(b, pod, sp, name, p.Time, p.Basis, pod.observed)
 		delete(t.pending, p.PodUID)
 	}
 }

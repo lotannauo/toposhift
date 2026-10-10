@@ -3,6 +3,7 @@ package k8sobjects_test
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -85,9 +86,13 @@ func storeFrom(t *testing.T, rs ...[]store.Record) *memstore.Store {
 }
 
 // Fed through the coalescer into a store, each pod's existence starts at its
-// creation and ends at the observed time of its DELETED, in both modes.
+// creation, covers the observed time of every record of the pod, and ends at the
+// observed time of its DELETED, in both modes. A third mode, a TTL of one second,
+// is shorter than the time between a pod's creation and its first record, so a
+// pod is alive at the observed time of each record only if the record says the pod
+// existed all that time.
 func TestPodIntervalsInTheStore(t *testing.T) {
-	for _, ttl := range ttls {
+	for _, ttl := range append(slices.Clone(ttls), time.Second) {
 		for _, name := range captures {
 			t.Run(name+"/ttl="+ttl.String(), func(t *testing.T) {
 				in := loadCapture(t, name)
@@ -100,6 +105,7 @@ func TestPodIntervalsInTheStore(t *testing.T) {
 
 				created := map[string]time.Time{}
 				deleted := map[string]time.Time{}
+				seen := map[string][]time.Time{} // the observed times of each pod's records
 				for _, x := range in {
 					typ, o := objectOf(x.Rec)
 					if subStr(o, "kind") != "Pod" {
@@ -115,6 +121,8 @@ func TestPodIntervalsInTheStore(t *testing.T) {
 					}
 					if typ == "DELETED" {
 						deleted[uid] = observedOf(x)
+					} else {
+						seen[uid] = append(seen[uid], observedOf(x))
 					}
 				}
 				if len(deleted) == 0 {
@@ -128,6 +136,26 @@ func TestPodIntervalsInTheStore(t *testing.T) {
 						t.Fatal(err)
 					}
 					return ok
+				}
+				checked := 0
+				for uid, times := range seen {
+					f, born := podFP(t, uid), created[uid]
+					end, gone := deleted[uid]
+					for _, ob := range times {
+						if gone && !ob.Before(end) {
+							continue // a record after the DELETED is set aside
+						}
+						checked++
+						if !alive(f, ob) {
+							t.Errorf("pod %s is not alive at the observed time %s of one of its records (born %s)", uid[:8], ob.Format(time.RFC3339Nano), born.Format(time.RFC3339Nano))
+						}
+					}
+				}
+				if checked == 0 {
+					t.Fatal("no record time was checked")
+				}
+				if ttl == time.Second {
+					return // the pods lapse between records
 				}
 				for uid, end := range deleted {
 					f, born := podFP(t, uid), created[uid]

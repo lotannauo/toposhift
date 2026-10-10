@@ -9,6 +9,7 @@
     "event_time": "2026-10-09T16:41:25Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:43:56.708843911Z",
     "payload": {
      "addresses": [
       {
@@ -66,6 +67,7 @@
     "event_time": "2026-10-09T16:43:56Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:43:56.716079697Z",
     "payload": {
      "conditions": [
       {
@@ -122,6 +124,7 @@
     "event_time": "2026-10-09T16:43:56Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:43:56.716079697Z",
     "payload": {
      "node_name": "kwok-node-2",
      "resolution": {

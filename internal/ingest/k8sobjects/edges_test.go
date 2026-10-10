@@ -237,8 +237,8 @@ func TestDeleteOfAnUnseenPodEndsItsContainersAndEdge(t *testing.T) {
 	}
 }
 
-// With a TTL a container is refreshed with its pod, so both lapse when the pulls
-// stop; the edges have no TTL.
+// With a TTL a container is refreshed with its pod, and so is its part_of edge, so
+// all of them lapse when the pulls stop.
 func TestContainerLapsesWithItsPod(t *testing.T) {
 	const ttl = 15 * time.Minute
 	tr := newTranslator(t, ttl)
@@ -265,14 +265,19 @@ func TestContainerLapsesWithItsPod(t *testing.T) {
 				t.Errorf("%s alive at +%s = %v, %v, want %v", name, c.at.Sub(t0), got, err, c.want)
 			}
 		}
+		// The part_of edge is re-asserted with the pod, so it lapses with the pod.
+		ns, err := s.Neighbors(ctx, ctr, store.Forward, c.at, store.Current(catalog.L2))
+		if got := len(ns) == 1; err != nil || got != c.want {
+			t.Errorf("part_of at +%s = %v, %v, want present = %v", c.at.Sub(t0), ns, err, c.want)
+		}
 	}
 }
 
-// A pod whose records stop for longer than the TTL lapses, and returns when they
-// resume with no DELETED in between. Its existence and its container's show the
-// gap. The edges have no TTL: they stay stored throughout, nothing re-asserts
-// or deletes them, and none is emitted on the return.
-func TestLapsedPodReturnsWithoutNewEdges(t *testing.T) {
+// A pod whose records stop for longer than the TTL lapses, and so do its container
+// and both edges, since each is re-asserted with the pod. They return when the
+// records resume, with no DELETED in between: each pull after the gap gives the pod,
+// the container and both edges again.
+func TestLapsedPodLapsesItsEdges(t *testing.T) {
 	const ttl = 15 * time.Minute
 	tr := newTranslator(t, ttl)
 	nodeObj := nodeObject("n-1", node, at(-10, 0), "1")
@@ -281,30 +286,36 @@ func TestLapsedPodReturnsWithoutNewEdges(t *testing.T) {
 		Conds:      []map[string]any{cond("PodScheduled", "True", at(0, 0))},
 		Containers: []map[string]any{{"name": "app", "restartCount": 0, "containerID": "containerd://abc"}},
 	}
-	// The node is refreshed throughout, so only the pod's lapse is under test.
+	// The node is refreshed every ten minutes throughout, so only the pod's lapse is
+	// under test; the pod is pulled at +0 and +10 and then at +70 and +80.
+	pulls := map[int]bool{0: true, 10: true, 70: true, 80: true}
 	var batches [][]store.Record
-	pull := func(min int, i int) k8sobjects.Result {
-		p.Heartbeat = string(rune('a' + i))
-		nodeObj["metadata"].(map[string]any)["resourceVersion"] = p.Heartbeat
-		r := translate(t, tr, pullRec(at(min, 0), nodeObj))
-		pr := translate(t, tr, pullRec(at(min, 1), p.object()))
-		batches = append(batches, r.Records, pr.Records)
-		return pr
+	gave := map[int]k8sobjects.Result{}
+	for min := 0; min <= 80; min += 10 {
+		nodeObj["metadata"].(map[string]any)["resourceVersion"] = string(rune('a' + min/10))
+		batches = append(batches, translate(t, tr, pullRec(at(min, 0), nodeObj)).Records)
+		if pulls[min] {
+			p.Heartbeat = string(rune('a' + min/10))
+			r := translate(t, tr, pullRec(at(min, 1), p.object()))
+			batches = append(batches, r.Records)
+			gave[min] = r
+		}
 	}
-	first := pull(0, 0)
-	if len(first.Records) != 4 {
-		t.Fatalf("first sight gave %s, want pod, container, part_of, scheduled_on", joinSubjects(first.Records))
-	}
-	pull(10, 1)
-	for i, min := range []int{70, 80} {
-		r := pull(min, i+2)
+	for min := range pulls {
+		r := gave[min]
+		var entities, edges int
 		for _, rec := range r.Records {
+			if rec.Kind != lifecycle.Observe || rec.TTL != ttl {
+				t.Errorf("the pull at +%dm gave %+v, want observations with the TTL", min, rec)
+			}
 			if rec.Subject.Kind == store.SubjectEdge {
-				t.Errorf("the pull at +%dm emitted an edge record %+v; the edges are not re-asserted", min, rec)
+				edges++
+			} else {
+				entities++
 			}
 		}
-		if len(r.Records) != 2 {
-			t.Errorf("the pull at +%dm gave %s, want the pod and the container", min, joinSubjects(r.Records))
+		if entities != 2 || edges != 2 {
+			t.Errorf("the pull at +%dm gave %s, want pod, container, part_of, scheduled_on", min, joinSubjects(r.Records))
 		}
 	}
 
@@ -316,13 +327,13 @@ func TestLapsedPodReturnsWithoutNewEdges(t *testing.T) {
 		want bool
 	}{
 		{at(5, 0), true},
-		{at(10, 0).Add(ttl - time.Second), true},
-		{at(10, 0).Add(ttl + time.Second), false},
+		{at(10, 1).Add(ttl - time.Second), true},
+		{at(10, 1).Add(ttl + time.Second), false},
 		{at(40, 0), false},
 		{at(69, 59), false},
 		{at(70, 0), false},
 		{at(70, 2), true},
-		{at(80, 1).Add(ttl - time.Second), true},
+		{at(80, 1).Add(ttl - 2*time.Second), true}, // the node is alive until +95:00
 	} {
 		for name, f := range map[string]identity.Fingerprint{"pod": pod, "container": ctr} {
 			got, err := s.Alive(ctx, f, c.at, scope)
@@ -330,18 +341,18 @@ func TestLapsedPodReturnsWithoutNewEdges(t *testing.T) {
 				t.Errorf("%s alive at +%s = %v, %v, want %v", name, c.at.Sub(t0), got, err, c.want)
 			}
 		}
-	}
-	// The references are stored throughout, lapse included. This is a raw-store
-	// assertion: a read that cascades from existence hides them while the pod has
-	// lapsed, and shows them again when it is observed again.
-	for _, when := range []time.Time{at(5, 0), at(40, 0), at(75, 0)} {
-		ns, err := s.Neighbors(ctx, pod, store.Forward, when, scope)
-		if err != nil || len(ns) != 1 || ns[0].Peer != nodeRef || ns[0].Relation != catalog.ScheduledOn {
-			t.Errorf("scheduled_on at +%s = %v, %v, want one edge to the node", when.Sub(t0), ns, err)
+		// The node is alive throughout, so an edge is present exactly when it was
+		// re-asserted: it lapses with the pod it is stored on.
+		if got, err := s.Alive(ctx, nodeRef, c.at, scope); err != nil || !got {
+			t.Errorf("node alive at +%s = %v, %v, want true", c.at.Sub(t0), got, err)
 		}
-		ns, err = s.Neighbors(ctx, ctr, store.Forward, when, scope)
-		if err != nil || len(ns) != 1 || ns[0].Peer != pod || ns[0].Relation != catalog.PartOf {
-			t.Errorf("part_of at +%s = %v, %v, want one edge to the pod", when.Sub(t0), ns, err)
+		ns, err := s.Neighbors(ctx, pod, store.Forward, c.at, scope)
+		if got := len(ns) == 1 && ns[0].Peer == nodeRef && ns[0].Relation == catalog.ScheduledOn; err != nil || got != c.want {
+			t.Errorf("scheduled_on at +%s = %v, %v, want present = %v", c.at.Sub(t0), ns, err, c.want)
+		}
+		ns, err = s.Neighbors(ctx, ctr, store.Forward, c.at, scope)
+		if got := len(ns) == 1 && ns[0].Peer == pod && ns[0].Relation == catalog.PartOf; err != nil || got != c.want {
+			t.Errorf("part_of at +%s = %v, %v, want present = %v", c.at.Sub(t0), ns, err, c.want)
 		}
 	}
 }

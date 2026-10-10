@@ -61,12 +61,21 @@ type Assertion struct {
 	// repeated. Zero promises nothing (watch mode): only a Delete ends the
 	// reference. Must be zero on a Delete, and never negative.
 	TTL time.Duration
-	// Through, if set, says the producer repeated this Observe continuously,
-	// at least once per TTL, from EventTime through this instant, so a run of
-	// refreshes is one assertion. It never precedes EventTime, and is zero on a
-	// Delete. Zero means a single observation at EventTime. [Coalesce] produces
-	// runs, and a store extends one by re-asserting it at the same EventTime
-	// with a later Seq and a later Through.
+	// Through, if set, says the subject was asserted from EventTime through
+	// this instant, in one of two ways:
+	//
+	//   - the producer repeated this Observe continuously, at least once per
+	//     TTL, from EventTime through this instant, which is how [Coalesce]
+	//     makes a run of refreshes one assertion;
+	//   - the source attests that the subject existed continuously from
+	//     EventTime through this instant (for a Kubernetes object, its UID
+	//     exists continuously from creation to deletion), as a translator
+	//     asserts for an observation timed before it was made.
+	//
+	// It never precedes EventTime, and is zero on a Delete. Zero means a
+	// single observation at EventTime. [Coalesce] produces runs, and a store
+	// extends one by re-asserting it at the same EventTime with a later Seq
+	// and a later Through.
 	Through time.Time
 	// Attrs is the producer's complete description of the subject. Must be
 	// empty on a Delete, and may not repeat a key. Values are retained, not
