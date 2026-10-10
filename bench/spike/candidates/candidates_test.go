@@ -3,6 +3,8 @@ package candidates_test
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,10 +29,14 @@ func factory(v candidates.Variant, o candidates.Options) conformance.Factory {
 // Policies of layout L that a sweep names besides the default.
 var sweepPoints = append([]string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a4l2s", "L/k64a4l1h", "L/k64a4l1h30m", "L/k64a2l1ns"}, candidates.SweepGrid()...)
 
+// The variants built through the root module's store. They are found by Lookup
+// and are not in All.
+var rootPoints = []string{"Lroot/off", "Lroot/k8a1", "Lroot/k64a2l1ns", "Lroot/k64a1l1ns", "Lroot/k64a4l1h30m"}
+
 func everyVariant(t *testing.T) []candidates.Variant {
 	t.Helper()
 	out := candidates.All()
-	for _, name := range sweepPoints {
+	for _, name := range append(slices.Clone(sweepPoints), rootPoints...) {
 		v, err := candidates.Lookup(name)
 		if err != nil {
 			t.Fatal(err)
@@ -98,9 +104,44 @@ func TestNamesRoundTripAndBadOnesAreRefused(t *testing.T) {
 		"L/k64a4l90m",     // and another
 		"L/k64a4l1h0m",    // a second spelling of L/k64a4l1h
 		"X/crdb1", "m/crdb1",
+		"Lroot", "Lroot/", "Lroot/off2", "Lroot/L/off", "Lroot/k0a4", "Lroot/k64a0", "Lroot/k064a4", "Lroot/k64a4l0s", "Lroot/k64a4l90m", "Lroot/M/crdb1",
+		"Lroot/off+filter", "LROOT/off",
 	} {
 		if v, err := candidates.Lookup(bad); err == nil {
 			t.Errorf("Lookup(%q) = %q, want an error", bad, v.Name)
+		}
+	}
+}
+
+// The variants of the root store are looked up and are not run by default: a
+// default measurement is the spike's, unchanged.
+func TestRootVariantsAreFoundAndNotInTheDefaultSet(t *testing.T) {
+	t.Parallel()
+	for _, name := range rootPoints {
+		if slices.Contains(candidates.Names(), name) {
+			t.Errorf("%s is in the default set", name)
+		}
+		v, err := candidates.Lookup(name)
+		if err != nil || v.Name != name || v.Layout != "L" {
+			t.Errorf("Lookup(%q) = %+v, %v", name, v, err)
+		}
+	}
+	for _, v := range candidates.All() {
+		if strings.HasPrefix(v.Name, "Lroot/") {
+			t.Errorf("the default set holds %s", v.Name)
+		}
+	}
+	for _, name := range []string{"L/off", "L/k64a2l1ns"} {
+		root, err := candidates.Lookup("Lroot/" + name[len("L/"):])
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain, err := candidates.Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root.Name == plain.Name || root.Layout != plain.Layout {
+			t.Errorf("%s and %s: layouts %q and %q", plain.Name, root.Name, plain.Layout, root.Layout)
 		}
 	}
 }
@@ -122,6 +163,11 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 		"L/k64a4l1ns":      {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1ns"},
 		"L/k128a0.5l1ns":   {"layout": "L", "checkpoints": "kmin=128 alpha=0.5 lag=1ns"},
 		"L/k64a4l1h30m":    {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
+		// The root store's variants say so, and the others do not.
+		"Lroot/off":         {"layout": "L", "store": "root", "checkpoints": "off", "collectors_in_tables": "obsolete-key"},
+		"Lroot/k64a2l1ns":   {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=2 lag=1ns"},
+		"Lroot/k64a4":       {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=4 lag=0s"},
+		"Lroot/k64a4l1h30m": {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
 	}
 	for name, props := range want {
 		v, err := candidates.Lookup(name)
@@ -157,6 +203,11 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 					t.Errorf("%s = %q, want %q (all: %v)", k, got[k], w, got)
 				}
 			}
+			if _, has := props["store"]; !has {
+				if s, ok := got["store"]; ok {
+					t.Errorf("a variant that is not the root store's says store = %q", s)
+				}
+			}
 		})
 	}
 }
@@ -165,7 +216,17 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 // whether Pebble compacts on its own.
 func TestOptionsReachTheDatabase(t *testing.T) {
 	t.Parallel()
-	v, err := candidates.Lookup("L/off")
+	for _, name := range []string{"L/off", "Lroot/off"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			optionsReachTheDatabase(t, name)
+		})
+	}
+}
+
+func optionsReachTheDatabase(t *testing.T, name string) {
+	t.Helper()
+	v, err := candidates.Lookup(name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +264,7 @@ func TestOptionsReachTheDatabase(t *testing.T) {
 // SettleRetention reaches the engine of every layout, and is off unless asked.
 func TestSettleRetentionReachesEveryLayout(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"L/off", "L/k64a2l1ns", "M/crdb1"} {
+	for _, name := range []string{"L/off", "L/k64a2l1ns", "M/crdb1", "Lroot/off", "Lroot/k64a2l1ns"} {
 		v, err := candidates.Lookup(name)
 		if err != nil {
 			t.Fatal(err)
@@ -230,7 +291,7 @@ func TestSettleRetentionReachesEveryLayout(t *testing.T) {
 func TestARecorderSeesWhatTheVariantDoes(t *testing.T) {
 	t.Parallel()
 	conformance.SkipWhenTrimmed(t) // starts no goroutine of its own; the full tier runs it
-	for name, wantCheckpoints := range map[string]bool{"L/off": false, "L/k8a1": true, "M/crdb1": false} {
+	for name, wantCheckpoints := range map[string]bool{"L/off": false, "L/k8a1": true, "M/crdb1": false, "Lroot/off": false, "Lroot/k8a1": true} {
 		v, err := candidates.Lookup(name)
 		if err != nil {
 			t.Fatal(err)
