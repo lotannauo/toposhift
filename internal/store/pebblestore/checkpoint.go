@@ -186,14 +186,14 @@ func (f *stateFold) result() prefixState {
 // it is next touched. The map is no longer complete: the prefix may hold keys.
 func (s *Store) forget(prefix string) {
 	delete(s.states, prefix)
-	s.complete = false
+	s.lose()
 }
 
 // forgetAll drops everything that is remembered. Nothing is known of any prefix
 // afterwards, so the map is not complete.
 func (s *Store) forgetAll() {
 	s.states = map[string]*prefixState{}
-	s.complete = false
+	s.lose()
 }
 
 // forgetLayers drops what is remembered of every prefix in the layers a retention
@@ -209,7 +209,18 @@ func (s *Store) forgetLayers(ls []retainLayer) {
 			}
 		}
 	}
+	s.lose()
+}
+
+// lose says the map is not complete. A background pass that is pending is told
+// too, so that when it ends it does not claim the map is complete after all: what
+// it worked out of the prefixes it passed may be older than what was forgotten
+// since. The caller holds s.mu.
+func (s *Store) lose() {
 	s.complete = false
+	if s.pass != nil {
+		s.pass.intact = false
+	}
 }
 
 // layerOfPrefix is the layer a data prefix belongs to.
@@ -219,12 +230,14 @@ func layerOfPrefix(prefix []byte) catalog.Layer {
 }
 
 // readPrefixState reads the prefix from its newest key until the fold needs no
-// more: what [Store.state] learns of a prefix nothing remembers. unreadable is
+// more: what [Store.state] learns of a prefix nothing remembers. It reads through
+// r, which is the database, or a batch that holds changes not yet committed (a
+// write that rewrites the prefix first reads what it leaves). unreadable is
 // the error of a key that cannot be parsed, which says nothing of the database;
 // err is the error of the read itself.
-func (s *Store) readPrefixState(prefix []byte) (st prefixState, keys int64, unreadable, err error) {
+func (s *Store) readPrefixState(r pebble.Reader, prefix []byte) (st prefixState, keys int64, unreadable, err error) {
 	lo, hi := prefixBounds(prefix)
-	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	it, err := r.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
 		return prefixState{}, 0, nil, err
 	}
@@ -260,7 +273,7 @@ func (s *Store) state(prefix []byte) (*prefixState, error) {
 		return st, nil
 	}
 	s.iterators++
-	res, keys, unreadable, err := s.readPrefixState(prefix)
+	res, keys, unreadable, err := s.readPrefixState(s.kv, prefix)
 	if err != nil {
 		return nil, err
 	}

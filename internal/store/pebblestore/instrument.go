@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -26,6 +27,11 @@ func (i *Instrument) KV() *pebblekv.KV { return i.s.kv }
 // reached its deadline. All zero before the first Retain; flush and settle are
 // zero when SettleRetention is off or the retention returned early, before
 // rewriting anything.
+//
+// In a Background store the time of the last Retain is the time it took to publish
+// the horizons, which is all the work it does itself: flush and settle are zero (the
+// store does not settle), and the time of the chunks of the pass is in the samples
+// "retain.chunk_hold_ns".
 func (i *Instrument) LastRetain() (work, flush, settle time.Duration, deadlineHit bool) {
 	i.s.mu.Lock()
 	defer i.s.mu.Unlock()
@@ -136,4 +142,40 @@ func (i *Instrument) Breakdown() (map[Part]int64, error) {
 		}
 	}
 	return out, it.Error()
+}
+
+// WaitRetained returns when no background pass is pending: the last chunk is
+// committed, its writer state installed, the marker deleted and the map called
+// complete if the pass vouches for it. It returns the error that stopped the pass
+// if the store has latched one, an error wrapping [store.ErrClosed] if the store
+// is closed with the pass still pending (the next Open resumes it), and the
+// context's error if ctx ends first. In a Synchronous store, where Retain returns
+// when it has finished, it returns at once.
+func (i *Instrument) WaitRetained(ctx context.Context) error {
+	s := i.s
+	if s.retention != Background {
+		return nil
+	}
+	for {
+		s.mu.Lock()
+		switch {
+		case s.failed != nil:
+			err := s.failedError("WaitRetained")
+			s.mu.Unlock()
+			return err
+		case s.pass == nil:
+			s.mu.Unlock()
+			return nil
+		case s.closed.Load() || s.passDone == nil:
+			s.mu.Unlock()
+			return closedError("WaitRetained")
+		}
+		done := s.passDone
+		s.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return contextError("WaitRetained", ctx.Err())
+		}
+	}
 }
