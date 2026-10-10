@@ -156,6 +156,7 @@ type planFlags struct {
 	podHeartbeat  string
 	runMaxAge     string
 	payloadPad    int
+	producerLen   int
 	minNonEmpty   float64
 }
 
@@ -173,6 +174,7 @@ func (p *planFlags) flags(fs *flag.FlagSet) {
 	fs.StringVar(&p.podHeartbeat, "pod-heartbeat", "", "how often the cluster collector refreshes every pod's placement, such as 5m, or \"off\" (default: the preset's)")
 	fs.StringVar(&p.runMaxAge, "run-max-age", "", "the greatest age of a run of refreshes before the ingest coalescer continues it with a new one, such as 2h, or \"off\" (default: the preset's, none)")
 	fs.IntVar(&p.payloadPad, "payload-pad", 0, "random bytes added to every payload, drawn apart from the rest of the stream so that only the payloads change (default: none)")
+	fs.IntVar(&p.producerLen, "producer-len", 0, "pad every producer name to exactly this many bytes (14 to 64) with a \"/\" and filler of characters that do not repeat within the name, so that the cost of the producer string stored per record can be measured; the stream is otherwise the same (default: the names as they are)")
 	fs.IntVar(&p.window, "window", 0, "run over a window of this many days of retained history: a stream of 2R + 1.5 days with a daily retention that keeps R (see runner.WindowSpec)")
 	fs.StringVar(&p.pins, "pins", "", "the pinned prefixes of a family of windows, as made by `pins` (needs -window; only the records that touch them are written, unless -full)")
 	fs.BoolVar(&p.full, "full", false, "with -pins, write the whole stream and ask the pins' queries of it: a full store read at the pinned prefixes")
@@ -223,6 +225,9 @@ func (p planFlags) args() []string {
 	}
 	if p.payloadPad != 0 {
 		add("payload-pad", fmt.Sprint(p.payloadPad))
+	}
+	if p.producerLen != 0 {
+		add("producer-len", fmt.Sprint(p.producerLen))
 	}
 	if p.window != 0 {
 		add("window", fmt.Sprint(p.window))
@@ -307,6 +312,7 @@ func (p planFlags) spec() (runner.Spec, error) {
 		return runner.Spec{}, fmt.Errorf("-payload-pad cannot be negative")
 	}
 	w.PayloadPad = p.payloadPad
+	w.ProducerLen = p.producerLen // a length the workload refuses is refused by the spec's validation
 	s := runner.DefaultSpec(w)
 	if p.batch > 0 {
 		s.BatchSize = p.batch
@@ -668,7 +674,7 @@ func doRun(ctx context.Context, args []string) error {
 	planFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
-		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age", "payload-pad", "full":
+		case "preset", "days", "seed", "batch", "retain", "hot", "median", "cache-fraction", "cache-mb", "min-non-empty", "window", "pins", "events-per-second", "extend", "pod-heartbeat", "run-max-age", "payload-pad", "producer-len", "full":
 			planFlagSet = true
 		}
 	})
@@ -693,7 +699,7 @@ func doRun(ctx context.Context, args []string) error {
 	} else if planFlagSet {
 		// A plan is made once and every build is checked against it: flags that
 		// would make another plan are not quietly dropped.
-		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad, full) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
+		return fmt.Errorf("%s exists, so the plan flags (preset, days, seed, batch, retain, hot, median, cache-fraction, cache-mb, min-non-empty, window, pins, events-per-second, extend, pod-heartbeat, run-max-age, payload-pad, producer-len, full) cannot be applied: drop them to use that plan, or use another -out", filepath.Join(c.out, planFile))
 	}
 	list := strings.Split(names, ",")
 	// A run that resumes builds the candidates it has not built yet as the flags say,

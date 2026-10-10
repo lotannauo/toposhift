@@ -181,7 +181,7 @@ func entityLayer(t catalog.EntityType) catalog.Layer {
 
 func (g *Generator) entityRecord(at time.Time, p lifecycle.Producer, fp identity.Fingerprint, kind lifecycle.Kind, ttl time.Duration, payload []byte) {
 	r := engine.Record{
-		Layer: entityLayer(fp.Type()), Subject: engine.EntitySubject(fp), Producer: p, EventTime: at,
+		Layer: entityLayer(fp.Type()), Subject: engine.EntitySubject(fp), Producer: g.producer(p), EventTime: at,
 		Kind: kind, TTL: ttl,
 	}
 	if kind == lifecycle.Observe {
@@ -195,7 +195,7 @@ func (g *Generator) edgeRecord(at time.Time, p lifecycle.Producer, from, to iden
 		panic(fmt.Sprintf("workload: %s does not allow %s -> %s", rel, from.Type(), to.Type()))
 	}
 	r := engine.Record{
-		Layer: layerOf(rel), Subject: engine.EdgeSubject(from, to, rel), Producer: p, EventTime: at,
+		Layer: layerOf(rel), Subject: engine.EdgeSubject(from, to, rel), Producer: g.producer(p), EventTime: at,
 		Kind: kind, TTL: ttl,
 	}
 	if kind == lifecycle.Observe {

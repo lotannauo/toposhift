@@ -192,6 +192,63 @@ type Config struct {
 	// and a change in a measurement is the payload's alone. Zero adds nothing, and is
 	// left out of the config's JSON, so the digest of a spec without it is as it was.
 	PayloadPad int `json:",omitempty"`
+
+	// ProducerLen pads every producer name to exactly this many bytes, so the cost of the
+	// producer string a layout stores per record can be measured. Zero leaves the names
+	// as they are. Otherwise it is from the length of the longest name (MinProducerLen)
+	// up to MaxProducerLen: a name is followed by "/" and then filler up to the length (characters
+	// that do not repeat within the name, so that block compression does not hide the cost), and
+	// the longest name, which has no room for either, is left as it is when the length is
+	// its own. It draws nothing from either source of random numbers, so the stream has
+	// the same records with longer producer names, and is left out of the config's JSON
+	// when zero, so the digest of a spec without it is as it was.
+	ProducerLen int `json:",omitempty"`
+}
+
+// The bounds of Config.ProducerLen: the longest producer name of the workload, and the
+// longest name a producer may be given.
+const (
+	MinProducerLen = len(ProducerNodeCollector)
+	MaxProducerLen = 64
+)
+
+// paddedProducers maps each producer of the workload to its name lengthened to n bytes.
+func paddedProducers(n int) map[lifecycle.Producer]lifecycle.Producer {
+	out := make(map[lifecycle.Producer]lifecycle.Producer)
+	for _, p := range []lifecycle.Producer{ProducerFabric, ProducerK8sObjects, ProducerNodeCollector, ProducerTraces, ProducerKubelet, ProducerPodHeartbeat} {
+		switch {
+		case len(p) == n:
+			out[p] = p
+		default:
+			out[p] = p + "/" + lifecycle.Producer(ProducerFill(n-len(p)-1))
+		}
+	}
+	return out
+}
+
+// ProducerFill is n deterministic characters, all in [a-zA-Z0-9], no two of them alike
+// within 62 of each other, so that block compression does not hide what a longer name
+// costs (the longest filler a name of at most 64 bytes needs is 57). It draws nothing
+// from a random source.
+func ProducerFill(n int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[(i*7+3)%len(alphabet)]
+	}
+	return string(b)
+}
+
+// producer is the name a record of p carries.
+func (g *Generator) producer(p lifecycle.Producer) lifecycle.Producer {
+	if g.producers == nil {
+		return p
+	}
+	padded, ok := g.producers[p]
+	if !ok {
+		panic(fmt.Sprintf("workload: producer %q has no padded name", p))
+	}
+	return padded
 }
 
 // Tiny is twenty minutes of a handful of entities, for tests.
@@ -273,6 +330,8 @@ func (c Config) valid() error {
 		return bad("payload bounds are %d to %d", c.PayloadMin, c.PayloadMax)
 	case c.PayloadPad < 0:
 		return bad("PayloadPad must not be negative")
+	case c.ProducerLen != 0 && (c.ProducerLen < MinProducerLen || c.ProducerLen > MaxProducerLen):
+		return bad("ProducerLen must be 0 or from %d to %d", MinProducerLen, MaxProducerLen)
 	case c.ExtendEvery < 0 || (c.ExtendEvery > 0 && !c.CoalesceRuns):
 		return bad("ExtendEvery needs CoalesceRuns and must not be negative")
 	case c.RunMaxAge < 0 || (c.RunMaxAge > 0 && (!c.CoalesceRuns || c.RunMaxAge < time.Minute)):
@@ -291,6 +350,8 @@ type Generator struct {
 	rng *rand.Rand
 	pad *rand.Rand // the padding of payloads (PayloadPad), apart from rng
 	res *identity.Resolver
+
+	producers map[lifecycle.Producer]lifecycle.Producer // the padded names (ProducerLen), or nil
 
 	podZipf, nodeZipf *rand.Zipf
 
@@ -331,6 +392,9 @@ func New(cfg Config) (*Generator, error) {
 	}
 	if cfg.PayloadPad > 0 {
 		g.pad = rand.New(rand.NewPCG(cfg.Seed^0x7061646469e67000, ^cfg.Seed))
+	}
+	if cfg.ProducerLen > 0 {
+		g.producers = paddedProducers(cfg.ProducerLen)
 	}
 	g.podZipf = rand.NewZipf(g.rng, cfg.PodSkew, 1, uint64(cfg.Pods-1))
 	g.nodeZipf = rand.NewZipf(g.rng, cfg.NodeSkew, 1, uint64(cfg.Hosts-1))
