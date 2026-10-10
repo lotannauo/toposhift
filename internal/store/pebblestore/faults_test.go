@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,13 @@ type nthFault struct {
 	armed atomic.Bool
 	seen  atomic.Int64
 	fired atomic.Int64
+	// frozen is set when the process the file system belongs to is taken to have
+	// ended: every operation that reaches the injector from then on never returns,
+	// as nothing a dead process was doing does. Pebble, when told nothing is fatal,
+	// runs on in a store whose manifest has failed and retries the flush that
+	// cannot be recorded as fast as it can, writing a table and its copy in memory
+	// each time: a few hundred megabytes a second, for as long as the store is left.
+	frozen atomic.Bool
 }
 
 var _ errorfs.Injector = (*nthFault)(nil)
@@ -48,6 +56,9 @@ var _ errorfs.Injector = (*nthFault)(nil)
 func (f *nthFault) String() string { return fmt.Sprintf("operation %d of the matching ones", f.at) }
 
 func (f *nthFault) MaybeError(op errorfs.Op) error {
+	if f.frozen.Load() {
+		select {} // the store is abandoned: its goroutines park here, for good
+	}
 	if !f.armed.Load() || f.match == nil || !f.match(op) {
 		return nil
 	}
@@ -135,11 +146,13 @@ func failNth(n int64, seen, fired *atomic.Int64) func() error {
 var faultKinds = []faultKind{
 	{name: "wal-write", match: writesTo(".log"), span: 16, log: true},
 	{name: "wal-sync", match: syncsOf(".log"), span: 16, log: true},
-	{name: "table-create", match: createsOf(".sst"), span: 6},
+	{name: "table-create", match: createsOf(".sst"), span: 4},
 	{name: "table-write", match: writesTo(".sst"), span: 16},
 	{name: "table-sync", match: syncsOf(".sst"), span: 5},
-	{name: "manifest-write", match: writesTo("MANIFEST"), span: 2},
-	{name: "table-read", match: readsOf(".sst"), span: 100, reads: true},
+	// With span 1 only the first manifest edit after the fault is armed is failed: the
+	// edits of the later flushes go untested. (The workload makes three to five.)
+	{name: "manifest-write", match: writesTo("MANIFEST"), span: 1},
+	{name: "table-read", match: readsOf(".sst"), span: 50, reads: true},
 	{name: "record-commit-not-stored", span: 12, hook: func(s *Store, n int64, seen, f *atomic.Int64) { s.beforeRecordApply = failNth(n, seen, f) }},
 	{name: "record-commit-stored", span: 12, hook: func(s *Store, n int64, seen, f *atomic.Int64) { s.afterRecordApply = failNth(n, seen, f) }},
 	{name: "horizon-commit-not-stored", span: 2, hook: func(s *Store, n int64, seen, f *atomic.Int64) { s.beforeHorizonApply = failNth(n, seen, f) }},
@@ -185,6 +198,7 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 	percent := []int{0, 25, 60, 100}[rand.New(rand.NewPCG(uint64(seed), 98)).IntN(4)]
 	lg.onFatal = func() {
 		clone = base.CrashClone(vfs.CrashCloneCfg{UnsyncedDataPercent: percent, RNG: rand.New(rand.NewPCG(uint64(seed), 99))})
+		inj.frozen.Store(true) // after the clone: it is of the file system, not through the injector
 	}
 	// No compactions run. Pebble panics, in the goroutine of a compaction, when one
 	// fails in the way these tests make it (the bookkeeping of the level it was
@@ -197,6 +211,18 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 	opts := v.options(errorfs.Wrap(base, inj), lg, false)
 	if k.log {
 		opts.Tuning.MemTableSize = 4 << 20
+	} else {
+		// With no compaction every flush leaves a sublevel in level 0, and Pebble stops
+		// the writes for good when level 0 holds twelve ("L0 file count limit
+		// exceeded"): the Write or the Flush that meets the limit waits for a
+		// compaction that is not coming. The workloads rotate the memtable once for
+		// each memtable they fill and once for each retention, and every rotation is a
+		// flush. With the tiny tuning (32 KB) the most any seed rotated it was eleven
+		// times, one short of the limit. At twice the size the most is six; at four
+		// times, the tables and the manifest are written too seldom for the less
+		// frequent kinds to have as many places for a fault to fall on as their spans
+		// draw from.
+		opts.Tuning.MemTableSize = 64 << 10
 	}
 	s, err := Open("db", opts)
 	if err != nil {
@@ -205,7 +231,9 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 	closed := false
 	defer func() {
 		if !closed {
-			_ = s.Close()
+			// Bounded, though a store that is fine closes at once: a store left in a
+			// stall holds a lock inside Pebble that its Close waits for for ever.
+			_ = closeOrHang(s, lg.dead)
 		}
 	}()
 	live, err := memstoreWithPolicy(v.policy)
@@ -258,6 +286,7 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 		}
 		if opErr != nil {
 			if errors.Is(opErr, errHung) {
+				closed = true // left as it is, on purpose: a store in a stall cannot be closed
 				return res, opErr
 			}
 			res.failed, res.opErr = true, opErr
@@ -278,6 +307,9 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 		if err := op.apply(live); err != nil {
 			return res, fmt.Errorf("the reference refused %s: %w", op, err)
 		}
+		if err := level0Guard(s); err != nil {
+			return res, fmt.Errorf("after %s: %w", op, err)
+		}
 		if k.reads && step%4 == 0 {
 			if err := liveDiff(s, live, all[:pos], rng, true); err != nil {
 				return res, fmt.Errorf("after %s: %w", op, err)
@@ -289,9 +321,12 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 		// the workload makes on the tables and the manifest are all made, however
 		// the background work was timed.
 		if ended, err := flushOrDie(s, lg); err != nil {
+			closed = true // left as it is, on purpose: a store in a stall cannot be closed
 			return res, err
 		} else if ended || lg.fatal() != 0 {
 			res.fatal = true
+		} else if err := level0Guard(s); err != nil {
+			return res, fmt.Errorf("after the final flush: %w", err)
 		}
 	}
 	res.begun = len(hist)
@@ -329,7 +364,7 @@ func runFault(seed int, k faultKind, at int64) (res faultResult, err error) {
 	// ...and a store reopened on the file system without the fault holds a whole
 	// number of the operations and carries on.
 	closed = true
-	if err := closeOrHang(s); err != nil {
+	if err := closeOrHang(s, lg.dead); err != nil && lg.fatal() == 0 {
 		return res, err
 	}
 	// (If Pebble gave up meanwhile, in the checks or the close, what is reopened is
@@ -368,8 +403,8 @@ func applyOrDie(s *Store, op histOp, lg *fatalLog) (ended bool, err error) {
 		return false, err
 	case <-lg.dead:
 		return true, nil
-	case <-time.After(time.Minute):
-		return false, fmt.Errorf("%s did not return in a minute, and Pebble reported nothing fatal: %w", op, errHung)
+	case <-time.After(hangLimit):
+		return false, fmt.Errorf("%s did not return in %v, and Pebble reported nothing fatal (a write stall, if Pebble stopped the writes until a compaction that is not coming): %w", op, hangLimit, errHung)
 	}
 }
 
@@ -393,20 +428,101 @@ func flushOrDie(s *Store, lg *fatalLog) (ended bool, err error) {
 		return false, nil
 	case <-lg.dead:
 		return true, nil
-	case <-time.After(time.Minute):
-		return false, fmt.Errorf("Flush did not return in a minute, and Pebble reported nothing fatal: %w", errHung)
+	case <-time.After(hangLimit):
+		return false, fmt.Errorf("Flush did not return in %v, and Pebble reported nothing fatal (a write stall, if Pebble stopped the writes until a compaction that is not coming): %w", hangLimit, errHung)
 	}
 }
 
-// closeOrHang closes the store, and fails if that takes more than a minute.
-func closeOrHang(s *Store) error {
+// hangLimit is how long an operation, a flush or a close may take before the trial
+// fails with the operation named. A healthy one takes milliseconds.
+var hangLimit = time.Minute
+
+// caseLimit is how long one case (a fault trial, a control run, a crash seed) may
+// take before it fails with a dump of every goroutine. A healthy case takes
+// seconds, a few tens of seconds under the race detector on one loaded processor;
+// the operations inside it are held to hangLimit, so a case reaches this only when
+// something outside them hangs (a reopening, a close, a comparison).
+//
+// The limit is longer under the race detector: a crash seed there is slow on a
+// loaded runner, though healthy (the crash test was still going after five minutes
+// on the CI machine with several seeds in parallel). The watchdog only has to dump
+// before the test binary's own timeout.
+var caseLimit = func() time.Duration {
+	if raceEnabled {
+		return 10 * time.Minute
+	}
+	return 3 * time.Minute
+}()
+
+// level0Warn is how many sublevels level 0 may hold, with no compaction to reduce
+// them, before a trial fails. Pebble stops the writes at twelve; the guard fires one
+// sublevel before. The most any seed has reached locally is six; CI has reached more
+// than local runs for reasons not known, so the margin is kept wide.
+const level0Warn = 11
+
+// level0Guard names the problem before Pebble stalls on it.
+func level0Guard(s *Store) error {
+	if n := s.kv.Metrics().Levels[0].Sublevels; n >= level0Warn {
+		return fmt.Errorf("level 0 holds %d sublevels with compactions off, close to the write stop at 12: the workload outgrew the memtable size this test sets", n)
+	}
+	return nil
+}
+
+// stacks is the stack of every goroutine.
+func stacks() string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return string(buf[:n])
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// boundedCase runs one case of a test in a goroutine of its own and waits for it
+// at most caseLimit. When the case hangs, or reports that an operation did, the
+// dump of every goroutine is logged, so that the cause is readable even if the
+// process is stopped from outside before the test binary's own timeout; a case
+// that does not return is left running. The case must not use t.
+func boundedCase[R any](t *testing.T, what string, run func() (R, error)) (R, error) {
+	t.Helper()
+	type outcome struct {
+		res R
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := run()
+		done <- outcome{res, err}
+	}()
+	select {
+	case o := <-done:
+		if errors.Is(o.err, errHung) {
+			t.Logf("%s hung; every goroutine:\n%s", what, stacks())
+		}
+		return o.res, o.err
+	case <-time.After(caseLimit):
+		var zero R
+		t.Logf("%s did not finish in %v; every goroutine:\n%s", what, caseLimit, stacks())
+		return zero, fmt.Errorf("%s did not finish in %v (its goroutine is left running; the dump of every goroutine is in the log): %w", what, caseLimit, errHung)
+	}
+}
+
+// closeOrHang closes the store, and fails if that takes more than hangLimit. A close
+// that has not returned is left running. If dead is closed meanwhile, Pebble has
+// reported a fatal condition and the process is taken to have ended: the close
+// parks (the file system is frozen) and is not waited for, and that is no failure.
+func closeOrHang(s *Store, dead <-chan struct{}) error {
 	done := make(chan struct{})
 	go func() { _ = s.Close(); close(done) }()
 	select {
 	case <-done:
 		return nil
-	case <-time.After(time.Minute):
-		return errors.New("Close did not return in a minute")
+	case <-dead:
+		return nil
+	case <-time.After(hangLimit):
+		return fmt.Errorf("Close did not return in %v: %w", hangLimit, errHung)
 	}
 }
 
@@ -490,7 +606,7 @@ func TestIOFaultsLeaveTheStoreWholeOrAbsent(t *testing.T) {
 					if raceEnabled {
 						t.Skip("the plain builds run the control; the race detector runs the trials")
 					}
-					res, err := runFault(ki%8, k, -1)
+					res, err := boundedCase(t, "the control run of "+k.name, func() (faultResult, error) { return runFault(ki%8, k, -1) })
 					if err != nil {
 						t.Fatalf("%v\nreproduce with: go test ./internal/store/pebblestore -run '^TestIOFaultsLeaveTheStoreWholeOrAbsent$/^kinds$/^%s$/^control$' -v", err, k.name)
 					}
@@ -508,8 +624,9 @@ func TestIOFaultsLeaveTheStoreWholeOrAbsent(t *testing.T) {
 						if c := crashVariantOf(seed).ckpt; k.checkpoints && (!c.On || c.KMin > 8) {
 							t.Skip("this variant writes (almost) no checkpoints")
 						}
-						res, err := runFault(seed, k, at)
+						res, err := boundedCase(t, fmt.Sprintf("%s at seed %d", k.name, seed), func() (faultResult, error) { return runFault(seed, k, at) })
 						switch {
+						case errors.Is(err, errHung):
 						case res.fatal:
 							tally(k.name, "the process ended")
 						case res.failed:
