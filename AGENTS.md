@@ -33,11 +33,12 @@ mise run hooks      # install git hooks
 - Go module path: `github.com/lotannauo/toposhift`. Import grouping: standard library, third party, then this module (enforced by `mise run fmt`).
 - Workflows pin actions to full commit SHAs. Do not replace a SHA with a tag.
 - No secrets in the repository. Secrets come from the environment.
-- Commits are signed. Changes reach `main` through pull requests, squash-merged.
+- Every commit pushed to a branch on GitHub is signed; GitHub refuses unsigned commits on every branch. Changes reach `main` through pull requests, squash-merged.
 - Do not edit git configuration. Do not force-push or skip hooks unless the repository owner asks.
 
 ## Handoff conditions for agents
 
-- Commits are signed with the owner's Touch ID, so an unattended agent cannot sign. Leave changes uncommitted and ask the owner to commit.
+- Commits are signed with the owner's Touch ID, so an unattended agent cannot sign. Lane agents never commit: leave changes uncommitted and ask the owner to commit.
+- Only the owner's main session commits, and only through the owner's landing script. It may make local, unsigned work-in-progress commits that are never pushed; work reaches GitHub only as one signed commit per lane.
 - Never add or remove keys on the GitHub account.
 - Work only in the owner's local checkout: `docs/adr/` is untracked, so a fresh clone cannot see it.
