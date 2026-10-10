@@ -122,7 +122,11 @@ type Record struct {
 	// TTL is how long an observation stays live without a refresh.
 	TTL time.Duration
 	// Through is the last instant a run of identical refreshes was observed, if
-	// the record stands for a run.
+	// the record stands for a run. A translator also sets it, to the
+	// observed time, on an Observe timed before its observation, when the
+	// source guarantees the subject's continuity from the event time (a
+	// Kubernetes object's UID exists continuously from its creation until its
+	// deletion).
 	Through time.Time
 	// Payload is the producer's opaque description. It is empty for a delete.
 	Payload []byte

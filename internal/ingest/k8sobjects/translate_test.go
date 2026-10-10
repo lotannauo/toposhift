@@ -64,14 +64,50 @@ var (
 )
 
 func TestConfig(t *testing.T) {
+	const interval = 5 * time.Minute
 	for name, c := range map[string]k8sobjects.Config{
-		"no producer": {Resolver: resolver()},
-		"no resolver": {Producer: testProducer},
-		"negative":    {Producer: testProducer, Resolver: resolver(), EntityTTL: -time.Second},
+		"no producer":                {Resolver: resolver()},
+		"no resolver":                {Producer: testProducer},
+		"negative":                   {Producer: testProducer, Resolver: resolver(), EntityTTL: -time.Second},
+		"negative pull interval":     {Producer: testProducer, Resolver: resolver(), PullInterval: -time.Second},
+		"negative interval, big TTL": {Producer: testProducer, Resolver: resolver(), PullInterval: -interval, EntityTTL: time.Hour},
+		"TTL just under two":         {Producer: testProducer, Resolver: resolver(), PullInterval: interval, EntityTTL: 9*time.Minute + 59*time.Second},
+		"TTL of one interval":        {Producer: testProducer, Resolver: resolver(), PullInterval: interval, EntityTTL: interval},
+		"interval too long to scale": {Producer: testProducer, Resolver: resolver(), PullInterval: time.Duration(1<<62 + 1)},
 	} {
 		if _, err := k8sobjects.New(c); err == nil {
 			t.Errorf("%s: New returned no error", name)
 		}
+	}
+
+	// The TTL a translator ends up with is the TTL of the records it writes.
+	for _, tc := range []struct {
+		name     string
+		interval time.Duration
+		ttl      time.Duration
+		want     time.Duration
+	}{
+		{"no interval, no TTL: watch semantics", 0, 0, 0},
+		{"no interval: the TTL as given", 0, 15 * time.Minute, 15 * time.Minute},
+		{"no interval: any TTL as given", 0, time.Second, time.Second},
+		{"an interval alone gives three of them", interval, 0, 3 * interval},
+		{"another interval", 7 * time.Minute, 0, 21 * time.Minute},
+		{"exactly two intervals", interval, 10 * time.Minute, 10 * time.Minute},
+		{"more than two intervals", interval, 40 * time.Minute, 40 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, err := k8sobjects.New(k8sobjects.Config{Producer: testProducer, Resolver: resolver(), PullInterval: tc.interval, EntityTTL: tc.ttl})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := only(t, translate(t, tr, pullRec(t0.Add(time.Minute), nodeObject("n-1", node, t0, "1"))))
+			if rec.TTL != tc.want {
+				t.Errorf("TTL = %s, want %s", rec.TTL, tc.want)
+			}
+		})
+	}
+	if k8sobjects.DefaultTTLMultiple != 3 || k8sobjects.MinTTLMultiple != 2 {
+		t.Errorf("multiples are %d and %d, want 3 and 2", k8sobjects.DefaultTTLMultiple, k8sobjects.MinTTLMultiple)
 	}
 }
 
@@ -501,6 +537,9 @@ func TestAmbiguousNodeNameStaysPending(t *testing.T) {
 	if len(r.Records) != 1 || len(r.Pending) != 1 {
 		t.Fatalf("got %d records, %d pending, want the pod and a pending edge", len(r.Records), len(r.Pending))
 	}
+	if got := skips(r)[k8sobjects.SkipAmbiguousNodeName]; got != 1 {
+		t.Errorf("counted %d ambiguous node names, want 1", got)
+	}
 }
 
 func TestContainerWithoutIDIsSkipped(t *testing.T) {
@@ -784,7 +823,8 @@ func TestChangedTimesAndMonotonic(t *testing.T) {
 }
 
 // With a TTL, every pod and node record is an observation with that TTL, so each
-// pull refreshes it; edges and containers have none.
+// pull refreshes it; containers and edges are re-asserted with their pod and carry
+// the same TTL, and a removal has none.
 func TestEntityTTL(t *testing.T) {
 	const ttl = 15 * time.Minute
 	tr := newTranslator(t, ttl)
@@ -802,12 +842,8 @@ func TestEntityTTL(t *testing.T) {
 		t.Fatalf("pod gave %d records (%s), want pod, container, part_of, scheduled_on", len(pr.Records), joinSubjects(pr.Records))
 	}
 	for _, r := range pr.Records {
-		want := time.Duration(0)
-		if r.Subject.Kind == store.SubjectEntity {
-			want = ttl // the pod and its container; the edges have none
-		}
-		if r.TTL != want {
-			t.Errorf("%s TTL = %s, want %s", r.Subject.A.Type(), r.TTL, want)
+		if r.TTL != ttl {
+			t.Errorf("%s TTL = %s, want %s", r.Subject.A.Type(), r.TTL, ttl)
 		}
 	}
 
@@ -817,18 +853,18 @@ func TestEntityTTL(t *testing.T) {
 	at := t0.Add(10 * time.Minute)
 	nr = translate(t, tr, pullRec(at, n2))
 	pr = translate(t, tr, pullRec(at, p.object()))
-	// The pod and its container are refreshed; the edges are not re-asserted.
-	if len(nr.Records) != 1 || len(pr.Records) != 2 {
-		t.Fatalf("refresh gave %d node and %d pod records, want 1 and 2 (pod, container)", len(nr.Records), len(pr.Records))
+	// The pod, its container and both edges are refreshed.
+	if len(nr.Records) != 1 || len(pr.Records) != 4 {
+		t.Fatalf("refresh gave %d node and %d pod records, want 1 and 4 (pod, container, part_of, scheduled_on)", len(nr.Records), len(pr.Records))
 	}
 	for _, rec := range append(nr.Records, pr.Records...) {
-		if rec.Kind != lifecycle.Observe || rec.Subject.Kind != store.SubjectEntity || rec.TTL != ttl || !rec.EventTime.Equal(at) || rec.EventTimeBasis != store.BasisObserved {
-			t.Errorf("refresh = %+v, want an entity observation at the observed time with the TTL", rec)
+		if rec.Kind != lifecycle.Observe || rec.TTL != ttl || !rec.EventTime.Equal(at) || rec.EventTimeBasis != store.BasisObserved || !rec.Through.IsZero() {
+			t.Errorf("refresh = %+v, want an observation at the observed time with the TTL", rec)
 		}
 	}
 	// A watch event that changed nothing is a refresh too.
 	rs := translate(t, tr, watchRec(at.Add(time.Minute), "MODIFIED", p.object())).Records
-	if len(rs) != 2 || rs[0].TTL != ttl || rs[0].EventTimeBasis != store.BasisObserved {
+	if len(rs) != 4 || rs[0].TTL != ttl || rs[0].EventTimeBasis != store.BasisObserved {
 		t.Errorf("unchanged MODIFIED = %v", rs)
 	}
 	// A removal has none.
@@ -850,7 +886,9 @@ func TestPayloadAllowList(t *testing.T) {
 	}
 	n["status"].(map[string]any)["nodeInfo"] = map[string]any{"machineID": "m", "systemUUID": "s", "bootID": "b", "kubeletVersion": "v1"}
 	rec := only(t, translate(t, tr, pullRec(t0.Add(time.Minute), n)))
-	if rec.Boot != "" || rec.Seq != 0 || !rec.Through.IsZero() || rec.Producer != testProducer {
+	// The node was created a minute before it was seen, so the Observe at its
+	// creation carries the observed time as its Through.
+	if rec.Boot != "" || rec.Seq != 0 || !rec.Through.Equal(t0.Add(time.Minute)) || rec.Producer != testProducer {
 		t.Errorf("record envelope = %+v", rec)
 	}
 	want := `{"addresses":[{"address":"kwok-node-2","type":"Hostname"},{"address":"10.0.0.2","type":"InternalIP"}],` +
@@ -876,22 +914,36 @@ func TestPayloadAllowList(t *testing.T) {
 	}
 }
 
+// A record has no Seq and no Boot, and no Through except an Observe timed before
+// its observation, whose Through is the observed time.
 func TestRecordsCarryNoSeqAndTheProducer(t *testing.T) {
-	for _, r := range records(translateAll(t, newTranslator(t, 0), loadCapture(t, "run1.jsonl"))) {
-		if r.Seq != 0 || r.Boot != "" || !r.Through.IsZero() || r.Producer != testProducer || r.TTL != 0 {
-			t.Fatalf("record %+v: want no Seq, Boot or Through, the producer, TTL 0", r)
-		}
-		if r.Kind == lifecycle.Delete && len(r.Payload) != 0 {
-			t.Fatalf("delete with a payload: %+v", r)
-		}
-		if r.EventTimeBasis != store.BasisObjectField && r.EventTimeBasis != store.BasisObserved {
-			t.Fatalf("record %+v: basis must be object field or observed", r)
+	in := loadCapture(t, "run1.jsonl")
+	for i, res := range translateAll(t, newTranslator(t, 0), in) {
+		observed := observedOf(in[i])
+		for _, r := range res.Records {
+			if r.Seq != 0 || r.Boot != "" || r.Producer != testProducer || r.TTL != 0 {
+				t.Fatalf("%s: record %+v: want no Seq or Boot, the producer, TTL 0", in[i].Name, r)
+			}
+			wantThrough := time.Time{}
+			if r.Kind == lifecycle.Observe && r.EventTime.Before(observed) {
+				wantThrough = observed
+			}
+			if !r.Through.Equal(wantThrough) {
+				t.Fatalf("%s: record %+v: Through %s, want %s", in[i].Name, r, r.Through, wantThrough)
+			}
+			if r.Kind == lifecycle.Delete && len(r.Payload) != 0 {
+				t.Fatalf("delete with a payload: %+v", r)
+			}
+			if r.EventTimeBasis != store.BasisObjectField && r.EventTimeBasis != store.BasisObserved {
+				t.Fatalf("record %+v: basis must be object field or observed", r)
+			}
 		}
 	}
 }
 
 // With a TTL, every pod and node record of the fixtures is an observation with
-// it, whether the description changed or not, and nothing else has one.
+// it, whether the description changed or not, and so is every container and edge
+// observation; a Delete has none.
 func TestEntityTTLOnFixtures(t *testing.T) {
 	const ttl = 15 * time.Minute
 	for _, name := range captures {
@@ -907,7 +959,7 @@ func TestEntityTTLOnFixtures(t *testing.T) {
 				if isOwn {
 					own = append(own, rec)
 				}
-				if want := map[bool]time.Duration{true: ttl, false: 0}[isOwn]; rec.TTL != want {
+				if want := map[bool]time.Duration{true: ttl, false: 0}[rec.Kind == lifecycle.Observe]; rec.TTL != want {
 					t.Errorf("%s: record %+v has TTL %s, want %s", in[i].Name, rec.Subject, rec.TTL, want)
 				}
 			}

@@ -93,14 +93,6 @@ func translateAll(t testing.TB, tr *k8sobjects.Translator, in []input) []k8sobje
 	return out
 }
 
-func records(rs []k8sobjects.Result) []store.Record {
-	var out []store.Record
-	for _, r := range rs {
-		out = append(out, r.Records...)
-	}
-	return out
-}
-
 // plainOf decodes a body to plain Go values, for the tests that read the
 // fixtures.
 func plainOf(v capture.AnyValue) any {
@@ -203,6 +195,7 @@ type goldenRecord struct {
 	EventTime string          `json:"event_time"`
 	Basis     string          `json:"basis"`
 	TTL       string          `json:"ttl"`
+	Through   string          `json:"through,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
@@ -250,6 +243,9 @@ func render(t testing.TB, names map[identity.Fingerprint]string, in []input, rs 
 			}
 			if len(rec.Payload) > 0 {
 				g.Payload = json.RawMessage(rec.Payload)
+			}
+			if !rec.Through.IsZero() {
+				g.Through = rec.Through.Format(time.RFC3339Nano)
 			}
 			s.Records = append(s.Records, g)
 		}

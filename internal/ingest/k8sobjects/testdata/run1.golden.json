@@ -9,6 +9,7 @@
     "event_time": "2026-10-09T16:31:53Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1837135Z",
     "payload": {
      "addresses": [
       {
@@ -66,6 +67,7 @@
     "event_time": "2026-10-09T16:31:53Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1837135Z",
     "payload": {
      "addresses": [
       {
@@ -123,6 +125,7 @@
     "event_time": "2026-10-09T16:32:08Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1936416Z",
     "payload": {
      "conditions": [
       {
@@ -179,6 +182,7 @@
     "event_time": "2026-10-09T16:32:08Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1936416Z",
     "payload": {
      "node_name": "kwok-node-4",
      "resolution": {
@@ -202,6 +206,7 @@
     "event_time": "2026-10-09T16:32:08Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1936416Z",
     "payload": {
      "conditions": [
       {
@@ -270,6 +275,7 @@
     "event_time": "2026-10-09T16:32:08Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1936416Z",
     "payload": {
      "conditions": [
       {
@@ -326,6 +332,7 @@
     "event_time": "2026-10-09T16:32:08Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:32:54.1936416Z",
     "payload": {
      "node_name": "kwok-node-2",
      "resolution": {
@@ -356,6 +363,7 @@
     "event_time": "2026-10-09T16:34:24Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:34:24.483424039Z",
     "payload": {
      "name": "db-0",
      "namespace": "default",
@@ -385,6 +393,7 @@
     "event_time": "2026-10-09T16:34:24Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:34:24.732702658Z",
     "payload": {
      "conditions": [
       {
@@ -447,6 +456,7 @@
     "event_time": "2026-10-09T16:34:55Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:34:55.26476726Z",
     "payload": {
      "name": "pre-5984778487-sbt4s",
      "namespace": "default",
@@ -469,6 +479,7 @@
     "event_time": "2026-10-09T16:34:55Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:34:55.353199151Z",
     "payload": {
      "conditions": [
       {
@@ -502,6 +513,7 @@
     "event_time": "2026-10-09T16:34:55Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:36:24.95308785Z",
     "payload": {
      "conditions": [
       {
@@ -728,6 +740,7 @@
     "event_time": "2026-10-09T16:41:12Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:41:12.2551317Z",
     "payload": {
      "conditions": [
       {
@@ -819,6 +832,7 @@
     "event_time": "2026-10-09T16:41:25Z",
     "basis": "object_field",
     "ttl": "0s",
+    "through": "2026-10-09T16:41:25.683255081Z",
     "payload": {
      "labels": {
       "kubernetes.io/hostname": "kwok-node-2"
