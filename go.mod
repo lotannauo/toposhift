@@ -7,6 +7,9 @@ tool golang.org/x/vuln/cmd/govulncheck
 require (
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/cockroachdb/pebble/v2 v2.1.7
+	go.opentelemetry.io/proto/otlp v1.11.0
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a
+	google.golang.org/protobuf v1.36.12
 	pgregory.net/rapid v1.3.0
 )
 
@@ -53,6 +56,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	golang.org/x/vuln v1.8.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
 )
