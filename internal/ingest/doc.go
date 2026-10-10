@@ -19,4 +19,6 @@
 //     as an http.Handler with no gRPC in the build.
 //   - k8sobjects translates the records of the Kubernetes objects receiver: watch
 //     events and list items for pods and nodes.
+//   - k8scluster translates the entity events of the Kubernetes cluster receiver
+//     into records of nodes, pods and containers and their edges.
 package ingest

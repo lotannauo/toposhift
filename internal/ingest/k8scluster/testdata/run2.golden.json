@@ -1,0 +1,895 @@
+[
+ {
+  "input": "run2.jsonl:1 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:43:56.837144003Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:43:56.837144003Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ],
+  "notes": [
+   "description key dropped: k8s.node.label.beta.kubernetes.io/arch (x1)",
+   "description key dropped: k8s.node.label.beta.kubernetes.io/os (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/arch (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/hostname (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/os (x1)",
+   "description key dropped: k8s.node.label.type (x1)"
+  ]
+ },
+ {
+  "input": "run2.jsonl:2 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:43:56.837387837Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:25Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:43:56.837387837Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:3 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:43:56.837532588Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:43:56.837532588Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:4 entity.state k8s.namespace fda3fdb1",
+  "instant": "2026-10-09T16:43:56.837738839Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  },
+  "namespaces": [
+   {
+    "uid": "fda3fdb1-aad3-4032-9234-f453858da7d5",
+    "at": "2026-10-09T16:43:56.837738839Z",
+    "interval": "1m0s",
+    "alive_until": "2026-10-09T16:46:56.837738839Z"
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:5 entity.state k8s.pod 1f037c43",
+  "instant": "2026-10-09T16:43:56.837938132Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-6xxvb 1f037c43",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:43:56.837938132Z",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-2",
+     "k8s.pod.name": "pre-5984778487-6xxvb",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:43:56Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-6xxvb 1f037c43 -\u003e node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56.837938132Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:41:25Z"
+     }
+    }
+   }
+  ],
+  "notes": [
+   "description key dropped: k8s.deployment.uid (x1)",
+   "description key dropped: k8s.pod.label.app (x1)",
+   "description key dropped: k8s.pod.label.pod-template-hash (x1)",
+   "description key dropped: k8s.replicaset.uid (x1)",
+   "description key dropped: k8s.service.kubernetes (x1)"
+  ]
+ },
+ {
+  "input": "run2.jsonl:5 entity.state container ",
+  "instant": "2026-10-09T16:43:56.837938132Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:6 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:44:56.739758306Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:44:56.739758306Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:7 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:44:56.741005771Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:44:56.741005771Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:8 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:44:56.741080688Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:44:56.741080688Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:9 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:45:56.749379123Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:45:56.749379123Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:10 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:45:56.751970929Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:45:56.751970929Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:11 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:45:56.752169847Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:45:56.752169847Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:12 entity.delete k8s.statefulset bf011e05",
+  "instant": "2026-10-09T16:45:56.771225497Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:13 entity.delete k8s.pod 16414d46",
+  "instant": "2026-10-09T16:45:56.79843382Z",
+  "records": [
+   {
+    "subject": "pod 16414d46",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.79843382Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ],
+  "skipped": {
+   "delete of an unseen entity: its edge is not addressed": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:13 entity.delete container ",
+  "instant": "2026-10-09T16:45:56.79843382Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:14 entity.delete k8s.deployment 746d8f2a",
+  "instant": "2026-10-09T16:45:56.813020653Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:15 entity.delete k8s.replicaset 4f98dd5e",
+  "instant": "2026-10-09T16:45:56.817588346Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:16 entity.delete k8s.pod 1f037c43",
+  "instant": "2026-10-09T16:45:56.910810004Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-6xxvb 1f037c43 -\u003e node kwok-node-2 4edef4ef",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.910810004Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-6xxvb 1f037c43",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.910810004Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:16 entity.delete container ",
+  "instant": "2026-10-09T16:45:56.910810004Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run2.jsonl:17 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:46:56.741580774Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:46:56.741580774Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:18 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:46:56.74235632Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:46:56.74235632Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:19 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:46:56.742867114Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:46:56.742867114Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:20 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:47:56.779028766Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:47:56.779028766Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:21 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:47:56.78544947Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:47:56.78544947Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:22 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:47:56.785601971Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:47:56.785601971Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:23 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:48:56.775405872Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:48:56.775405872Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:24 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:48:56.775513498Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:48:56.775513498Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:25 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:48:56.775579957Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:48:56.775579957Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:26 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:49:56.776399208Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:49:56.776399208Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:27 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:49:56.777145295Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:49:56.777145295Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:28 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:49:56.777522048Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:49:56.777522048Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:29 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:50:56.776998707Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:50:56.776998707Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:30 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:50:56.777603127Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:50:56.777603127Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:31 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:50:56.777839129Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:50:56.777839129Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:32 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:51:26.363675649Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:51:26.363675649Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:33 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:51:56.779799576Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:51:56.779799576Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:34 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:51:56.779956993Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:51:56.779956993Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:35 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:51:56.780194578Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:51:56.780194578Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:36 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:51:58.753401087Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:51:58.753401087Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:37 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:52:02.634104484Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:52:02.634104484Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:38 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:52:56.779582015Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:52:56.779582015Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:39 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:52:56.78039677Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:52:56.78039677Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:40 entity.delete k8s.node 36ee1190",
+  "instant": "2026-10-09T16:52:56.908068238Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:52:56.908068238Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:41 entity.delete k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:52:56.995968857Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:52:56.995968857Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:42 entity.delete k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:52:57.082358217Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:52:57.082358217Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ }
+]
