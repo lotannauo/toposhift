@@ -395,6 +395,7 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 			Mode:    "background",
 			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
 			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
+			Outside: runner.GateBatches{Batches: 1, Records: 10, Commit: h}, // a control of 1 ms
 			WriteNs: 10e9,
 		}
 	}
@@ -460,5 +461,51 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 	writeGateBuild(t, root, "Lroot/off", background(time.Second), 0)
 	if code, text := run(root); code != 1 || !strings.Contains(text, "OVER") {
 		t.Errorf("a limit exceeded: status %d\n%s", code, text)
+	}
+}
+
+// A build whose only row that is not judged is Q1, because its control is too high for
+// the limit to tell a wait from the machine's noise, still ends the run with the status
+// for a row that should have been judged: a run is not a pass for having judged the rest.
+func TestStoreGateExitsTwoWhenOnlyQ1IsWithheldByItsControl(t *testing.T) {
+	t.Parallel()
+
+	ms := time.Millisecond
+	const day = int64(24 * time.Hour)
+	build := func(inside, control time.Duration) *runner.GateTrace {
+		var in, out runner.Histogram
+		in.Add(inside)
+		out.Add(control)
+		return &runner.GateTrace{
+			Mode:    "background",
+			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
+			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
+			Outside: runner.GateBatches{Batches: 1, Records: 4_000_000, Commit: out},
+			WriteNs: 1000e9, KeepNs: 30 * day, PeakRSS: 1 << 30,
+		}
+	}
+	for _, c := range []struct {
+		name            string
+		inside, control time.Duration
+		code            int
+	}{
+		{"within the limit, a high control", 100 * ms, 300 * ms, 0},
+		{"over the limit, a low control", 400 * ms, 100 * ms, 1},
+		{"over the limit, a high control", 400 * ms, 300 * ms, 2},
+	} {
+		root := t.TempDir()
+		writeGateBuild(t, root, "Lroot/off", build(40*ms, 10*ms), 1<<30)
+		writeGateBuild(t, root, "Lroot/k64a2l1ns", build(c.inside, c.control), 1<<30)
+		var out, errOut strings.Builder
+		err := runStoreGate([]string{root}, &out, &errOut)
+		if exitCode(err) != c.code {
+			t.Errorf("%s: status %d (%v), want %d\n%s", c.name, exitCode(err), err, c.code, out.String())
+		}
+		if c.code == 2 {
+			_, notJudged, _ := strings.Cut(out.String(), "NOT JUDGED:")
+			if lines := strings.Count(strings.TrimSpace(notJudged), "\n") + 1; lines != 1 || !strings.Contains(notJudged, "Q1") || !strings.Contains(notJudged, "control 300ms above 150ms") {
+				t.Errorf("%s: what was not judged is %q, want Q1 alone, naming the control", c.name, notJudged)
+			}
+		}
 	}
 }

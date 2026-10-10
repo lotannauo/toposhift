@@ -396,7 +396,7 @@ during a synchronous settle.
 
 | Row | Limit |
 | --- | --- |
-| Q1 | The longest batch inside a window takes at most 250 ms; the longest outside every window is printed beside it as the control, with the largest `retain.max_prefix_records` and `retain.chunk_hold_ns` of the build and the sum of `retain.touch_rewrites` (not recorded by this store). |
+| Q1 | The longest batch inside a window takes at most 250 ms. The longest outside every window and settle is printed beside it as the control; a build over 250 ms with a control above 150 ms, or with no control, is not judged (rerun it), and a control never prevents a pass. The largest `retain.max_prefix_records` and `retain.chunk_hold_ns` of the build and the sum of `retain.touch_rewrites` (not recorded by this store) are reported with it. |
 | Q2 | The 99th percentile of a batch's commit inside windows is at most the larger of twice the same outside windows and 50 ms. A histogram bucket is within an eighth of the value it holds, so the inside is read at the top of its bucket and the outside at the bottom of its: neither reading lets a batch pass that the true values would not (and a value within an eighth under the limit may be refused). |
 | Q3 | With 30 days kept, the longest rewrite (publication to the end of the rewrite, not of the settle nor the return of the call) takes at most 2 h, at a load outside windows of at least 3000 records/s. The load is printed; a build below it, or one that keeps fewer than 30 days, shows its figure and is not judged. The tombstones after the settle are reported, not judged. |
 | Q4 | The records of the batches inside windows over the windows' total time plus the time of those batches that lies outside the windows are at least 3000 records/s (a big batch over a short window is not a quick writer). |
@@ -425,7 +425,7 @@ Exit status of `storegate`:
 | --- | --- |
 | 0 | Nothing is over a limit, and every row the builds' mode has something to judge was judged. Rows that cannot be judged by construction (Q1, Q2 and Q4 of a synchronous retention) do not count against it. |
 | 1 | A row is over its limit (this wins when rows are also not judged). |
-| 2 | A row that the builds' mode should judge was not judged (synchronous: Q3 and both Q5 rows; background: all six): a run in which nothing could be judged is never a pass. A local build that keeps fewer than 30 days, or has no heap samples, ends with 2 though its report is complete. |
+| 2 | A row that the builds' mode should judge was not judged (synchronous: Q3 and both Q5 rows; background: all six; Q1 withheld by its control counts): a run in which nothing could be judged is never a pass. A local build that keeps fewer than 30 days, or has no heap samples, ends with 2 though its report is complete. |
 | 3 | An error: no build was given, a flag is unknown, or a build could not be read. Nothing is judged, and it is not taken for a verdict. |
 
 ### Adding a candidate

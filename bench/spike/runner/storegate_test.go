@@ -119,9 +119,9 @@ func TestAStoreWithinEveryLimitPassesEveryRow(t *testing.T) {
 }
 
 // Q1 is the longest batch inside a window, at most 250 ms: at the limit it passes and
-// a nanosecond over it does not, and the longest batch outside the windows is shown as
-// the control (a verdict that dropped it would show the store's slowness without what
-// the machine does anyway).
+// a nanosecond over it does not, and the longest batch outside every window and settle
+// is shown as the control (a verdict that dropped it would show the store's slowness
+// without what the machine does anyway).
 func TestQ1IsTheLongestBatchInsideAWindowWithTheControl(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +147,63 @@ func TestQ1IsTheLongestBatchInsideAWindowWithTheControl(t *testing.T) {
 		}
 		if !strings.Contains(r.Limit, "250ms") {
 			t.Errorf("limit %q", r.Limit)
+		}
+	}
+}
+
+// A build over 250 ms is over the limit only if its control, the longest batch outside
+// every window and settle, is at most 150 ms: with a higher control, or none, Q1 is not
+// judged, and says why. The control never prevents a pass and never relaxes the limit.
+// The cases are numbered as the decision lists them, so that each mutant of the rule is
+// caught by a case of its own: a control ignored (5, 7), a control that relaxes the limit
+// (9), >= against 150 ms (4), a high control that withholds a pass (6), a missing control
+// taken for zero (7), < against 250 ms (1).
+func TestQ1IsOverOnlyWhereItsControlLeavesRoomToTellNoiseFromAWait(t *testing.T) {
+	t.Parallel()
+
+	const none = time.Duration(-1) // no batch outside every window and settle
+	ms := time.Millisecond
+	for _, c := range []struct {
+		n       int
+		inside  time.Duration
+		control time.Duration
+		want    string
+		reason  string // what the list of what was not judged says, "" for nothing about Q1
+	}{
+		{1, 250 * ms, 90 * ms, runner.GateOK, ""},
+		{2, 250*ms - 1, 90 * ms, runner.GateOK, ""},
+		{3, 250*ms + 1, 90 * ms, runner.GateOver, ""},
+		{4, 270 * ms, 150 * ms, runner.GateOver, ""},
+		{5, 270 * ms, 150*ms + 1, runner.GateNotJudged, "control 150.000001ms above 150ms"},
+		{6, 240 * ms, 180 * ms, runner.GateOK, ""},
+		{7, 270 * ms, none, runner.GateNotJudged, "no batch outside every window and settle"},
+		{8, 240 * ms, none, runner.GateOK, ""},
+		{9, 380 * ms, 300 * ms, runner.GateNotJudged, "control 300ms above 150ms"},
+	} {
+		b := synth("Lroot/k64a2l1ns", trace(func(g *runner.GateTrace) {
+			g.Inside.Commit = histOf(10*ms, c.inside)
+			if c.control == none {
+				g.Outside = runner.GateBatches{}
+			} else {
+				g.Outside.Commit = histOf(7*ms, c.control)
+			}
+		}))
+		rep := runner.JudgeStoreGate([]*runner.StoreGateBuild{b})
+		r := find(t, rep, "Lroot/k64a2l1ns", "Q1")
+		if r.State != c.want {
+			t.Errorf("case %d: inside %s, control %s: %+v, want %s", c.n, c.inside, c.control, r, c.want)
+		}
+		if !strings.Contains(r.Limit, "250ms") || !strings.Contains(r.Value, "control") {
+			t.Errorf("case %d: the row %+v does not show the limit and the control", c.n, r)
+		}
+		listed := ""
+		for _, s := range rep.NotJudged {
+			if strings.Contains(s, "Q1") {
+				listed = s
+			}
+		}
+		if (c.reason == "") != (listed == "") || !strings.Contains(listed, c.reason) {
+			t.Errorf("case %d: the list of what was not judged has %q for Q1, want it to say %q", c.n, listed, c.reason)
 		}
 	}
 }
@@ -534,6 +591,8 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 	for _, want := range []string{
 		"store gate rules 1\n",
 		"at most 250ms",
+		"A build over that limit is over it only if its control is at most 150ms; with a control above 150ms, or no batch outside every window and every settle, Q1 is not judged for the build, with the control in the reason,",
+		"A control never prevents a pass.",
 		"max(2x the same outside windows and settles, read as the lower bound of its bucket, 50ms)",
 		"with 30 days kept, the longest rewrite (from the publication to the end of the rewrite) is at most 2h0m0s, at a load outside windows of at least 3000 records/s",
 		"are at least 3000 records/s",
@@ -551,7 +610,10 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 			t.Errorf("the rules text lacks %q:\n%s", want, text)
 		}
 	}
-	const pinned = "014496b454e822c11c5b2791fc61a355d5dc4655c81de57a2364c4b67776d6f2"
+	if runner.StoreGateRulesVersion != 1 {
+		t.Errorf("the rules version is %d: the text was revised before any build was judged, and the version stays 1", runner.StoreGateRulesVersion)
+	}
+	const pinned = "27e767cf66a5418ffdedbeafa202769ec1fbf4f35a19602816040b868bb46311"
 	if got := runner.StoreGateRulesDigest(); got != pinned {
 		t.Errorf("the digest of the rules text is %s, pinned %s: a limit or a word of the rules changed, which is a decision and not a fix of a test\n%s", got, pinned, text)
 	}

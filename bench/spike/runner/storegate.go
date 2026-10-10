@@ -30,10 +30,31 @@ import (
 
 // The limits of the store gate. Q1 to Q5 are fixed before anything is measured.
 const (
+	// Log (2026-10-10, before any build was judged by the gate): the text was revised
+	// before it was first merged and before any measurement. Q2 reads the 99th
+	// percentile inside at the top of its histogram bucket and the one outside at the
+	// bottom; MB and GB are decimal; a batch that overlaps a settle and no window is
+	// counted apart from the inside and the outside; Q4 divides by the time of the
+	// inside batches outside the windows too; the Lroot/off baseline must be judgeable
+	// and built with the same GOGC, GOMEMLIMIT and metrics interval. No result exists
+	// under the earlier text, so the version stays 1.
+	//
+	// Log (2026-10-10, before any build was judged by the gate): Q1 also uses its
+	// control. A build over 250ms is over the limit only when its control, the longest
+	// batch outside every window and every settle, is at most 150ms; with a higher
+	// control, or none, Q1 is not judged. A control never prevents a pass, and the
+	// 250ms limit is unchanged. The version stays 1.
+
 	// StoreGateRulesVersion is the version of the gate's rules text.
 	StoreGateRulesVersion = 1
 	// StoreGateQ1MaxWait is the most the longest batch inside a retention window may take.
 	StoreGateQ1MaxWait = 250 * time.Millisecond
+	// StoreGateQ1NoiseCeiling is the most the control, the longest batch outside every
+	// window and every settle, may take for a build over StoreGateQ1MaxWait to be over
+	// it: above it the machine's own longest batch leaves too little of the limit to tell
+	// a retention's wait from its noise, and Q1 is not judged. A control never prevents
+	// a pass.
+	StoreGateQ1NoiseCeiling = 150 * time.Millisecond
 	// StoreGateQ2Factor and StoreGateQ2Floor make the limit of the 99th percentile of a
 	// batch's commit inside windows: the factor times the same outside windows, or the
 	// floor if that is more.
@@ -60,12 +81,12 @@ const (
 func StoreGateRulesText() string {
 	return fmt.Sprintf(`store gate rules %d
 window: from a retention's publication to the end of its rewrite; a batch that overlaps it, its first and last instants included, is inside; the settle runs from the end of the rewrite to its own end, and a batch that overlaps it and no window is settling: it is counted in neither the inside nor the outside (so not in the control, and not in Q2's baseline) and its longest and 99th percentile are reported
-Q1: the longest batch inside a window is at most %s; the longest batch outside every window and every settle is reported as the control
+Q1: the longest batch inside a window is at most %s; the longest batch outside every window and every settle is reported as the control. A build over that limit is over it only if its control is at most %s; with a control above %s, or no batch outside every window and every settle, Q1 is not judged for the build, with the control in the reason, because the machine's own longest batch then leaves too little of the limit to tell a retention's wait from its noise. A control never prevents a pass.
 Q2: the 99th percentile of a batch's commit inside windows, read as the upper bound of its histogram bucket, is at most max(%dx the same outside windows and settles, read as the lower bound of its bucket, %s)
 Q3: with %d days kept, the longest rewrite (from the publication to the end of the rewrite) is at most %s, at a load outside windows of at least %d records/s; a build below that load is not judged
 Q4: the records of the batches inside windows over the windows' total time plus the time of those batches outside the windows are at least %d records/s
 Q5: the peak live heap is at most that of Lroot/off on the same plan plus %d MB, both built with the same GOGC, GOMEMLIMIT and metrics interval; the peak resident set of the build process is at most %d GB; MB and GB are 10^6 and 10^9 bytes
-`, StoreGateRulesVersion, StoreGateQ1MaxWait, StoreGateQ2Factor, StoreGateQ2Floor,
+`, StoreGateRulesVersion, StoreGateQ1MaxWait, StoreGateQ1NoiseCeiling, StoreGateQ1NoiseCeiling, StoreGateQ2Factor, StoreGateQ2Floor,
 		StoreGateQ3KeepDays, StoreGateQ3Max, StoreGateRate, StoreGateRate,
 		StoreGateQ5HeapMargin/1_000_000, int64(StoreGateRSSCeiling)/1_000_000_000)
 }
@@ -653,14 +674,25 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 	rows[gateQ1] = gateRow{build: b, judged: noInside == "", reason: noInside}
 	if noInside == "" {
 		v := t.Inside.Commit.MaxNs
-		control := "none"
-		if t.Outside.Batches > 0 {
-			control = fmtDur(t.Outside.Commit.MaxNs)
+		control, hasControl, ctl := "none", t.Outside.Batches > 0, t.Outside.Commit.MaxNs
+		if hasControl {
+			control = fmtDur(ctl)
 		}
 		rows[gateQ1].value = fmt.Sprintf("%s (control, longest outside windows: %s)", fmtDur(v), control)
 		rows[gateQ1].limit = StoreGateQ1MaxWait.String()
 		rows[gateQ1].pass = v <= int64(StoreGateQ1MaxWait)
 		rows[gateQ1].margin = float64(v) / float64(StoreGateQ1MaxWait)
+		// Over the limit, a build is over it only if the machine's own longest batch
+		// leaves enough of the limit to tell a retention's wait from its noise. The
+		// control never prevents a pass and never relaxes the limit.
+		if !rows[gateQ1].pass {
+			switch {
+			case !hasControl:
+				ni(gateQ1, "no batch outside every window and settle: without the control a wait over the limit cannot be told from the machine's noise (rerun it)")
+			case ctl > int64(StoreGateQ1NoiseCeiling):
+				ni(gateQ1, fmt.Sprintf("control %s above %s: the machine's own longest batch leaves too little of the limit to judge by (rerun it)", time.Duration(ctl), StoreGateQ1NoiseCeiling))
+			}
+		}
 	}
 
 	// Q2: the 99th percentile inside against twice the one outside, or the floor.
