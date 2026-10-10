@@ -1,0 +1,777 @@
+[
+ {
+  "input": "run1.jsonl:1 entity.state k8s.node 36ee1190",
+  "instant": "2026-10-09T16:32:54.304684247Z",
+  "records": [
+   {
+    "subject": "node kwok-node-0 36ee1190",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.304684247Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-0",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ],
+  "notes": [
+   "description key dropped: k8s.node.label.beta.kubernetes.io/arch (x1)",
+   "description key dropped: k8s.node.label.beta.kubernetes.io/os (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/arch (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/hostname (x1)",
+   "description key dropped: k8s.node.label.kubernetes.io/os (x1)",
+   "description key dropped: k8s.node.label.type (x1)"
+  ]
+ },
+ {
+  "input": "run1.jsonl:2 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:32:54.30495029Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.30495029Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:3 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:32:54.305126458Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.305126458Z",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:4 entity.state k8s.deployment 746d8f2a",
+  "instant": "2026-10-09T16:32:54.305185958Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:5 entity.state k8s.service cdf1decc",
+  "instant": "2026-10-09T16:32:54.305261375Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:6 entity.state k8s.namespace ecd00ad7",
+  "instant": "2026-10-09T16:32:54.306008588Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:7 entity.state k8s.namespace fda3fdb1",
+  "instant": "2026-10-09T16:32:54.306184381Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  },
+  "namespaces": [
+   {
+    "uid": "fda3fdb1-aad3-4032-9234-f453858da7d5",
+    "at": "2026-10-09T16:32:54.306184381Z",
+    "interval": "1m0s",
+    "alive_until": "2026-10-09T16:35:54.306184381Z"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:8 entity.state k8s.replicaset 4f98dd5e",
+  "instant": "2026-10-09T16:32:54.309081022Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:9 entity.state k8s.pod 9ab1d6d5",
+  "instant": "2026-10-09T16:32:54.309109689Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-262tj 9ab1d6d5",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.309109689Z",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-4",
+     "k8s.pod.name": "pre-5984778487-262tj",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:32:08Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-262tj 9ab1d6d5 -\u003e node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.309109689Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-4",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ],
+  "notes": [
+   "description key dropped: k8s.deployment.uid (x1)",
+   "description key dropped: k8s.pod.label.app (x1)",
+   "description key dropped: k8s.pod.label.pod-template-hash (x1)",
+   "description key dropped: k8s.replicaset.uid (x1)",
+   "description key dropped: k8s.service.kubernetes (x1)"
+  ]
+ },
+ {
+  "input": "run1.jsonl:9 entity.state container ",
+  "instant": "2026-10-09T16:32:54.309109689Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:10 entity.state k8s.pod 4a9d1695",
+  "instant": "2026-10-09T16:32:54.309226482Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-42s2c 4a9d1695",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.309226482Z",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-4",
+     "k8s.pod.name": "pre-5984778487-42s2c",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:32:08Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-42s2c 4a9d1695 -\u003e node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.309226482Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-4",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:10 entity.state container ",
+  "instant": "2026-10-09T16:32:54.309226482Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:11 entity.state k8s.pod c5ad95aa",
+  "instant": "2026-10-09T16:32:54.310812116Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-wr85m c5ad95aa",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:32:54.310812116Z",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-2",
+     "k8s.pod.name": "pre-5984778487-wr85m",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:32:08Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-wr85m c5ad95aa -\u003e node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.310812116Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:11 entity.state container ",
+  "instant": "2026-10-09T16:32:54.310812116Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:12 entity.state k8s.node 70f60f5f",
+  "instant": "2026-10-09T16:33:54.207472444Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:33:54.207472444Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-4",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:13 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:33:54.217519378Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:33:54.217519378Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:14 entity.state k8s.pod 9ab1d6d5",
+  "instant": "2026-10-09T16:33:54.21940143Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-262tj 9ab1d6d5",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:33:54.21940143Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-4",
+     "k8s.pod.name": "pre-5984778487-262tj",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:32:08Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-262tj 9ab1d6d5 -\u003e node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:33:54.21940143Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-4",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:14 entity.state container ",
+  "instant": "2026-10-09T16:33:54.21940143Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:15 entity.state k8s.statefulset bf011e05",
+  "instant": "2026-10-09T16:34:24.317429988Z",
+  "skipped": {
+   "entity type not in the catalog": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:16 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:34:54.229548062Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:54.229548062Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:17 entity.state k8s.pod a19305d2",
+  "instant": "2026-10-09T16:34:55.62973247Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-nnsrv a19305d2",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:34:55.62973247Z",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "",
+     "k8s.pod.name": "pre-5984778487-nnsrv",
+     "k8s.pod.phase": "Pending",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:34:55Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:18 entity.state k8s.pod a19305d2",
+  "instant": "2026-10-09T16:34:55.682317735Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-nnsrv a19305d2",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55.682317735Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-2",
+     "k8s.pod.name": "pre-5984778487-nnsrv",
+     "k8s.pod.phase": "Pending",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:34:55Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-nnsrv a19305d2 -\u003e node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55.682317735Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:19 entity.state k8s.pod a19305d2",
+  "instant": "2026-10-09T16:34:55.682938613Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-nnsrv a19305d2",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55.682938613Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-2",
+     "k8s.pod.name": "pre-5984778487-nnsrv",
+     "k8s.pod.phase": "Running",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:34:55Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-nnsrv a19305d2 -\u003e node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55.682938613Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:19 entity.state container ",
+  "instant": "2026-10-09T16:34:55.682938613Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:20 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:35:54.225537531Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:35:54.225537531Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:21 entity.delete k8s.pod a19305d2",
+  "instant": "2026-10-09T16:36:24.973124508Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-nnsrv a19305d2 -\u003e node kwok-node-2 f41e8e62",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:24.973124508Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-nnsrv a19305d2",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:24.973124508Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:21 entity.delete container ",
+  "instant": "2026-10-09T16:36:24.973124508Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:22 entity.delete k8s.pod 9ab1d6d5",
+  "instant": "2026-10-09T16:36:24.995380305Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-262tj 9ab1d6d5 -\u003e node kwok-node-4 70f60f5f",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:24.995380305Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-262tj 9ab1d6d5",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:24.995380305Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:22 entity.delete container ",
+  "instant": "2026-10-09T16:36:24.995380305Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:23 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:36:54.216896813Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:36:54.216896813Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:24 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:37:54.216678517Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:37:54.216678517Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:25 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:38:54.224604194Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:38:54.224604194Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:26 entity.state k8s.node f41e8e62",
+  "instant": "2026-10-09T16:39:54.219016202Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:39:54.219016202Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.condition_disk_pressure": "false",
+     "k8s.node.condition_memory_pressure": "false",
+     "k8s.node.condition_network_unavailable": "false",
+     "k8s.node.condition_pid_pressure": "false",
+     "k8s.node.condition_ready": "true",
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:31:53Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:27 entity.delete k8s.node f41e8e62",
+  "instant": "2026-10-09T16:40:25.593055122Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:40:25.593055122Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:28 entity.state k8s.pod c5ad95aa",
+  "instant": "2026-10-09T16:41:12.263645106Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-wr85m c5ad95aa",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:12.263645106Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.deployment.name": "pre",
+     "k8s.namespace.name": "default",
+     "k8s.node.name": "kwok-node-2",
+     "k8s.pod.name": "pre-5984778487-wr85m",
+     "k8s.pod.phase": "Failed",
+     "k8s.replicaset.name": "pre-5984778487",
+     "k8s.workload.kind": "Deployment",
+     "k8s.workload.name": "pre",
+     "pod.creation_timestamp": "2026-10-09T16:32:08Z"
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-wr85m c5ad95aa -\u003e node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:12.263645106Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:28 entity.state container ",
+  "instant": "2026-10-09T16:41:12.263645106Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:29 entity.delete k8s.pod c5ad95aa",
+  "instant": "2026-10-09T16:41:12.267604579Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-wr85m c5ad95aa -\u003e node kwok-node-2 f41e8e62",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:41:12.267604579Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-wr85m c5ad95aa",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:41:12.267604579Z",
+    "basis": "producer_event",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:29 entity.delete container ",
+  "instant": "2026-10-09T16:41:12.267604579Z",
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:30 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:41:25.682415661Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:25Z",
+    "basis": "object_field",
+    "ttl": "3m0s",
+    "through": "2026-10-09T16:41:25.682415661Z",
+    "payload": {
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:31 entity.state k8s.node 4edef4ef",
+  "instant": "2026-10-09T16:41:25.705552245Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:25.705552245Z",
+    "basis": "producer_event",
+    "ttl": "3m0s",
+    "payload": {
+     "k8s.node.name": "kwok-node-2",
+     "node.creation_timestamp": "2026-10-09T16:41:25Z"
+    }
+   }
+  ]
+ }
+]
