@@ -1,4 +1,4 @@
-# Git hooks are a convenience. CI runs the same checks and is the enforcement.
+# Git hooks are a convenience. CI runs these checks and more, and is the enforcement.
 # Install with: mise run hooks
 #
 # Hooks run outside an interactive shell, where mise's tools are not on PATH,
@@ -16,12 +16,12 @@ pre-commit:
       glob: "*.go"
       run: mise exec -- golangci-lint fmt --diff && cd bench && mise exec -- golangci-lint fmt --diff
 
-# Everything CI runs on a pull request, before a push. go test reuses the result
-# of every package that has not changed since it last passed, so after a passing
-# mise run ci this takes a few seconds; after a change it costs what the change
-# reaches (a minute for one that reaches every Pebble package). It checks the
-# working tree, which can hold changes the pushed commits do not.
+# The push runs the quick check that the edit loop uses; the full CI runs on the
+# pull request. go test reuses the result of every package that has not changed
+# since it last passed, so after a passing mise run check this takes seconds;
+# after a change it costs what the change reaches. It checks the working tree,
+# which can hold changes the pushed commits do not.
 pre-push:
   commands:
-    ci:
-      run: mise run ci
+    check:
+      run: mise run check
