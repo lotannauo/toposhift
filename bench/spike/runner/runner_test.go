@@ -1480,7 +1480,7 @@ func TestFilesKeepTheirFields(t *testing.T) {
 		"Query":        {runner.Query{}, "Group,Rank,Op,Layer,Dir,Fps,Age,At,From,To,AsOf,Expect,Size"},
 		"Stream":       {runner.StreamInfo{}, "Digest,Records,Dropped,LastSeq,PayloadBytes,Retentions,TokenFloor,OldToken,OldAt,Start,End,Horizon"},
 		"Group":        {runner.GroupInfo{}, "Group,Age,Queries,NonEmpty"},
-		"Manifest":     {runner.Manifest{}, "Candidate,Layout,PlanDigest,Stream,Build,Untimed,Describe,Counters,StatsBuilt,StatsCompacted,Breakdown,SizeByLayer,Size,Timing,Uncompacted,UncompactedWrong"},
+		"Manifest":     {runner.Manifest{}, "Candidate,Layout,PlanDigest,Stream,Build,Untimed,Describe,Counters,StatsBuilt,StatsCompacted,Breakdown,SizeByLayer,Size,Timing,Uncompacted,UncompactedWrong,Gate"},
 		"Timing":       {runner.Timing{}, "Writes,AfterRetention,Retains,PostRetention,RetainPhases"},
 		"Retain phase": {runner.RetainPhase{}, "Work,Flush,Settle,DeadlineHit"},
 		"Results":      {runner.Results{}, "Candidate,PlanDigest,ManifestDigest,Build,Untimed,Describe,Queries,Mismatches,Unstable,StatsBefore,StatsAfter"},

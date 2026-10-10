@@ -386,3 +386,41 @@ func TestWrapIsNotACandidate(t *testing.T) {
 	}
 	_ = again.Close()
 }
+
+// The retention mode reaches the variants built through the root store and no other:
+// they open in no mode and in sync, and refuse background (which the store does not
+// have) and anything else, saying so; every other variant ignores it.
+func TestTheRetentionModeIsTheRootVariantsOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"Lroot/off", "Lroot/k64a2l1ns", "L/off", "M/default"} {
+		v, err := candidates.Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := v.Root(), strings.HasPrefix(name, "Lroot/"); got != want {
+			t.Errorf("%s: Root() is %v, want %v", name, got, want)
+		}
+		for _, mode := range []string{"", candidates.RetentionSync, candidates.RetentionBackground, "async"} {
+			e, err := v.Open("db", candidates.Options{FS: vfs.NewMem(), RetentionMode: mode})
+			refused := mode == candidates.RetentionBackground || mode == "async"
+			switch {
+			case v.Root() && refused:
+				if err == nil {
+					_ = e.Close()
+					t.Errorf("%s in mode %q: opened", name, mode)
+				} else if mode == candidates.RetentionBackground && !strings.Contains(err.Error(), "Background: not available on this store") {
+					t.Errorf("%s in mode %q: %v, want it to say the mode is not available", name, mode, err)
+				}
+			case err != nil:
+				t.Errorf("%s in mode %q: %v", name, mode, err)
+			default:
+				_ = e.Close()
+			}
+		}
+	}
+	wrapped := candidates.Wrap(candidates.LrootNoCheckpoints(), "wrapped", func(e engine.Engine, _ candidates.Options) (engine.Engine, error) { return e, nil })
+	if !wrapped.Root() {
+		t.Error("a wrapped root variant is not root")
+	}
+}

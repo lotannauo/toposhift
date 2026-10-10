@@ -78,6 +78,10 @@ type goMemory struct {
 	HeapObjects  int64 `json:"heap_objects"`
 	HeapReleased int64 `json:"heap_released"`
 	HeapGoal     int64 `json:"heap_goal"`
+	// HeapLive is the heap found live by the last collection that finished, the figure a
+	// store's memory is judged by; it is 0 before the first collection and for a runtime
+	// that does not report it.
+	HeapLive int64 `json:"heap_live"`
 }
 
 // goMemoryNow reads the runtime's memory from runtime/metrics: unlike
@@ -89,6 +93,7 @@ func goMemoryNow() goMemory {
 		{Name: "/memory/classes/heap/objects:bytes"},
 		{Name: "/memory/classes/heap/released:bytes"},
 		{Name: "/gc/heap/goal:bytes"},
+		{Name: "/gc/heap/live:bytes"},
 	}
 	rtmetrics.Read(s)
 	v := func(i int) int64 {
@@ -97,7 +102,7 @@ func goMemoryNow() goMemory {
 		}
 		return int64(s[i].Value.Uint64())
 	}
-	return goMemory{Total: v(0), HeapObjects: v(1), HeapReleased: v(2), HeapGoal: v(3)}
+	return goMemory{Total: v(0), HeapObjects: v(1), HeapReleased: v(2), HeapGoal: v(3), HeapLive: v(4)}
 }
 
 // sampler appends a line of the database's statistics and the runtime's memory to a

@@ -107,7 +107,7 @@ func buildAndSample(t *testing.T, opts runner.BuildOptions, perRetention, after 
 			keys = append(keys, k)
 		}
 		slices.Sort(keys)
-		if want := []string{"heap_goal", "heap_objects", "heap_released", "total"}; !slices.Equal(keys, want) {
+		if want := []string{"heap_goal", "heap_live", "heap_objects", "heap_released", "total"}; !slices.Equal(keys, want) {
 			t.Errorf("line %d: go has %v, want %v", i+1, keys, want)
 		}
 		if l.Go["total"] <= 0 {

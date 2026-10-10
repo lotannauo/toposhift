@@ -74,6 +74,33 @@ type Options struct {
 	// ReadOnly opens the existing database for reading only; see
 	// [pebblekv.Config].
 	ReadOnly bool
+	// RetentionMode is how the root store's retention runs, for the Lroot variants
+	// only (every other variant ignores it): "" and [RetentionSync] are the only mode
+	// the store has, [RetentionBackground] is refused until it has one. See
+	// [CheckRetentionMode].
+	RetentionMode string
+}
+
+// The retention modes a build can ask of the root store.
+const (
+	// RetentionSync makes a retention do all of its work, settling included, before
+	// it returns: the only mode the store has, and the one "" means.
+	RetentionSync = "sync"
+	// RetentionBackground is the mode in which a retention runs beside the writer.
+	// The store does not have it yet.
+	RetentionBackground = "background"
+)
+
+// CheckRetentionMode returns why mode is not one the root store can be opened in, or
+// nil for "" and [RetentionSync].
+func CheckRetentionMode(mode string) error {
+	switch mode {
+	case "", RetentionSync:
+		return nil
+	case RetentionBackground:
+		return fmt.Errorf("candidates: retention mode %q: Background: not available on this store (the only mode is %q)", mode, RetentionSync)
+	}
+	return fmt.Errorf("candidates: retention mode %q is not %q or %q", mode, RetentionSync, RetentionBackground)
 }
 
 func (o Options) config() pebblekv.Config {
@@ -97,11 +124,18 @@ type Variant struct {
 	Name string
 	// Layout is "M" or "L".
 	Layout string
-	open   func(dir string, o Options) (engine.Engine, error)
+	// root says the candidate is built through the root module's store, which has a
+	// retention mode ([Options.RetentionMode]).
+	root bool
+	open func(dir string, o Options) (engine.Engine, error)
 }
 
 // Open opens the candidate under dir.
 func (v Variant) Open(dir string, o Options) (engine.Engine, error) { return v.open(dir, o) }
+
+// Root says whether the candidate is built through the root module's store, whose
+// retention has a mode.
+func (v Variant) Root() bool { return v.root }
 
 func layoutM(schema pebblekv.Schema, filter bool) Variant {
 	name := "M/" + schema.String()
@@ -137,7 +171,10 @@ func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 // LrootNoCheckpoints is layout L built through the root module's store with no
 // checkpoints, stated outright to the store.
 func LrootNoCheckpoints() Variant {
-	return Variant{Name: "Lroot/off", Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: "Lroot/off", Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
+		if err := CheckRetentionMode(o.RetentionMode); err != nil {
+			return nil, err
+		}
 		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder})
 	}}
 }
@@ -145,7 +182,10 @@ func LrootNoCheckpoints() Variant {
 // LrootCheckpoints is layout L built through the root module's store with the
 // checkpoint policy of [LCheckpoints].
 func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
-	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
+		if err := CheckRetentionMode(o.RetentionMode); err != nil {
+			return nil, err
+		}
 		return rootlog.Open(dir, rootlog.Options{
 			Config: o.config(), Recorder: o.Recorder,
 			Checkpoints: pebblestore.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
@@ -179,7 +219,7 @@ func lagName(d time.Duration) string {
 // variant that is not a candidate, for a test of a runner that needs an engine
 // that misbehaves. It is not in [All] and [Lookup] does not find it.
 func Wrap(v Variant, name string, wrap func(engine.Engine, Options) (engine.Engine, error)) Variant {
-	return Variant{Name: name, Layout: v.Layout, open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: name, Layout: v.Layout, root: v.root, open: func(dir string, o Options) (engine.Engine, error) {
 		e, err := v.open(dir, o)
 		if err != nil {
 			return nil, err
