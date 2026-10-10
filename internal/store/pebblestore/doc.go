@@ -45,8 +45,9 @@
 // alive at h, and range-deletes everything older, the delete and the baseline in one
 // commit. The baseline is not derived data: it is the only record of the state
 // before h. With Config.SettleRetention the database is then flushed and
-// waited on until its compactions have run. Retention is synchronous:
-// [Synchronous] is the only [RetentionMode].
+// waited on until its compactions have run. That is the [Synchronous]
+// [RetentionMode], the default: Retain returns when all of it is done. The
+// [Background] mode is described below.
 //
 // The rewriting goes in key order, in chunks that end between prefixes (at 4 MiB
 // or 20 ms, whichever comes first), each read through an iterator of its own and
@@ -64,6 +65,35 @@
 // beside it is refused. Running a pass again over prefixes it has rewritten changes
 // no key. A Retain with a later horizon while a marker is present starts again from
 // the first key, under the next generation.
+//
+// # Background retention
+//
+// A store opened with [Background] does the first step of a retention under its
+// lock, in milliseconds: the horizons and the marker are committed in one synced
+// commit and published, a goroutine of the store is woken, and Retain returns. The
+// goroutine takes the pass one chunk at a time, holding the lock for the chunk only
+// and yielding between chunks, so writers go on. Reads take no lock, as always.
+//
+// A write to a prefix the pass has not reached (at or after the marker's resume
+// key, in a layer the pass rewrites, and not yet rewritten by a write) first runs
+// the pass's step on that prefix, in its own batch, before anything else the write
+// does to it. The step reads only keys below the layer's horizon, which are frozen
+// from the publication on, so the keys the batch leaves are the keys the pass would
+// leave, and when the pass later reaches the prefix it finds nothing below the
+// horizon to rewrite. A write that fails before its commit leaves the prefix to the
+// pass. What the writer remembers of such a prefix is what a read of it finds once
+// the batch is applied.
+//
+// A second Retain while a pass is pending starts a pass again from the first key at
+// the new horizons, keeping the layers of the older pass that it does not move. Close
+// stops the pass at a chunk boundary and waits for the goroutine; a store opened over
+// a marker has the pass ready before Open returns and resumes it. A commit that fails
+// in the background stops the pass and is latched: Write, Retain, Instrument.WaitRetained
+// and Close return it, reads continue, and reopening the store finishes the pass.
+// Instrument.WaitRetained returns when the pass is over.
+//
+// Background retention does not yet settle its tombstones; until it does, a store
+// that ingests real data uses [Synchronous]. It is not the default.
 //
 // # Layers
 //
@@ -122,8 +152,6 @@
 //
 // # Not here yet
 //
-// The asynchronous retainer (a lock released between chunks, a rewrite when a write
-// touches a prefix the pass has not reached, a background settle) and a boot history
-// kept in baselines are later changes. The product's default offsets are not set
+// The background settle and a boot history kept in baselines are later changes. The product's default offsets are not set
 // here either: [DefaultOptions] has every offset zero and no layer kept.
 package pebblestore

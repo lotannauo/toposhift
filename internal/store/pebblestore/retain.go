@@ -2,10 +2,12 @@ package pebblestore
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"math"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -44,6 +46,17 @@ import (
 // key is rewritten and none after it has been touched, and a crash that loses the
 // chunk loses its resume key with it. Each chunk reads through an iterator of its
 // own, opened when it begins, so that it sees what the chunks before it committed.
+//
+// A store opened in [Background] mode does the first step under its lock, in
+// milliseconds, and then returns: the rewriting is done by the store's own
+// goroutine, one chunk at a time, taking the lock for each chunk only (see
+// [Store.retainer]). A write that reaches a prefix the pass has not yet rewritten
+// rewrites it first, in the same batch (see [Store.rewriteForWrite]), so the keys
+// the pass leaves are the keys the synchronous mode leaves, whatever the
+// interleaving. A Retain while a pass is pending starts the pass again at the new
+// horizons, from the first key, and keeps rewriting the layers of the older pass
+// that it does not move. Close stops the pass at a chunk boundary, and the next
+// Open resumes it. Background mode does not settle.
 //
 // Last, the marker passes to its settling phase in the commit of the last chunk;
 // with Config.SettleRetention the database is flushed and waited on until it is at
@@ -133,6 +146,9 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		}
 		marker.layers = append(marker.layers, retainLayer{layer: catalog.L0 + catalog.Layer(i), horizon: to[i], last: last})
 	}
+	if marker != nil && s.retention == Background && s.pass != nil {
+		allInside = s.carryOver(marker, allInside)
+	}
 	if err := s.publishHorizon(to, last, moved, marker); err != nil {
 		return err
 	}
@@ -160,6 +176,11 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	// the keys at or after the horizon of each prefix, up to its newest checkpoint,
 	// counted as "retain.state_keys".
 	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && allInside
+	if s.retention == Background {
+		// The rest is the retainer's. The publication is the work this call did.
+		workEnd = time.Now()
+		return s.startPass(*marker, derive, wasComplete)
+	}
 	p, err := s.newPass(ctx, *marker, derive, s.stopAfter)
 	if err != nil {
 		return err
@@ -240,6 +261,19 @@ type retainPass struct {
 	commits int
 	chunks  int64
 	workEnd time.Time
+	closed  bool
+
+	// bg says the pass is the store's background pass, run by the retainer one
+	// chunk at a time; the rest is its state, guarded by the store's lock like
+	// everything else a write reads. marker.resume is the first key the pass has
+	// not reached: a prefix before it is rewritten. touched holds the prefixes at
+	// or after it that a write rewrote in its own batch, which the chunks skip.
+	// intact says nothing has dropped what the writer remembers since the pass
+	// began (see Store.lose): only then may the pass, when it ends, call the map
+	// complete.
+	bg      bool
+	touched map[string]struct{}
+	intact  bool
 
 	visited, replayed, records, baselines, deletes, seeks, kept, maxPrefixRecords int64
 }
@@ -269,7 +303,12 @@ func (s *Store) newPass(ctx context.Context, m retainMarker, derive bool, stopAf
 	return p, nil
 }
 
-func (p *retainPass) close() { _ = p.b.Close() }
+func (p *retainPass) close() {
+	if !p.closed {
+		p.closed = true
+		_ = p.b.Close()
+	}
+}
 
 // run does what is left of the pass: the chunks, then the settling, then the
 // removal of the marker.
@@ -288,6 +327,18 @@ func (p *retainPass) run() error {
 		maps.Copy(s.states, p.next)
 		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
 	}
+	p.report()
+	// Settling changes no data, and no iterator is open: it would pin the tables
+	// the compactions replace.
+	if err := s.settleRetention(); err != nil {
+		return err
+	}
+	return s.releaseMarker(p.marker.generation)
+}
+
+// report counts what the pass did, once it has rewritten everything.
+func (p *retainPass) report() {
+	s := p.s
 	if p.derived {
 		s.rec.Count("retain.state_keys", p.stateKeys)
 	}
@@ -301,12 +352,6 @@ func (p *retainPass) run() error {
 	s.rec.Sample("retain.max_prefix_records", p.maxPrefixRecords)
 	s.rec.Sample("retain.chunks", p.chunks)
 	p.workEnd = time.Now()
-	// Settling changes no data, and no iterator is open: it would pin the tables
-	// the compactions replace.
-	if err := s.settleRetention(); err != nil {
-		return err
-	}
-	return s.releaseMarker(p.marker.generation)
 }
 
 // chunk rewrites prefixes from the marker's resume key until its commit holds
@@ -336,9 +381,24 @@ func (p *retainPass) chunk() error {
 			ok = it.SeekGE([]byte{prefix[0] + 1}) // the whole layer is left as it is
 			continue
 		}
-		if ok, err = p.rewritePrefix(it, prefix); err != nil {
+		if _, done := p.touched[string(prefix)]; done {
+			// A write rewrote it, in its own batch. Visiting it would change nothing.
+			p.seeks++
+			ok = it.SeekGE(prefixSucc(prefix))
+			lastPrefix = prefix
+			continue
+		}
+		var res rewriteResult
+		if res, err = p.rewritePrefix(it, prefix, p.b, p.derive); err != nil {
 			return err
 		}
+		if res.lost {
+			p.derive, p.next = false, nil
+		}
+		if res.state != nil {
+			p.remember(prefix, res.state)
+		}
+		ok = res.ok
 		lastPrefix = prefix
 		if ok && (p.b.Len() >= s.retainBytes || time.Since(begin) >= s.chunkTime) {
 			exhausted = false
@@ -362,7 +422,32 @@ func (p *retainPass) chunk() error {
 		}
 	}
 	closeIter()
-	return p.commit(next, begin)
+	if err := p.commit(next, begin); err != nil {
+		return err
+	}
+	if p.bg {
+		p.install()
+	}
+	return nil
+}
+
+// install puts what the chunk just committed worked out of the writer's state in
+// the writer's map, for the prefixes no write has rewritten since the pass began
+// (the writer holds those, and is newer). It is done in the chunk's own critical
+// section, so no write falls between the commit and the install; and it is done
+// chunk by chunk, never for the whole pass at its end, because the writes that
+// came between the chunks have moved on the prefixes the pass has passed, and a
+// copy at the end would put an older state over theirs.
+func (p *retainPass) install() {
+	if !p.derive {
+		return
+	}
+	for k, st := range p.next {
+		if _, done := p.touched[k]; !done {
+			p.s.states[k] = st
+		}
+	}
+	p.next = map[string]*prefixState{}
 }
 
 // commit commits the batch with the marker next in it, not synced: the horizon is
@@ -377,7 +462,9 @@ func (p *retainPass) commit(next retainMarker, begin time.Time) error {
 	if err := p.b.Set(metaKey(metaRetain), raw, nil); err != nil {
 		return err
 	}
-	if err := p.ctx.Err(); err != nil {
+	// A background pass is stopped by the retainer, between two chunks: a chunk that
+	// has begun is committed, so a Close waits for one chunk at most.
+	if err := p.ctx.Err(); err != nil && !p.bg {
 		return contextError("Retain", err)
 	}
 	if err := s.kv.Apply(p.b, pebble.NoSync); err != nil {
@@ -387,7 +474,9 @@ func (p *retainPass) commit(next retainMarker, begin time.Time) error {
 	p.b.Reset()
 	p.chunks++
 	s.rec.Sample("retain.chunk_hold_ns", time.Since(begin).Nanoseconds())
-	if s.afterRetainCommit != nil {
+	if s.afterRetainCommit != nil && !p.bg {
+		// A background chunk runs the hook after it has released the lock, so that a
+		// hook may write.
 		s.afterRetainCommit()
 	}
 	if p.commits++; p.stopAfter > 0 && p.commits >= p.stopAfter {
@@ -406,13 +495,27 @@ func (p *retainPass) remember(prefix []byte, st *prefixState) {
 	}
 }
 
+// rewriteResult is what rewritePrefix found. ok is false when no key is left
+// after the prefix. state is what the writer would find in the prefix once the
+// rewrite is committed, when derive was set and held to the end, and nil
+// otherwise; lost says a key could not be read, so that nothing is to be learnt
+// from this prefix or from the rest of the pass.
+type rewriteResult struct {
+	ok    bool
+	state *prefixState
+	lost  bool
+}
+
 // rewritePrefix rewrites the prefix the iterator is at the first key of, into the
-// pass's batch: a baseline at the horizon holds what is alive at it, and everything
+// batch b: a baseline at the horizon holds what is alive at it, and everything
 // older goes. It leaves the iterator at the first key after the prefix, or, when
 // nothing in the prefix is older than the horizon, wherever the seek past that
-// instant landed, which is also after it; ok is false when no key is left.
-func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool, err error) {
-	s, b := p.s, p.b
+// instant landed, which is also after it; ok is false when no key is left. With
+// derive set it also works out the state the writer would find in the prefix
+// afterwards. It writes to b and nothing else of the store: the chunks pass the
+// pass's own batch, and a write that reaches a prefix first passes its own.
+func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte, b *pebble.Batch, derive bool) (res rewriteResult, err error) {
+	s := p.s
 	lp := &p.lay[int(layerOfPrefix(prefix))-int(catalog.L0)]
 	hNs, horizon := lp.hNs, lp.horizon
 	dir := prefix[prefixLen-1]
@@ -420,25 +523,28 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 	// The keys that stay are read first, from the first key of the prefix, where
 	// the iterator is.
 	var stays, dropped prefixState
-	if p.derive {
+	if derive {
 		var parsed bool
 		var n int64
 		stays, dropped, n, parsed, err = foldRetained(it, prefix, hNs)
 		if err != nil {
-			return false, err
+			return res, err
 		}
 		p.stateKeys += n
 		if !parsed {
-			p.derive, p.next = false, nil // a key that cannot be read: learn nothing here
+			derive, res.lost = false, true // a key that cannot be read: learn nothing here
 		}
 	}
 	// Go to the newest record of this prefix strictly before the horizon. The
 	// seek may land in a later prefix, which the loop then takes up.
 	p.seeks++
-	ok = it.SeekGE(seekKey(prefix, lp.oldMax))
+	ok := it.SeekGE(seekKey(prefix, lp.oldMax))
+	res.ok = ok
 	if !ok || !hasPrefix(it.Key(), prefix) {
-		p.remember(prefix, &stays) // nothing is rewritten here: a checkpoint at the horizon stays
-		return ok, nil
+		if derive {
+			res.state = &stays // nothing is rewritten here: a checkpoint at the horizon stays
+		}
+		return res, nil
 	}
 	p.replayed++
 	var prefixRecords int64
@@ -457,7 +563,7 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 	for ; ok && hasPrefix(it.Key(), prefix); ok = it.Next() {
 		_, ns, seq, kind, err := parseKey(it.Key())
 		if err != nil {
-			return false, err
+			return res, err
 		}
 		switch kind {
 		case kindRecord:
@@ -465,20 +571,20 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 			prefixRecords++
 			ref, v, err := decodeRecordValue(dir, it.Value())
 			if err != nil {
-				return false, err
+				return res, err
 			}
 			if v.Seq != seq {
-				return false, fmt.Errorf("pebblestore: a record's key has seq %d and its value %d", seq, v.Seq)
+				return res, fmt.Errorf("pebblestore: a record's key has seq %d and its value %d", seq, v.Seq)
 			}
 			bootSeen = bootSeen || v.Boot != ""
 			consider(ref, ns, v)
 		case kindBaseline:
 			st, err := decodeStamp(it.Value())
 			if err != nil {
-				return false, err
+				return res, err
 			}
 			if st.kind != kindBaseline {
-				return false, fmt.Errorf("pebblestore: a baseline key holds a stamp of kind %d", st.kind)
+				return res, fmt.Errorf("pebblestore: a baseline key holds a stamp of kind %d", st.kind)
 			}
 			for _, en := range st.entries {
 				consider(en.ref, en.eventNs, en.value)
@@ -486,7 +592,7 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 		}
 	}
 	if err := it.Error(); err != nil {
-		return false, err
+		return res, err
 	}
 	p.maxPrefixRecords = max(p.maxPrefixRecords, prefixRecords)
 	if p.boots && dir == dirEntity && bootSeen {
@@ -498,25 +604,27 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 		// it finds now. Neither of the states worked out from the keys at or after
 		// the horizon is that: the checkpoint at the horizon stays, and older
 		// checkpoints and records may stay below it.
-		if p.derive {
-			res, n, unreadable, rerr := s.readPrefixState(prefix)
+		if derive {
+			read, n, unreadable, rerr := s.readPrefixState(s.kv, prefix)
 			if rerr != nil {
-				return false, rerr
+				return res, rerr
 			}
 			p.stateKeys += n
 			if unreadable != nil {
-				p.derive, p.next = false, nil // a key that cannot be read: learn nothing here
+				res.lost = true // a key that cannot be read: learn nothing here
 			} else {
-				p.remember(prefix, &res)
+				res.state = &read
 			}
 		}
 	} else {
-		p.remember(prefix, &dropped)
+		if derive {
+			res.state = &dropped
+		}
 		// Everything older than the horizon goes, the previous baseline
 		// included; what is still alive at the horizon is one new baseline, in
 		// the same commit and after the delete.
 		if err := b.DeleteRange(seekKey(prefix, lp.oldMax), prefixSucc(prefix), nil); err != nil {
-			return false, err
+			return res, err
 		}
 		p.deletes++
 		if s.anyCkpt && lp.where == pebblekv.Inside {
@@ -524,22 +632,23 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte) (ok bool,
 			// baseline. The writer never writes one at or below the horizon,
 			// and the ones in the prefixes this retention rewrites go.
 			if err := b.Delete(stampKey(prefix, hNs, kindCheckpoint), nil); err != nil {
-				return false, err
+				return res, err
 			}
 		}
 		if len(entries) > 0 {
 			val, err := appendStamp(nil, stamp{kind: kindBaseline, foldVersion: foldVersion, through: lp.last, w: lp.last, horizon: horizon, entries: entries})
 			if err != nil {
-				return false, err
+				return res, err
 			}
 			if err := b.Set(stampKey(prefix, lp.baseNs, kindBaseline), val, nil); err != nil {
-				return false, err
+				return res, err
 			}
 			p.baselines++
 		}
 	}
 	p.seeks++
-	return it.SeekGE(prefixSucc(prefix)), nil
+	res.ok = it.SeekGE(prefixSucc(prefix))
+	return res, nil
 }
 
 // releaseMarker deletes the marker, if it is generation gen's: a retention that
@@ -658,4 +767,337 @@ func (s *Store) commitHorizon(b *pebble.Batch) error {
 		return s.afterHorizonApply() // tests: a commit that landed, reported as failed
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// The background pass.
+//
+// In Background mode Retain publishes the horizons and the marker, makes a
+// retainPass of the marker and leaves it in Store.pass; the retainer goroutine
+// runs it, one chunk at a time, each under the store's lock; and a Write that
+// reaches a prefix before the pass does rewrites it itself. Everything below is
+// called with the lock held unless it says otherwise.
+
+// carryOver adds to the marker of a Retain the layers of the pass still pending
+// that this Retain does not move, each with the horizon and last sequence number it
+// was given: the new pass starts again from the first key, and the layers it does
+// not move are still owed their rewriting. (A layer that a Retain does not move is
+// one that is kept or has a longer offset; those are fixed for the life of a store,
+// but a store opened again with other options may resume a pass that holds a layer
+// the options of this opening would never move.) It returns whether every layer of
+// the marker is inside the range.
+func (s *Store) carryOver(m *retainMarker, allInside bool) bool {
+	for _, old := range s.pass.marker.layers {
+		if slices.ContainsFunc(m.layers, func(l retainLayer) bool { return l.layer == old.layer }) {
+			continue
+		}
+		m.layers = append(m.layers, old)
+		_, where := pebblekv.Locate(old.horizon)
+		allInside = allInside && where == pebblekv.Inside
+	}
+	slices.SortFunc(m.layers, func(a, b retainLayer) int { return cmp.Compare(a.layer, b.layer) })
+	return allInside
+}
+
+// newBackgroundPass makes the pass the marker stands for, as the store's
+// background pass: nothing is touched yet, and nothing has dropped what the writer
+// remembers.
+func (s *Store) newBackgroundPass(m retainMarker, derive bool, stopAfter int) (*retainPass, error) {
+	p, err := s.newPass(s.ctx, m, derive, stopAfter)
+	if err != nil {
+		return nil, err
+	}
+	p.bg, p.touched, p.intact = true, map[string]struct{}{}, true
+	return p, nil
+}
+
+// startPass makes the pass of a Retain the store's pending pass, in place of an
+// older one, and wakes the retainer. The pass starts from the marker's first key,
+// with no prefix touched: the prefixes the older pass or the writes rewrote are
+// rewritten again at the new horizons.
+func (s *Store) startPass(m retainMarker, derive, wasComplete bool) error {
+	p, err := s.newBackgroundPass(m, derive, s.stopAfter)
+	if err != nil {
+		// The marker of the new generation is stored, and the older pass must not go on
+		// to write its own marker over it.
+		s.dropPass()
+		s.failed = fmt.Errorf("the pass of a retention could not be made (%w), so it is finished only when the store is reopened: reopen the store", err)
+		s.bgErr = s.failed
+		s.releaseWaiters()
+		return s.failedError("Retain")
+	}
+	p.wasComplete = wasComplete
+	s.dropPass()
+	s.pass = p
+	s.expectWaiters()
+	s.signal()
+	return nil
+}
+
+// resumeInBackground makes the pass a marker found at Open stands for the store's
+// pending pass, before the store is handed out, so that a write that arrives
+// before the first chunk already sees which prefixes are owed. Nothing is worked
+// out of the writer's state: the first write to a prefix reads it.
+func (s *Store) resumeInBackground(m retainMarker) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = retainPhases{}
+	s.forgetAll()
+	s.rec.Count("retain.resumed", 1)
+	p, err := s.newBackgroundPass(m, false, s.resumeStopAfter)
+	if err != nil {
+		return err
+	}
+	s.pass = p
+	s.expectWaiters()
+	return nil
+}
+
+// dropPass forgets the pending pass, if there is one, without ending it: its marker
+// stays in the database.
+func (s *Store) dropPass() {
+	if s.pass != nil {
+		s.pass.close()
+		s.pass = nil
+	}
+}
+
+// expectWaiters makes ready the channel the callers of WaitRetained wait on.
+func (s *Store) expectWaiters() {
+	if s.passDone == nil {
+		s.passDone = make(chan struct{})
+	}
+}
+
+// releaseWaiters wakes the callers of WaitRetained: no pass is pending, or none
+// will run.
+func (s *Store) releaseWaiters() {
+	if s.passDone != nil {
+		close(s.passDone)
+		s.passDone = nil
+	}
+}
+
+// signal wakes the retainer; a signal sent while it is awake is kept for its next
+// wait. It takes no lock.
+func (s *Store) signal() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+// startRetainer starts the goroutine that runs the passes of a Background store.
+// Open does it, once, after the store is made: a pass that Open resumed is waiting
+// for it.
+func (s *Store) startRetainer() {
+	s.retainerDone = make(chan struct{})
+	go s.retainer()
+	s.signal()
+}
+
+// A step of the retainer.
+type retainerStep uint8
+
+const (
+	stepMore retainerStep = iota // a pass is pending: take its next chunk
+	stepIdle                     // nothing is pending: wait to be woken
+	stepExit                     // the store is closing, or has failed
+)
+
+// retainer is the goroutine of a Background store. It waits to be woken and then
+// takes the pending pass one chunk at a time, each under the store's lock and
+// none for longer than the chunk, yielding between them so that a writer that
+// waits for the lock gets it. It exits when the store's context is cancelled (at
+// the next chunk boundary), or when a commit has failed and the store has latched
+// the failure.
+func (s *Store) retainer() {
+	defer func() {
+		s.mu.Lock()
+		s.releaseWaiters()
+		s.mu.Unlock()
+		if s.retainerExited != nil {
+			close(s.retainerExited)
+		}
+		close(s.retainerDone)
+	}()
+	var cur *retainPass
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.wake:
+		}
+		for {
+			if s.beforeRetainChunk != nil && s.pending() {
+				s.beforeRetainChunk() // the lock is free: a hook may write
+			}
+			step, landed := s.retainStep(&cur)
+			if landed && s.afterRetainCommit != nil {
+				s.afterRetainCommit() // the lock is free: a hook may write
+			}
+			if step == stepExit {
+				return
+			}
+			if step == stepIdle {
+				break
+			}
+			runtime.Gosched()
+		}
+	}
+}
+
+// pending says a pass is waiting to be run.
+func (s *Store) pending() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pass != nil && s.failed == nil
+}
+
+// retainStep takes one chunk of the pending pass. cur is the pass the retainer was
+// taking: if another generation has taken its place, it is dropped and the newer is
+// started from the first key, with nothing of the older installed. landed says a
+// chunk was committed (so the hook runs).
+func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ctx.Err() != nil || s.failed != nil {
+		return stepExit, false
+	}
+	if p := *cur; p != nil && (s.pass == nil || s.pass.marker.generation != p.marker.generation) {
+		*cur = nil // another Retain published: this pass is not the store's any more
+	}
+	if *cur == nil {
+		*cur = s.pass
+	}
+	p := *cur
+	if p == nil {
+		return stepIdle, false
+	}
+	// A pass resumed from a marker in its settling phase has nothing left to rewrite
+	// (its resume key is empty, and a chunk from there would read the meta keys): in
+	// Background mode, which does not settle, it only releases its marker.
+	var err error
+	if p.marker.phase == phaseRewrite {
+		before := p.chunks
+		err = p.chunk()
+		landed = p.chunks > before
+	}
+	if err == nil && p.marker.phase == phaseSettle {
+		err = s.endPass(p)
+		*cur = nil
+		if err == nil {
+			return stepIdle, landed
+		}
+	}
+	if err != nil {
+		s.latch(err)
+		return stepExit, landed
+	}
+	return stepMore, landed
+}
+
+// endPass ends a pass whose last chunk has been committed and installed, in the
+// order that lets WaitRetained say the pass is over: the marker goes, the map is
+// called complete if the pass vouches for it, the counts are made, the pass is
+// cleared, and the waiters are woken. Background mode does not settle.
+func (s *Store) endPass(p *retainPass) error {
+	if err := s.releaseMarker(p.marker.generation); err != nil {
+		return err
+	}
+	if p.derive && p.intact {
+		// As the synchronous pass ends, but only if nothing has dropped what the
+		// writer remembers since it began: a prefix forgotten after the pass passed it
+		// would be missing from the map, which would then claim it holds nothing.
+		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
+	}
+	p.report()
+	s.pass = nil
+	p.close()
+	s.releaseWaiters()
+	return nil
+}
+
+// latch stops the background pass for good after an error in a chunk or in its
+// end: Write, Retain, WaitRetained and Close report it, reads continue, and
+// reopening the store finishes the pass from its marker. What the writer
+// remembers is dropped, as for any commit that failed.
+func (s *Store) latch(err error) {
+	if s.failed == nil {
+		_ = s.uncertainCommit("Retain", err)
+	}
+	s.bgErr = s.failed
+	s.forgetAll()
+	s.dropPass()
+	s.releaseWaiters()
+}
+
+// owes says the pass has yet to rewrite the prefix, so that a write to it must:
+// the prefix is in a layer the pass rewrites, is at or after the first key the
+// pass has not reached, and no write has rewritten it in this generation.
+func (p *retainPass) owes(prefix []byte) bool {
+	if p.marker.phase != phaseRewrite {
+		return false // every prefix is rewritten already
+	}
+	i := int(layerOfPrefix(prefix)) - int(catalog.L0)
+	if i < 0 || i >= layers || !p.moved[i] || bytes.Compare(prefix, p.marker.resume) < 0 {
+		return false
+	}
+	_, done := p.touched[string(prefix)]
+	return !done
+}
+
+// rewriteForWrite runs the pass's step for a prefix a write is about to put
+// records in, into the write's own batch b, and sets what the writer remembers of
+// the prefix to what a read of it finds with the batch applied. The batch is
+// indexed, so that the read sees the range delete, the checkpoint delete and the
+// baseline of the step over what the database holds. The caller marks the prefix
+// as touched only when the batch has been committed: a write that fails leaves
+// the prefix to the pass, or to a later write.
+//
+// The step is the pass's own (rewritePrefix), so the keys it leaves are the keys
+// the pass would have left, and the later visit of the pass is a seek that finds
+// nothing below the horizon. Nothing a write can put is below the horizon of its
+// layer, and the step reaches no further than the instant before it.
+func (s *Store) rewriteForWrite(b *pebble.Batch, prefix []byte, track bool) error {
+	if err := s.touchPrefix(b, prefix); err != nil {
+		return err
+	}
+	if !track {
+		return nil // nothing is remembered when checkpoints are off and none exists
+	}
+	if !s.anyCkpt {
+		// What the state lookup finds in a database that has no checkpoint.
+		s.states[string(prefix)] = &prefixState{latest: -1}
+		return nil
+	}
+	s.iterators++
+	res, keys, unreadable, err := s.readPrefixState(b, prefix)
+	if err != nil {
+		return err
+	}
+	if unreadable != nil {
+		return unreadable
+	}
+	s.states[string(prefix)] = &res
+	s.rec.Count("checkpoint.loads", 1)
+	s.rec.Count("checkpoint.load_keys", keys)
+	return nil
+}
+
+// touchPrefix is the pass's step on one prefix, into b. The iterator is of the
+// database and is closed before it returns, so that the batch can be read and
+// written after.
+func (s *Store) touchPrefix(b *pebble.Batch, prefix []byte) error {
+	lo, hi := prefixBounds(prefix)
+	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = it.Close() }()
+	if !it.First() {
+		return it.Error() // the prefix holds nothing: there is nothing to rewrite
+	}
+	_, err = s.pass.rewritePrefix(it, prefix, b, false)
+	return err
 }

@@ -41,7 +41,9 @@ import (
 //     prefix) and "retain.chunks" (how many chunks it committed); and, as a sample
 //     for each chunk, "retain.chunk_hold_ns" (the nanoseconds from the chunk's start
 //     to the end of its commit, which is how long a writer would wait for it if the
-//     lock were released between chunks); and, when Open finishes a retention that
+//     lock were released between chunks); and, in a Background store,
+//     "retain.touch_rewrites" (the prefixes a write rewrote in its own batch because
+//     the pass had not reached them); and, when Open finishes a retention that
 //     an earlier process left, "retain.resumed", counted once before that retention
 //     reports as any other does; "retain.superseded", counted when Open removes a
 //     marker that the stored horizons have all moved past; and, when
@@ -55,9 +57,16 @@ type RetentionMode uint8
 
 const (
 	// Synchronous makes Retain do all of its work, settling included, before it
-	// returns. It is the only mode there is, and the zero value of
-	// [Options.Retention] means it.
+	// returns. The zero value of [Options.Retention] means it, and it is the mode
+	// of [DefaultOptions], of the benchmarks and of the conformance suite.
 	Synchronous RetentionMode = 1
+	// Background makes Retain publish the horizons and return, and leaves the
+	// rewriting to a goroutine of the store that works in chunks and lets writers
+	// through between them; a write to a prefix the pass has not reached rewrites
+	// that prefix first, in its own batch. See the package comment. It does not yet
+	// settle its tombstones; until it does, a store that ingests real data uses
+	// Synchronous. [Instrument.WaitRetained] waits for the pass to end.
+	Background RetentionMode = 2
 )
 
 // Options says how a store is opened. The key schema is Pebble's default and
@@ -82,7 +91,8 @@ type Options struct {
 	Policy lifecycle.Policy
 	// Recorder receives the store's counts. Nil discards them.
 	Recorder Recorder
-	// Retention says how Retain works; the zero value is [Synchronous].
+	// Retention says how Retain works; the zero value is [Synchronous]. A store
+	// opened [Background] and read-only starts no goroutine and runs no pass.
 	Retention RetentionMode
 	// Checkpoints says when interleaved checkpoints are written. Nil means
 	// [DefaultCheckpoints]; a policy that writes none is an explicit
@@ -116,6 +126,12 @@ type Options struct {
 	retainStopAfter   int
 	resumeStopAfter   int
 	afterRetainCommit func()
+	// beforeRetainChunk runs on the goroutine of a Background store before each chunk
+	// of a pending pass, and so before the first, with the store's lock free, and
+	// retainerExited, if not nil, is closed by that goroutine when it exits: both
+	// for tests. (afterRetainCommit runs after each chunk, the same way.)
+	beforeRetainChunk func()
+	retainerExited    chan struct{}
 	// beforeRecordApply returns an error in place of a record commit (a commit
 	// that failed without landing), afterRecordApply runs after one has landed
 	// and an error it returns stands for a commit that failed but is visible, and

@@ -34,6 +34,12 @@ import (
 // [Store.uncertainCommit]). In practice Pebble ends the process on such an error
 // (see package pebblekv), so this is the last line of defence.
 //
+// In a Background store, while a retention's pass is pending, the records of a
+// prefix the pass has not yet reached come with the pass's rewrite of that prefix,
+// in the same commit, so that the prefix is as the pass would leave it (see
+// [Store.Retain]). A Write that fails before its commit leaves the prefix to the
+// pass.
+//
 // A subject stored in a layer other than the one a record names is not detected
 // when the other layer was written by an earlier batch: the contract leaves that
 // precondition to the caller, because finding out costs a lookup per record.
@@ -117,7 +123,30 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		}
 	}
 
-	b := s.kv.NewBatch()
+	// In a Background store, while a pass is pending, a prefix the pass has not yet
+	// reached is rewritten first, in this very batch: the pass's step for it is
+	// committed with the records, so that the keys left are the ones the pass would
+	// have left, whatever the order of the two. The prefixes are found now, before
+	// the batch is made, because the step reads the prefix through the batch, which
+	// must then be indexed. A value of true says the prefix has been rewritten in
+	// this batch (two puts of one prefix rewrite it once).
+	var rewrite map[string]bool
+	if s.pass != nil {
+		for _, p := range puts {
+			if s.pass.owes(p.prefix) {
+				if rewrite == nil {
+					rewrite = map[string]bool{}
+				}
+				rewrite[string(p.prefix)] = false
+			}
+		}
+	}
+	var b *pebble.Batch
+	if len(rewrite) > 0 {
+		b = s.kv.NewIndexedBatch()
+	} else {
+		b = s.kv.NewBatch()
+	}
 	defer func() { _ = b.Close() }()
 	// A record with an event time before a checkpoint's makes that checkpoint
 	// untrue, so it is deleted in the same commit as the record. From here on the
@@ -137,10 +166,20 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	// has no checkpoints and is not writing any.
 	track := s.ckpt.On || s.anyCkpt
 	if !track {
-		s.complete = false // records are about to be stored that the map will not know of
+		s.lose() // records are about to be stored that the map will not know of
 	}
 	touched := map[string]struct{}{}
+	rewrites := 0
 	for _, p := range puts {
+		if done, owed := rewrite[string(p.prefix)]; owed && !done {
+			// Before anything else is done to the prefix: the state, the checkpoints to
+			// delete and the record itself all follow what the rewrite leaves.
+			if err := s.rewriteForWrite(b, p.prefix, track); err != nil {
+				return fmt.Errorf("pebblestore: Write: %w", err)
+			}
+			rewrite[string(p.prefix)] = true
+			rewrites++
+		}
 		if track {
 			started := s.now()
 			st, err := s.state(p.prefix)
@@ -182,6 +221,14 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	// The second commit: the checkpoints this write made due. It finishes before
 	// Write returns, and its failure is counted, never returned.
 	s.writeCheckpoints(touched, &ph)
+	// The prefixes are the pass's no more only now that the batch that rewrote them
+	// is committed; a Write that failed before this leaves them to the pass.
+	for k := range rewrite {
+		s.pass.touched[k] = struct{}{}
+	}
+	if rewrites > 0 {
+		s.rec.Count("retain.touch_rewrites", int64(rewrites))
+	}
 	finished = true
 	if s.iterators > 0 {
 		s.rec.Count("write.iterators", s.iterators)

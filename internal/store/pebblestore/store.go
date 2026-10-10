@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -58,6 +59,20 @@ type Store struct {
 	stopAfter         int
 	resumeStopAfter   int
 	afterRetainCommit func()
+
+	// retention is the mode Retain works in. In Background mode ctx is the store's
+	// own context, which Close cancels, wake tells the retainer there is a pass,
+	// and retainerDone is closed when the retainer has exited (nil when none was
+	// started, in a store opened read-only). retainerExited is the test hook of
+	// the same event.
+	retention      RetentionMode
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wake           chan struct{}
+	retainerDone   chan struct{}
+	retainerExited chan struct{}
+	// beforeRetainChunk is the test hook of the same name in Options.
+	beforeRetainChunk func()
 
 	beforeRecordApply, afterRecordApply, rereadFails func() error
 	beforeHorizonApply, afterHorizonApply            func() error
@@ -127,6 +142,14 @@ type Store struct {
 	iterators int64
 	// last is how the last Retain spent its time (see [Instrument.LastRetain]).
 	last retainPhases
+	// pass is the background pass that has not ended, if there is one (see
+	// retainPass). passDone is closed, and set to nil, when no pass is pending any
+	// more or the store is stopping, to release the callers of WaitRetained; it is
+	// not nil while a pass is pending. bgErr is the error that stopped the
+	// retainer, which Close reports.
+	pass     *retainPass
+	passDone chan struct{}
+	bgErr    error
 }
 
 var _ store.Store = (*Store)(nil)
@@ -175,7 +198,7 @@ func Open(dir string, o Options) (*Store, error) {
 				catalog.L0+catalog.Layer(i), off, store.ErrInvalid)
 		}
 	}
-	if o.Retention != 0 && o.Retention != Synchronous {
+	if o.Retention != 0 && o.Retention != Synchronous && o.Retention != Background {
 		return nil, fmt.Errorf("pebblestore: Open: retention mode %d: %w", o.Retention, store.ErrInvalid)
 	}
 	ckpt := DefaultCheckpoints()
@@ -207,8 +230,13 @@ func Open(dir string, o Options) (*Store, error) {
 		beforeCheckpointApply: o.beforeCheckpointApply, afterCheckpointApply: o.afterCheckpointApply,
 		ckpt: ckpt, fullStateRead: o.fullStateRead, states: map[string]*prefixState{},
 		offsets: o.Offsets, keep: o.Keep,
+		retention: o.Retention, retainerExited: o.retainerExited, beforeRetainChunk: o.beforeRetainChunk,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
+	if s.retention == Background && !cfg.ReadOnly {
+		s.ctx, s.cancel = context.WithCancel(context.Background())
+		s.wake = make(chan struct{}, 1)
+	}
 	if o.checkValue != nil {
 		s.checkValue = o.checkValue
 	}
@@ -235,6 +263,7 @@ func Open(dir string, o Options) (*Store, error) {
 	}
 	unfinished, err := s.load()
 	if err != nil {
+		s.abandon()
 		_ = kv.Close()
 		return nil, err
 	}
@@ -244,12 +273,28 @@ func Open(dir string, o Options) (*Store, error) {
 		// the store is handed out. (A database opened read-only cannot be written to:
 		// its reads are right, since the horizons are in force, and the marker waits
 		// for a store that can write.)
-		if err := s.resumeRetention(*unfinished); err != nil {
+		if s.retention == Background {
+			err = s.resumeInBackground(*unfinished)
+		} else {
+			err = s.resumeRetention(*unfinished)
+		}
+		if err != nil {
+			s.abandon()
 			_ = kv.Close()
 			return nil, err
 		}
 	}
+	if s.cancel != nil {
+		s.startRetainer()
+	}
 	return s, nil
+}
+
+// abandon releases what a store that failed to open holds besides the database.
+func (s *Store) abandon() {
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 // load reads, or on a new database writes, the meta keys. It returns the marker of
@@ -521,11 +566,31 @@ func (s *Store) LayerHorizon(layer catalog.Layer) store.Horizon { return s.horiz
 // call returns nil. It does not take the lock Write and Retain hold, so it must
 // not run while either does: a Retain that settles can hold the database for up to
 // its deadline.
+//
+// A Background store first stops its retainer: the store is marked closed, the
+// retainer's context is cancelled and Close waits for the retainer to exit, which
+// it does at its next chunk boundary (a chunk in progress commits first, so Close
+// waits for at most one chunk). The pass that was pending is not lost: its marker
+// stays in the database and the next Open resumes it. If the retainer stopped
+// because a commit failed, Close returns that error, after closing the database.
 func (s *Store) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	return s.kv.Close()
+	var stopped error
+	if s.retainerDone != nil {
+		s.cancel()
+		s.signal()
+		<-s.retainerDone
+		s.mu.Lock()
+		stopped = s.bgErr
+		s.mu.Unlock()
+	}
+	err := s.kv.Close()
+	if stopped != nil {
+		return errors.Join(fmt.Errorf("pebblestore: Close: the retention stopped: %w", stopped), err)
+	}
+	return err
 }
 
 // closedError is the error every method that returns one gives after Close.
