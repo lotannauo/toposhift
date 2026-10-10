@@ -375,6 +375,59 @@ runs git only with `-git`, never touches the network and writes nothing but `-js
 Builds may run under a Go memory limit (the workflow's `go_mem_limit` input, applied to the builds and not to the
 plans), which is recorded in the manifest as `go_memory_limit` and in `job.json`; the judge and the report refuse a mix of builds under different limits.
 
+#### The store's retention gate: storegate
+
+The root store (`Lroot/off` and `Lroot/<policy>`) is judged apart from the spike's gates, by five limits fixed
+before anything is measured, which `spikebench storegate` prints with a digest of their text on every report
+(the text is a constant in `runner/storegate.go`, and a test pins its digest, so a change to a limit shows in the
+diff). The command never reads `runner.Rules`: the spike's rules version and digest do not depend on it.
+
+```sh
+spikebench build -candidate Lroot/off         -out D/R7 -metrics-every 10s -retention-mode sync
+spikebench build -candidate Lroot/k64a2l1ns   -out D/R7 -metrics-every 10s -retention-mode sync
+spikebench storegate D/R7                     # or the build directories themselves, or a directory of CI artifacts
+```
+
+A window is the time from a retention's publication to the end of its rewrite; a batch that overlaps one, its
+first and last instants included, is inside it. A batch that overlaps a settle (from the end of a rewrite to the
+end of its settle) and no window is settling: it is counted in neither the inside nor the outside, so it is
+neither the control nor Q2's baseline, and its longest and 99th percentile are reported. Nothing is written
+during a synchronous settle.
+
+| Row | Limit |
+| --- | --- |
+| Q1 | The longest batch inside a window takes at most 250 ms. The longest outside every window and settle is printed beside it as the control; a build over 250 ms with a control above 150 ms, or with no control, is not judged (rerun it), and a control never prevents a pass. The largest `retain.max_prefix_records` and `retain.chunk_hold_ns` of the build and the sum of `retain.touch_rewrites` (not recorded by this store) are reported with it. |
+| Q2 | The 99th percentile of a batch's commit inside windows is at most the larger of twice the same outside windows and 50 ms. A histogram bucket is within an eighth of the value it holds, so the inside is read at the top of its bucket and the outside at the bottom of its: neither reading lets a batch pass that the true values would not (and a value within an eighth under the limit may be refused). |
+| Q3 | With 30 days kept, the longest rewrite (publication to the end of the rewrite, not of the settle nor the return of the call) takes at most 2 h, at a load outside windows of at least 3000 records/s. The load is printed; a build below it, or one that keeps fewer than 30 days, shows its figure and is not judged. The tombstones after the settle are reported, not judged. |
+| Q4 | The records of the batches inside windows over the windows' total time plus the time of those batches that lies outside the windows are at least 3000 records/s (a big batch over a short window is not a quick writer). |
+| Q5 | The peak live heap (`/gc/heap/live:bytes`, the field `heap_live` of `metrics.jsonl`, so the build needs `-metrics-every`) is at most that of `Lroot/off` of the same plan, architecture and repetition plus 512 MB, and the two builds must record the same `go_gc`, `go_memory_limit` and `metrics_every` (the sampled peak depends on the interval), and the baseline must itself be a build the gate judges, or the row is not judged; a separate row holds the peak resident set of the build process to 14 GB. MB and GB are 10^6 and 10^9 bytes: reading them as MiB and GiB would relax the limits by 4.9% and 7.4%. |
+
+A build records, in its manifest, the windows (with the end of the rewrite and of the settle and the instant
+the call returned), the batches inside and outside them (count, records and a histogram of their commit),
+the time the stream took and the time the builder waited for the database to rest, the history the last
+retention kept, the peak resident set (`getrusage`, so it covers the compaction after the stream too), and `go_gc`
+and `retention_mode` among its descriptions. The load outside windows is the records of the batches outside every
+window over the time the stream took, less the rests and the time the builder was away in a retention that did not
+return until it was done.
+
+`-retention-mode` (on `build`, `run` and `windows`, passed to the `Lroot` candidates only) accepts `sync`, which is
+what no value means, and refuses `background`: the store does not have it yet ("Background: not available on this
+store"). In synchronous mode the writer is blocked for the whole of each window, so no batch is written inside one:
+Q1, Q2 and Q4 are then not judged, with the longest time the writer was blocked in the reason, and Q3 and Q5 are
+judged. Repetitions of a candidate on an architecture are one row, the worst of those that could be judged, marked
+`(partial)` when some could not be; a build that is untimed, not through the root store, without the gate's record or
+with a window that never ended is listed under `NOT JUDGED` with its reason. Only a build through the root store
+records the gate's trace. It reads files and writes nothing.
+
+Exit status of `storegate`:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Nothing is over a limit, and every row the builds' mode has something to judge was judged. Rows that cannot be judged by construction (Q1, Q2 and Q4 of a synchronous retention) do not count against it. |
+| 1 | A row is over its limit (this wins when rows are also not judged). |
+| 2 | A row that the builds' mode should judge was not judged (synchronous: Q3 and both Q5 rows; background: all six; Q1 withheld by its control counts): a run in which nothing could be judged is never a pass. A local build that keeps fewer than 30 days, or has no heap samples, ends with 2 though its report is complete. |
+| 3 | An error: no build was given, a flag is unknown, or a build could not be read. Nothing is judged, and it is not taken for a verdict. |
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

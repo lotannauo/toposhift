@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -191,6 +193,11 @@ func TestARunRefusesToResumeOverABuildMadeOtherwise(t *testing.T) {
 		{"sampled build, flags with its interval", map[string]string{runner.RestKey: "true", runner.MetricsKey: "30s"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}, ""},
 		{"no metrics key, flags without sampling", map[string]string{runner.RestKey: "true"}, plain, ""},
 		{"no metrics key, flags with sampling", map[string]string{runner.RestKey: "true"}, buildFlags{rest: true, metricsEvery: 30 * time.Second}, "metrics_every"},
+		{"no retention mode key, flags without a mode", map[string]string{runner.RestKey: "true"}, plain, ""},
+		{"no retention mode key, flags with sync", map[string]string{runner.RestKey: "true"}, buildFlags{rest: true, retentionMode: "sync"}, ""},
+		{"sync build, flags with sync", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "sync"}, buildFlags{rest: true, retentionMode: "sync"}, ""},
+		{"sync build, flags without a mode", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "sync"}, plain, ""},
+		{"background build, flags without a mode", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "background"}, plain, "retention_mode"},
 	} {
 		writeManifest(t, runner.CandidateDir(out, "M/crdb1"), c.describe)
 		err := c.b.agreeAll(out)
@@ -252,5 +259,253 @@ func TestAgreeAllFollowsALinkToACandidate(t *testing.T) {
 	}
 	if err := (buildFlags{rest: true, canonical: true}).agreeAll(out); err == nil || !strings.Contains(err.Error(), "canonical_layout") {
 		t.Errorf("a linked candidate built plain, asked for canonical: %v", err)
+	}
+}
+
+// -retention-mode accepts none and sync, which are the same mode, and refuses
+// background (the store does not have it) and anything else, naming the flag; what is
+// passed on to a build step says the mode when one was given.
+func TestRetentionModeFlagAcceptsOnlySync(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		arg  string
+		want string // text of the refusal, or "" for accepted
+	}{
+		{"", ""},
+		{"sync", ""},
+		{"background", "Background: not available on this store"},
+		{"async", `"async" is not`},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		var b buildFlags
+		b.flags(fs)
+		if err := fs.Parse([]string{"-retention-mode=" + c.arg}); err != nil {
+			t.Fatal(err)
+		}
+		err := b.resolve(fs, false)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("-retention-mode=%q: refused: %v", c.arg, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), "-retention-mode") || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("-retention-mode=%q: %v, want a refusal naming the flag and saying %q", c.arg, err, c.want)
+		}
+		if c.want != "" {
+			continue
+		}
+		again := parseBuild(t, false, b.args()...)
+		if again != b {
+			t.Errorf("-retention-mode=%q passed on as %v, a step makes %+v, want %+v", c.arg, b.args(), again, b)
+		}
+		if got := slices.Contains(b.args(), "-retention-mode="+c.arg); got != (c.arg != "") {
+			t.Errorf("-retention-mode=%q: passed on as %v", c.arg, b.args())
+		}
+		if got := b.options().RetentionMode; got != c.arg {
+			t.Errorf("-retention-mode=%q: the build options say %q", c.arg, got)
+		}
+	}
+}
+
+// exitCode is the status the program ends with for the error of a command: 1 for any
+// error, and the code an exitCodeError carries.
+func exitCode(err error) int {
+	var ec exitCodeError
+	switch {
+	case err == nil:
+		return 0
+	case errors.As(err, &ec):
+		return ec.code
+	}
+	return 1
+}
+
+// writeGateBuild writes the manifest of a build of the root store, with the metrics
+// file if peak is above 0, and returns its directory.
+func writeGateBuild(t *testing.T, root, cand string, gate *runner.GateTrace, peak int64) string {
+	t.Helper()
+	dir := filepath.Join(root, strings.ReplaceAll(cand, "/", "_"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := runner.Manifest{
+		Candidate: cand, Layout: "L", PlanDigest: "p", Gate: gate,
+		Describe: map[string]string{runner.RetentionModeKey: gate.Mode, runner.GoGCKey: "100"},
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runner.ManifestFile), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if peak > 0 {
+		line := fmt.Sprintf(`{"elapsed_ms":1,"phase":"write","batches":1,"retentions":0,"stats":{},"go":{"heap_live":%d}}`+"\n", peak)
+		if err := os.WriteFile(filepath.Join(dir, runner.MetricsFile), []byte(line), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+// storegate takes builds and prints the report with the rules' digest. It ends with
+// status 1 when a limit is exceeded, with status 2 when a row that the builds' mode
+// should judge was not judged (a run in which nothing could be judged is never a pass),
+// and with status 0 when every row was judged but those that cannot be by construction
+// (Q1, Q2 and Q4 of a synchronous retention); with no build it is a mistake.
+func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
+	t.Parallel()
+
+	var out, errOut strings.Builder
+	// a mistake, or builds that cannot be read, is status 3: neither a verdict nor a pass
+	if err := runStoreGate(nil, &out, &errOut); err == nil || !strings.Contains(err.Error(), "give the builds") || exitCode(err) != 3 {
+		t.Errorf("no builds: %v (status %d)", err, exitCode(err))
+	}
+	if err := runStoreGate([]string{t.TempDir()}, &out, &errOut); err == nil || !strings.Contains(err.Error(), "holds none") || exitCode(err) != 3 {
+		t.Errorf("an empty directory: %v (status %d)", err, exitCode(err))
+	}
+	if err := runStoreGate([]string{filepath.Join(t.TempDir(), "absent")}, &out, &errOut); exitCode(err) != 3 {
+		t.Errorf("a directory that is not there: %v (status %d)", err, exitCode(err))
+	}
+	if err := runStoreGate([]string{"-nonsense"}, &out, &errOut); exitCode(err) != 3 {
+		t.Errorf("an unknown flag: %v (status %d)", err, exitCode(err))
+	}
+	damaged := t.TempDir()
+	if err := os.WriteFile(filepath.Join(damaged, runner.ManifestFile), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runStoreGate([]string{damaged}, &out, &errOut); exitCode(err) != 3 {
+		t.Errorf("a damaged manifest: %v (status %d)", err, exitCode(err))
+	}
+
+	var h runner.Histogram
+	h.Add(time.Millisecond)
+	const day = int64(24 * time.Hour)
+	sync := func() *runner.GateTrace {
+		return &runner.GateTrace{
+			Mode:    "sync",
+			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 1e9}},
+			Outside: runner.GateBatches{Batches: 1, Records: 4_000_000, Commit: h},
+			WriteNs: 1000e9, KeepNs: 30 * day, PeakRSS: 1 << 30,
+		}
+	}
+	background := func(longest time.Duration) *runner.GateTrace {
+		var in runner.Histogram
+		in.Add(longest)
+		return &runner.GateTrace{
+			Mode:    "background",
+			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
+			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
+			Outside: runner.GateBatches{Batches: 1, Records: 10, Commit: h}, // a control of 1 ms
+			WriteNs: 10e9,
+		}
+	}
+	run := func(dirs ...string) (int, string) {
+		out.Reset()
+		err := runStoreGate(dirs, &out, &errOut)
+		return exitCode(err), out.String()
+	}
+
+	// synchronous builds that were judged on everything their mode has to judge
+	root := t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", sync(), 1<<30)
+	writeGateBuild(t, root, "Lroot/k64a2l1ns", sync(), 1<<30)
+	code, text := run(root)
+	if code != 0 {
+		t.Errorf("synchronous builds judged on Q3 and Q5: status %d\n%s", code, text)
+	}
+	for _, want := range []string{"store retention gate; rules digest " + runner.StoreGateRulesDigest(), "Q3 longest rewrite", "NOT JUDGED:", "Background: not available on this store"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the report lacks %q:\n%s", want, text)
+		}
+	}
+
+	// the same without the samples of the heap: Q5 should have been judged
+	root = t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", sync(), 0)
+	writeGateBuild(t, root, "Lroot/k64a2l1ns", sync(), 0)
+	if code, text := run(root); code != 2 {
+		t.Errorf("Q5 not judged: status %d\n%s", code, text)
+	}
+
+	// a run in which nothing could be judged: a build with no record of the gate
+	root = t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", &runner.GateTrace{}, 0)
+	dir := filepath.Join(root, "Lroot_off", runner.ManifestFile)
+	raw, err := os.ReadFile(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "Gate")
+	if raw, err = json.Marshal(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, text := run(root); code != 2 {
+		t.Errorf("nothing judged: status %d, want 2\n%s", code, text)
+	}
+
+	// a build in the background mode, within its limit, with a row not judged: 2; over: 1,
+	// which wins over the rows not judged
+	root = t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", background(time.Millisecond), 0)
+	if code, text := run(root); code != 2 {
+		t.Errorf("background, rows not judged: status %d\n%s", code, text)
+	}
+	root = t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", background(time.Second), 0)
+	if code, text := run(root); code != 1 || !strings.Contains(text, "OVER") {
+		t.Errorf("a limit exceeded: status %d\n%s", code, text)
+	}
+}
+
+// A build whose only row that is not judged is Q1, because its control is too high for
+// the limit to tell a wait from the machine's noise, still ends the run with the status
+// for a row that should have been judged: a run is not a pass for having judged the rest.
+func TestStoreGateExitsTwoWhenOnlyQ1IsWithheldByItsControl(t *testing.T) {
+	t.Parallel()
+
+	ms := time.Millisecond
+	const day = int64(24 * time.Hour)
+	build := func(inside, control time.Duration) *runner.GateTrace {
+		var in, out runner.Histogram
+		in.Add(inside)
+		out.Add(control)
+		return &runner.GateTrace{
+			Mode:    "background",
+			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
+			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
+			Outside: runner.GateBatches{Batches: 1, Records: 4_000_000, Commit: out},
+			WriteNs: 1000e9, KeepNs: 30 * day, PeakRSS: 1 << 30,
+		}
+	}
+	for _, c := range []struct {
+		name            string
+		inside, control time.Duration
+		code            int
+	}{
+		{"within the limit, a high control", 100 * ms, 300 * ms, 0},
+		{"over the limit, a low control", 400 * ms, 100 * ms, 1},
+		{"over the limit, a high control", 400 * ms, 300 * ms, 2},
+	} {
+		root := t.TempDir()
+		writeGateBuild(t, root, "Lroot/off", build(40*ms, 10*ms), 1<<30)
+		writeGateBuild(t, root, "Lroot/k64a2l1ns", build(c.inside, c.control), 1<<30)
+		var out, errOut strings.Builder
+		err := runStoreGate([]string{root}, &out, &errOut)
+		if exitCode(err) != c.code {
+			t.Errorf("%s: status %d (%v), want %d\n%s", c.name, exitCode(err), err, c.code, out.String())
+		}
+		if c.code == 2 {
+			_, notJudged, _ := strings.Cut(out.String(), "NOT JUDGED:")
+			if lines := strings.Count(strings.TrimSpace(notJudged), "\n") + 1; lines != 1 || !strings.Contains(notJudged, "Q1") || !strings.Contains(notJudged, "control 300ms above 150ms") {
+				t.Errorf("%s: what was not judged is %q, want Q1 alone, naming the control", c.name, notJudged)
+			}
+		}
 	}
 }

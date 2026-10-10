@@ -56,6 +56,10 @@ type Manifest struct {
 	// as it does one that answers wrongly after the compaction.
 	Uncompacted      []UncompactedRead
 	UncompactedWrong []string
+	// Gate is what the store gate judges a root-store retention from: the windows of the
+	// retentions, the batches inside and outside them, and the memory (see [GateTrace]).
+	// Only a candidate built through the root store records it.
+	Gate *GateTrace `json:",omitempty"`
 }
 
 // UncompactedRead is what one read cost at the end of a build.
@@ -135,6 +139,8 @@ type buildSink struct {
 	// prog is told the phase and the progress, for the sampling of the build's
 	// metrics; nil for none.
 	prog *buildProgress
+	// gate is told the batches and the retentions, for the store gate; nil for none.
+	gate *gateTracker
 }
 
 // postState is how many more batches after the last retention are to be recorded in
@@ -165,6 +171,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 	if err != nil {
 		return err
 	}
+	s.gate.batch(start, d, len(batch))
 	s.prog.batch()
 	if got, want := s.e.LastSeq(), batch[len(batch)-1].Seq; got != want {
 		return fmt.Errorf("LastSeq is %d after a batch ending at %d", got, want)
@@ -179,6 +186,9 @@ func (s buildSink) Retain(h time.Time) error {
 	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
 	if lr, ok := s.e.(lastRetainer); ok {
 		work, flush, settle, hit := lr.LastRetain()
+		if err == nil {
+			s.gate.syncWindow(start, time.Now(), work, flush, settle)
+		}
 		s.t.RetainPhases = append(s.t.RetainPhases, RetainPhase{Work: int64(work), Flush: int64(flush), Settle: int64(settle), DeadlineHit: hit})
 	}
 	// A retention starts its own list of batches, and ends the previous one's.
@@ -197,6 +207,8 @@ func (s buildSink) Retain(h time.Time) error {
 	}
 	s.prog.setPhase(phaseRest)
 	defer s.prog.setPhase(phaseWrite)
+	restStart := time.Now()
+	defer func() { s.gate.rested(time.Since(restStart)) }()
 	// The retention is timed alone; then, untimed, the build waits until the database
 	// is at rest. A retention writes a deletion for every prefix it rewrites, and a
 	// writer that runs on before the compactions and Pebble's statistics of those
@@ -243,6 +255,11 @@ type BuildOptions struct {
 	// first-batch-after-a-retention figure of a sampled build is comparable only with
 	// builds sampled the same way, which [Check] enforces. Zero is off.
 	MetricsEvery time.Duration
+	// RetentionMode is how the root store's retention runs, for the candidates built
+	// through it and ignored by the others: "" and "sync" are the one mode it has (see
+	// [candidates.CheckRetentionMode]). It is recorded in the manifest of such a candidate
+	// (Describe, key retention_mode), and builds in different modes are not compared.
+	RetentionMode string
 }
 
 // Build is [BuildWith] with the options of a build by this binary: it rests after
@@ -274,7 +291,13 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 
 	rec := NewCapture()
-	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: rec, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true})
+	var recorder engine.Recorder = rec
+	var maxima *maxRecorder // only a candidate built through the root store has samples to keep the largest of
+	if v.Root() {
+		maxima = newMaxRecorder(rec)
+		recorder = maxima
+	}
+	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode})
 	if err != nil {
 		return nil, err
 	}
@@ -305,9 +328,27 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	var timing Timing
 	after := false
 	postBatches := DefaultRules().PostRetentionBatches
-	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog})
+	var gate *gateTracker // nil for a candidate that is not built through the root store
+	if v.Root() {
+		gate = newGateTracker(time.Now())
+	}
+	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate})
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+	}
+	mode := ""
+	if v.Root() {
+		if mode = opts.RetentionMode; mode == "" {
+			mode = candidates.RetentionSync
+		}
+	}
+	var keep time.Duration
+	for _, r := range plan.Spec.Retentions {
+		keep = max(keep, r.Keep)
+	}
+	var trace *GateTrace
+	if gate != nil {
+		trace = gate.trace(time.Now(), mode, keep, maxima.maxima())
 	}
 	if err := sameAsPlan(plan.Stream, info); err != nil {
 		return nil, fmt.Errorf("runner: %s wrote a different stream than planned: %w", v.Name, err)
@@ -352,6 +393,12 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	m.Describe[PostRetentionKey] = strconv.Itoa(postBatches)
 	// A negative argument reads the limit and leaves it as it is.
 	m.Describe[GoMemoryLimitKey] = memoryLimitText(debug.SetMemoryLimit(-1))
+	if processGC != "" {
+		m.Describe[GoGCKey] = processGC
+	}
+	if mode != "" {
+		m.Describe[RetentionModeKey] = mode
+	}
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err
@@ -385,6 +432,10 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	// would otherwise leave a manifest no read accepts.
 	if err := checkAsRead(plan, v, dir, m); err != nil {
 		return nil, fmt.Errorf("runner: %s changed after it was measured, and a read would refuse it: %s %w", v.Name, v.Name, err)
+	}
+	if trace != nil {
+		trace.PeakRSS = peakRSS()
+		m.Gate = trace
 	}
 	if err := writeJSON(filepath.Join(dir, ManifestFile), m); err != nil {
 		return nil, err

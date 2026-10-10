@@ -10,6 +10,7 @@
 //	spikebench windows -preset ci -out DIR           run over windows of 2, 7, 14 and 30 days of retained history
 //	spikebench g1     -out DIR                       judge G1 from the windows
 //	spikebench timing -in DIR...                     judge G2, G3 and G4 from the bench workflow's artifacts
+//	spikebench storegate DIR...                      judge the root store's retention (Q1 to Q5) from builds
 //
 // Build with CGO_ENABLED=0 and without -race or the invariants tag, from a clean
 // tree; the program refuses to produce a result otherwise (-untimed allows it
@@ -23,6 +24,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -82,17 +84,31 @@ func main() {
 		err = doG1(args)
 	case "timing":
 		err = doTiming(ctx, args)
+	case "storegate":
+		err = doStoreGate(args)
 	default:
 		usage()
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "spikebench:", err)
+		var ec exitCodeError
+		if errors.As(err, &ec) {
+			os.Exit(ec.code)
+		}
 		os.Exit(1)
 	}
 }
 
+// exitCodeError is an error that ends the program with a status of its own.
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e exitCodeError) Error() string { return e.msg }
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|timing [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|timing|storegate [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 
@@ -434,12 +450,15 @@ func doBuild(ctx context.Context, args []string) error {
 type buildFlags struct {
 	rest, canonical, sync bool
 	metricsEvery          time.Duration
+	// retentionMode is how the root store's retention runs; "" is the store's own, sync.
+	retentionMode string
 }
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
 	fs.BoolVar(&b.sync, "sync", false, "commit every batch with a sync of the log to the disk, as production does; recorded in the manifest, and a report refuses to compare builds with and without it (default: off)")
+	fs.StringVar(&b.retentionMode, "retention-mode", "", "how the root store's retention runs, for the Lroot candidates (the others ignore it): sync, the default and until the store has a background mode the only one; recorded in the manifest, and a family is built all in one mode")
 	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
 }
 
@@ -455,19 +474,26 @@ func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 	if b.metricsEvery < 0 || (b.metricsEvery > 0 && b.metricsEvery < time.Second) {
 		return fmt.Errorf("-metrics-every %s: give 0 for none, or at least 1s", b.metricsEvery)
 	}
+	if err := candidates.CheckRetentionMode(b.retentionMode); err != nil {
+		return fmt.Errorf("-retention-mode: %w", err)
+	}
 	return nil
 }
 
 // args are the flags that make a build step do what b says, both given explicitly.
 func (b buildFlags) args() []string {
-	return []string{
+	out := []string{
 		"-rest-after-retention=" + strconv.FormatBool(b.rest), "-canonical-layout=" + strconv.FormatBool(b.canonical),
 		"-sync=" + strconv.FormatBool(b.sync), "-metrics-every=" + b.metricsEvery.String(),
 	}
+	if b.retentionMode != "" { // left out, it is the store's own mode, which a step makes of its own
+		out = append(out, "-retention-mode="+b.retentionMode)
+	}
+	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery}
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode}
 }
 
 // forward is step with b's flags added to every build it starts.
@@ -501,11 +527,16 @@ func (b buildFlags) agrees(dir string) error {
 		return def
 	}
 	canonical := orDefault(runner.CanonicalKey, "false")
+	mode := b.retentionMode
+	if mode == "" {
+		mode = candidates.RetentionSync
+	}
 	for _, f := range []struct{ flag, key, have, want string }{
 		{"-canonical-layout", runner.CanonicalKey, canonical, strconv.FormatBool(b.canonical)},
 		{"-rest-after-retention", runner.RestKey, m.Describe[runner.RestKey], strconv.FormatBool(b.rest)},
 		{"-sync", runner.SyncKey, orDefault(runner.SyncKey, "false"), strconv.FormatBool(b.sync)},
 		{"-metrics-every", runner.MetricsKey, orDefault(runner.MetricsKey, "0s"), b.metricsEvery.String()},
+		{"-retention-mode", runner.RetentionModeKey, orDefault(runner.RetentionModeKey, candidates.RetentionSync), mode},
 	} {
 		if f.have != f.want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for %s=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, f.key, f.have, f.flag, f.want)
@@ -984,6 +1015,48 @@ func doG1(args []string) error {
 	}
 	if len(problems) > 0 {
 		return fmt.Errorf("these windows cannot be judged together (%d reasons, listed above): %s", len(problems), problems[0])
+	}
+	return nil
+}
+
+// storeGateErrorStatus is the status of storegate when it could not judge: a usage
+// error, or builds that could not be read.
+const storeGateErrorStatus = 3
+
+// doStoreGate judges the root store's retention (Q1 to Q5) from builds.
+func doStoreGate(args []string) error { return runStoreGate(args, os.Stdout, os.Stderr) }
+
+// runStoreGate is [doStoreGate] with its streams given. The arguments after the flags
+// are builds, or directories of builds. It prints the report and returns an error that
+// ends the program with status 1 if a limit is exceeded, or with status 2 if a row that
+// the build's mode has something to judge in was not judged; only a row that cannot be
+// judged by construction (Q1, Q2 and Q4 of a synchronous retention) is not an error.
+// A limit exceeded wins over a row not judged. A mistake of the command line, or
+// builds that cannot be loaded, ends it with status 3, so that neither is taken for
+// a verdict.
+func runStoreGate(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("storegate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return exitCodeError{storeGateErrorStatus, err.Error()}
+	}
+	if fs.NArg() == 0 {
+		return exitCodeError{storeGateErrorStatus, "storegate: give the builds to judge: build directories, or directories of builds"}
+	}
+	builds, err := runner.LoadStoreGateBuilds(fs.Args())
+	if err != nil {
+		return exitCodeError{storeGateErrorStatus, err.Error()}
+	}
+	rep := runner.JudgeStoreGate(builds)
+	runner.WriteStoreGate(stdout, rep)
+	switch {
+	case rep.Over > 0:
+		return exitCodeError{1, fmt.Sprintf("the store gate: %d rows are over their limit (listed above)", rep.Over)}
+	case rep.Unexpected > 0:
+		return exitCodeError{2, fmt.Sprintf("the store gate: %d rows that the builds' mode should judge were not judged (listed under NOT JUDGED)", rep.Unexpected)}
 	}
 	return nil
 }

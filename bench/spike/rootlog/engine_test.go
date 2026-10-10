@@ -304,6 +304,9 @@ func TestATinyRunAgreesWithTheSpike(t *testing.T) {
 			}
 			wantDescribe := maps.Clone(spike.m.Describe)
 			wantDescribe["store"] = "root"
+			// The one key a build through the root store has besides the spike engine's
+			// (go_gc is in both): how its retention runs.
+			wantDescribe[runner.RetentionModeKey] = "sync"
 			for k, v := range wantDescribe {
 				if k != "pebble_options" && root.m.Describe[k] != v {
 					t.Errorf("Describe[%s] = %q, want %q", k, root.m.Describe[k], v)
