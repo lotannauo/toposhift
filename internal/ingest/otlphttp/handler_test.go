@@ -248,6 +248,53 @@ func TestSinkErrors(t *testing.T) {
 	}
 }
 
+// The mapping that was there before the sink could refuse or say ingest is
+// off is unchanged, with its messages and codes: a busy sink is 503, UNAVAILABLE,
+// Retry-After: 1, and any other error is 500, INTERNAL, "internal error", with
+// the error's text absent from the body and no Retry-After.
+func TestSinkErrorMapping(t *testing.T) {
+	const secret = "disk /var/secret is full"
+	cases := []struct {
+		name       string
+		err        error
+		status     int
+		code       int32
+		message    string
+		retryAfter string
+	}{
+		{"busy", otlphttp.ErrBusy, http.StatusServiceUnavailable, 14, "busy: send the request again later", "1"},
+		{"wrapped busy", fmt.Errorf("queue full: %w", otlphttp.ErrBusy), http.StatusServiceUnavailable, 14, "busy: send the request again later", "1"},
+		{"other", errors.New(secret), http.StatusInternalServerError, 13, "internal error", ""},
+		{"wrapped other", fmt.Errorf("write: %w", errors.New(secret)), http.StatusInternalServerError, 13, "internal error", ""},
+	}
+	for _, c := range cases {
+		for _, enc := range []string{protoType, jsonType} {
+			t.Run(c.name+" "+enc, func(t *testing.T) {
+				h, sink := newHandler(otlphttp.Options{})
+				sink.err = c.err
+				body := marshalProto(t, sampleProto())
+				if enc == jsonType {
+					body = encodeJSON(t, sampleModel())
+				}
+				rec := do(t, h, request{ctype: enc, body: body})
+				if rec.Code != c.status {
+					t.Fatalf("status %d, want %d", rec.Code, c.status)
+				}
+				st := statusOf(t, rec)
+				if st.Code != c.code || st.Message != c.message {
+					t.Errorf("status code %d message %q, want %d and %q", st.Code, st.Message, c.code, c.message)
+				}
+				if got := rec.Header().Get("Retry-After"); got != c.retryAfter {
+					t.Errorf("Retry-After %q, want %q", got, c.retryAfter)
+				}
+				if strings.Contains(rec.Body.String(), "secret") {
+					t.Errorf("the response leaks the sink's error: %q", rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
 // The same data in either encoding reaches the sink as an equal value, and it is
 // the value written down by hand.
 func TestProtobufAndJSONAgree(t *testing.T) {

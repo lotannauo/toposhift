@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -27,19 +28,72 @@ const Path = "/v1/logs"
 // 64 MiB. The package documentation says why it is so large.
 const DefaultMaxBodyBytes = 64 << 20
 
-// retryAfterSeconds is the Retry-After value of a 503, in seconds.
-const retryAfterSeconds = "1"
+// MaxStatusMessageBytes bounds the message of every google.rpc.Status the
+// handler writes, in bytes. A longer message is cut at a UTF-8 rune boundary and
+// ends with an ellipsis; the whole message, ellipsis included, is at most
+// MaxStatusMessageBytes bytes.
+const MaxStatusMessageBytes = 1024
+
+// ellipsis ends a status message that was cut.
+const ellipsis = "…"
+
+// The Retry-After values of a 503, in seconds. A busy sink is expected to
+// have room again almost at once. A sink that is off is off until an operator
+// acts, so the client is asked to wait longer.
+const (
+	retryAfterBusy        = "1"
+	retryAfterUnavailable = "30"
+)
 
 // ErrBusy is what a [Sink] returns when it cannot take the batch now and the
 // client should send it again later. The handler answers 503 with Retry-After.
 var ErrBusy = errors.New("otlphttp: sink busy")
 
+// RefusedError is what a [Sink] returns to refuse the whole request: the
+// handler answers 400 with a google.rpc.Status whose message is Message, and
+// the client is expected not to send the request again. The message reaches the
+// client, so it names the values the client can act on and nothing else. It is
+// cut to [MaxStatusMessageBytes].
+type RefusedError struct{ Message string }
+
+func (e *RefusedError) Error() string {
+	if e == nil {
+		return "otlphttp: request refused"
+	}
+	return "otlphttp: request refused: " + e.Message
+}
+
+// UnavailableError is what a [Sink] returns when ingest is off: the handler
+// answers 503 with Retry-After (30 seconds) and a google.rpc.Status whose
+// message is Message. The message reaches the client, and is cut to
+// [MaxStatusMessageBytes].
+type UnavailableError struct{ Message string }
+
+func (e *UnavailableError) Error() string {
+	if e == nil {
+		return "otlphttp: ingest unavailable"
+	}
+	return "otlphttp: ingest unavailable: " + e.Message
+}
+
 // Sink takes the logs of one request. It is called once per accepted request,
 // on the goroutine of the request, and the request is answered when it
-// returns: nil is 200, [ErrBusy] (possibly wrapped) is 503, and any other error
-// is 500. A request the sink returned an error for is not accepted, and the
-// client may send it again, so a sink must not keep part of a batch it
-// refused.
+// returns. The error, which may be wrapped or joined, is mapped in this order:
+//
+//   - nil is 200;
+//   - an [UnavailableError] is 503 with Retry-After: 30 and its message;
+//   - [ErrBusy] is 503 with Retry-After: 1;
+//   - a [RefusedError] is 400 with its message;
+//   - any other error is 500, and its text stays in the server.
+//
+// A request the sink returned an error for is not accepted, and the client may
+// send it again, so a sink must not keep part of a batch it refused.
+//
+// The precedence of ingest being off over a refusal belongs to the sink: a sink
+// that is off returns an [UnavailableError] before it checks anything about the
+// request, so a request that would be refused gets the 503 while ingest is off.
+// The handler orders the mapping the same way, so an error that holds both
+// (errors.Join) is also a 503.
 type Sink interface {
 	Accept(ctx context.Context, d capture.LogsData) error
 }
@@ -119,15 +173,31 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.sink.Accept(r.Context(), d); err != nil {
-		if errors.Is(err, ErrBusy) {
-			w.Header().Set("Retry-After", retryAfterSeconds)
-			writeStatus(w, k, http.StatusServiceUnavailable, "busy: send the request again later")
-			return
-		}
-		writeStatus(w, k, http.StatusInternalServerError, "internal error")
+		h.writeSinkError(w, k, err)
 		return
 	}
 	writeSuccess(w, k)
+}
+
+// writeSinkError answers the error a sink returned. The order is the one
+// documented on [Sink]: ingest off, busy, refused, and then the rest. A nil
+// *UnavailableError or *RefusedError, which errors.As matches, has no message
+// and is an error like any other: 500.
+func (h *handler) writeSinkError(w http.ResponseWriter, k kind, err error) {
+	var unavailable *UnavailableError
+	var refused *RefusedError
+	switch {
+	case errors.As(err, &unavailable) && unavailable != nil:
+		w.Header().Set("Retry-After", retryAfterUnavailable)
+		writeStatus(w, k, http.StatusServiceUnavailable, unavailable.Message)
+	case errors.Is(err, ErrBusy):
+		w.Header().Set("Retry-After", retryAfterBusy)
+		writeStatus(w, k, http.StatusServiceUnavailable, "busy: send the request again later")
+	case errors.As(err, &refused) && refused != nil:
+		writeStatus(w, k, http.StatusBadRequest, refused.Message)
+	default:
+		writeStatus(w, k, http.StatusInternalServerError, "internal error")
+	}
 }
 
 func (h *handler) tooLarge() string {
@@ -424,10 +494,30 @@ func rpcCode(status int) int32 {
 	}
 }
 
+// boundMessage returns msg unchanged if it has at most [MaxStatusMessageBytes]
+// bytes. Otherwise it returns the longest prefix that ends on a rune boundary
+// and leaves room for the ellipsis, followed by the ellipsis, so the result has
+// at most [MaxStatusMessageBytes] bytes. msg must be valid UTF-8.
+func boundMessage(msg string) string {
+	if len(msg) <= MaxStatusMessageBytes {
+		return msg
+	}
+	cut := MaxStatusMessageBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + ellipsis
+}
+
 // writeStatus answers a refusal with a google.rpc.Status in the encoding of the
-// request.
+// request. The message is made valid UTF-8 (a run of invalid bytes becomes one
+// U+FFFD, since a protobuf string must be valid UTF-8 and a refusal can name a
+// value the client chose) and then bounded, whatever its source: the sink's, or
+// the text of a decoder error. The order matters: replacing bytes can make the
+// message longer.
 func writeStatus(w http.ResponseWriter, k kind, status int, msg string) {
 	code := rpcCode(status)
+	msg = boundMessage(strings.ToValidUTF8(msg, "\uFFFD"))
 	var body []byte
 	if k == kindJSON {
 		w.Header().Set("Content-Type", contentJSON)
