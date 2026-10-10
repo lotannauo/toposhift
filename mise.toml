@@ -288,7 +288,7 @@ description = "Build the toposhift binary into ./bin, without cgo"
 env = { CGO_ENABLED = "0" }
 run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
-# ci is exactly three shards, and CI runs each shard as its own job on both
+# ci is exactly four shards, and CI runs each shard as its own job on both
 # architectures, so the shards build and test side by side on separate runners
 # instead of all of them sharing one. A job named ci (<runner>) passes only when
 # every shard passed on both. check and test:fast are not shards and not part of
@@ -297,7 +297,7 @@ run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 # or a shard the workflow does not run, cannot pass locally and be missed by CI.
 [tasks.ci]
 description = "Everything CI runs on a pull request"
-depends = ["ci:static", "ci:bench", "ci:race"]
+depends = ["ci:static", "ci:bench", "ci:race", "ci:benchrace"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows and secrets"
@@ -308,8 +308,12 @@ description = "CI shard: the bench module's full tests and its cgo-free build"
 depends = ["bench:test", "bench:purego"]
 
 [tasks."ci:race"]
-description = "CI shard: the tests under the race detector"
-depends = ["test", "bench:test:race"]
+description = "CI shard: the root module's tests under the race detector"
+depends = ["test"]
+
+[tasks."ci:benchrace"]
+description = "CI shard: the bench module's trimmed tests under the race detector"
+depends = ["bench:test:race"]
 
 [tasks."check:no-results"]
 description = "Fail if measurement output is tracked: numbers from a laptop or a VM are never published"
