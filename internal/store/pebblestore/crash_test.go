@@ -218,15 +218,14 @@ func maxEvent(at time.Time, records []store.Record) time.Time {
 }
 
 // crashSeeds is the fixed list of seeds a run takes: 20 in a short run, more in a full
-// one, and fewer under the race detector, which finds nothing in these
-// single-goroutine runs and costs several times as much.
+// one, and two under the race detector, which finds nothing in these
+// single-goroutine runs and costs several times as much (the plain builds run the
+// whole list).
 func crashSeeds() []int {
 	n := 40
 	switch {
-	case raceEnabled && testing.Short():
-		n = 3
 	case raceEnabled:
-		n = 6
+		n = 2
 	case testing.Short():
 		n = 20
 	}
@@ -759,6 +758,14 @@ type crashTally struct {
 	by [crashKinds]int
 }
 
+// counts is a copy of the tally, taken under its lock: a seed that outlived its
+// watchdog may still be adding to it.
+func (c *crashTally) counts() [crashKinds]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.by
+}
+
 func (c *crashTally) add(at crashAt) {
 	c.mu.Lock()
 	c.by[at]++
@@ -897,7 +904,7 @@ func TestCrashKeepsEveryAcknowledgedBatch(t *testing.T) {
 		for _, seed := range crashSeeds() {
 			t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 				t.Parallel()
-				if err := runCrash(seed, count); err != nil {
+				if _, err := boundedCase(t, fmt.Sprintf("crash seed %d", seed), func() (struct{}, error) { return struct{}{}, runCrash(seed, count) }); err != nil {
 					t.Fatalf("seed %d (%s): %v\n%s", seed, crashVariantOf(seed).name, err, reproduce("TestCrashKeepsEveryAcknowledgedBatch", seed))
 				}
 			})
@@ -907,7 +914,8 @@ func TestCrashKeepsEveryAcknowledgedBatch(t *testing.T) {
 	// run in the goroutine of the run, so where the seeds' crashes fall is fixed by
 	// the seeds.
 	total := 0
-	for at, n := range count.by {
+	by := count.counts()
+	for at, n := range by {
 		total += n
 		// The trimmed lists of the race detector reach what they reach; the plain
 		// builds, which run the whole list, check every place is reached.
@@ -915,5 +923,5 @@ func TestCrashKeepsEveryAcknowledgedBatch(t *testing.T) {
 			t.Errorf("no crash fell %s: the seeds do not reach it", crashAt(at))
 		}
 	}
-	t.Logf("%d crashes reopened: %v", total, count.by)
+	t.Logf("%d crashes reopened: %v", total, by)
 }

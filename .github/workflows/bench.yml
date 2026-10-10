@@ -54,6 +54,10 @@ on:
         description: Run every build with this Go memory limit (GOMEMLIMIT), as a whole number of MiB or GiB such as 11GiB, or leave empty for none. Never applied to the plans. Builds with different limits are never compared.
         type: string
         default: ""
+      max_parallel:
+        description: How many build jobs may run at once (1 to 20). The free plan runs 20 jobs at once across the account; the default leaves 9 for pull-request CI.
+        type: string
+        default: "11"
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -97,6 +101,7 @@ jobs:
       sync: ${{ steps.matrix.outputs.sync }}
       metrics_every: ${{ steps.matrix.outputs.metrics_every }}
       go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
+      max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       plans_key: ${{ steps.matrix.outputs.plans_key }}
     steps:
       - name: Harden runner
@@ -119,6 +124,7 @@ jobs:
           SYNC: ${{ inputs.sync }}
           METRICS_EVERY: ${{ inputs.metrics_every }}
           GO_MEM_LIMIT: ${{ inputs.go_mem_limit }}
+          MAX_PARALLEL: ${{ inputs.max_parallel }}
         run: |
           set -euo pipefail
 
@@ -179,6 +185,10 @@ jobs:
           re='^([1-9]|10)$'
           [[ $REPS =~ $re ]] ||
             fail "reps: an integer from 1 to 10"
+
+          re='^([1-9]|1[0-9]|20)$'
+          [[ $MAX_PARALLEL =~ $re ]] ||
+            fail "max_parallel: an integer from 1 to 20"
 
           windows="${WINDOWS//[[:space:]]/}"
           re='^[0-9]+(,[0-9]+)*$'
@@ -245,6 +255,7 @@ jobs:
             echo "sync=$SYNC"
             echo "metrics_every=$metrics_every"
             echo "go_mem_limit=$go_mem_limit"
+            echo "max_parallel=$MAX_PARALLEL"
             echo "plans_key=bench-plans-${RUN_ID}-${RUN_ATTEMPT}"
           } >>"$GITHUB_OUTPUT"
 
@@ -255,6 +266,7 @@ jobs:
             echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
             echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
             echo "- Go memory limit: \`${go_mem_limit:-none}\`"
+            echo "- at most \`$MAX_PARALLEL\` build jobs at once"
             echo
             echo "| runner | window (days) | candidate | repetition |"
             echo "|---|---|---|---|"
@@ -397,7 +409,7 @@ jobs:
   # One spikebench build per job, so the longest job is one 30-day build. Every
   # job gets its own runner, and so its own disk and its own memory.
   build:
-    name: bench build (${{ matrix.os }} R${{ matrix.window }} ${{ matrix.candidate }} #${{ matrix.rep }})
+    name: "bench build (${{ matrix.os }} R${{ matrix.window }} ${{ matrix.candidate }} rep ${{ matrix.rep }})"
     if: github.event_name == 'workflow_dispatch'
     needs: [setup, plans]
     runs-on: ${{ matrix.os }}
@@ -406,6 +418,9 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # The free plan runs 20 jobs at once across the account, so the builds
+      # leave the rest for pull-request CI. Checked in the setup job.
+      max-parallel: ${{ fromJSON(needs.setup.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
     steps:
       - name: Harden runner
