@@ -1,0 +1,839 @@
+[
+ {
+  "input": "run1.jsonl:1 LIST Node kwok-node-2",
+  "observed": "2026-10-09T16:32:54.1837135Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "addresses": [
+      {
+       "address": "localhost",
+       "type": "Hostname"
+      }
+     ],
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasNoDiskPressure",
+       "status": "False",
+       "type": "DiskPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasSufficientMemory",
+       "status": "False",
+       "type": "MemoryPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "RouteCreated",
+       "status": "False",
+       "type": "NetworkUnavailable"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasSufficientPID",
+       "status": "False",
+       "type": "PIDPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletReady",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "labels": {
+      "kubernetes.io/hostname": "kwok-node-2"
+     },
+     "name": "kwok-node-2"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:2 LIST Node kwok-node-4",
+  "observed": "2026-10-09T16:32:54.1837135Z",
+  "records": [
+   {
+    "subject": "node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:31:53Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "addresses": [
+      {
+       "address": "localhost",
+       "type": "Hostname"
+      }
+     ],
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasNoDiskPressure",
+       "status": "False",
+       "type": "DiskPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasSufficientMemory",
+       "status": "False",
+       "type": "MemoryPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "RouteCreated",
+       "status": "False",
+       "type": "NetworkUnavailable"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletHasSufficientPID",
+       "status": "False",
+       "type": "PIDPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:31:53Z",
+       "reason": "KubeletReady",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "labels": {
+      "kubernetes.io/hostname": "kwok-node-4"
+     },
+     "name": "kwok-node-4"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:3 LIST Pod pre-5984778487-42s2c",
+  "observed": "2026-10-09T16:32:54.1936416Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-42s2c",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-42s2c",
+     "namespace": "default",
+     "node_name": "kwok-node-4",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.3"
+     ]
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-42s2c -\u003e node kwok-node-4 70f60f5f",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "node_name": "kwok-node-4",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:4 LIST Pod pre-5984778487-4gjhs",
+  "observed": "2026-10-09T16:32:54.1936416Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-4gjhs",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-4gjhs",
+     "namespace": "default",
+     "node_name": "kwok-node-3",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.25"
+     ]
+    }
+   }
+  ],
+  "pending": [
+   "pod pre-5984778487-4gjhs -\u003e node name \"kwok-node-3\" at 2026-10-09T16:32:08Z"
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:5 LIST Pod pre-5984778487-wr85m",
+  "observed": "2026-10-09T16:32:54.1936416Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-wr85m",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-wr85m",
+     "namespace": "default",
+     "node_name": "kwok-node-2",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.12"
+     ]
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-wr85m -\u003e node kwok-node-2 f41e8e62",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:08Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:31:53Z"
+     }
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:6 entity.state",
+  "observed": "1970-01-01T00:00:00Z",
+  "skipped": {
+   "entity event": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:7 ADDED Pod db-0",
+  "observed": "2026-10-09T16:34:24.483424039Z",
+  "records": [
+   {
+    "subject": "pod db-0",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:24Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "name": "db-0",
+     "namespace": "default",
+     "owner": {
+      "kind": "StatefulSet",
+      "name": "db"
+     },
+     "phase": "Pending"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:8 ADDED Event db.18dce9a92583d658",
+  "observed": "2026-10-09T16:34:24.730732063Z",
+  "skipped": {
+   "unsupported kind": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:9 MODIFIED Pod db-0",
+  "observed": "2026-10-09T16:34:24.732702658Z",
+  "records": [
+   {
+    "subject": "pod db-0",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:24Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:34:24Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:24Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:24Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:24Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "db",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:34:24Z",
+       "state": "running"
+      }
+     ],
+     "name": "db-0",
+     "namespace": "default",
+     "node_name": "kwok-node-1",
+     "owner": {
+      "kind": "StatefulSet",
+      "name": "db"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.41"
+     ]
+    }
+   }
+  ],
+  "pending": [
+   "pod db-0 -\u003e node name \"kwok-node-1\" at 2026-10-09T16:34:24Z"
+  ],
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:10 ADDED Pod pre-5984778487-sbt4s",
+  "observed": "2026-10-09T16:34:55.26476726Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-sbt4s",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "name": "pre-5984778487-sbt4s",
+     "namespace": "default",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Pending"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:11 MODIFIED Pod pre-5984778487-sbt4s",
+  "observed": "2026-10-09T16:34:55.353199151Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-sbt4s",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:34:55Z",
+       "status": "True",
+       "type": "PodScheduled"
+      }
+     ],
+     "name": "pre-5984778487-sbt4s",
+     "namespace": "default",
+     "node_name": "kwok-node-1",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Pending"
+    }
+   }
+  ],
+  "pending": [
+   "pod pre-5984778487-sbt4s -\u003e node name \"kwok-node-1\" at 2026-10-09T16:34:55Z"
+  ]
+ },
+ {
+  "input": "run1.jsonl:12 MODIFIED Pod pre-5984778487-sbt4s",
+  "observed": "2026-10-09T16:36:24.95308785Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-sbt4s",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:55Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:34:55Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:55Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:55Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:34:55Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:34:55Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:34:55Z",
+       "state": "running"
+      }
+     ],
+     "deletion_timestamp": "2026-10-09T16:36:54Z",
+     "name": "pre-5984778487-sbt4s",
+     "namespace": "default",
+     "node_name": "kwok-node-1",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.44"
+     ]
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:13 DELETED Pod pre-5984778487-sbt4s",
+  "observed": "2026-10-09T16:36:25.006611328Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-sbt4s",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:25.006611328Z",
+    "basis": "observed",
+    "ttl": "0s"
+   }
+  ],
+  "skipped": {
+   "pending edge dropped: pod deleted": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:14 MODIFIED Pod pre-5984778487-42s2c",
+  "observed": "2026-10-09T16:37:55.08729608Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-42s2c",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:37:55.08729608Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-42s2c",
+     "namespace": "default",
+     "node_name": "kwok-node-4",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Failed",
+     "pod_ips": [
+      "10.0.0.3"
+     ],
+     "reason": "Evicted"
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:15 MODIFIED Pod pre-5984778487-4gjhs",
+  "observed": "2026-10-09T16:38:25.185191829Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-4gjhs",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:38:25.185191829Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 3,
+       "state": "waiting"
+      }
+     ],
+     "name": "pre-5984778487-4gjhs",
+     "namespace": "default",
+     "node_name": "kwok-node-3",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.25"
+     ]
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:16 entity.delete",
+  "observed": "1970-01-01T00:00:00Z",
+  "skipped": {
+   "entity event": 1
+  }
+ },
+ {
+  "input": "run1.jsonl:17 DELETED Node kwok-node-2",
+  "observed": "2026-10-09T16:40:25.592947163Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 f41e8e62",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:40:25.592947163Z",
+    "basis": "observed",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:18 MODIFIED Pod pre-5984778487-wr85m",
+  "observed": "2026-10-09T16:41:12.2551317Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-wr85m",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:12Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:41:12Z",
+       "reason": "DeletionByPodGC",
+       "status": "True",
+       "type": "DisruptionTarget"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:32:08Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:32:08Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-wr85m",
+     "namespace": "default",
+     "node_name": "kwok-node-2",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Failed",
+     "pod_ips": [
+      "10.0.0.12"
+     ]
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run1.jsonl:19 DELETED Pod pre-5984778487-wr85m",
+  "observed": "2026-10-09T16:41:12.267634537Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-wr85m -\u003e node kwok-node-2 f41e8e62",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:41:12.267634537Z",
+    "basis": "observed",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-wr85m",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:41:12.267634537Z",
+    "basis": "observed",
+    "ttl": "0s"
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:20 ADDED Node kwok-node-2",
+  "observed": "2026-10-09T16:41:25.683255081Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:25Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "labels": {
+      "kubernetes.io/hostname": "kwok-node-2"
+     },
+     "name": "kwok-node-2"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run1.jsonl:21 MODIFIED Node kwok-node-2",
+  "observed": "2026-10-09T16:41:25.705236785Z"
+ },
+ {
+  "input": "run1.jsonl:22 MODIFIED Node kwok-node-4",
+  "observed": "2026-10-09T16:41:54.594392902Z"
+ }
+]

@@ -1,0 +1,158 @@
+[
+ {
+  "input": "run2.jsonl:1 LIST Node kwok-node-2",
+  "observed": "2026-10-09T16:43:56.708843911Z",
+  "records": [
+   {
+    "subject": "node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:41:25Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "addresses": [
+      {
+       "address": "localhost",
+       "type": "Hostname"
+      }
+     ],
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:41:25Z",
+       "reason": "KubeletHasNoDiskPressure",
+       "status": "False",
+       "type": "DiskPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:41:25Z",
+       "reason": "KubeletHasSufficientMemory",
+       "status": "False",
+       "type": "MemoryPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:41:25Z",
+       "reason": "RouteCreated",
+       "status": "False",
+       "type": "NetworkUnavailable"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:41:25Z",
+       "reason": "KubeletHasSufficientPID",
+       "status": "False",
+       "type": "PIDPressure"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:41:25Z",
+       "reason": "KubeletReady",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "labels": {
+      "kubernetes.io/hostname": "kwok-node-2"
+     },
+     "name": "kwok-node-2"
+    }
+   }
+  ]
+ },
+ {
+  "input": "run2.jsonl:2 LIST Pod pre-5984778487-6xxvb",
+  "observed": "2026-10-09T16:43:56.716079697Z",
+  "records": [
+   {
+    "subject": "pod pre-5984778487-6xxvb",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-09T16:43:56Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:43:56Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:43:56Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-09T16:43:56Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:43:56Z",
+       "state": "running"
+      },
+      {
+       "name": "sidecar",
+       "restart_count": 0,
+       "started_at": "2026-10-09T16:43:56Z",
+       "state": "running"
+      }
+     ],
+     "name": "pre-5984778487-6xxvb",
+     "namespace": "default",
+     "node_name": "kwok-node-2",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "pre-5984778487"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.47"
+     ]
+    }
+   },
+   {
+    "subject": "scheduled_on pod pre-5984778487-6xxvb -\u003e node kwok-node-2 4edef4ef",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "payload": {
+     "node_name": "kwok-node-2",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-09T16:41:25Z"
+     }
+    }
+   }
+  ],
+  "skipped": {
+   "container without runtime id": 2
+  }
+ },
+ {
+  "input": "run2.jsonl:3 DELETED Pod pre-5984778487-6xxvb",
+  "observed": "2026-10-09T16:45:56.911110922Z",
+  "records": [
+   {
+    "subject": "scheduled_on pod pre-5984778487-6xxvb -\u003e node kwok-node-2 4edef4ef",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.911110922Z",
+    "basis": "observed",
+    "ttl": "0s"
+   },
+   {
+    "subject": "pod pre-5984778487-6xxvb",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.911110922Z",
+    "basis": "observed",
+    "ttl": "0s"
+   }
+  ]
+ }
+]
