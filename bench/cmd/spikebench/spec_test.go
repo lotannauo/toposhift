@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,7 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		"a run age":         {[]string{"-run-max-age", "2h"}, func(w workload.Config) bool { return w.CoalesceRuns && w.RunMaxAge == 2*time.Hour }},
 		"no run age":        {[]string{"-run-max-age", "off"}, func(w workload.Config) bool { return w.RunMaxAge == 0 }},
 		"a payload pad":     {[]string{"-payload-pad", "456"}, func(w workload.Config) bool { return w.PayloadPad == 456 }},
+		"a producer length": {[]string{"-producer-len", "18"}, func(w workload.Config) bool { return w.ProducerLen == 18 }},
 	} {
 		s, err := parse(t, append([]string{"-preset", "ci"}, c.args...)...).spec()
 		if err != nil || !c.check(s.Workload) {
@@ -173,6 +175,9 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		"run age nonsense":    {"-run-max-age", "long"},
 		"run age too short":   {"-run-max-age", "10s"},
 		"negative pad":        {"-payload-pad", "-1"},
+		"producer too short":  {"-producer-len", "13"},
+		"producer too long":   {"-producer-len", "65"},
+		"producer negative":   {"-producer-len", "-1"},
 		"window with days":    {"-window", "2", "-days", "5"},
 		"window with retain":  {"-window", "2", "-retain", "48h/24h"},
 		"pins with no window": {"-pins", pinsFile(t)},
@@ -184,8 +189,8 @@ func TestScenarioFlagsSetTheWorkload(t *testing.T) {
 		}
 	}
 	// The flags are passed on to the processes of a run.
-	p := parse(t, "-extend", "every", "-pod-heartbeat", "5m", "-events-per-second", "0.25", "-run-max-age", "2h", "-payload-pad", "456", "-window", "7")
-	want := []string{"-preset", "ci", "-events-per-second", "0.25", "-extend", "every", "-pod-heartbeat", "5m", "-run-max-age", "2h", "-payload-pad", "456", "-window", "7"}
+	p := parse(t, "-extend", "every", "-pod-heartbeat", "5m", "-events-per-second", "0.25", "-run-max-age", "2h", "-payload-pad", "456", "-producer-len", "18", "-window", "7")
+	want := []string{"-preset", "ci", "-events-per-second", "0.25", "-extend", "every", "-pod-heartbeat", "5m", "-run-max-age", "2h", "-payload-pad", "456", "-producer-len", "18", "-window", "7"}
 	if got := p.args(); !slices.Equal(got, want) {
 		t.Errorf("args = %v, want %v", got, want)
 	}
@@ -277,4 +282,48 @@ func pinsFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// Pins are chosen from a stream of one scenario, and a producer length is part of the
+// scenario: a plan made with -producer-len from pins chosen without it is refused, and
+// pins chosen with the same length are accepted.
+func TestPinsChosenWithoutAProducerLenDoNotFitAPlanWithOne(t *testing.T) {
+	t.Parallel()
+
+	madeWith := func(args ...string) string {
+		t.Helper()
+		window, err := parse(t, append([]string{"-preset", "tiny", "-window", "1"}, args...)...).spec()
+		if err != nil {
+			t.Fatal(err)
+		}
+		made, err := runner.MakePins(context.Background(), window)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(made)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "pins.json")
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	without, with := madeWith(), madeWith("-producer-len", "18")
+	if _, err := parse(t, "-preset", "tiny", "-window", "2", "-pins", without).spec(); err != nil {
+		t.Errorf("pins chosen without a producer length, a plan without one: %v", err)
+	}
+	if _, err := parse(t, "-preset", "tiny", "-window", "2", "-pins", with, "-producer-len", "18").spec(); err != nil {
+		t.Errorf("pins chosen with a producer length of 18, a plan with the same: %v", err)
+	}
+	for name, c := range map[string]struct{ pins, length string }{
+		"pins without, plan with 18": {without, "18"},
+		"pins with 18, plan without": {with, "0"},
+		"pins with 18, plan with 64": {with, "64"},
+	} {
+		if _, err := parse(t, "-preset", "tiny", "-window", "2", "-pins", c.pins, "-producer-len", c.length).spec(); err == nil || !strings.Contains(err.Error(), "another scenario") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }

@@ -278,7 +278,9 @@ re-asserted, the control) or `-extend 0.5` (a share of the TTL), `-pod-heartbeat
 refreshed run whatever its layer: a bound on how far a layout that keeps an extension at its run's start
 has to walk back; a run whose extension interval, half its TTL, is at least the bound is never extended), `-payload-pad 456`
 (random bytes added to every payload from a source of their own, so the stream is the same records with
-longer payloads), `-events-per-second` and `-cache-mb` (the block cache is the same absolute size in every
+longer payloads), `-producer-len 18` (every producer name padded to exactly that many bytes, 14 to 64, by
+a "/" and filler after the name, characters that do not repeat within the name so that block compression does not hide the cost, so the stream is the same records with longer producer strings; it makes
+another scenario, so `pins` and `plan` must be given the same value), `-events-per-second` and `-cache-mb` (the block cache is the same absolute size in every
 run, 64 MiB unless given). A checkpoint candidate is named by its policy, any of them: `L/k64a4l1h30m` has a
 checkpoint 1 h 30 min behind the newest record of its prefix, which with `-run-max-age 1h` and an extension
 interval of 30 min is behind every run that can still be extended (a lag is written without the units that
@@ -302,6 +304,19 @@ a retention's tombstones inside the retention (`settle_tombstones`); builds with
 compared, and a build that rested after each retention, or did not record those batches, is shown and not judged
 on G2. The local report judges the absolute budget only; the relative fallback for a window where no layout fits
 it belongs to the judgement of the timed builds. The rules' log of 2026-10-08 has the rule in full.
+
+`producercost` measures, on a local capture of the Kubernetes objects receiver, what a longer producer name
+costs a store: it translates the capture with the real translator, coalesces it and writes it to the real
+store with no record, with producer names of 18 bytes (the baseline) and with each length of `-lengths` (a comma
+list from 14 to 64, not 18; default `32,64`: 64 is the longest the rule allows and not a typical name, so the
+other lengths show the curve), compacts each to the bottom level and prints the record counts at each step,
+the live table bytes, the bytes written and, for each length, the cost
+`(live_N - live18) / (live18 - liveEmpty)`
+(`go run ./cmd/producercost -capture <dir with run1.jsonl and run2.jsonl>`). The 2026-10-12 capture has 2,535
+log records; the translator makes 656 records of them and the coalescer (5-minute pull setting) writes 615.
+Its numbers are local and informational. It writes one small store, so its cost moves by about half a
+percentage point with the exact bytes of the filler; the decision takes it and the bench measurement at scale
+(R2, R7) together.
 
 `streamstats` prints three models of what a deadline index would cost: every extension rewriting its
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses

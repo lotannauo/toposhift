@@ -299,10 +299,10 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	} else if _, stderr, err := run(t, bin, "read", "-untimed", "-out", own, "-candidate", "M/crdb1"); err != nil {
 		t.Errorf("read of a canonical build: %v\n%s", err, stderr)
 	}
-	// A plan flag is not quietly dropped when a plan exists: run refuses it (here -full
-	// and -payload-pad, which a plan of another kind would have made).
+	// A plan flag is not quietly dropped when a plan exists: run refuses it (here -full,
+	// -producer-len and -payload-pad, which a plan of another kind would have made).
 	if _, statErr := os.Stat(filepath.Join(own, "plan.json")); statErr == nil { // without a plan, run would make one and build everything
-		for _, flag := range [][]string{{"-full"}, {"-payload-pad", "8"}} {
+		for _, flag := range [][]string{{"-full"}, {"-payload-pad", "8"}, {"-producer-len", "18"}} {
 			if _, stderr, err := run(t, bin, append([]string{"run", "-untimed", "-out", own}, flag...)...); err == nil || !strings.Contains(stderr, "cannot be applied") {
 				t.Errorf("run with %v over an existing plan: %v\n%.300s", flag, err, stderr)
 			}
