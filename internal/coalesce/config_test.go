@@ -117,6 +117,9 @@ func TestDescribe(t *testing.T) {
 		"a fixed interval": {coalesce.Config{ExtendEvery: 90 * time.Second, RunMaxAge: 10 * time.Minute}, map[string]string{
 			"extend_ttl_fraction": "0", "extend_every": "1m30s", "run_max_age": "10m0s",
 		}},
+		"the age from the TTL": {coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true}, map[string]string{
+			"extend_ttl_fraction": "0.5", "extend_every": "0s", "run_max_age": "0s", "run_age_from_ttl": "true",
+		}},
 		"an odd fraction": {coalesce.Config{ExtendTTLFraction: 0.125}, map[string]string{
 			"extend_ttl_fraction": "0.125", "extend_every": "0s", "run_max_age": "0s",
 		}},

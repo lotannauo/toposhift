@@ -120,18 +120,24 @@ func (c *Coalescer) Runs() int { return len(c.runs) }
 // another, so the caller may reuse its buffers once it has used what Add returned for
 // the record. Add takes raw records: one that already carries a Through is passed on
 // as given, like a delete, and ends the subject's run, whose state it no longer
-// matches. Nothing is written for the tail of the run that its absorbed refreshes stood
-// for, so existence can show a gap of less than one extension interval before such a
+// matches, with two exceptions at its layer's horizon h: one that starts before h and
+// reaches it (its Through is at or after h) is re-timed to h and keeps its Through,
+// and one that ends before h is passed on unchanged and leaves the runs alone.
+// Nothing is written for the tail of the run that its absorbed refreshes stood for,
+// so existence can show a gap of less than one extension interval before such a
 // record, as it can before a watch-mode record; that gap is accepted.
 //
 // An extension re-asserts the run at its first event time, so once the store has
 // retained past that time it would be refused and the run would silently die at
 // its deadline. A run that started before the retention horizon of its layer is
 // therefore continued by a new run, asserted at the refresh's own event time. A new
-// run also starts when the description changes (a payload, a TTL, a boot or the basis of
-// the event time), and when the run has reached the age [Config.RunMaxAge] allows. An
-// extension and the record that closes a run carry the basis of the refresh that started
-// it; a record that is passed on as given keeps its own.
+// run also starts when the description changes (a payload, a TTL, a boot or the
+// basis of the event time), and when the run has reached the age [Config.RunMaxAge]
+// allows or, with [Config.RunAgeFromTTL], its own extension interval (such a run is
+// never extended by a refresh, but is closed with a Through when its stored copy
+// lapsed before the new run). An extension and the record that closes a run carry
+// the basis of the refresh that started it; a record that is passed on as given
+// keeps its own.
 //
 // A new run replaces the old run's deadline, so existence stays continuous only
 // if the old run's stored deadline reaches the new run's start. Refreshes inside
@@ -145,6 +151,20 @@ func (c *Coalescer) Add(r store.Record, out []store.Record) []store.Record {
 	r.Seq = 0
 	key := runKey{r.Subject, r.Producer}
 	if r.Kind == lifecycle.Delete || r.TTL == 0 || !r.Through.IsZero() {
+		if !r.Through.IsZero() {
+			// A record that stands for a span, and starts before its layer's horizon,
+			// is kept from the horizon on, as closeRun does for a run that began
+			// before it. One that ends before the horizon is wholly past what the
+			// store keeps: it is passed on as given, for the late path after the
+			// coalescer to refuse and count, and the run is left alone, because a
+			// record the store will never hold must not end a live run.
+			if h := c.Horizon(r.Layer); r.EventTime.Before(h) {
+				if r.Through.Before(h) {
+					return append(out, r)
+				}
+				r.EventTime = h
+			}
+		}
 		// A delete, a watch-mode assertion, or a record that already stands for a run of
 		// its own (a Through is the coalescer's to set, so this one is not a refresh)
 		// ends any run. It is passed on as given: overwriting its Through, or absorbing
@@ -180,7 +200,7 @@ func (c *Coalescer) Add(r store.Record, out []store.Record) []store.Record {
 	case !r.EventTime.After(st.last):
 		return out // already covered by the run
 	case st.start.Before(c.Horizon(st.layer)) || r.EventTime.After(st.last.Add(st.ttl)) ||
-		(c.cfg.RunMaxAge > 0 && r.EventTime.Sub(st.start) >= c.cfg.RunMaxAge):
+		(c.cfg.ageBound(st.ttl) > 0 && r.EventTime.Sub(st.start) >= c.cfg.ageBound(st.ttl)):
 		// A run the store can no longer extend, a gap longer than the TTL, or a run
 		// that has reached its greatest age: a new run.
 		out = c.closeRun(key, st, r.EventTime, out)
