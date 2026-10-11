@@ -1,0 +1,27 @@
+2026-10-10T10:00:00Z script exited (status 0)
+2026-10-10T10:01:00Z collector run 1 started, T0=1000
+2026-10-10T10:02:00Z baseline starts, B=1060
+2026-10-10T11:00:00Z churn web=50
+deployment.apps/web scaled
+2026-10-10T12:00:00Z collector run 1 stopped: 10 lines, 1000 bytes
+2026-10-10T12:00:00Z S5 starts
+pod "web-1" deleted from default namespace
+2026-10-10T12:01:00Z deleted 2 web pods (S5): pod/web-1 pod/web-2 
+2026-10-10T12:05:00Z collector run 2 started, T0=2000
+2026-10-10T12:40:00Z collector run 2 stopped: 20 lines, 2000 bytes
+2026-10-10T12:40:00Z S12-early starts
+2026-10-10T12:41:00Z deleted 1 web pods (S12-early): pod/web-3 
+2026-10-10T12:52:00Z collector run 3 started, T0=3000
+2026-10-10T13:30:00Z kubectl scale deployment web --replicas=40
+2026-10-10T13:30:00Z churn paused, web=40
+2026-10-10T13:40:00Z API restart 3: ready, deleted 1 pods at once: pod/web-4 
+2026-10-10T13:48:00Z API restart 3: ready, deleted 1 pods at once: pod/web-5 
+2026-10-10T13:56:00Z API restart 3: ready, deleted 1 pods at once: pod/web-6 
+2026-10-10T14:00:00Z agent 2 stopped (node uid 1c427a35-bffd-4c62-90a8-287ebb932e0a)
+2026-10-10T14:07:00Z kubectl delete node k3snode-agent-2 --wait=false
+2026-10-10T14:09:00Z agent 2 back with uid d43640a7-2ab6-4e47-9765-fe8361ec9020
+2026-10-10T15:00:00Z kubectl scale deployment web --replicas=100
+2026-10-10T15:01:00Z web=400 Running
+2026-10-10T15:10:00Z kubectl scale deployment web --replicas=40
+2026-10-10T15:20:00Z kubectl delete deployment web --wait=false
+2026-10-10T15:30:00Z collector run 3 stopped: 30 lines, 3000 bytes
