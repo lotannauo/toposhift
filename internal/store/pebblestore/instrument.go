@@ -1,8 +1,11 @@
 package pebblestore
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -146,9 +149,154 @@ func (i *Instrument) Breakdown() (map[Part]int64, error) {
 	return out, it.Error()
 }
 
+// WaitScanned returns when no scan of the stored prefixes is running: the filter of
+// the last one is installed, or the scan was stopped. It returns an error wrapping
+// [store.ErrClosed] if the store is closed, and the context's error if ctx ends
+// first. A Background pass starts its scan when its rewriting is over, so after a
+// Retain the caller waits for [Instrument.WaitRetained] first. For tests and
+// measurements, whose counts would otherwise depend on how fast a scan is.
+func (i *Instrument) WaitScanned(ctx context.Context) error {
+	s := i.s
+	for {
+		s.mu.Lock()
+		if s.closed.Load() {
+			s.mu.Unlock()
+			return closedError("WaitScanned")
+		}
+		done := s.scanWait
+		s.flushCounts()
+		s.mu.Unlock()
+		if done == nil {
+			return nil
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return contextError("WaitScanned", ctx.Err())
+		}
+	}
+}
+
+// AssumeEveryPrefixMayExist makes the filter of the stored prefixes answer that
+// every prefix may hold keys, so that the writer reads every prefix whose state it
+// does not keep, for tests and measurements that compare the two. It changes no
+// stored byte.
+func (i *Instrument) AssumeEveryPrefixMayExist() {
+	i.s.mu.Lock()
+	defer i.s.mu.Unlock()
+	i.s.filterMaybe = true
+}
+
+// CapCachedStates makes the writer keep the states of at most n prefixes, besides
+// the budget of [Options.StateCacheBytes], so that a test or a measurement can make
+// it evict and read again. Zero removes the cap.
+func (i *Instrument) CapCachedStates(n int) {
+	i.s.mu.Lock()
+	defer i.s.mu.Unlock()
+	i.s.states.setCap(max(n, 0))
+}
+
+// VerifyCheckpoints walks every checkpoint in the database of the current fold
+// version, builds it again from what is below it, and returns an error for the
+// first that has other entries than the build gives, or a W below the highest Seq
+// among the records before its instant: a stale checkpoint. The B and the W of the
+// two are not compared, B being the last sequence number at the build and W
+// conservative. For tests and measurements.
+func (i *Instrument) VerifyCheckpoints() error {
+	s := i.s
+	// No write or chunk changes the database while the checkpoints are listed and
+	// built again.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type ckpt struct {
+		prefix []byte
+		ns     int64
+		val    []byte
+	}
+	var found []ckpt
+	lo, hi := dataBounds()
+	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return err
+	}
+	for ok := it.First(); ok; ok = it.Next() {
+		prefix, ns, _, kind, err := parseKey(it.Key())
+		if err != nil {
+			_ = it.Close()
+			return err
+		}
+		if kind == kindCheckpoint {
+			found = append(found, ckpt{slices.Clone(prefix), ns, slices.Clone(it.Value())})
+		}
+	}
+	if err := errors.Join(it.Error(), it.Close()); err != nil {
+		return err
+	}
+	// The builds are the store's own, through a store that counts nothing: a
+	// verification is not part of what a measurement counts.
+	v := &Store{kv: s.kv, rec: nopRecorder{}}
+	for _, c := range found {
+		stored, err := decodeStamp(c.val)
+		if err != nil {
+			return fmt.Errorf("pebblestore: the checkpoint at %d of prefix %x does not decode: %w", c.ns, c.prefix, err)
+		}
+		if stored.foldVersion != foldVersion {
+			continue
+		}
+		raw, err := v.build(c.prefix, c.ns)
+		if err != nil {
+			return err
+		}
+		built, err := decodeStamp(raw)
+		if err != nil {
+			return err
+		}
+		floor, err := s.highestSeqBefore(c.prefix, c.ns)
+		if err != nil {
+			return err
+		}
+		if stored.w < floor {
+			return fmt.Errorf("pebblestore: the checkpoint at %d of prefix %x has W %d, below %d, the highest Seq among the records before it", c.ns, c.prefix, stored.w, floor)
+		}
+		stored.through, built.through, stored.w, built.w = 0, 0, 0, 0
+		x, xerr := appendStamp(nil, stored)
+		y, yerr := appendStamp(nil, built)
+		if err := errors.Join(xerr, yerr); err != nil {
+			return err
+		}
+		if !bytes.Equal(x, y) {
+			return fmt.Errorf("pebblestore: the checkpoint at %d (%d entries) of prefix %x is not what building it from the records gives (%d entries): it is stale", c.ns, len(stored.entries), c.prefix, len(built.entries))
+		}
+	}
+	return nil
+}
+
+// highestSeqBefore is the highest Seq among the records of the prefix with an event
+// time before ns.
+func (s *Store) highestSeqBefore(prefix []byte, ns int64) (uint64, error) {
+	lo, hi := prefixBounds(prefix)
+	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
+	if err != nil {
+		return 0, err
+	}
+	var top uint64
+	for ok := it.First(); ok; ok = it.Next() {
+		_, at, seq, kind, err := parseKey(it.Key())
+		if err != nil {
+			_ = it.Close()
+			return 0, err
+		}
+		if kind == kindRecord && at < ns {
+			top = max(top, seq)
+		}
+	}
+	return top, errors.Join(it.Error(), it.Close())
+}
+
 // WaitRetained returns when no background pass is pending: the last chunk is
-// committed, its writer state installed, the pass settled (if the store settles), the
-// marker deleted and the map called complete if the pass vouches for it. A Retain
+// committed, its writer state installed, the pass settled (if the store settles) and
+// the marker deleted; the scan of the stored prefixes that follows the pass has
+// started, and [Instrument.WaitScanned] waits for it. A Retain
 // while a pass settles replaces it, and the caller then waits for the newer pass. It returns the error that stopped the pass
 // if the store has latched one, an error wrapping [store.ErrClosed] if the store
 // is closed with the pass still pending (the next Open resumes it), and the

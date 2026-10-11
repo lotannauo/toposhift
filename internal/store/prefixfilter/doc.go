@@ -8,8 +8,8 @@
 // direction) has to ask, before a write, whether a prefix is already known. At
 // tens of millions of prefixes an exact in-memory set takes gigabytes. A
 // [Filter] answers the same question in about 9.84 bits per key (about 20 MB at
-// 16.5 million keys), in three memory reads, and is rebuilt from the prefixes a
-// retention pass visits. It is never updated in place: prefixes created after
+// 16.5 million keys), in three memory reads, and is built from a scan of the
+// stored prefixes. It is never updated in place: prefixes created after
 // the build belong in a separate exact set that the caller checks as well.
 //
 // # What a wrong answer costs

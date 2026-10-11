@@ -79,6 +79,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	ph.validate = s.since(validateStart)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushCounts()
 	if s.failed != nil {
 		return s.failedError("Write")
 	}
@@ -166,6 +167,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		if !finished {
 			s.forgetAll()
 		}
+		s.states.unpinAll() // the states this Write touched were kept from eviction until now
 	}()
 	s.iterators = 0
 	// Nothing is remembered, and nothing can need invalidating, in a database that
@@ -193,6 +195,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 			if err != nil {
 				return fmt.Errorf("pebblestore: Write: %w", err)
 			}
+			s.states.pin(string(p.prefix), st)
 			started = s.now()
 			err = s.invalidate(b, p.prefix, st, p.ns)
 			ph.invalidate += s.since(started)
@@ -204,6 +207,11 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 			st.sinceBytes += len(p.value)
 			touched[string(p.prefix)] = struct{}{}
 		}
+		// The prefix is known to hold keys from before the commit, whatever the
+		// commit reports: one that reports failure may have landed. (Not before its
+		// state is asked for: a prefix this batch creates is one the map knows to
+		// hold nothing until now.)
+		s.written(p.prefix)
 		if err := b.Set(p.key, p.value, nil); err != nil {
 			return fmt.Errorf("pebblestore: Write: %w", err)
 		}

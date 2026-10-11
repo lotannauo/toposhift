@@ -283,6 +283,7 @@ func TestRandomBootHistories(t *testing.T) {
 								}
 							}
 							log = append(log, fmt.Sprintf("retain %d (last seq %d)", horizon, seq))
+							waitScanned(t, s) // the scan that follows the pass, which completes the map
 							if s.complete {
 								if err := rememberedStateMismatch(s); err != nil {
 									t.Fatalf("%v\n%v", err, log)

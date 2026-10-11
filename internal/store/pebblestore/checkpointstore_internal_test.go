@@ -127,11 +127,12 @@ func TestAPrefixKeptWholeForBootsHasItsOwnStateWorkedOut(t *testing.T) {
 	if got := checkpointsOnDisk(t, p.s)[string(entityPrefix())]; !slices.Equal(got, []int64{t0.Add(5 * time.Minute).UnixNano(), h.UnixNano()}) {
 		t.Fatalf("the checkpoints on disk after the retention = %v: a prefix kept whole keeps them all", got)
 	}
+	waitScanned(t, p.s)
 	if !p.s.complete {
-		t.Fatal("the map is not complete after a retention that finished")
+		t.Fatal("the map is not complete after the scan that follows a retention")
 	}
 	requireWholeReads(t, p.s)
-	if st := p.s.states[string(entityPrefix())]; st == nil || !slices.Equal(st.ckpts, []int64{t0.Add(5 * time.Minute).UnixNano(), h.UnixNano()}) {
+	if st := p.s.states.peek(string(entityPrefix())); st == nil || !slices.Equal(st.ckpts, []int64{t0.Add(5 * time.Minute).UnixNano(), h.UnixNano()}) {
 		t.Fatalf("the writer remembers %+v of the prefix; it holds both checkpoints", st)
 	}
 	// A later record, and one at the horizon's own instant, delete only what they
@@ -211,7 +212,7 @@ func TestARetentionThatLeavesALayerAloneKeepsWhatIsRememberedOfIt(t *testing.T) 
 	if len(checkpointsOnDisk(t, s)[string(l1Prefix)]) != 1 {
 		t.Fatal("no checkpoint in L1")
 	}
-	l1State := s.states[string(l1Prefix)]
+	l1State := s.states.peek(string(l1Prefix))
 	if l1State == nil {
 		t.Fatal("the writer does not remember the prefix of L1")
 	}
@@ -224,11 +225,12 @@ func TestARetentionThatLeavesALayerAloneKeepsWhatIsRememberedOfIt(t *testing.T) 
 	if s.LayerHorizon(catalog.L1).Time.Equal(mid) || !s.LayerHorizon(catalog.L2).Time.Equal(mid) {
 		t.Fatalf("the retention moved the wrong layers: L1 %v, L2 %v", s.LayerHorizon(catalog.L1), s.LayerHorizon(catalog.L2))
 	}
-	if got := s.states[string(l1Prefix)]; got != l1State || !reflect.DeepEqual(*got, l1Before) {
+	if got := s.states.peek(string(l1Prefix)); got != l1State || !reflect.DeepEqual(*got, l1Before) {
 		t.Fatalf("the retention changed what is remembered of the layer it left alone: %+v, was %+v", got, l1Before)
 	}
+	waitScanned(t, s)
 	if !s.complete {
-		t.Error("the map was complete before a retention that worked out every layer it rewrote, and is not after")
+		t.Error("the map is not complete after the scan that follows the retention")
 	}
 	if rec.counters["retain.state_keys"] == 0 {
 		t.Error("a retention that works the state of the layers it rewrites out counted no keys")

@@ -17,6 +17,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/pebblekv"
+	"github.com/lotannauo/toposhift/internal/store/prefixfilter"
 )
 
 // formatTag identifies the layout and its encodings in a database's meta: the key
@@ -107,41 +108,54 @@ type Store struct {
 	// of the marker Open found: the next retention's is one more. It is not stored
 	// when no marker is, which is when it does not matter.
 	retainGen uint64
-	// states is what the writer remembers of each prefix (see checkpoint.go).
-	// anyCkpt says a checkpoint may be in the database (one was, or a commit that
-	// reported failure may have landed), in which case a prefix first touched is
-	// read for the checkpoints it holds, and a retention deletes the one at its
-	// horizon. flagOnDisk says the meta key that records it is durably there; until
-	// a commit carrying it succeeds, every checkpoint batch carries it (see
-	// applyCheckpoints).
+	// states, filter and deltas are the writer's map (see prefixstate.go): the
+	// cache of what the writer remembers of the prefixes it touched most recently
+	// (see checkpoint.go), the filter of the stored prefixes the last scan
+	// installed (nil before the first), and the exact sets of the prefixes written
+	// since, oldest first. anyCkpt says a checkpoint may be in the database (one was,
+	// or a commit that reported failure may have landed), in which case a prefix
+	// whose state is not kept is read for the checkpoints it holds, and a retention
+	// deletes the one at its horizon. flagOnDisk says the meta key that records it is
+	// durably there; until a commit carrying it succeeds, every checkpoint batch
+	// carries it (see applyCheckpoints).
 	//
-	// complete says the map is not only right about the prefixes in it but
-	// exhaustive: a prefix it lacks holds no record and no checkpoint, so the
-	// writer knows its state (empty) without reading it. It holds from the opening
-	// of a database with no data, and from the end of a retention that worked out
-	// the state of every prefix it rewrote in its own pass (see Retain), if it held
-	// before or if the retention rewrote every layer. It does not hold, and the
-	// prefixes are read as they are touched, in a database that already holds data
-	// when it is opened; after a retention that does not work the state out (no
-	// checkpoint in the database yet, the policy off, a horizon after the range, a
-	// key that cannot be read, a store that always reads whole prefixes (tests), a
-	// retention that stops or fails, or one that Open finishes for an earlier
-	// process), which forgets the layers it rewrote and keeps what it knew of the
-	// others; after a retention that leaves a layer alone, if it did not hold
-	// before, since the pass vouches for no prefix of that layer; and after anything
-	// that drops what is remembered (a failed commit or read, or a Write that does
-	// not finish once it has begun to touch state), and after a write with
-	// checkpoints off and none in the database, which stores records and remembers
-	// nothing, so the prefixes it leaves are read if a checkpoint is later written.
-	// A horizon before the first instant changes nothing and forgets nothing.
-	//
-	// The price is memory: one entry per live prefix, kept for as long as the store
-	// is open, where the map would otherwise hold only the prefixes touched since
-	// the last retention.
-	states     map[string]*prefixState
+	// complete says a filter is installed and every prefix created since its scan
+	// began is in a live delta: a prefix in neither holds no key, so the writer
+	// knows its state (empty) without reading it. Only the install of a scan's
+	// filter makes it hold, and only if nothing was lost since the scan began. It
+	// does not hold before the first scan of a store opened over data, and stops
+	// holding, until a scan that begins after, on anything that drops what is
+	// remembered (lose): a failed commit or read, a Write that does not finish once
+	// it has begun to touch state, a retention that rewrites a layer, and a write
+	// with checkpoints off and none in the database, which stores records and
+	// remembers nothing. lost counts those, so that a scan that began before one
+	// does not call the map complete.
+	states     *stateCache
+	filter     *prefixfilter.Filter
+	deltas     []*delta
 	complete   bool
+	lost       uint64
 	anyCkpt    bool
 	flagOnDisk bool
+	// scan is the scan of the stored prefixes that is the store's, if one is
+	// running (see startScan); scanWait is closed, and set to nil, when there is
+	// none any more, to release the callers of WaitScanned. scanCtx is cancelled by
+	// Close, which stops every scan, and scans and liveScans count the goroutines
+	// of the scans, the ones stopped included, which Close waits for.
+	scan      *scanRun
+	scanWait  chan struct{}
+	scanCtx   context.Context
+	scanStop  context.CancelFunc
+	scans     sync.WaitGroup
+	liveScans atomic.Int32
+	// laterCounts are the counts of the scans, kept for the caller's next call (see
+	// countLater).
+	laterCounts map[string]int64
+	// filterMaybe makes the filter answer that every prefix may hold keys, for tests
+	// and measurements (see Instrument). scanHook is the test hook of the same name
+	// in Options.
+	filterMaybe bool
+	scanHook    func(at scanPoint, hops int, last []byte)
 	// iterators counts the iterators the Write in progress opens for its state.
 	iterators int64
 	// last is how the last Retain spent its time (see [Instrument.LastRetain]).
@@ -212,6 +226,13 @@ func Open(dir string, o Options) (*Store, error) {
 	if err := ckpt.validate(); err != nil {
 		return nil, fmt.Errorf("pebblestore: Open: %w", err)
 	}
+	if o.StateCacheBytes < 0 {
+		return nil, fmt.Errorf("pebblestore: Open: the state cache of %d bytes is negative: %w", o.StateCacheBytes, store.ErrInvalid)
+	}
+	cacheBytes := o.StateCacheBytes
+	if cacheBytes == 0 {
+		cacheBytes = DefaultStateCacheBytes
+	}
 	// Fold validates the policy before anything else, and the check itself is not
 	// exported.
 	if _, err := lifecycle.Fold(nil, o.Policy); err != nil {
@@ -232,10 +253,11 @@ func Open(dir string, o Options) (*Store, error) {
 		beforeRecordApply: o.beforeRecordApply, afterRecordApply: o.afterRecordApply, rereadFails: o.rereadFails,
 		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply,
 		beforeCheckpointApply: o.beforeCheckpointApply, afterCheckpointApply: o.afterCheckpointApply,
-		ckpt: ckpt, fullStateRead: o.fullStateRead, states: map[string]*prefixState{},
+		ckpt: ckpt, fullStateRead: o.fullStateRead,
 		offsets: o.Offsets, keep: o.Keep,
 		retention: o.Retention, retainerExited: o.retainerExited, beforeRetainChunk: o.beforeRetainChunk,
 		betweenSettleRanges: o.betweenSettleRanges, observer: o.Observer,
+		scanHook: o.scanHook,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
 	if s.retention == Background && !cfg.ReadOnly {
@@ -250,6 +272,11 @@ func Open(dir string, o Options) (*Store, error) {
 	} else {
 		// Only a store that has a recorder reads the clock for the phases of a Write.
 		s.timed = true
+	}
+	s.states = newStateCache(cacheBytes, s.rec)
+	s.scanCtx, s.scanStop = context.WithCancel(context.Background())
+	if !cfg.ReadOnly {
+		s.newDelta() // the delta of the opening, which the writes before the first scan add to
 	}
 	s.clock = time.Now
 	if o.clock != nil {
@@ -266,7 +293,7 @@ func Open(dir string, o Options) (*Store, error) {
 			s.chunkTime = time.Duration(1<<63 - 1)
 		}
 	}
-	unfinished, err := s.load()
+	unfinished, empty, err := s.load()
 	if err != nil {
 		s.abandon()
 		_ = kv.Close()
@@ -289,6 +316,21 @@ func Open(dir string, o Options) (*Store, error) {
 			return nil, err
 		}
 	}
+	// The writer's map: a database with no data has the empty filter at once, and
+	// is complete; one with data is scanned, now, or, with a background pass
+	// pending, when its rewriting is over, and is read as it is touched until then.
+	// (A store that reads whole prefixes, for tests, trusts nothing it has not read.)
+	if !kv.Config().ReadOnly && !s.fullStateRead {
+		s.mu.Lock()
+		switch {
+		case empty:
+			s.openEmpty()
+		case s.pass == nil:
+			s.startScan()
+		}
+		s.flushCounts()
+		s.mu.Unlock()
+	}
 	if s.cancel != nil {
 		s.startRetainer()
 	}
@@ -300,15 +342,16 @@ func (s *Store) abandon() {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.scanStop()
 }
 
 // load reads, or on a new database writes, the meta keys. It returns the marker of
 // a retention that did not finish, if the database holds one, after checking that
 // it agrees with the horizons stored beside it.
-func (s *Store) load() (*retainMarker, error) {
+func (s *Store) load() (_ *retainMarker, empty bool, err error) {
 	format, err := s.kv.GetMeta(metaKey(pebblekv.MetaFormat))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	pebbleNow := pebbleTag(linkedPebbleVersion(), s.kv.FormatMajorVersion())
 	switch {
@@ -318,81 +361,81 @@ func (s *Store) load() (*retainMarker, error) {
 		lo, hi := dataBounds()
 		it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		held := it.First()
 		if err := errors.Join(it.Error(), it.Close()); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if held {
-			return nil, fmt.Errorf("pebblestore: Open: the directory holds data keys and no format: %w", store.ErrInvalid)
+			return nil, false, fmt.Errorf("pebblestore: Open: the directory holds data keys and no format: %w", store.ErrInvalid)
 		}
 		// A new database: everything that is fixed at creation goes in one commit,
 		// so that a database with a format has all of it.
 		b := s.kv.NewBatch()
 		defer func() { _ = b.Close() }()
 		if err := b.Set(metaKey(pebblekv.MetaFormat), []byte(formatTag), nil); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err := b.Set(metaKey(metaPebble), pebbleNow, nil); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if s.policy.BootKey != "" {
 			if err := b.Set(metaKey(metaBootKey), []byte(s.policy.BootKey), nil); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 		if err := s.kv.Apply(b, pebble.Sync); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	case string(format) != formatTag:
-		return nil, fmt.Errorf("pebblestore: Open: the database holds format %q, this is %q: %w", format, formatTag, store.ErrInvalid)
+		return nil, false, fmt.Errorf("pebblestore: Open: the database holds format %q, this is %q: %w", format, formatTag, store.ErrInvalid)
 	default:
 		// There is no option to upgrade a database to another Pebble yet, so a
 		// database made by another version, or at another format major version,
 		// is refused.
 		made, err := s.kv.GetMeta(metaKey(metaPebble))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if string(made) != string(pebbleNow) {
-			return nil, fmt.Errorf("pebblestore: Open: the database was made by %q, this is %q: %w", made, pebbleNow, store.ErrInvalid)
+			return nil, false, fmt.Errorf("pebblestore: Open: the database was made by %q, this is %q: %w", made, pebbleNow, store.ErrInvalid)
 		}
 	}
 	// An absent bootKey is the zero policy's, which is what a database created
 	// without one has, so any mismatch is a refusal.
 	bootKey, err := s.kv.GetMeta(metaKey(metaBootKey))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if string(bootKey) != string(s.policy.BootKey) {
-		return nil, fmt.Errorf("pebblestore: Open: the database was created with boot key %q, not %q: %w", bootKey, s.policy.BootKey, store.ErrInvalid)
+		return nil, false, fmt.Errorf("pebblestore: Open: the database was created with boot key %q, not %q: %w", bootKey, s.policy.BootKey, store.ErrInvalid)
 	}
 	raw, err := s.kv.GetMeta(metaKey(pebblekv.MetaLastSeq))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	seq, err := pebblekv.DecodeSeq(raw)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.lastSeq.Store(seq)
 	var hs [layers]store.Horizon
 	for i := range hs {
 		raw, err := s.kv.GetMeta(metaKey(pebblekv.HorizonMetaName(catalog.L0 + catalog.Layer(i))))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		t, hseq, err := pebblekv.DecodeLayerHorizon(raw)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		hs[i] = store.Horizon{Time: t, Seq: hseq}
 	}
 	s.horizons.Store(&hs)
 	rawLast, err := s.kv.GetMeta(metaKey(metaHorizonLast))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	latest := lastHorizon(rawLast, hs)
 	s.lastMoved.Store(&latest)
@@ -400,36 +443,34 @@ func (s *Store) load() (*retainMarker, error) {
 	// ones a later record makes untrue, whether or not it writes any.
 	raw, err = s.kv.GetMeta(metaKey(metaCheckpoints))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.anyCkpt = raw != nil
 	s.flagOnDisk = s.anyCkpt
-	// A database that holds no data has no prefix to learn: every one a write meets
-	// is new, and there is no need to read it to find that out. (A store that reads
-	// the whole of every prefix, for tests, trusts nothing it has not read.)
+	// A database that holds no data has no prefix to scan: every one a write meets
+	// is new, and there is no need to read it to find that out (see Open).
 	lo, hi := dataBounds()
 	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	empty := !it.First()
+	empty = !it.First()
 	if err := errors.Join(it.Error(), it.Close()); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	s.complete = empty && !s.fullStateRead
 	// A marker means a retention began and did not finish. Its horizons were
 	// committed with it, so they must be the ones stored; a database where they
 	// are not is not one this store wrote.
 	raw, err = s.kv.GetMeta(metaKey(metaRetain))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if raw == nil {
-		return nil, nil
+		return nil, empty, nil
 	}
 	m, err := decodeRetainMarker(raw)
 	if err != nil {
-		return nil, fmt.Errorf("pebblestore: Open: %w: %w", err, store.ErrInvalid)
+		return nil, false, fmt.Errorf("pebblestore: Open: %w: %w", err, store.ErrInvalid)
 	}
 	s.retainGen = m.generation
 	if markerSuperseded(m, hs) {
@@ -439,16 +480,16 @@ func (s *Store) load() (*retainMarker, error) {
 		// only removed (a database opened read-only is left as it is).
 		if !s.kv.Config().ReadOnly {
 			if err := s.releaseMarker(m.generation); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			s.rec.Count("retain.superseded", 1)
 		}
-		return nil, nil
+		return nil, empty, nil
 	}
 	if err := checkMarker(m, hs); err != nil {
-		return nil, fmt.Errorf("pebblestore: Open: the retention marker %w: %w", err, store.ErrInvalid)
+		return nil, false, fmt.Errorf("pebblestore: Open: the retention marker %w: %w", err, store.ErrInvalid)
 	}
-	return &m, nil
+	return &m, empty, nil
 }
 
 // markerSuperseded says the stored horizon of every layer the marker names is
@@ -581,19 +622,32 @@ func (s *Store) LayerHorizon(layer catalog.Layer) store.Horizon { return s.horiz
 // database, in its settling phase if the rewriting was over, and the next Open
 // resumes it, settling again. If the retainer stopped because a commit failed, Close
 // returns that error, after closing the database.
+//
+// Close also stops a scan of the stored prefixes that is running, between two
+// prefixes, and waits for its goroutine to exit before it closes the database. The
+// writer's memory is never stored: the next Open scans again.
 func (s *Store) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// A scan is stopped first, between two prefixes, and waited for: its iterator
+	// must be closed before the database is.
+	s.scanStop()
 	var stopped error
 	if s.retainerDone != nil {
 		s.cancel()
 		s.signal()
 		<-s.retainerDone
-		s.mu.Lock()
-		stopped = s.bgErr
-		s.mu.Unlock()
 	}
+	// No scan starts once the store is closed (startScan, under the lock, looks), so
+	// after this one the goroutines of the scans can be waited for.
+	s.mu.Lock()
+	stopped = s.bgErr
+	s.mu.Unlock()
+	s.scans.Wait()
+	s.mu.Lock()
+	s.releaseWriterMap()
+	s.mu.Unlock()
 	err := s.kv.Close()
 	if stopped != nil {
 		return errors.Join(fmt.Errorf("pebblestore: Close: the retention stopped: %w", stopped), err)

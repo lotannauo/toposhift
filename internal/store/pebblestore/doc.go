@@ -37,6 +37,20 @@
 // losing one is harmless, and a stale one is a wrong answer, so a record that makes
 // one untrue deletes it in the same commit.
 //
+// # The writer's memory
+//
+// The writer keeps, for the prefixes it touched most recently and within
+// [Options.StateCacheBytes], what it needs to keep checkpoints true: the instants
+// of a prefix's checkpoints and how much was written since the last. It knows the
+// other prefixes by a filter of the stored prefixes (package prefixfilter), built
+// by a scan of the data keyspace when a store opens over data and after each
+// retention, beside the writes and without their lock, and by exact sets of the
+// prefixes written since a scan began. A prefix in neither holds nothing, and its
+// state is known without a read; any other prefix whose state is not kept is read
+// when a write touches it. Before the first scan has installed a filter, every
+// such prefix is read. Nothing of this is stored: a store opened again scans
+// again. See prefixstate.go.
+//
 // # Retention
 //
 // Retain(h) publishes the horizon of each layer it moves (see Layers below), then

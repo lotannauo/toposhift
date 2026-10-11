@@ -66,14 +66,16 @@ func TestABackgroundRetentionLeavesTheBytesOfASynchronousOne(t *testing.T) {
 				}
 			}
 			waitRetained(t, bgs)
+			waitScanned(t, bgs)
+			waitScanned(t, syn)
 			if m := readMarker(t, bgs); m != nil {
 				t.Errorf("the marker %+v is left", m)
 			}
 			if !slices.Equal(dataBytes(t, bgs), dataBytes(t, syn)) {
 				t.Fatal("the background retention left other data than the synchronous one")
 			}
-			if bgs.complete != syn.complete || len(bgs.states) != len(syn.states) {
-				t.Errorf("the background pass leaves a map of %d prefixes (complete %v), the synchronous one %d (%v)", len(bgs.states), bgs.complete, len(syn.states), syn.complete)
+			if bgs.complete != syn.complete || bgs.states.len() != syn.states.len() {
+				t.Errorf("the background pass leaves a map of %d prefixes (complete %v), the synchronous one %d (%v)", bgs.states.len(), bgs.complete, syn.states.len(), syn.complete)
 			}
 			if ck.On {
 				requireWholeReads(t, bgs)
@@ -1368,8 +1370,8 @@ func TestAWriteThatFailsBeforeItsCommitLeavesItsPrefixesToThePass(t *testing.T) 
 // What the writer remembers during a pass.
 
 // Whatever drops what the writer remembers while a pass is pending (here a failed
-// checkpoint commit) means the pass cannot call the map complete when it ends: the
-// prefixes it passed before are not in it any more.
+// checkpoint commit) ends completeness, and only the scan that follows the pass,
+// which begins after the failure, makes the map complete again.
 func TestAFailureThatDropsTheWritersMapDuringAPassLeavesItIncomplete(t *testing.T) {
 	t.Parallel()
 	w := newAsyncWorld(53)
@@ -1383,6 +1385,11 @@ func TestAFailureThatDropsTheWritersMapDuringAPassLeavesItIncomplete(t *testing.
 		if calls++; calls == 5 {
 			armed = true
 			errs.add(s.Write(bg, cloneAll(w.later[0])))
+			s.mu.Lock()
+			if s.complete {
+				errs.add(errors.New("the map is complete after a failure dropped it"))
+			}
+			s.mu.Unlock()
 		}
 	}
 	o.beforeCheckpointApply = func() error {
@@ -1406,8 +1413,9 @@ func TestAFailureThatDropsTheWritersMapDuringAPassLeavesItIncomplete(t *testing.
 	if !fired {
 		t.Fatal("no checkpoint commit failed")
 	}
-	if s.complete {
-		t.Error("the pass called the writer's map complete after a failure dropped it")
+	waitScanned(t, s)
+	if complete, _ := mapState(s); !complete {
+		t.Error("the scan that followed the pass did not make the map complete")
 	}
 	s.mu.Lock()
 	err := asyncStateMismatch(s, false)
@@ -1417,12 +1425,11 @@ func TestAFailureThatDropsTheWritersMapDuringAPassLeavesItIncomplete(t *testing.
 	}
 }
 
-// Everything that drops what the writer remembers tells the pending pass.
-func TestWhateverTheWriterForgetsTheBackgroundPassIsToldOf(t *testing.T) {
+// Everything that drops what the writer remembers ends completeness, and counts a
+// loss, so that a scan that began before it does not call the map complete.
+func TestWhateverTheWriterForgetsEndsCompleteness(t *testing.T) {
 	t.Parallel()
 	s := openMem(t, Options{Retention: Background})
-	// The store's retainer reads the pass under the lock, so the test sets it and
-	// forgets under the lock too.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for name, forget := range map[string]func(){
@@ -1430,13 +1437,13 @@ func TestWhateverTheWriterForgetsTheBackgroundPassIsToldOf(t *testing.T) {
 		"everything": s.forgetAll,
 		"layers":     func() { s.forgetLayers([]retainLayer{{layer: catalog.L1}}) },
 	} {
-		s.pass = &retainPass{intact: true}
+		s.complete = true
+		lost := s.lost
 		forget()
-		if s.pass.intact {
-			t.Errorf("forgetting %s leaves the pass intact", name)
+		if s.complete || s.lost == lost {
+			t.Errorf("forgetting %s leaves the map complete (%v) or counts no loss", name, s.complete)
 		}
 	}
-	s.pass = nil
 }
 
 // A checkpoint made between two chunks by the instrument, in a prefix the pass has

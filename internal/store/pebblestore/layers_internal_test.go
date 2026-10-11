@@ -418,17 +418,18 @@ func TestAnInterruptedRetentionOfTwoLayersResumesInThoseLayers(t *testing.T) {
 
 // The writer's memory after a Retain that leaves layers alone: the prefixes of those
 // layers keep the states they had (the very values), the prefixes of the layers it
-// rewrote are what a whole read finds, and the map is complete only if it was.
+// rewrote that the writer keeps are what a whole read finds (it keeps none of them
+// after a reopening, and the retention adds none), and the scan that follows makes
+// the map complete.
 func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 	t.Parallel()
 	cs := newChunkStream(t, 90*time.Second)
 	for _, tc := range []struct {
-		name         string
-		reopen       bool
-		wantComplete bool
+		name   string
+		reopen bool
 	}{
-		{"a complete map stays complete", false, true},
-		{"a map that was not complete is not", true, false},
+		{"the writer keeps the states it wrote", false},
+		{"the writer keeps one state, of the kept layer", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -443,8 +444,8 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 					t.Fatal(err)
 				}
 				s = mustOpen(t, o)
-				if s.complete {
-					t.Fatal("a database that holds data opens complete")
+				if complete, installed := mapState(s); complete != installed {
+					t.Fatalf("a database that holds data opens complete = %v, with a filter = %v", complete, installed)
 				}
 				// A write to a prefix of the kept layer, which the store then remembers.
 				var l0 []byte
@@ -454,7 +455,13 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 						break
 					}
 				}
-				if _, err := s.state(l0); err != nil {
+				s.mu.Lock()
+				st, err := s.state(l0)
+				if err == nil {
+					s.states.put(string(l0), st)
+				}
+				s.mu.Unlock()
+				if err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -463,7 +470,7 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 			}
 			unmoved := map[string]*prefixState{}
 			saved := map[string]prefixState{}
-			for k, st := range s.states {
+			for k, st := range s.states.all() {
 				if layerOfPrefix([]byte(k)) == catalog.L0 {
 					unmoved[k], saved[k] = st, *st
 				}
@@ -474,11 +481,12 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 			if err := s.Retain(bg, cs.h); err != nil {
 				t.Fatal(err)
 			}
-			if s.complete != tc.wantComplete {
-				t.Errorf("complete = %v after the Retain, want %v", s.complete, tc.wantComplete)
+			waitScanned(t, s)
+			if !s.complete {
+				t.Error("the scan that follows the Retain did not make the map complete")
 			}
 			for k, st := range unmoved {
-				if got := s.states[k]; got != st || !reflect.DeepEqual(*got, saved[k]) {
+				if got := s.states.peek(k); got != st || !reflect.DeepEqual(*got, saved[k]) {
 					t.Errorf("what the writer remembered of the prefix %x of the kept layer changed", k)
 				}
 			}
@@ -488,13 +496,13 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 			}
 			// Some prefix of a rewritten layer is remembered.
 			var moved int
-			for k := range s.states {
+			for k := range s.states.all() {
 				if layerOfPrefix([]byte(k)) != catalog.L0 {
 					moved++
 				}
 			}
-			if moved == 0 {
-				t.Error("the writer remembers nothing of the layers the retention rewrote")
+			if (moved == 0) != tc.reopen {
+				t.Errorf("the writer remembers %d prefixes of the layers the retention rewrote", moved)
 			}
 		})
 	}
@@ -503,7 +511,7 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 // A Retain whose horizon is past the range rewrites every prefix in a way the keys
 // it leaves do not describe, so it works nothing out: the prefixes of the layers it
 // rewrote are forgotten, those of a kept layer are remembered still, and the map is
-// no longer complete.
+// complete again once the scan that follows has run.
 func TestARetainPastTheRangeForgetsOnlyTheLayersItRewrote(t *testing.T) {
 	t.Parallel()
 	cs := newChunkStream(t, 90*time.Second)
@@ -513,7 +521,7 @@ func TestARetainPastTheRangeForgetsOnlyTheLayersItRewrote(t *testing.T) {
 		t.Fatalf("anyCkpt %v, complete %v", s.anyCkpt, s.complete)
 	}
 	kept := map[string]*prefixState{}
-	for k, st := range s.states {
+	for k, st := range s.states.all() {
 		if layerOfPrefix([]byte(k)) == catalog.L0 {
 			kept[k] = st
 		}
@@ -521,15 +529,16 @@ func TestARetainPastTheRangeForgetsOnlyTheLayersItRewrote(t *testing.T) {
 	if err := s.Retain(bg, store.MaxEventTime.Add(24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if s.complete {
-		t.Error("the map is complete after a retention that worked nothing out")
+	waitScanned(t, s)
+	if !s.complete {
+		t.Error("the scan that follows the retention did not make the map complete")
 	}
 	for k, st := range kept {
-		if s.states[k] != st {
+		if s.states.peek(k) != st {
 			t.Errorf("the prefix %x of the kept layer was forgotten", k)
 		}
 	}
-	for k := range s.states {
+	for k := range s.states.all() {
 		if _, ok := kept[k]; !ok {
 			t.Errorf("the prefix %x of a layer that was rewritten is remembered", k)
 		}

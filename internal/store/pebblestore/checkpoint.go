@@ -46,24 +46,24 @@ import (
 //     the deletion are one batch).
 //
 // Losing a checkpoint is harmless, a stale one is the bug. What the writer knows
-// of each prefix is kept in memory (prefixState), so it deletes known keys. It is
-// read from the database the first time a write (or the instrument's hook)
-// touches the prefix after an opening or a failed commit, but only in a database
-// that has ever had a checkpoint (a meta key says so), so one that has none is
-// never read and, with checkpoints off, nothing is remembered at all. A retention
-// does not make it forget where the policy is on and a checkpoint may exist: it
-// works out what the read would find from the keys it leaves in each prefix (see
-// foldRetained), and when it has done that for every prefix the map is complete,
-// and a prefix missing from it is known to be empty without a read (see
-// Store.complete). A database opened empty starts complete. Some retentions do
-// not work the state out, and then the prefixes of the layers they rewrote are
-// forgotten and read as they are touched: a database that has no checkpoint yet, a
-// policy that is off, a horizon after the range of instants, a key that cannot be
-// read, a store that always reads whole prefixes (tests), and a retention that stops
-// or fails. A layer a retention leaves alone keeps what is remembered of it, and the
-// map is complete afterwards only if it was before or every layer was rewritten. A
-// retention that changes nothing (a horizon before the first instant a record can have)
-// forgets nothing. That read stops at the newest checkpoint (and the newest
+// of a prefix is kept in memory (prefixState), so it deletes known keys; the states
+// of the prefixes touched most recently are kept, within a budget (see
+// prefixstate.go). A state not kept is read from the database when a write (or the
+// instrument's hook) touches the prefix, but only in a database that has ever had a
+// checkpoint (a meta key says so), so one that has none is never read and, with
+// checkpoints off, nothing is remembered at all; and not when the writer's map is
+// complete and the prefix is in neither its filter of the stored prefixes nor a
+// delta of the prefixes written since, which holds nothing (see Store.complete). A
+// retention does not make the kept states be read again where the policy is on and
+// a checkpoint may exist: it works out what the read would find from the keys it
+// leaves in each prefix (see foldRetained), and puts that in the states of its
+// layers that are kept. Some retentions do not work the state out, and then the
+// kept states of the layers they rewrote are dropped and read as they are touched:
+// a database that has no checkpoint yet, a policy that is off, a horizon after the
+// range of instants, a key that cannot be read, a store that always reads whole
+// prefixes (tests), and a retention that stops or fails. A layer a retention leaves
+// alone keeps what is remembered of it. A retention that changes nothing (a horizon
+// before the first instant a record can have) forgets nothing. That read stops at the newest checkpoint (and the newest
 // record, if it is older): it is as long as the tail the policy lets grow, not
 // the prefix's history. The older checkpoints are looked up only when something
 // needs them, by reading back from the oldest instant known down to the one
@@ -183,44 +183,37 @@ func (f *stateFold) result() prefixState {
 }
 
 // forget drops what is remembered of one prefix, which is then read again when
-// it is next touched. The map is no longer complete: the prefix may hold keys.
+// it is next touched, and ends completeness (see lose).
 func (s *Store) forget(prefix string) {
-	delete(s.states, prefix)
+	s.states.remove(prefix)
 	s.lose()
 }
 
-// forgetAll drops everything that is remembered. Nothing is known of any prefix
-// afterwards, so the map is not complete.
+// forgetAll drops everything that is remembered, and ends completeness.
 func (s *Store) forgetAll() {
-	s.states = map[string]*prefixState{}
+	s.states.clear()
 	s.lose()
 }
 
-// forgetLayers drops what is remembered of every prefix in the layers a retention
-// is about to rewrite. What is remembered of the other layers stays, as true as it
-// was; but the map is no longer complete, because the prefixes dropped may hold
-// keys.
+// forgetLayers makes stale what is remembered of every prefix in the layers a
+// retention is about to rewrite: a stale state is not used, and the prefix is read
+// when it is next touched, unless the retention works its state out first (see
+// retainPass.install). What is remembered of the other layers stays, as true as it
+// was. It ends completeness.
 func (s *Store) forgetLayers(ls []retainLayer) {
-	for k := range s.states {
-		for _, l := range ls {
-			if layerOfPrefix([]byte(k)) == l.layer {
-				delete(s.states, k)
-				break
-			}
-		}
-	}
+	s.states.staleWhere(func(k string) bool {
+		return slices.ContainsFunc(ls, func(l retainLayer) bool { return layerOfPrefix([]byte(k)) == l.layer })
+	})
 	s.lose()
 }
 
-// lose says the map is not complete. A background pass that is pending is told
-// too, so that when it ends it does not claim the map is complete after all: what
-// it worked out of the prefixes it passed may be older than what was forgotten
-// since. The caller holds s.mu.
+// lose says the map is not complete, until a scan that begins after it installs its
+// filter (see installFilter). The deltas keep every prefix written all the same:
+// completeness is lost besides, on every path where what the writer remembers is
+// dropped. The caller holds s.mu.
 func (s *Store) lose() {
 	s.complete = false
-	if s.pass != nil {
-		s.pass.intact = false
-	}
+	s.lost++
 }
 
 // layerOfPrefix is the layer a data prefix belongs to.
@@ -259,18 +252,21 @@ func (s *Store) readPrefixState(r pebble.Reader, prefix []byte) (st prefixState,
 	return f.result(), keys, nil, nil
 }
 
+// state is what the writer knows of the prefix: the state the cache holds, or the
+// one a read finds, which the cache then holds. A prefix needs no read when no
+// checkpoint was ever written to this database, so none is under it, or when the
+// map is complete and the prefix is in neither the filter nor a live delta, so it
+// holds no key; its state is then the one a read of nothing finds, which is used
+// and not kept (a Write keeps the states it touches). A read is counted as a cold
+// load before the first scan has installed a filter, as a false positive when the
+// map is complete and it finds nothing, and as a load otherwise. The caller holds
+// s.mu.
 func (s *Store) state(prefix []byte) (*prefixState, error) {
-	if st, ok := s.states[string(prefix)]; ok {
+	if st := s.states.get(string(prefix)); st != nil {
 		return st, nil
 	}
-	if !s.anyCkpt || s.complete {
-		// Either no checkpoint was ever written to this database, so none is under
-		// this prefix, or the map is complete (see Store.complete) and a prefix it
-		// lacks holds no record and no checkpoint. Either way there is nothing to
-		// find by reading it, and the state is the one a read of nothing finds.
-		st := &prefixState{latest: -1}
-		s.states[string(prefix)] = st
-		return st, nil
+	if !s.anyCkpt || (s.complete && !s.filterMaybe && !s.inFilterOrDelta(prefix)) {
+		return &prefixState{latest: -1}, nil
 	}
 	s.iterators++
 	res, keys, unreadable, err := s.readPrefixState(s.kv, prefix)
@@ -281,8 +277,15 @@ func (s *Store) state(prefix []byte) (*prefixState, error) {
 		return nil, unreadable
 	}
 	st := &res
-	s.states[string(prefix)] = st
-	s.rec.Count("checkpoint.loads", 1)
+	s.states.put(string(prefix), st)
+	switch {
+	case s.filter == nil && !s.fullStateRead:
+		s.rec.Count("checkpoint.loads_cold", 1)
+	case s.complete && st.empty():
+		s.rec.Count("writer_map.false_positive_reads", 1)
+	default:
+		s.rec.Count("checkpoint.loads", 1)
+	}
 	s.rec.Count("checkpoint.load_keys", keys)
 	return st, nil
 }
@@ -540,7 +543,7 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 	}
 	var done []made
 	for _, k := range keys {
-		st := s.states[k]
+		st := s.states.peek(k)
 		if st == nil || !s.ckpt.due(st) {
 			continue
 		}
@@ -593,7 +596,7 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 		return
 	}
 	for _, m := range done {
-		st := s.states[m.prefix]
+		st := s.states.peek(m.prefix)
 		if st == nil {
 			continue
 		}
@@ -664,6 +667,7 @@ func (s *Store) checkpointAt(op string, prefix []byte, c time.Time) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushCounts()
 	if s.failed != nil {
 		return s.failedError(op)
 	}
@@ -677,6 +681,11 @@ func (s *Store) checkpointAt(op string, prefix []byte, c time.Time) error {
 	if err != nil {
 		return err
 	}
+	// The state is kept while the checkpoint is placed, and the prefix, which may
+	// hold nothing yet, is in the newest delta before the commit.
+	s.states.pin(string(prefix), st)
+	defer s.states.unpinAll()
+	s.written(prefix)
 	if err := s.know(prefix, st, cNs); err != nil {
 		s.forget(string(prefix))
 		return err

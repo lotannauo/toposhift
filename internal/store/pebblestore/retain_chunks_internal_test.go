@@ -506,6 +506,7 @@ func TestChunkingLeavesTheSameBytesAndTheSameWriterState(t *testing.T) {
 			if err := base.Retain(bg, cs.h); err != nil {
 				t.Fatal(err)
 			}
+			waitScanned(t, base)
 			if err := ref.Retain(bg, cs.h); err != nil {
 				t.Fatal(err)
 			}
@@ -525,12 +526,13 @@ func TestChunkingLeavesTheSameBytesAndTheSameWriterState(t *testing.T) {
 				if err := s.Retain(bg, cs.h); err != nil {
 					t.Fatal(err)
 				}
+				waitScanned(t, s)
 				if !slices.Equal(dataBytes(t, s), want) {
 					t.Fatalf("chunks of %d bytes or %v leave other data than one chunk", c.bytes, c.time)
 				}
-				if s.complete != base.complete || len(s.states) != len(base.states) {
+				if s.complete != base.complete || s.states.len() != base.states.len() {
 					t.Errorf("chunks of %d bytes or %v leave a map of %d prefixes (complete %v), where one chunk leaves %d (%v)",
-						c.bytes, c.time, len(s.states), s.complete, len(base.states), base.complete)
+						c.bytes, c.time, s.states.len(), s.complete, base.states.len(), base.complete)
 				}
 				if ck.On {
 					if !s.complete {
@@ -650,9 +652,11 @@ func stoppedAtEveryChunk(t *testing.T, cs *chunkStream, ck *CheckpointOptions) {
 			if got := s.Horizon(); !got.Time.Equal(cs.h) {
 				t.Errorf("the horizon is %v, want %v", got, cs.h)
 			}
-			// Nothing is remembered of the prefixes, and the map is not complete.
-			if s.complete || len(s.states) != 0 {
-				t.Errorf("after the resumed retention the map is complete %v and holds %d prefixes", s.complete, len(s.states))
+			// Nothing is remembered of the prefixes, and the scan of the opening, which
+			// follows the resumed retention, makes the map complete.
+			waitScanned(t, s)
+			if !s.complete || s.states.len() != 0 {
+				t.Errorf("after the resumed retention and the scan the map is complete %v and holds %d prefixes", s.complete, s.states.len())
 			}
 			// The writer then learns the prefixes as it meets them, and gets what
 			// the uninterrupted store gets.

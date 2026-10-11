@@ -201,7 +201,8 @@ func TestWriteCountsItsIteratorsAndRetentionSamplesItsLongestPrefix(t *testing.T
 	if err := s2.Write(bg, []store.Record{edgeRecord(3, "p", t0.Add(2*time.Second), lifecycle.Observe, 0)}); err != nil {
 		t.Fatal(err)
 	}
-	if got, loads := rec2.counters["write.iterators"], rec2.counters["checkpoint.loads"]; got != loads || loads != 2 {
+	// (A read before the scan of the opening has installed its filter is a cold one.)
+	if got, loads := rec2.counters["write.iterators"], rec2.counters["checkpoint.loads"]+rec2.counters["checkpoint.loads_cold"]; got != loads || loads != 2 {
 		t.Errorf("write.iterators = %d with %d state loads, want 2 and 2", got, loads)
 	}
 
