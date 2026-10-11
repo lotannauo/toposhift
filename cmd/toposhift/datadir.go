@@ -12,16 +12,12 @@ import (
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
 
-// ingestNotYet is what the receiver answers while a data directory is open but
-// nothing takes the logs it receives.
-const ingestNotYet = "ingest is not available in this build yet"
-
 const serveUsage = `Usage: toposhift serve [flags]
 
 Runs the ingest and query service. It needs no configuration: with none, it
 listens on loopback and serves health; it keeps its data in
-$HOME/.local/share/toposhift, and keeps ingest off when no data directory
-resolves.
+$HOME/.local/share/toposhift, takes OpenTelemetry logs at POST /v1/logs into
+the store there, and keeps ingest off when no data directory resolves.
 
 Flags:
 `
@@ -110,11 +106,11 @@ func bootDataDir(flagValue string, getenv func(string) string, log *slog.Logger,
 	for _, w := range dir.Warnings {
 		log.Warn(w)
 	}
-	return dir, ingestNotYet, 0
+	return dir, ingestStarting, 0
 }
 
-// gateSink takes no logs: it answers that ingest is off, with the reason. It
-// stands where the component that takes the logs will.
+// gateSink takes no logs: it answers 503 with Retry-After: 30 and the reason,
+// while ingest is off or the store is opening.
 type gateSink struct{ message string }
 
 func (g gateSink) Accept(context.Context, capture.LogsData) error {

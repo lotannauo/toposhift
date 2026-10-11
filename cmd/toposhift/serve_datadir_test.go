@@ -17,10 +17,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/datadir"
 )
 
-const (
-	sentenceNoDirectory = "ingest is off: no data directory; set --data-dir or TOPOSHIFT_DATA_DIR"
-	sentenceNotYet      = "ingest is not available in this build yet"
-)
+const sentenceNoDirectory = "ingest is off: no data directory; set --data-dir or TOPOSHIFT_DATA_DIR"
 
 // lockedBuffer is a stderr that the test reads while serve writes it.
 type lockedBuffer struct {
@@ -222,7 +219,7 @@ func TestServeWithADataDirectoryLaysItOut(t *testing.T) {
 	if got := get(t, s.base+"/healthz"); got != http.StatusOK {
 		t.Errorf("GET /healthz = %d, want 200", got)
 	}
-	requireIngestOff(t, s.base, sentenceNotYet)
+	waitIngestOn(t, s.base)
 
 	// The directory belongs to this instance while it runs, and is released
 	// when it stops.

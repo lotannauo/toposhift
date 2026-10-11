@@ -44,7 +44,8 @@ processors:
   # The name of this cluster. Set it once per cluster. It is at most 21 bytes of
   # the characters A-Z a-z 0-9 . _ : / and -. Delete this processor, and its entry
   # in the pipeline below, to send no name: toposhift then uses "default", or the
-  # cluster name toposhift is configured with, when that flag exists.
+  # cluster name toposhift is configured with (--cluster-name). When toposhift is
+  # configured with a name, this one must be the same; see README.md.
   resource:
     attributes:
       - key: k8s.cluster.name
