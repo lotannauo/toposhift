@@ -43,6 +43,11 @@ type truthSummary struct {
 	NodeSamples     int `json:"node_samples"`
 	NodeUIDs        int `json:"node_uids"`
 	NodeUnavailable int `json:"node_samples_unavailable"`
+	// PodSampleLargestGap is the largest gap between consecutive pod listing times,
+	// which are the times the coalescer is flushed at. A gap longer than the flush lead
+	// ends the guarantee that a run's stored copy is written before it lapses.
+	PodSampleLargestGap string `json:"pod_sample_largest_gap"`
+	FlushGapOverLead    bool   `json:"pod_sample_gap_over_flush_lead"`
 }
 
 type runReport struct {
@@ -125,9 +130,12 @@ type propertyReport struct {
 }
 
 type passReport struct {
-	Name     string          `json:"pass"`
-	Restarts int             `json:"restarts"`
-	Runs     []passRunReport `json:"runs"`
+	Name     string `json:"pass"`
+	Restarts int    `json:"restarts"`
+	// FlushRecords are the records the flushes wrote (informational): at each listing
+	// sample, and in pass B at each restart.
+	FlushRecords int             `json:"flush_records"`
+	Runs         []passRunReport `json:"runs"`
 	// Totals of subjects written, across the runs.
 	Subjects    []subjectSets   `json:"subjects_written_total"`
 	Pods        existenceReport `json:"pods_against_truth"`
@@ -245,7 +253,7 @@ func passRunsOf(p *pass) ([]passRunReport, []subjectSets) {
 
 // analyzePass asks the stores the questions of the truth and builds the pass's report.
 func analyzePass(ctx context.Context, p *pass, pods *podsTruth, nodesT *nodesTruth, wl *workload, ws []window, stats []*runStats, margin time.Duration) (*passReport, error) {
-	pr := &passReport{Name: p.Name, Restarts: p.Restarts}
+	pr := &passReport{Name: p.Name, Restarts: p.Restarts, FlushRecords: p.FlushRecords}
 	pr.Runs, pr.Subjects = passRunsOf(p)
 
 	pa, err := queryPods(ctx, p, pods, nodesT)
