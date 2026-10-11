@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 )
 
 // The counters of a read that do not depend on what an earlier read left in the
@@ -61,6 +62,39 @@ func sumSuffix(m map[string]int64, suffix string) int64 {
 	return n
 }
 
+// gcHold counts the reads that hold the collector off, and remembers the target it had
+// before the first of them.
+var gcHold struct {
+	mu   sync.Mutex
+	n    int
+	prev int
+}
+
+// holdGCOff turns the collector off until the function it returns is called, and turns
+// it back to what it was when the last such hold is released. Reads in tests run beside
+// each other, and setting the target to "off" and restoring what each found would, with
+// two overlapping, restore the first's value and then the second's, which is "off": the
+// collector would stay off for the rest of the process, and everything that runs beside
+// it would allocate without limit. Calling the returned function again does nothing.
+func holdGCOff() (release func()) {
+	gcHold.mu.Lock()
+	defer gcHold.mu.Unlock()
+	if gcHold.n == 0 {
+		gcHold.prev = debug.SetGCPercent(-1)
+	}
+	gcHold.n++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			gcHold.mu.Lock()
+			defer gcHold.mu.Unlock()
+			if gcHold.n--; gcHold.n == 0 {
+				debug.SetGCPercent(gcHold.prev)
+			}
+		})
+	}
+}
+
 // allocReps is how many times a read is counted for its allocations.
 const allocReps = 3
 
@@ -76,7 +110,7 @@ const allocReps = 3
 // not reach.
 func allocAsk(e measurable, rec *Capture, q Query) (map[string]int64, error) {
 	runtime.GC()
-	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	defer holdGCOff()()
 	for range 2 {
 		if _, err := Ask(e, q); err != nil {
 			return nil, err
