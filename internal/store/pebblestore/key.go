@@ -67,6 +67,10 @@ const (
 	// horizons. It is a hint, trusted only while it agrees with the horizons stored
 	// beside it: see [lastHorizon].
 	metaHorizonLast = pebblekv.MetaHorizon + "/last"
+	// metaClusterName is the cluster name the store was started with, or that none
+	// was set: see [Store.RecordClusterName]. It is additive: a version that does not
+	// know it ignores it.
+	metaClusterName = "cluster_name"
 )
 
 func metaKey(name string) []byte { return append([]byte{metaLead}, name...) }

@@ -48,6 +48,8 @@ type Store struct {
 	layers    map[store.Subject]catalog.Layer    // the one layer each subject is stored in
 	incident  [3]map[identity.Fingerprint][]edge // by direction: entity -> its edges
 	folds     map[store.Subject]map[int]fold     // subject -> number of visible records -> fold
+
+	clusterName clusterNameMeta // the cluster name the store records (see clustername.go)
 }
 
 var _ store.Store = (*Store)(nil)

@@ -1,0 +1,108 @@
+{
+  "about": "Golden vectors of the meta value at the key 'cluster_name'. The expectations were computed independently of the code: version byte 1, a uvarint length n, then n bytes of the name; n = 0 means no cluster name was set. The decoder's bound is the format's (53 bytes), not the write limit's.",
+  "key": "00636c75737465725f6e616d65",
+  "absent": {
+    "name": "absent",
+    "note": "no value is stored at the key"
+  },
+  "vectors": [
+    {
+      "name": "none set",
+      "set": false,
+      "cluster": "",
+      "encoded": "0100"
+    },
+    {
+      "name": "prod",
+      "set": true,
+      "cluster": "prod",
+      "encoded": "010470726f64"
+    },
+    {
+      "name": "a name at the write limit",
+      "set": true,
+      "cluster": "abcdefghijklmnopqrstu",
+      "encoded": "01156162636465666768696a6b6c6d6e6f707172737475"
+    },
+    {
+      "name": "a name of 53 bytes, the format's longest",
+      "set": true,
+      "cluster": "abcdefghijklmnopqrstuvwxyz.-_:/ABCDEFGHIJKLMNOPQRSTUV",
+      "encoded": "01356162636465666768696a6b6c6d6e6f707172737475767778797a2e2d5f3a2f4142434445464748494a4b4c4d4e4f50515253545556"
+    }
+  ],
+  "refused": [
+    {
+      "name": "empty value",
+      "encoded": ""
+    },
+    {
+      "name": "unknown leading byte 0",
+      "encoded": "000470726f64"
+    },
+    {
+      "name": "unknown leading byte 2",
+      "encoded": "020470726f64"
+    },
+    {
+      "name": "version byte only",
+      "encoded": "01"
+    },
+    {
+      "name": "length truncated (continuation bit set)",
+      "encoded": "0180"
+    },
+    {
+      "name": "n = 54",
+      "encoded": "0136616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
+    },
+    {
+      "name": "n = 128 (two-byte length)",
+      "encoded": "0180016161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
+    },
+    {
+      "name": "length overflowing a uint64",
+      "encoded": "01ffffffffffffffffff7f"
+    },
+    {
+      "name": "name with a space",
+      "encoded": "010470722064"
+    },
+    {
+      "name": "name with a non-ASCII byte",
+      "encoded": "0102c3a9"
+    },
+    {
+      "name": "name with a NUL byte",
+      "encoded": "0103007072"
+    },
+    {
+      "name": "name with a backslash",
+      "encoded": "010470725c64"
+    },
+    {
+      "name": "trailing byte after a name",
+      "encoded": "010470726f6400"
+    },
+    {
+      "name": "trailing byte after none set",
+      "encoded": "010000"
+    },
+    {
+      "name": "non-shortest length for a name",
+      "encoded": "01840070726f64"
+    },
+    {
+      "name": "non-shortest length for none set",
+      "encoded": "018000"
+    },
+    {
+      "name": "name truncated",
+      "encoded": "010470726f"
+    },
+    {
+      "name": "name missing",
+      "encoded": "0104"
+    }
+  ]
+}
