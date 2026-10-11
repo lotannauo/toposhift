@@ -416,23 +416,30 @@ func TestCompactRangesStopsBetweenSubRanges(t *testing.T) {
 	t.Run("a deadline that passes", func(t *testing.T) {
 		t.Parallel()
 		kv := setup(t)
+		// The deadline counts from the end of the flush, and the hook lets it pass after
+		// the first range, whatever the speed of the machine: the first range has a
+		// second to be done in, and the hook does not return before the deadline is
+		// behind it.
+		const deadline = time.Second
 		done := 0
 		hooked := WithCompactRangesHook(context.Background(), func(n int) {
 			done = n
-			time.Sleep(5 * time.Millisecond)
+			if n == 1 {
+				time.Sleep(deadline + 100*time.Millisecond)
+			}
 		})
-		_, settle, hit, err := kv.CompactRanges(hooked, ranges, 30*time.Millisecond)
+		_, settle, hit, err := kv.CompactRanges(hooked, ranges, deadline)
 		if err != nil {
 			t.Fatalf("a deadline that passed is an error: %v", err)
 		}
 		if !hit {
-			t.Error("a deadline of 30ms was not reported as reached")
+			t.Errorf("a deadline of %s was not reported as reached", deadline)
 		}
-		if done == 0 || done >= len(ranges) {
-			t.Errorf("%d of %d ranges were compacted before a deadline that passed in the first few", done, len(ranges))
+		if done < 1 || done >= len(ranges) {
+			t.Errorf("%d of %d ranges were compacted, want the first and not all: the deadline passed while the hook held it", done, len(ranges))
 		}
-		if settle > 10*time.Second {
-			t.Errorf("the compactions took %s with a deadline of 30ms", settle)
+		if settle < deadline {
+			t.Errorf("the compactions took %s with a deadline of %s that was reported as reached", settle, deadline)
 		}
 	})
 

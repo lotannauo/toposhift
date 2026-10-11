@@ -264,7 +264,7 @@ func (l *eventLog) note(name string, gen uint64, at time.Time) {
 		// The lock is taken for a moment by a caller of WaitRetained or LastRetain now
 		// and then; one this call itself holds up is held for the whole call.
 		free := false
-		for range 200 {
+		for range 1000 {
 			if s.mu.TryLock() {
 				s.mu.Unlock()
 				free = true
@@ -549,8 +549,8 @@ func TestBackgroundSettleLeavesNoTombstonesInMovingLayers(t *testing.T) {
 		// is left in flight: any flush after that is the settle's.
 		o.afterRetainCommit = func() {
 			for range 10000 {
-				if s.kv.Metrics().Flush.NumInProgress == 0 {
-					break
+				if m := s.kv.Metrics(); m.Flush.NumInProgress == 0 && m.MemTable.Count == 1 {
+					break // no flush is running or queued
 				}
 				time.Sleep(time.Millisecond)
 			}
