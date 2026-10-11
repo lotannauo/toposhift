@@ -16,7 +16,14 @@ import (
 // A server started with no configuration must not be reachable from the network.
 const DefaultListen = "127.0.0.1:7070"
 
-const shutdownTimeout = 5 * time.Second
+// shutdownTimeout bounds the graceful shutdown. It must exceed the point at
+// which net/http counts a connection that never sent a request as idle (after
+// 5 whole seconds, noticed by a poll at most 500 ms apart, so up to about
+// 6.5 s); otherwise Shutdown races its own deadline whenever a client holds a
+// spare connection open. It is kept under 10 s so that even a forced close
+// finishes within the default stop grace of container runtimes. It is a
+// variable only so tests can lower it.
+var shutdownTimeout = 8 * time.Second
 
 // Config is the server configuration. The zero value is invalid; start from
 // DefaultConfig.
@@ -85,7 +92,17 @@ func Serve(ctx context.Context, ln net.Listener, log *slog.Logger) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server: shutdown: %w", err)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("server: shutdown: %w", err)
+		}
+		// Connections that outlived the deadline were asked to stop and did
+		// not; the process is ending, so close them rather than fail.
+		// srv.Close closes the listeners and every connection, so it cuts a
+		// request still in flight. That is acceptable because ingest
+		// acknowledges a write only after it is committed, so the sender
+		// retries a request that was cut.
+		log.Warn("forced close of connections still open")
+		_ = srv.Close()
 	}
 	log.Info("stopped")
 	return nil
