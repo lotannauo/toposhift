@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -56,13 +57,22 @@ import (
 // interleaving. A Retain while a pass is pending starts the pass again at the new
 // horizons, from the first key, and keeps rewriting the layers of the older pass
 // that it does not move. Close stops the pass at a chunk boundary, and the next
-// Open resumes it. Background mode does not settle.
+// Open resumes it.
 //
 // Last, the marker passes to its settling phase in the commit of the last chunk;
 // with Config.SettleRetention the database is flushed and waited on until it is at
 // rest, or until the deadline passes (see [pebblekv.KV.SettleAfterRetention]); and
 // then the marker is deleted, if it is still this retention's: it carries a
-// generation, and a retention that finds another's marker leaves it.
+// generation, and a retention that finds another's marker leaves it. A Background
+// store settles differently, so that writers go on: after the last chunk the
+// goroutine releases the lock, flushes, and compacts the key ranges of each layer
+// the pass moved, one range after another, until they are done or the deadline
+// passes (see [pebblekv.KV.CompactRanges] and settleRanges); only then does it take
+// the lock again, delete the marker and wake the callers of
+// [Instrument.WaitRetained]. A Retain while it settles starts its own pass at once;
+// the settle that is running finishes or reaches its deadline, and is not started
+// again. Close during the settle stops it between two ranges and leaves the marker
+// in its settling phase, so that the next Open settles again.
 //
 // A prefix with a boot in a record it would discard is kept whole when the store's
 // policy names a boot key (see the package comment). A Retain that does not move
@@ -89,6 +99,14 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return contextError("Retain", err)
 	}
+	// What the observer is told of this retention is told after the lock is
+	// released (deferred first, so it runs last).
+	var announce func()
+	defer func() {
+		if announce != nil {
+			announce()
+		}
+	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failed != nil {
@@ -156,6 +174,10 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		return nil // nothing changes, and nothing is forgotten
 	}
 	s.retainGen = marker.generation
+	var publishedAt time.Time
+	if s.retention == Background {
+		publishedAt = s.stamp()
+	}
 	// What was remembered of each prefix of a layer about to be rewritten is out of
 	// date. It is worked out again below, and stays forgotten if the retention does
 	// not finish. What is remembered of the other layers is as true as it was.
@@ -179,7 +201,25 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if s.retention == Background {
 		// The rest is the retainer's. The publication is the work this call did.
 		workEnd = time.Now()
-		return s.startPass(*marker, derive, wasComplete)
+		// A pass that is still rewriting is replaced: its rewriting ends here, as far as
+		// the observer is concerned, and it will not be settled.
+		var replaced uint64
+		if s.pass != nil && s.pass.marker.phase == phaseRewrite {
+			replaced = s.pass.marker.generation
+		}
+		if err := s.startPass(*marker, derive, wasComplete); err != nil {
+			return err
+		}
+		if o := s.observer; o != nil {
+			gen := marker.generation
+			announce = func() {
+				if replaced != 0 {
+					o.RewriteEnded(replaced, publishedAt)
+				}
+				o.Published(gen, publishedAt)
+			}
+		}
+		return nil
 	}
 	p, err := s.newPass(ctx, *marker, derive, s.stopAfter)
 	if err != nil {
@@ -787,6 +827,10 @@ func (s *Store) commitHorizon(b *pebble.Batch) error {
 // the options of this opening would never move.) It returns whether every layer of
 // the marker is inside the range.
 func (s *Store) carryOver(m *retainMarker, allInside bool) bool {
+	if s.pass.marker.phase == phaseSettle {
+		// Its rewriting is over (it is settling, off the lock): nothing is owed.
+		return allInside
+	}
 	for _, old := range s.pass.marker.layers {
 		if slices.ContainsFunc(m.layers, func(l retainLayer) bool { return l.layer == old.layer }) {
 			continue
@@ -908,9 +952,10 @@ const (
 // retainer is the goroutine of a Background store. It waits to be woken and then
 // takes the pending pass one chunk at a time, each under the store's lock and
 // none for longer than the chunk, yielding between them so that a writer that
-// waits for the lock gets it. It exits when the store's context is cancelled (at
-// the next chunk boundary), or when a commit has failed and the store has latched
-// the failure.
+// waits for the lock gets it; when the rewriting is over it settles the pass
+// without the lock (see [Store.settleBackground]). It exits when the store's
+// context is cancelled (at the next chunk boundary, or between two ranges of a
+// settle), or when a commit has failed and the store has latched the failure.
 func (s *Store) retainer() {
 	defer func() {
 		s.mu.Lock()
@@ -932,7 +977,10 @@ func (s *Store) retainer() {
 			if s.beforeRetainChunk != nil && s.pending() {
 				s.beforeRetainChunk() // the lock is free: a hook may write
 			}
-			step, landed := s.retainStep(&cur)
+			step, landed, w := s.retainStep(&cur)
+			if w.rewriteEnded && s.observer != nil {
+				s.observer.RewriteEnded(w.gen, w.rewriteAt)
+			}
 			if landed && s.afterRetainCommit != nil {
 				s.afterRetainCommit() // the lock is free: a hook may write
 			}
@@ -941,6 +989,9 @@ func (s *Store) retainer() {
 			}
 			if step == stepIdle {
 				break
+			}
+			if w.settle != nil && s.settleBackground(w.settle) == stepExit {
+				return
 			}
 			runtime.Gosched()
 		}
@@ -954,15 +1005,39 @@ func (s *Store) pending() bool {
 	return s.pass != nil && s.failed == nil
 }
 
+// retainWork is what a step of the retainer leaves for it to do once the lock is
+// released: tell the observer the rewriting is over, and settle the pass.
+type retainWork struct {
+	gen          uint64
+	rewriteEnded bool
+	rewriteAt    time.Time
+	settle       *settleJob
+}
+
+// settleJob is a pass whose rewriting is over and the key ranges it settles.
+type settleJob struct {
+	p      *retainPass
+	ranges [][2][]byte
+}
+
+// settleResult is how long a settle took, if one ran.
+type settleResult struct {
+	flush, settle time.Duration
+	hit, ran      bool
+}
+
 // retainStep takes one chunk of the pending pass. cur is the pass the retainer was
 // taking: if another generation has taken its place, it is dropped and the newer is
 // started from the first key, with nothing of the older installed. landed says a
-// chunk was committed (so the hook runs).
-func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool) {
+// chunk was committed (so the hook runs). When the rewriting is over and the pass is
+// to be settled off the lock, the work says so and cur is cleared: the pass ends in
+// [Store.settleBackground]. A pass with nothing to settle, and no observer to tell,
+// ends here.
+func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool, w retainWork) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ctx.Err() != nil || s.failed != nil {
-		return stepExit, false
+		return stepExit, false, w
 	}
 	if p := *cur; p != nil && (s.pass == nil || s.pass.marker.generation != p.marker.generation) {
 		*cur = nil // another Retain published: this pass is not the store's any more
@@ -972,46 +1047,143 @@ func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool) {
 	}
 	p := *cur
 	if p == nil {
-		return stepIdle, false
+		return stepIdle, false, w
 	}
+	w.gen = p.marker.generation
 	// A pass resumed from a marker in its settling phase has nothing left to rewrite
-	// (its resume key is empty, and a chunk from there would read the meta keys): in
-	// Background mode, which does not settle, it only releases its marker.
+	// (its resume key is empty, and a chunk from there would read the meta keys): it
+	// only settles, and releases its marker.
 	var err error
 	if p.marker.phase == phaseRewrite {
 		before := p.chunks
 		err = p.chunk()
 		landed = p.chunks > before
+		if err == nil && p.marker.phase == phaseSettle {
+			w.rewriteEnded, w.rewriteAt = true, s.stamp()
+			s.vouch(p)
+		}
 	}
 	if err == nil && p.marker.phase == phaseSettle {
-		err = s.endPass(p)
+		if s.kv.Config().SettleRetention || s.observer != nil {
+			w.settle = &settleJob{p: p, ranges: s.settleRangesOf(p)}
+			*cur = nil
+			return stepMore, landed, w
+		}
+		err = s.endPass(p, settleResult{})
 		*cur = nil
 		if err == nil {
-			return stepIdle, landed
+			return stepIdle, landed, w
 		}
 	}
 	if err != nil {
 		s.latch(err)
-		return stepExit, landed
+		return stepExit, landed, w
 	}
-	return stepMore, landed
+	return stepMore, landed, w
 }
 
-// endPass ends a pass whose last chunk has been committed and installed, in the
-// order that lets WaitRetained say the pass is over: the marker goes, the map is
-// called complete if the pass vouches for it, the counts are made, the pass is
-// cleared, and the waiters are woken. Background mode does not settle.
-func (s *Store) endPass(p *retainPass) error {
+// settleRangesOf are the key ranges to settle for a pass: those of each layer it
+// moved.
+func (s *Store) settleRangesOf(p *retainPass) [][2][]byte {
+	ids := entityIDs(s.ids)
+	var out [][2][]byte
+	for i, moved := range p.moved {
+		if moved {
+			out = append(out, settleRanges(catalog.L0+catalog.Layer(i), ids)...)
+		}
+	}
+	return out
+}
+
+// vouch calls the writer's map complete, as the synchronous pass does when its last
+// commit has landed, if the pass vouches for it: it worked out the state of the
+// layers it rewrote and nothing has dropped what the writer remembers since it
+// began. A write or a later Retain that does forget something clears it again (see
+// Store.lose). The caller holds the lock.
+func (s *Store) vouch(p *retainPass) {
+	if p.derive && p.intact {
+		// A prefix forgotten after the pass passed it would be missing from the map,
+		// which would then claim it holds nothing: that is what intact is for.
+		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
+	}
+}
+
+// settleBackground settles a pass whose rewriting is over, and ends it. It runs on
+// the retainer's goroutine without the store's lock and without an iterator open,
+// so that writes go on: it compacts the ranges of the layers the pass moved (see
+// [pebblekv.KV.CompactRanges]) and then takes the lock to end the pass.
+//
+// The marker stays in its settling phase until then, so that a Close or a crash
+// during the settle leaves it for the next Open, which settles again. A Close stops
+// the settle between two ranges: that is not a failure, and the pass is not ended.
+// A settle that reaches its deadline is counted and not an error. A Retain during
+// the settle replaces the pass: the settle finishes, it is counted, the old pass is
+// reported, and the waiters, who now wait for the newer pass, are left alone.
+func (s *Store) settleBackground(j *settleJob) retainerStep {
+	p := j.p
+	gen := p.marker.generation
+	var res settleResult
+	if cfg := s.kv.Config(); cfg.SettleRetention {
+		ctx := s.ctx
+		if s.betweenSettleRanges != nil {
+			ctx = pebblekv.WithCompactRangesHook(ctx, s.betweenSettleRanges)
+		}
+		flush, settle, hit, err := s.kv.CompactRanges(ctx, j.ranges, cfg.SettleDeadline)
+		if err != nil {
+			if s.ctx.Err() != nil && errors.Is(err, context.Canceled) {
+				return stepExit // Close: the marker stays for the next Open
+			}
+			s.mu.Lock()
+			s.latch(err)
+			s.mu.Unlock()
+			return stepExit
+		}
+		res = settleResult{flush: flush, settle: settle, hit: hit, ran: true}
+	}
+	at := s.stamp()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if res.ran {
+		s.countSettle(res.flush, res.settle, res.hit)
+	}
+	if s.failed != nil {
+		return stepExit
+	}
+	if s.pass == p && s.observer != nil {
+		// Told without the lock, and before the waiters are woken: a caller of
+		// WaitRetained that returns has been told.
+		s.mu.Unlock()
+		s.observer.SettleEnded(gen, at)
+		s.mu.Lock()
+		if s.failed != nil {
+			return stepExit
+		}
+	}
+	if s.pass != p {
+		// Replaced while it settled.
+		p.report()
+		p.close()
+		return stepMore
+	}
+	if err := s.endPass(p, res); err != nil {
+		s.latch(err)
+		return stepExit
+	}
+	return stepMore
+}
+
+// endPass ends a pass whose last chunk has been committed and installed and which
+// has settled (if it settles), in the order that lets WaitRetained say the pass is
+// over: the marker goes, the counts are made, the pass is cleared, and the waiters
+// are woken.
+func (s *Store) endPass(p *retainPass, res settleResult) error {
 	if err := s.releaseMarker(p.marker.generation); err != nil {
 		return err
 	}
-	if p.derive && p.intact {
-		// As the synchronous pass ends, but only if nothing has dropped what the
-		// writer remembers since it began: a prefix forgotten after the pass passed it
-		// would be missing from the map, which would then claim it holds nothing.
-		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
-	}
 	p.report()
+	if res.ran {
+		s.last.flush, s.last.settle, s.last.deadlineHit = res.flush, res.settle, res.hit
+	}
 	s.pass = nil
 	p.close()
 	s.releaseWaiters()

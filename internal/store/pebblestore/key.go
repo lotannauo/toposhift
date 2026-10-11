@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
@@ -113,6 +115,70 @@ func prefixSucc(prefix []byte) []byte {
 
 func prefixBounds(prefix []byte) (lo, hi []byte) {
 	return append([]byte(nil), prefix...), prefixSucc(prefix)
+}
+
+// settleRanges are the key ranges a settle compacts for one layer, lo up to hi each
+// (Pebble's Compact also takes hi itself, which is never a key of the layout here:
+// boundary keys are 1, 3 or 4 bytes, real keys 37), consecutive and covering the
+// layer's keys exactly: from the layer byte itself to the byte after it. The layer is cut finely so that no one compaction is the whole
+// layer: every key is [layer][entity type id, 2 bytes, big endian][digest]..., so
+// each registered type id is cut on the high nibble of the first byte of the digest,
+// which is spread evenly, into 16 ranges. Cutting on the byte after the layer byte
+// would cut nothing: the type ids are small, and their high byte is always zero.
+//
+// The boundaries, which strictly increase, are
+//
+//	[layer]
+//	[layer][id][n<<4]            for each id in ids, ascending, and n = 0 to 15
+//	[layer][maxID+1]             the upper edge for ids past the last one
+//	[layer+1]
+//
+// so a range is the keys from one boundary up to the next. The first covers type ids
+// below the first registered one, the last range of an id also covers any unregistered
+// ids before the next registered one, and the last covers ids from maxID+1 on. With
+// the shipped catalog (11 types) that is 1 + 16 x 11 + 1 = 178 ranges per layer. When
+// maxID is the largest id there is no edge above it, and the last range of that id
+// reaches the end of the layer.
+//
+// A retention range-deletes inside one prefix, from [seekKey] to [prefixSucc], and a
+// prefix is within one range, since the boundaries fall on the first byte of the
+// digest. So no tombstone of a retention straddles two ranges.
+//
+// ids need not be sorted; duplicates count once.
+func settleRanges(layer catalog.Layer, ids []catalog.EntityID) [][2][]byte {
+	lead := pebblekv.LayerByte(layer)
+	ids = slices.Clone(ids)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	bounds := [][]byte{{lead}}
+	for _, id := range ids {
+		for n := range 16 {
+			bounds = append(bounds, []byte{lead, byte(id >> 8), byte(id), byte(n << 4)})
+		}
+	}
+	if len(ids) > 0 {
+		if edge := uint32(ids[len(ids)-1]) + 1; edge <= math.MaxUint16 {
+			bounds = append(bounds, []byte{lead, byte(edge >> 8), byte(edge)})
+		}
+	}
+	bounds = append(bounds, []byte{lead + 1})
+	out := make([][2][]byte, 0, len(bounds)-1)
+	for i := 1; i < len(bounds); i++ {
+		out = append(out, [2][]byte{bounds[i-1], bounds[i]})
+	}
+	return out
+}
+
+// entityIDs are the ids of the entity types the store knows, ascending.
+func entityIDs(ids *pebblekv.IDs) []catalog.EntityID {
+	var out []catalog.EntityID
+	for _, t := range ids.EntityTypes() {
+		if id, ok := ids.EntityID(t); ok {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // dataBounds are the bounds of every data key, all layers: after the meta keys,

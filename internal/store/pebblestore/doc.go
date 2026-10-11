@@ -92,8 +92,17 @@
 // and Close return it, reads continue, and reopening the store finishes the pass.
 // Instrument.WaitRetained returns when the pass is over.
 //
-// Background retention does not yet settle its tombstones; until it does, a store
-// that ingests real data uses [Synchronous]. It is not the default.
+// With Config.SettleRetention a Background pass settles after its last chunk, without
+// holding the lock: a flush, then a compaction of the key ranges of each layer it
+// moved, one range after another (178 per layer with the shipped catalog, cut on the
+// first byte of the digest within each entity type; see [pebblekv.KV.CompactRanges]),
+// until they are done or Config.SettleDeadline passes, which is counted, not an
+// error. Writers go on meanwhile, and the marker stays, in its settling phase, until
+// the settle is over; so Instrument.WaitRetained returns only after it, and a Close
+// during it leaves the marker for the next Open, which settles again. The settle
+// writes no key. It does not wait for the database to be at rest, as the
+// Synchronous settle does. A Background store is opt-in: the default is
+// [Synchronous]. Options.Observer is told when each phase of a retention ends.
 //
 // # Layers
 //
@@ -152,6 +161,6 @@
 //
 // # Not here yet
 //
-// The background settle and a boot history kept in baselines are later changes. The product's default offsets are not set
+// A boot history kept in baselines is a later change. The product's default offsets are not set
 // here either: [DefaultOptions] has every offset zero and no layer kept.
 package pebblestore

@@ -63,11 +63,48 @@ const (
 	// Background makes Retain publish the horizons and return, and leaves the
 	// rewriting to a goroutine of the store that works in chunks and lets writers
 	// through between them; a write to a prefix the pass has not reached rewrites
-	// that prefix first, in its own batch. See the package comment. It does not yet
-	// settle its tombstones; until it does, a store that ingests real data uses
-	// Synchronous. [Instrument.WaitRetained] waits for the pass to end.
+	// that prefix first, in its own batch. See the package comment. With
+	// Config.SettleRetention the pass ends by settling: a flush, then a compaction of
+	// the key ranges of each layer it moved, one range after another, with no lock
+	// held and no iterator open, so that writers go on while it runs (see
+	// [pebblekv.KV.CompactRanges]). Without it the pass leaves its tombstones to the
+	// compactions the database schedules. [Instrument.WaitRetained] waits for the
+	// pass and its settle to end. It is opt-in: the default is [Synchronous].
 	Background RetentionMode = 2
 )
+
+// RetainObserver is told when a retention of a [Background] store reaches the points
+// that bound its phases, for a measurement that judges each phase. The instants are
+// the store's clock at the point, read under its lock where the point is reached.
+// The calls are made without the store's lock, by the goroutine that reached the
+// point, so a call may arrive after a later one of another goroutine, and the
+// instant, not the order of arrival, is what to trust. A call must return quickly
+// and must not call back into the store: the retainer waits for it.
+//
+// A retention is named by its generation, the number its marker carries. For each
+// generation that ends:
+//
+//   - Published is called by the Retain that published it, once the horizons are
+//     stored and visible;
+//   - RewriteEnded is called when the last chunk of the rewriting is committed, or,
+//     for a generation a later Retain replaces before that, by the later Retain with
+//     the instant of the later publication;
+//   - SettleEnded is called when the settle that follows has ended, whether or not
+//     SettleRetention is on (without it the settle is empty), and before
+//     [Instrument.WaitRetained] returns for the generation. A generation replaced
+//     before its settle ends gets none (a generation replaced by a Retain that comes
+//     between the end of its settle and this call has had SettleEnded nonetheless).
+//
+// A pass that Open resumes gets no Published, and none of the other two for a phase
+// that was over before the process stopped. A Synchronous store calls none of them,
+// because it does all of its work under the lock, and a store that is closed during
+// a settle does not call SettleEnded for it. The clock is not read when there is no
+// observer.
+type RetainObserver interface {
+	Published(gen uint64, at time.Time)
+	RewriteEnded(gen uint64, at time.Time)
+	SettleEnded(gen uint64, at time.Time)
+}
 
 // Options says how a store is opened. The key schema is Pebble's default and
 // there is no time filter: the layout has no use for one, since every read is one
@@ -94,6 +131,9 @@ type Options struct {
 	// Retention says how Retain works; the zero value is [Synchronous]. A store
 	// opened [Background] and read-only starts no goroutine and runs no pass.
 	Retention RetentionMode
+	// Observer, if not nil, is told of the phases of each retention of a Background
+	// store; see [RetainObserver].
+	Observer RetainObserver
 	// Checkpoints says when interleaved checkpoints are written. Nil means
 	// [DefaultCheckpoints]; a policy that writes none is an explicit
 	// &CheckpointOptions{}, and the layout then answers every read by replaying.
@@ -132,6 +172,10 @@ type Options struct {
 	// for tests. (afterRetainCommit runs after each chunk, the same way.)
 	beforeRetainChunk func()
 	retainerExited    chan struct{}
+	// betweenSettleRanges runs after each range of a Background settle has been
+	// compacted, with the number done so far, with the store's lock free (see
+	// [pebblekv.WithCompactRangesHook]): for tests.
+	betweenSettleRanges func(done int)
 	// beforeRecordApply returns an error in place of a record commit (a commit
 	// that failed without landing), afterRecordApply runs after one has landed
 	// and an error it returns stands for a commit that failed but is visible, and
