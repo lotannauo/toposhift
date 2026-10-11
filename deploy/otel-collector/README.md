@@ -2,7 +2,14 @@
 
 `toposhift.yaml` is an OpenTelemetry collector configuration that reads a Kubernetes cluster and sends it to toposhift. It is written for the collector contrib distribution, version 0.162.0.
 
-Taking in logs, and the cluster-name flag, arrive in toposhift with a later change. Until then toposhift answers every export with 503, and the collector's queue fills.
+toposhift takes the logs in when it has a data directory (by default under `$HOME/.local/share/toposhift`, or the one named by `--data-dir` or `TOPOSHIFT_DATA_DIR`; see `toposhift serve -h`). It answers an export `200` only once its records are committed to disk. While it starts, and whenever ingest is off, it answers `503` with `Retry-After: 30` and says why; the collector retries, so the data waits in its queue:
+
+- while the store opens at boot: `ingest is starting: the store is opening`;
+- with no data directory: `ingest is off: no data directory; set --data-dir or TOPOSHIFT_DATA_DIR`;
+- when the store cannot be opened: `ingest is off: the store could not be opened: ` followed by the error;
+- when the cluster name toposhift is configured with differs from the one its store recorded (see "The cluster name" below).
+
+When toposhift is merely busy (its queue of requests is full, a request waited too long to be merged into a commit, or too many bytes are in flight), it answers `503` with `Retry-After: 1`, and the collector sends the request again soon.
 
 The collector is the buffer. While toposhift is down or busy, the collector keeps what it has read on its own disk, retries without giving up, and sends it in order when toposhift is back. toposhift needs none of these settings to start: they are a recommendation, not a requirement.
 
@@ -16,13 +23,17 @@ Edit these and nothing else:
 | `<TOPOSHIFT_HOST>` | `exporters.otlphttp/toposhift.endpoint` | The host (and so the address) at which the collector reaches toposhift. |
 | the storage directory | `extensions.file_storage/toposhift` | Only if `/var/lib/otelcol/toposhift` is not writable by the collector. Change `directory` and `compaction.directory` together. |
 
-**The cluster name.** It is at most 21 bytes, each one of `A-Z a-z 0-9 . _ : / -`. It is part of every producer name toposhift stores, and a store records the name it was started with, so choose it once. To send no name, delete the `resource` processor and its entry in `service.pipelines.logs.processors`: toposhift then uses `default`, or the cluster name toposhift is configured with, when that flag exists.
+**The cluster name.** It is at most 21 bytes, each one of `A-Z a-z 0-9 . _ : / -`. It is part of every producer name toposhift stores, and a store records the name it was started with, so choose it once. To send no name, delete the `resource` processor and its entry in `service.pipelines.logs.processors`: toposhift then uses `default`, or the cluster name it is configured with.
 
-**An unedited `<CLUSTER_NAME>` passes the collector's validation, but toposhift refuses it.** Once ingest is available, `<` being outside the name format means every export gets a permanent 400 (`INVALID_ARGUMENT`) and the collector drops it. The collector starts, looks healthy, and nothing reaches the store. Check the collector's logs for refused exports after the first start.
+toposhift can be configured with a cluster name too: `--cluster-name`, or `TOPOSHIFT_CLUSTER_NAME` (empty is none). With one, an export whose `k8s.cluster.name` differs from it gets a permanent `400`, and the collector drops it, so set the same name in both places, or send none. Without one, each export's `k8s.cluster.name` names its cluster.
+
+The store records the cluster name toposhift was first started with. If toposhift is later started with another name (or with a name after none), ingest stays off: every export gets `503` with `Retry-After: 30` and a message saying so, and the collector's queue holds the data. Records under the old name stay, and their references lapse by their TTL. To accept the change, start toposhift once with `--accept-new-cluster-name=` followed by the new name (or with nothing after the `=` to accept that no name is set). That flag is for one start and has no environment variable.
+
+**An unedited `<CLUSTER_NAME>` passes the collector's validation, but toposhift refuses it.** `<` is outside the name format (and the placeholder differs from any name toposhift is configured with), so every export gets a permanent 400 (`INVALID_ARGUMENT`) and the collector drops it. The collector starts, looks healthy, and nothing reaches the store. Check the collector's logs for refused exports after the first start.
 
 **Reaching toposhift.** toposhift listens on `127.0.0.1:7070` and nowhere else unless told to. A collector in a cluster cannot reach that. Start toposhift with `TOPOSHIFT_LISTEN` set to an address the cluster can reach (for example `TOPOSHIFT_LISTEN=0.0.0.0:7070`), and put that host in `<TOPOSHIFT_HOST>`. Listening beyond loopback exposes the port to whatever can route to it, so restrict it with the network.
 
-Once ingest is available, toposhift also needs a data directory (`TOPOSHIFT_DATA_DIR`) to ingest. Without one it answers `503` with `Retry-After: 30`, which the collector retries, so the data waits in the queue.
+toposhift also needs a data directory to ingest: by default one under `$HOME/.local/share/toposhift`, or the one named by `--data-dir` or `TOPOSHIFT_DATA_DIR`. Without one it answers `503` with `Retry-After: 30`, which the collector retries, so the data waits in the queue.
 
 ## Start the collector with the feature gate
 
