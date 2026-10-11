@@ -71,8 +71,12 @@ type Store struct {
 	wake           chan struct{}
 	retainerDone   chan struct{}
 	retainerExited chan struct{}
-	// beforeRetainChunk is the test hook of the same name in Options.
-	beforeRetainChunk func()
+	// beforeRetainChunk and betweenSettleRanges are the test hooks of the same names
+	// in Options; observer is the Options field of the same name, read without the
+	// lock because it is fixed at Open.
+	beforeRetainChunk   func()
+	betweenSettleRanges func(done int)
+	observer            RetainObserver
 
 	beforeRecordApply, afterRecordApply, rereadFails func() error
 	beforeHorizonApply, afterHorizonApply            func() error
@@ -231,6 +235,7 @@ func Open(dir string, o Options) (*Store, error) {
 		ckpt: ckpt, fullStateRead: o.fullStateRead, states: map[string]*prefixState{},
 		offsets: o.Offsets, keep: o.Keep,
 		retention: o.Retention, retainerExited: o.retainerExited, beforeRetainChunk: o.beforeRetainChunk,
+		betweenSettleRanges: o.betweenSettleRanges, observer: o.Observer,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
 	if s.retention == Background && !cfg.ReadOnly {
@@ -570,9 +575,12 @@ func (s *Store) LayerHorizon(layer catalog.Layer) store.Horizon { return s.horiz
 // A Background store first stops its retainer: the store is marked closed, the
 // retainer's context is cancelled and Close waits for the retainer to exit, which
 // it does at its next chunk boundary (a chunk in progress commits first, so Close
-// waits for at most one chunk). The pass that was pending is not lost: its marker
-// stays in the database and the next Open resumes it. If the retainer stopped
-// because a commit failed, Close returns that error, after closing the database.
+// waits for at most one chunk) or, in a settle, between two of its key ranges, or
+// sooner (a compaction that has started is not stopped, and closing the database
+// waits for it). The pass that was pending is not lost: its marker stays in the
+// database, in its settling phase if the rewriting was over, and the next Open
+// resumes it, settling again. If the retainer stopped because a commit failed, Close
+// returns that error, after closing the database.
 func (s *Store) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
@@ -613,7 +621,8 @@ func (s *Store) failedError(op string) error {
 
 // settleRetention is the end of every retention that does not return early, under
 // SettleRetention, whether or not it deleted anything: see
-// [pebblekv.KV.SettleAfterRetention].
+// [pebblekv.KV.SettleAfterRetention]. It is the Synchronous mode's, and runs under
+// the lock; a Background pass settles by [Store.settleBackground].
 func (s *Store) settleRetention() error {
 	cfg := s.kv.Config()
 	if !cfg.SettleRetention {
@@ -621,6 +630,13 @@ func (s *Store) settleRetention() error {
 	}
 	flush, settle, hit, err := s.kv.SettleAfterRetention(cfg.SettleDeadline)
 	s.last.flush, s.last.settle, s.last.deadlineHit = flush, settle, hit
+	s.countSettle(flush, settle, hit)
+	return err
+}
+
+// countSettle counts a settle: the flush and the wait in nanoseconds, and one if
+// the wait reached its deadline.
+func (s *Store) countSettle(flush, settle time.Duration, hit bool) {
 	s.rec.Count("retain.flush_ns", flush.Nanoseconds())
 	s.rec.Count("retain.settle_ns", settle.Nanoseconds())
 	hits := int64(0)
@@ -628,7 +644,15 @@ func (s *Store) settleRetention() error {
 		hits = 1
 	}
 	s.rec.Count("retain.settle_deadline_hits", hits)
-	return err
+}
+
+// stamp is the reading of the clock for an observer of a retention, or the zero time
+// when the store has none, in which case the clock is not read.
+func (s *Store) stamp() time.Time {
+	if s.observer == nil {
+		return time.Time{}
+	}
+	return s.clock()
 }
 
 // now is the start of a timed span: the clock's reading, or the zero time when the

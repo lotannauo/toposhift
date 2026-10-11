@@ -96,6 +96,82 @@ func (k *KV) SettleAfterRetention(deadline time.Duration) (flush, settle time.Du
 	return flush, settle, false, err
 }
 
+// CompactRanges is the settle of a retention that must not hold the writer: it
+// flushes once, and then compacts each of the ranges given, in order, one after
+// the other. A range is lo up to hi; Pebble's Compact also takes hi itself, which is
+// never a key of the layout here (boundary keys are 1, 3 or 4 bytes, real keys 37).
+// A range whose lo is not before its hi is an error. This package knows nothing of the layout of the
+// keys; the caller says which ranges its range deletions fell in.
+//
+// It stops between two ranges, and not before the first, when ctx is done (it
+// returns ctx's error, which is not a failure of the database) or when deadline
+// ([DefaultSettleDeadline] when zero) has passed since the flush ended (it returns
+// deadlineHit and no error: what is not compacted is paid by the reads and writes
+// after it, as for [KV.SettleAfterRetention]). The deadline also ends a wait that is
+// in progress. It returns how long the flush and the compactions took.
+//
+// Pebble's Compact, which runs each range, does not stop a compaction that has
+// started when its context ends: it cancels the compactions of the call that have
+// not been picked up yet, returns the context's error at once, and leaves the
+// running ones to finish in the background (Pebble v2.1.7, DB.Compact and
+// manualCompact). So a range may still be compacting when this returns early, and
+// the database must not be closed meanwhile; closing waits for it. It is the
+// caller's to stop calling Compact before closing: Pebble panics on a Compact of a
+// closed database.
+//
+// It does not wait for the database to be at rest: not for the flushes and
+// compactions other writes bring on, nor for the statistics of the new tables, which
+// is what [KV.SettleAfterRetention] waits for. A read-only database has nothing to
+// flush or compact, and returns at once.
+func (k *KV) CompactRanges(ctx context.Context, ranges [][2][]byte, deadline time.Duration) (flush, settle time.Duration, deadlineHit bool, err error) {
+	if k.cfg.ReadOnly {
+		return 0, 0, false, nil
+	}
+	if deadline == 0 {
+		deadline = DefaultSettleDeadline
+	}
+	start := time.Now()
+	if err := k.Flush(); err != nil {
+		return time.Since(start), 0, false, err
+	}
+	flush = time.Since(start)
+	timed, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	start = time.Now()
+	for i, r := range ranges {
+		if err := ctx.Err(); err != nil {
+			return flush, time.Since(start), false, err
+		}
+		if timed.Err() != nil {
+			return flush, time.Since(start), true, nil
+		}
+		if err := k.Compact(timed, r[0], r[1], true); err != nil {
+			settle = time.Since(start)
+			if cerr := ctx.Err(); cerr != nil {
+				return flush, settle, false, cerr
+			}
+			if errors.Is(err, context.DeadlineExceeded) && timed.Err() != nil {
+				return flush, settle, true, nil
+			}
+			return flush, settle, false, fmt.Errorf("pebblekv: compacting %x to %x: %w", r[0], r[1], err)
+		}
+		if f, ok := ctx.Value(compactRangesHookKey{}).(func(done int)); ok {
+			f(i + 1)
+		}
+	}
+	return flush, time.Since(start), false, nil
+}
+
+type compactRangesHookKey struct{}
+
+// WithCompactRangesHook returns a context that makes [KV.CompactRanges] call f with
+// the number of ranges compacted so far after each one, from the goroutine that
+// compacts, so that a test can count them or hold the settle between two. It is for
+// tests.
+func WithCompactRangesHook(ctx context.Context, f func(done int)) context.Context {
+	return context.WithValue(ctx, compactRangesHookKey{}, f)
+}
+
 // tablesAwaitingStats is how many tables Pebble has not loaded the statistics of.
 func (k *KV) tablesAwaitingStats() (int, error) {
 	levels, err := k.SSTables()
