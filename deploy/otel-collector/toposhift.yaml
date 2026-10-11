@@ -1,0 +1,115 @@
+# OpenTelemetry collector (contrib 0.162.0) configuration that reads Kubernetes
+# and sends it to toposhift. See README.md in this directory.
+#
+# Start the collector with the entity-events feature gate on, or the k8s_cluster
+# receiver sends the wrong log shape:
+#
+#   otelcol-contrib --config toposhift.yaml \
+#     --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+#
+# Edit three things and nothing else:
+#   <CLUSTER_NAME>    the processor below: a name for this cluster
+#   <TOPOSHIFT_HOST>  the exporter below: where toposhift listens
+#   the storage directory, only if the default path is not writable
+#
+# The collector is the buffer. The settings below make it hold data durably while
+# toposhift is down and send it in order when toposhift is back.
+
+receivers:
+  # Kubernetes objects. Each kind is read twice. Watch mode sends every change as
+  # it happens. Pull mode lists the whole kind every 5 minutes, which repairs
+  # whatever a dropped watch missed.
+  k8s_objects:
+    auth_type: serviceAccount
+    objects:
+      - name: pods
+        mode: watch
+      - name: nodes
+        mode: watch
+      - name: pods
+        mode: pull
+        interval: 5m
+      - name: nodes
+        mode: pull
+        interval: 5m
+
+  # Cluster entities (namespaces, deployments, and so on), sent as entity events
+  # on the logs pipeline. With the 5 minute metadata interval the entity report
+  # interval is 300 seconds. This needs the feature gate named at the top.
+  k8s_cluster:
+    auth_type: serviceAccount
+    metadata_collection_interval: 5m
+
+processors:
+  # The name of this cluster. Set it once per cluster. It is at most 21 bytes of
+  # the characters A-Z a-z 0-9 . _ : / and -. Delete this processor, and its entry
+  # in the pipeline below, to send no name: toposhift then uses "default", or the
+  # cluster name toposhift is configured with, when that flag exists.
+  resource:
+    attributes:
+      - key: k8s.cluster.name
+        value: <CLUSTER_NAME>
+        action: upsert
+
+exporters:
+  otlphttp/toposhift:
+    # Where toposhift listens. It listens on 127.0.0.1:7070 unless started with
+    # TOPOSHIFT_LISTEN set to an address the cluster can reach.
+    endpoint: http://<TOPOSHIFT_HOST>:7070
+    encoding: proto
+    compression: gzip
+    timeout: 30s
+
+    # Retry for as long as it takes. 429, 502, 503 and 504 are retried and the
+    # server's Retry-After is honoured. Every other status is permanent and the
+    # request is dropped. max_elapsed_time: 0 means never give up.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0
+
+    sending_queue:
+      enabled: true
+      # Keep the queue on disk, so a collector restart does not lose it.
+      storage: file_storage/toposhift
+      # One consumer sends requests one at a time, in the order they were queued.
+      num_consumers: 1
+      # Up to 1000 requests wait in the queue. When it is full the collector
+      # drops new data (block_on_overflow stays off). A long outage can fill it.
+      queue_size: 1000
+      # Each export is merged or split to at most 16 MB, by size in bytes whatever
+      # the objects weigh, so it stays well under toposhift's limit of 64 MiB for a
+      # decoded request body. This protects toposhift from a 413; it does not
+      # bound the queue's disk.
+      batch:
+        sizer: bytes
+        max_size: 16000000
+        flush_timeout: 1s
+
+extensions:
+  # Disk storage for the sending queue.
+  file_storage/toposhift:
+    # The collector's user must be able to write here.
+    directory: /var/lib/otelcol/toposhift
+    create_directory: true
+    # Sync every write to disk, so the queue survives the host losing power. This
+    # costs the collector some throughput.
+    fsync: true
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: /var/lib/otelcol/toposhift
+
+service:
+  extensions:
+    - file_storage/toposhift
+  pipelines:
+    logs:
+      receivers:
+        - k8s_objects
+        - k8s_cluster
+      processors:
+        - resource
+      exporters:
+        - otlphttp/toposhift
