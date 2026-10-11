@@ -18,6 +18,8 @@ import (
 	"runtime/debug"
 	"syscall"
 
+	"github.com/lotannauo/toposhift/internal/datadir"
+	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
 	"github.com/lotannauo/toposhift/internal/server"
 )
 
@@ -68,6 +70,12 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	fs := flag.NewFlagSet("toposhift serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to listen on (env "+envListen+")")
+	dataDir := fs.String("data-dir", "", "directory for the data (env "+datadir.EnvDataDir+"); without one, ingest is off")
+	fs.Usage = func() {
+		_, _ = fmt.Fprint(stderr, serveUsage)
+		fs.PrintDefaults()
+		_, _ = fmt.Fprint(stderr, dataDirHelp)
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -80,6 +88,15 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	}
 
 	log := slog.New(slog.NewTextHandler(stderr, nil))
+	dir, ingestOff, code := bootDataDir(*dataDir, getenv, log, stderr)
+	if code != 0 {
+		return code
+	}
+	defer func() { _ = dir.Close() }()
+	cfg.Routes = []server.Route{{
+		Pattern: "POST /v1/logs",
+		Handler: otlphttp.Handler(gateSink{message: ingestOff}, otlphttp.Options{}),
+	}}
 	if err := server.Run(ctx, cfg, log); err != nil {
 		log.Error("server failed", "err", err)
 		return 1

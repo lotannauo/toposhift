@@ -88,6 +88,89 @@ func TestRunRejectsEmptyListen(t *testing.T) {
 	}
 }
 
+func TestServeServesExtraRoutesBesideHealthz(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	route := server.Route{
+		Pattern: "POST /v1/logs",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ctx, ln, discardLogger(), route) }()
+
+	base := "http://" + ln.Addr().String()
+	for _, tt := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodPost, "/v1/logs", http.StatusTeapot},
+		{http.MethodGet, "/healthz", http.StatusOK},
+		{http.MethodGet, "/v1/logs", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/nothing", http.StatusNotFound},
+	} {
+		req, err := http.NewRequestWithContext(ctx, tt.method, base+tt.path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := noKeepAlive.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != tt.want {
+			t.Errorf("%s %s = %d, want %d", tt.method, tt.path, resp.StatusCode, tt.want)
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned %v after cancel, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after context cancel")
+	}
+}
+
+// noKeepAlive keeps no connection open, so the shutdown at the end of a test
+// has none to wait for.
+var noKeepAlive = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
+func TestInvalidRoutesAreErrorsNotPanics(t *testing.T) {
+	ok := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	tests := []struct {
+		name   string
+		routes []server.Route
+	}{
+		{"conflicts with healthz", []server.Route{{Pattern: "GET /healthz", Handler: ok}}},
+		{"conflicts with another route", []server.Route{{Pattern: "GET /a", Handler: ok}, {Pattern: "GET /a", Handler: ok}}},
+		{"malformed pattern", []server.Route{{Pattern: "GET", Handler: ok}}},
+		{"no pattern", []server.Route{{Handler: ok}}},
+		{"no handler", []server.Route{{Pattern: "GET /a"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = ln.Close() }()
+			if err := server.Serve(t.Context(), ln, discardLogger(), tt.routes...); err == nil {
+				t.Error("Serve with an invalid route returned nil")
+			}
+			cfg := server.Config{Listen: "127.0.0.1:0", Routes: tt.routes}
+			if err := server.Run(t.Context(), cfg, discardLogger()); err == nil {
+				t.Error("Run with an invalid route returned nil")
+			}
+		})
+	}
+}
+
 const forcedCloseLog = "forced close of connections still open"
 
 // TestShutdownTimeoutExceedsNeverUsedConnectionGrace pins the default. net/http
