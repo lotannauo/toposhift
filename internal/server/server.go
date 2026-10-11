@@ -1,5 +1,6 @@
-// Package server provides the HTTP server for toposhift. Currently it only
-// answers health checks; ingest and query handlers arrive in later milestones.
+// Package server provides the HTTP server for toposhift. It answers health
+// checks itself and serves the routes its caller adds in [Config.Routes];
+// ingest and query handlers are mounted that way.
 package server
 
 import (
@@ -30,6 +31,17 @@ var shutdownTimeout = 8 * time.Second
 type Config struct {
 	// Listen is the TCP address to bind, in host:port form.
 	Listen string
+
+	// Routes are served beside GET /healthz. The zero value adds none.
+	Routes []Route
+}
+
+// Route is one handler the server serves in addition to GET /healthz.
+type Route struct {
+	// Pattern is an [http.ServeMux] pattern, such as "POST /v1/logs". It must
+	// not conflict with GET /healthz or another route.
+	Pattern string
+	Handler http.Handler
 }
 
 // DefaultConfig returns the default server configuration.
@@ -55,6 +67,10 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if cfg.Listen == "" {
 		return errors.New("server: empty listen address")
 	}
+	handler, err := newHandler(cfg.Routes)
+	if err != nil {
+		return err
+	}
 	if !cfg.IsLoopback() {
 		log.Warn("listening on a non-loopback address; the server has no authentication yet",
 			"listen", cfg.Listen)
@@ -64,14 +80,23 @@ func Run(ctx context.Context, cfg Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("server: listen on %q: %w", cfg.Listen, err)
 	}
-	return Serve(ctx, ln, log)
+	return serve(ctx, ln, log, handler)
 }
 
 // Serve runs the HTTP server on ln until ctx is cancelled, then shuts down gracefully.
-// It returns nil on a clean shutdown.
-func Serve(ctx context.Context, ln net.Listener, log *slog.Logger) error {
+// It serves GET /healthz and routes. It returns nil on a clean shutdown, and an
+// error, before serving, if a route is invalid or conflicts with another.
+func Serve(ctx context.Context, ln net.Listener, log *slog.Logger, routes ...Route) error {
+	handler, err := newHandler(routes)
+	if err != nil {
+		return err
+	}
+	return serve(ctx, ln, log, handler)
+}
+
+func serve(ctx context.Context, ln net.Listener, log *slog.Logger, handler http.Handler) error {
 	srv := &http.Server{
-		Handler:           newMux(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -108,11 +133,24 @@ func Serve(ctx context.Context, ln net.Listener, log *slog.Logger) error {
 	return nil
 }
 
-func newMux() *http.ServeMux {
+// newHandler builds the mux. A pattern that is malformed or conflicts with
+// another makes http.ServeMux panic; here it is an error.
+func newHandler(routes []Route) (h http.Handler, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			h, err = nil, fmt.Errorf("server: invalid route: %v", r)
+		}
+	}()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	return mux
+	for _, r := range routes {
+		if r.Pattern == "" || r.Handler == nil {
+			return nil, errors.New("server: a route needs a pattern and a handler")
+		}
+		mux.Handle(r.Pattern, r.Handler)
+	}
+	return mux, nil
 }

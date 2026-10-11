@@ -27,7 +27,7 @@ func TestBootsWithNoConfig(t *testing.T) {
 	}
 
 	bin := filepath.Join(t.TempDir(), "toposhift")
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", bin, ".")
+	build := exec.CommandContext(t.Context(), goTool(), "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
@@ -47,6 +47,7 @@ func TestBootsWithNoConfig(t *testing.T) {
 	if err := waitHealthy(t.Context(), "http://"+server.DefaultListen+"/healthz", exited); err != nil {
 		t.Fatal(err)
 	}
+	requireIngestOff(t, "http://"+server.DefaultListen, sentenceNoDirectory)
 
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
