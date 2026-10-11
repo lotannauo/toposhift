@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lotannauo/toposhift/bench/spike/engine"
 )
 
 var epoch = time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
@@ -287,5 +290,474 @@ func TestTheEarlyExitOfTheWindowScanChangesNothing(t *testing.T) {
 		if inside == 0 || settling == 0 || outside == 0 {
 			t.Errorf("seed %d: the batches do not cover all three classes (%d, %d, %d)", seed, inside, settling, outside)
 		}
+	}
+}
+
+// win is a window with the instants given, none replaced and no deadline hit.
+func win(start, rewriteEnd, settleEnd, ret int64) GateWindow {
+	return GateWindow{StartNs: start, RewriteEndNs: rewriteEnd, SettleEndNs: settleEnd, ReturnNs: ret}
+}
+
+// replaced is w, replaced in its rewrite by the publication at ns.
+func (w GateWindow) replaced(ns int64) GateWindow { w.SupersededNs = ns; return w }
+
+// The observer of a store that retains in the background gives the tracker the
+// windows its generations make, in whatever order the calls arrive in: a retention a
+// later publication replaces ends there, in its rewrite (and is marked replaced) or in
+// its settle; a phase ends at the earliest instant it is given; a generation the
+// tracker was not told the publication of has no window.
+func TestTheObserverFeedsTheWindowsWhateverTheOrderOfTheCalls(t *testing.T) {
+	t.Parallel()
+
+	const open = gateWindowOpen
+	type call struct {
+		what string
+		gen  uint64
+		ns   int64
+	}
+	p := func(gen uint64, ns int64) call { return call{"published", gen, ns} }
+	r := func(gen uint64, ns int64) call { return call{"rewrite", gen, ns} }
+	s := func(gen uint64, ns int64) call { return call{"settle", gen, ns} }
+	for _, c := range []struct {
+		name  string
+		calls []call
+		want  []GateWindow
+	}{
+		{"one retention", []call{p(1, 100), r(1, 200), s(1, 300)}, []GateWindow{win(100, 200, 300, 100)}},
+		{"a later report of an end does not move it", []call{p(1, 100), r(1, 200), r(1, 260), s(1, 300), s(1, 350)}, []GateWindow{win(100, 200, 300, 100)}},
+		{"one that has not ended", []call{p(1, 100), r(1, 200)}, []GateWindow{win(100, 200, open, 100)}},
+		{
+			// the store's real order: the replaced pass's rewrite ends at the instant of the
+			// publication that replaces it
+			"replaced while it rewrites",
+			[]call{p(1, 100), r(1, 150), p(2, 150), r(2, 300), s(2, 400)},
+			[]GateWindow{win(100, 150, 150, 100).replaced(150), win(150, 300, 400, 150)},
+		},
+		{
+			"replaced while it rewrites, the publication arriving first",
+			[]call{p(1, 100), p(2, 150), r(1, 150), r(2, 300), s(2, 400)},
+			[]GateWindow{win(100, 150, 150, 100).replaced(150), win(150, 300, 400, 150)},
+		},
+		{
+			"replaced while it settles",
+			[]call{p(1, 100), r(1, 200), p(2, 250), r(2, 300), s(2, 400)},
+			[]GateWindow{win(100, 200, 250, 100), win(250, 300, 400, 250)},
+		},
+		{
+			// the end of the rewrite, told late, was before the publication that replaced the
+			// pass: it was its settle that was replaced
+			"replaced while it settles, the report of its rewrite arriving late",
+			[]call{p(1, 100), p(2, 250), r(1, 200), r(2, 300), s(2, 400)},
+			[]GateWindow{win(100, 200, 250, 100), win(250, 300, 400, 250)},
+		},
+		{
+			"replaced while it settles, after its settle had ended, the report arriving late",
+			[]call{p(1, 100), r(1, 200), p(2, 250), s(1, 230), r(2, 300), s(2, 400)},
+			[]GateWindow{win(100, 200, 230, 100), win(250, 300, 400, 250)},
+		},
+		{
+			"three, each replaced by the next",
+			[]call{p(1, 100), p(2, 200), p(3, 300), r(3, 500), s(3, 600)},
+			[]GateWindow{win(100, 200, 200, 100).replaced(200), win(200, 300, 300, 200).replaced(300), win(300, 500, 600, 300)},
+		},
+		{"a generation that was not published here", []call{r(9, 500), s(9, 600), p(10, 700), r(10, 800), s(10, 900)}, []GateWindow{win(700, 800, 900, 700)}},
+	} {
+		g := newGateTracker(epoch)
+		obs := gateObserver{g}
+		for _, k := range c.calls {
+			switch k.what {
+			case "published":
+				obs.Published(k.gen, at(k.ns))
+			case "rewrite":
+				obs.RewriteEnded(k.gen, at(k.ns))
+			case "settle":
+				obs.SettleEnded(k.gen, at(k.ns))
+			}
+		}
+		if !slices.Equal(g.windows, c.want) {
+			t.Errorf("%s: windows %+v, want %+v", c.name, g.windows, c.want)
+		}
+	}
+
+	var none *gateTracker // a build that is not through the root store has no tracker
+	gateObserver{none}.Published(1, at(1))
+	gateObserver{none}.RewriteEnded(1, at(2))
+	gateObserver{none}.SettleEnded(1, at(3))
+	none.settleCounted(1)
+}
+
+// The store counts each settle, then tells the observer it ended, from one goroutine;
+// the tracker gives each window the count of its own settle: a pass that was replaced as
+// it settled counts a settle and is never told it ended, and the pass after it, which
+// has none to count, does not take that count. Counts of 1, 0, 1 are matched to the
+// three passes they belong to, not to the first three that end.
+func TestEachWindowTakesTheDeadlineCountOfItsOwnSettle(t *testing.T) {
+	t.Parallel()
+
+	// The interleaving of internal/store/pebblestore/retain.go: a Retain reports
+	// RewriteEnded(old) and Published(new) at one instant for a pass it replaces in its
+	// rewrite; the retainer reports RewriteEnded, then counts the settle, then reports
+	// SettleEnded; a pass replaced as it settles counts its settle after the Retain's
+	// Published and is not reported ended.
+	g := newGateTracker(epoch)
+	obs := gateObserver{g}
+	obs.Published(1, at(100))
+	obs.RewriteEnded(1, at(200))
+	g.settleCounted(1) // pass 1 settles and reaches its deadline
+	obs.SettleEnded(1, at(300))
+
+	obs.Published(2, at(400))
+	obs.RewriteEnded(2, at(500))
+	// A Retain publishes pass 3 while pass 2 settles.
+	obs.Published(3, at(550))
+	g.settleCounted(1) // pass 2's settle ends after that, reaches its deadline, and is not reported
+	// Pass 3's rewrite ends; it has no settle to count (nothing to settle).
+	obs.RewriteEnded(3, at(600))
+	obs.SettleEnded(3, at(610))
+
+	obs.Published(4, at(700))
+	obs.RewriteEnded(4, at(800))
+	g.settleCounted(0)
+	obs.SettleEnded(4, at(900))
+
+	obs.Published(5, at(1000))
+	obs.RewriteEnded(5, at(1100))
+	g.settleCounted(1)
+	obs.SettleEnded(5, at(1200))
+
+	want := []bool{true, false, false, false, true}
+	for i, w := range g.windows {
+		if w.SettleDeadlineHit != want[i] {
+			t.Errorf("window %d: deadline hit %v, want %v (%+v)", i+1, w.SettleDeadlineHit, want[i], g.windows)
+		}
+	}
+	if len(g.windows) != len(want) {
+		t.Fatalf("%d windows", len(g.windows))
+	}
+}
+
+// The instant a call returned is set on the window that call made, and on none if it
+// made none (a retention that moved nothing).
+func TestTheReturnOfACallIsSetOnTheWindowItMade(t *testing.T) {
+	t.Parallel()
+
+	g := newGateTracker(epoch)
+	obs := gateObserver{g}
+	n := g.count()
+	obs.Published(1, at(100))
+	g.returnedSince(n, at(130))
+	n = g.count()
+	g.returnedSince(n, at(900)) // a call that published nothing
+	obs.RewriteEnded(1, at(200))
+	obs.SettleEnded(1, at(300))
+	if want := []GateWindow{win(100, 200, 300, 130)}; !slices.Equal(g.windows, want) {
+		t.Errorf("windows %+v, want %+v", g.windows, want)
+	}
+	var none *gateTracker
+	if none.count() != 0 {
+		t.Error("a nil tracker has windows")
+	}
+	none.returnedSince(0, at(1))
+}
+
+// What the tracker makes of a store's report is judged: a build whose batches are in
+// every part (inside a window, in a settle, outside) is judged on all six rows, and the
+// rules are the ones whose digest was pinned before any build was judged.
+func TestTheBackgroundWindowsOfAStoreReportJudgeAllSixRows(t *testing.T) {
+	t.Parallel()
+
+	const oneGiB = 1 << 30
+	g := newGateTracker(epoch)
+	g.setPaced()
+	g.startPacing(at(9e8)) // the batches before it are unpaced
+	obs := gateObserver{g}
+	// Twenty seconds of batches of 100 records every 25 ms (4000 records a second),
+	// with a retention published at 1 s that rewrites for 10 s and settles for 2.
+	obs.Published(1, at(1e9))
+	g.returnedSince(0, at(1e9+1e6))
+	obs.RewriteEnded(1, at(11e9))
+	obs.SettleEnded(1, at(13e9))
+	for ms := int64(0); ms < 20000; ms += 25 {
+		g.batch(at(ms*1e6), 20*time.Millisecond, 100)
+	}
+	trace := g.trace(at(20e9), "background", 30*24*time.Hour, map[string]int64{"retain.max_prefix_records": 12, "retain.chunk_hold_ns": int64(30 * time.Millisecond)})
+	trace.PeakRSS = 2 * oneGiB
+	if len(trace.Windows) != 1 || trace.Inside.Batches == 0 || trace.Outside.Batches == 0 || trace.Settling.Batches == 0 {
+		t.Fatalf("windows %v, inside %d, settling %d, outside %d batches", trace.Windows, trace.Inside.Batches, trace.Settling.Batches, trace.Outside.Batches)
+	}
+	build := func(cand string) *StoreGateBuild { return pacedBuildOf(cand, trace) }
+	rep := JudgeStoreGate([]*StoreGateBuild{build("Lroot/off"), build("Lroot/k64a2l1ns")})
+	judged := map[string]int{}
+	for _, row := range rep.Rows {
+		judged[row.Gate[:2]]++
+		if row.State == GateNotJudged || row.State == GateOver {
+			t.Errorf("%s %s: %+v, want it judged and within its limit", row.Candidate, row.Gate, row)
+		}
+	}
+	if len(rep.Rows) != 12 || len(rep.NotJudged) != 0 || rep.Over != 0 {
+		t.Errorf("%d rows, not judged %v, over %d: want six rows for each of two builds, all judged", len(rep.Rows), rep.NotJudged, rep.Over)
+	}
+}
+
+// pacedBuildOf is a build in the background, paced at the rule's rate from the day it
+// gives for the 30 days it kept, with the trace given.
+func pacedBuildOf(cand string, trace *GateTrace) *StoreGateBuild {
+	const oneGiB = 1 << 30
+	return &StoreGateBuild{
+		Dir: "/builds/" + strings.ReplaceAll(cand, "/", "_"),
+		Manifest: &Manifest{
+			Candidate: cand, Layout: "L", PlanDigest: "plan", Build: BuildInfo{GOOS: "linux", GOARCH: "arm64"},
+			Describe: map[string]string{GoGCKey: "100", GoMemoryLimitKey: "11811160064", RetentionModeKey: "background", PaceKey: "4500", PaceFromDayKey: "46.5"},
+			Gate:     trace,
+		},
+		Metrics: StoreGateMetrics{Lines: 5, HeapLiveSamples: 5, HeapLivePeak: oneGiB},
+	}
+}
+
+// In a paced build a batch that starts before the pacing did is unpaced, and one that
+// overlaps a window that started before it, or that window's settle, is excluded; the
+// others are inside, settling or outside as they always were. None of the unpaced or
+// excluded is inside, settling or outside.
+func TestAPacedBuildDividesItsBatchesByThePacingStartAndTheWindowsBefore(t *testing.T) {
+	t.Parallel()
+
+	g := newGateTracker(epoch)
+	g.setPaced()
+	obs := gateObserver{g}
+	obs.Published(1, at(50)) // before the pacing: an unjudged window
+	g.batch(at(60), 10, 1)   // starts before the pacing does
+	g.rested(7)              // a rest before the pacing is not a rest of the paced time
+	g.startPacing(at(100))
+	g.startPacing(at(120)) // once
+	obs.RewriteEnded(1, at(150))
+	obs.SettleEnded(1, at(200))
+	g.batch(at(110), 5, 2)   // beside the rewrite of the unjudged window
+	g.batch(at(170), 5, 3)   // beside its settle
+	g.batch(at(140), 100, 5) // spanning both
+	g.batch(at(250), 5, 7)   // outside everything
+	obs.Published(2, at(300))
+	obs.RewriteEnded(2, at(400))
+	obs.SettleEnded(2, at(450))
+	g.batch(at(320), 5, 11) // inside the judged window
+	g.batch(at(420), 5, 13) // in its settle
+	g.batch(at(500), 5, 17) // outside
+	g.rested(11)
+	tr := g.trace(at(600), "background", 30*24*time.Hour, nil)
+	if tr.PaceStartNs != 100 || tr.StreamEndNs != 600 {
+		t.Errorf("pacing started at %d and the stream ended at %d, want 100 and 600", tr.PaceStartNs, tr.StreamEndNs)
+	}
+	for _, c := range []struct {
+		name             string
+		got              GateBatches
+		batches, records int64
+	}{
+		{"unpaced", tr.Unpaced, 1, 1},
+		{"excluded", tr.Excluded, 3, 2 + 3 + 5},
+		{"inside", tr.Inside, 1, 11},
+		{"settling", tr.Settling, 1, 13},
+		{"outside", tr.Outside, 2, 7 + 17},
+	} {
+		if c.got.Batches != c.batches || c.got.Records != c.records {
+			t.Errorf("%s: %d batches and %d records, want %d and %d", c.name, c.got.Batches, c.got.Records, c.batches, c.records)
+		}
+	}
+	if tr.RestNs != 18 || tr.PacedRestNs != 11 {
+		t.Errorf("rest %d and paced rest %d, want 18 and 11", tr.RestNs, tr.PacedRestNs)
+	}
+
+	// a build that is not paced divides its batches as it always did
+	plain := newGateTracker(epoch)
+	gateObserver{plain}.Published(1, at(50))
+	gateObserver{plain}.RewriteEnded(1, at(150))
+	gateObserver{plain}.SettleEnded(1, at(200))
+	plain.batch(at(60), 10, 1)
+	plain.batch(at(170), 5, 1)
+	plain.batch(at(300), 5, 1)
+	if p := plain.trace(at(400), "background", 0, nil); p.Inside.Batches != 1 || p.Settling.Batches != 1 || p.Outside.Batches != 1 || p.Unpaced.Batches+p.Excluded.Batches != 0 {
+		t.Errorf("an unpaced build: %+v %+v %+v unpaced %+v excluded %+v", p.Inside, p.Settling, p.Outside, p.Unpaced, p.Excluded)
+	}
+}
+
+// Q1's control, Q2's outside and Q3's load come from the paced batches only: a long batch
+// before the pacing began, or beside an unjudged window, is neither the control nor the
+// outside. Here the build is over the limit with a control within the noise ceiling, which
+// a control that held the long batch before the pacing would withhold.
+func TestTheControlIsTakenOverThePacedBatchesOnly(t *testing.T) {
+	t.Parallel()
+
+	g := newGateTracker(epoch)
+	g.setPaced()
+	obs := gateObserver{g}
+	obs.Published(1, at(5e9)) // an unjudged window
+	g.batch(at(1e9), 900*time.Millisecond, 100)
+	g.startPacing(at(10e9))
+	obs.RewriteEnded(1, at(12e9))
+	obs.SettleEnded(1, at(14e9))
+	g.batch(at(11e9), 900*time.Millisecond, 100) // beside the unjudged window
+	g.batch(at(20e9), 10*time.Millisecond, 100)  // paced, outside
+	obs.Published(2, at(30e9))
+	obs.RewriteEnded(2, at(40e9))
+	obs.SettleEnded(2, at(41e9))
+	g.batch(at(35e9), 300*time.Millisecond, 100) // inside the judged window, over the limit
+	tr := g.trace(at(60e9), "background", 30*24*time.Hour, nil)
+	rows, _ := judgeBuild(pacedBuildOf("Lroot/k64a2l1ns", tr), nil, "")
+	if r := rows[gateQ1]; !r.judged || r.pass {
+		t.Errorf("Q1: judged %v, pass %v (%s %s), want over the limit and judged with a control of 10ms", r.judged, r.pass, r.value, r.reason)
+	}
+	if r := rows[gateQ2]; !strings.Contains(r.value, "over 1 inside batches") {
+		t.Errorf("Q2: %q", r.value)
+	}
+}
+
+// sameSettings compares the retention mode, the sync setting, the pacing rate and the
+// pacing start, and reads a key a manifest lacks as its default.
+func TestQ5ComparesTheModeTheSyncAndThePacing(t *testing.T) {
+	t.Parallel()
+
+	base := func() *Manifest {
+		return &Manifest{Describe: map[string]string{GoGCKey: "100", RetentionModeKey: "background", PaceKey: "4500", PaceFromDayKey: "46.5"}}
+	}
+	if why := sameSettings(base(), base()); why != "" {
+		t.Fatalf("the same settings: %s", why)
+	}
+	for _, c := range []struct{ key, value string }{
+		{RetentionModeKey, "sync"}, {SyncKey, "true"}, {PaceKey, "4000"}, {PaceFromDayKey, "11.5"},
+	} {
+		other := base()
+		other.Describe[c.key] = c.value
+		if why := sameSettings(base(), other); !strings.Contains(why, c.key+" differs") {
+			t.Errorf("%s: %q", c.key, why)
+		}
+	}
+	// a missing key is its default
+	missing := base()
+	delete(missing.Describe, PaceKey)
+	delete(missing.Describe, PaceFromDayKey)
+	other := base()
+	other.Describe[PaceKey], other.Describe[PaceFromDayKey] = "0", ""
+	if why := sameSettings(missing, other); why != "" {
+		t.Errorf("a key left out against its default: %s", why)
+	}
+	if why := sameSettings(missing, base()); !strings.Contains(why, PaceKey) {
+		t.Errorf("unpaced against paced: %q", why)
+	}
+	syncOff := base()
+	syncOff.Describe[SyncKey] = "false"
+	if why := sameSettings(base(), syncOff); why != "" {
+		t.Errorf("a sync of false against a key left out: %s", why)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The pacing in the build.
+
+// stubEngine is the part of an engine the sink of a build writes to.
+type stubEngine struct {
+	measurable
+	last uint64
+}
+
+func (e *stubEngine) Write(b []engine.Record) error { e.last = b[len(b)-1].Seq; return nil }
+func (e *stubEngine) LastSeq() uint64               { return e.last }
+
+// day is a batch of one record at the stream day given, from epoch.
+func recordAtDay(seq uint64, days float64) engine.Record {
+	return engine.Record{Seq: seq, EventTime: epoch.Add(time.Duration(days * float64(24*time.Hour)))}
+}
+
+func pacedSink(g *gateTracker, p *pacer) buildSink {
+	after := false
+	return buildSink{e: &stubEngine{}, t: &Timing{}, afterRetention: &after, gate: g, pace: &paceState{pacer: p, fromDay: 2.5, streamAt: epoch}}
+}
+
+// The batches of a day before the one the build is paced from are written as fast as
+// the engine takes them; the first batch from that day on starts the schedule, and the
+// ones after it wait for it. The gate hears the start of the pacing, and counts the
+// batches before it as unpaced.
+func TestABuildIsPacedFromTheRulesDay(t *testing.T) {
+	t.Parallel()
+
+	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	g := newGateTracker(time.Now())
+	g.setPaced()
+	sink := pacedSink(g, testPacer(100, clock))
+	for i, day := range []float64{0.5, 1, 2.4, 2.6, 2.7, 3} {
+		if err := sink.Write([]engine.Record{recordAtDay(uint64(i+1), day)}); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case i < 3 && (len(clock.sleeps) != 0 || g.paceStartNs != 0):
+			t.Fatalf("batch %d at day %v was paced: sleeps %v, pacing started at %d", i+1, day, clock.sleeps, g.paceStartNs)
+		case i == 3 && (len(clock.sleeps) != 0 || g.paceStartNs == 0):
+			t.Fatalf("the first batch from day 2.5 slept %v, or the pacing did not start (%d)", clock.sleeps, g.paceStartNs)
+		}
+	}
+	// each paced batch after the first is due 10 ms after the one before, on a clock that
+	// moves only by the sleeps
+	if len(clock.sleeps) != 2 || clock.sleeps[0] != 10*time.Millisecond || clock.sleeps[1] != 10*time.Millisecond {
+		t.Errorf("sleeps %v, want 10ms and 10ms", clock.sleeps)
+	}
+	tr := g.trace(time.Now(), "background", 0, nil)
+	if tr.Unpaced.Batches != 3 || tr.Outside.Batches != 3 {
+		t.Errorf("%d batches unpaced and %d outside, want 3 and 3", tr.Unpaced.Batches, tr.Outside.Batches)
+	}
+}
+
+// The stream day of a batch is the day of its last record, which is what the stream is
+// driven by: a batch whose first record is early (a coalesced extension) and whose last is
+// late switches the pacing on, and one whose first is late and whose last is early does not.
+func TestTheStreamDayOfABatchIsThatOfItsLastRecord(t *testing.T) {
+	t.Parallel()
+
+	ps := &paceState{fromDay: 2.5, streamAt: epoch}
+	if day := ps.streamDay([]engine.Record{recordAtDay(1, 0.1), recordAtDay(2, 3)}); day != 3 {
+		t.Errorf("an early first record and a late last: day %v, want 3", day)
+	}
+	if day := ps.streamDay([]engine.Record{recordAtDay(1, 3), recordAtDay(2, 0.1)}); day > 0.11 {
+		t.Errorf("a late first record and an early last: day %v, want 0.1", day)
+	}
+	g := newGateTracker(time.Now())
+	g.setPaced()
+	sink := pacedSink(g, testPacer(100, &fakeClock{t: time.Unix(1_700_000_000, 0)}))
+	if err := sink.Write([]engine.Record{recordAtDay(1, 3), recordAtDay(2, 0.1)}); err != nil {
+		t.Fatal(err)
+	}
+	if sink.pace.on {
+		t.Error("a batch whose last record is on day 0.1 switched the pacing on")
+	}
+	if err := sink.Write([]engine.Record{recordAtDay(3, 0.1), recordAtDay(4, 3)}); err != nil {
+		t.Fatal(err)
+	}
+	if !sink.pace.on {
+		t.Error("a batch whose last record is on day 3 did not switch the pacing on")
+	}
+}
+
+// The wait for the schedule is not in the time of the batch: with a sleep of 60 ms for
+// each batch that the engine writes at once, the commit the gate and the timings record
+// is the engine's.
+func TestThePacersSleepIsNotInTheCommitTime(t *testing.T) {
+	t.Parallel()
+
+	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	p := testPacer(100, clock)
+	p.sleep = func(time.Duration) { time.Sleep(60 * time.Millisecond) }
+	g := newGateTracker(time.Now())
+	g.setPaced()
+	sink := pacedSink(g, p)
+	for i := range 4 {
+		if err := sink.Write([]engine.Record{recordAtDay(uint64(i+1), 3)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tr := g.trace(time.Now(), "background", 0, nil)
+	if tr.Outside.Batches != 4 {
+		t.Fatalf("%+v", tr)
+	}
+	if got := time.Duration(tr.Outside.Commit.MaxNs); got > 30*time.Millisecond {
+		t.Errorf("the longest commit the gate recorded is %s: it holds the pacer's sleep of 60ms", got)
+	}
+	if got := time.Duration(sink.t.Writes.MaxNs); got > 30*time.Millisecond {
+		t.Errorf("the longest write in the timings is %s: it holds the pacer's sleep of 60ms", got)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lotannauo/toposhift/bench/spike/candidates"
 )
 
 // The words of the log of 2026-10-07 in code. They are not fields of [Rules], which
@@ -531,6 +533,9 @@ func (j *judge) checkSet(builds []*tbuild, prefix string) {
 	diff(func(m *Manifest) string { return describedOr(m, MetricsKey, "0s") }, func(a, b, x, y string) string {
 		return fmt.Sprintf("%s and %s were built with different metric sampling (%q and %q): their timings are not comparable", a, b, x, y)
 	})
+	diff(func(m *Manifest) string { return describedOr(m, RetentionModeKey, candidates.RetentionSync) }, func(a, b, x, y string) string {
+		return fmt.Sprintf("%s and %s were built with different retention modes (%q and %q): their timings are not comparable", a, b, x, y)
+	})
 	diff(func(m *Manifest) string { return describedOr(m, SettleKey, "false") }, func(a, b, x, y string) string {
 		return fmt.Sprintf("%s and %s were built with and without settling a retention's tombstones (%q and %q): their timings are not comparable", a, b, x, y)
 	})
@@ -649,6 +654,11 @@ func (j *judge) buildsWhy(builds []*tbuild) (binary, settings string) {
 			why := strings.TrimPrefix(err.Error(), "runner: this binary is not one a result may come from: ")
 			why = strings.TrimSuffix(why, " (use -untimed for a validation run)")
 			return fmt.Sprintf("%s was built by a binary a result may not come from: %s", b.label(), why), ""
+		}
+	}
+	for _, b := range builds {
+		if describedOr(b.Manifest, PaceKey, "0") != "0" {
+			return "", fmt.Sprintf("%s was paced: a paced build is judged by the store gate only, its timing is not the spike's stream", b.label())
 		}
 	}
 	for _, b := range builds {

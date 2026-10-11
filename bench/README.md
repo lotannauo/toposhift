@@ -305,47 +305,18 @@ compared, and a build that rested after each retention, or did not record those 
 on G2. The local report judges the absolute budget only; the relative fallback for a window where no layout fits
 it belongs to the judgement of the timed builds. The rules' log of 2026-10-08 has the rule in full.
 
-`producercost` measures, on a local capture of the Kubernetes receivers, what a longer producer name
+`producercost` measures, on a local capture of the Kubernetes objects receiver, what a longer producer name
 costs a store: it translates the capture with the real translator, coalesces it and writes it to the real
 store with no record, with producer names of 18 bytes (the baseline) and with each length of `-lengths` (a comma
 list from 14 to 64, not 18; default `32,64`: 64 is the longest the rule allows and not a typical name, so the
 other lengths show the curve), compacts each to the bottom level and prints the record counts at each step,
 the live table bytes, the bytes written and, for each length, the cost
 `(live_N - live18) / (live18 - liveEmpty)`
-(`go run ./cmd/producercost -capture <dir with run1.jsonl and run2.jsonl>`). The tool prints the counts at each step:
-what the capture holds, what the translators make of it and what the coalescer writes.
-`-files` names the files of the capture to read, in order and each in replay order (default
-`run1.jsonl,run2.jsonl`). `-translators` says which translators the capture goes through: `objects` (the
-default, the output above) is the objects translator alone with a fixed 15-minute TTL and the coalescer's runs
-bounded at 10 minutes of age; `cluster` is the cluster translator alone on the entity events; `both` is the
-shipped mix, with every record sent to the translator of its kind, each with a producer of exactly N bytes
-(`k8sobjects/<fill>` and `k8scluster/<fill>`), the objects translator taking a 5-minute pull interval, the
-cluster translator the interval each event reports (5 minutes where it reports none; each translator's TTL is three
-intervals), and both writing to one
-coalescer, whose runs are bounded by their own extension interval, and one store. With `cluster` or `both` the
-table has two more columns, the records each translator made, and a last line says what the cluster translator
-set aside (an entity type the catalog does not have, say). Its numbers are local and informational. On a small
-capture (the kwok one, one table's worth) its cost moves by about half a percentage point with the exact bytes of
-the filler; the decision takes it and the bench measurement at scale (R2, R7) together.
-
-`capturereplay` replays a local capture of a k3s cluster through both translators, the coalescer and both
-stores, and compares what the stores say exists with what the cluster itself listed. The capture is a directory
-with `out/run1.jsonl` to `run5.jsonl` (a collector restarted between runs), and `logs/` with the host's listing
-of the pods and the nodes every 30 seconds, the timeline of the run (`workload.txt`) and `sizes.txt`; the command
-never writes under it. Each record goes, in the order of its file, to the cluster translator if it is an entity
-event and to the objects translator if not; one coalescer sees both, and each line is one batch to a memory store
-and a Pebble store, which must answer every question alike. It does this twice: in pass A one translator pair and
-one coalescer see all five runs, and in pass B new ones begin each run, as a restart of toposhift with the
-collector would. For every pod and node UID of the listing, at every sample, the report says whether the store
-agreed, had it absent while it was listed, or had it alive after it left, with the pairs within `-margin` (60
-seconds) of a UID's first or last listing not judged. It sums these per window of the timeline (each collector
-stop, each API restart, the node scenario, the 400-pod pull), against the predictions recomputed with the measured
-time from the last pull to the stop and with the store's own deadline for each pod, and adds the ghost rate, the `scheduled_on` edges against the listed nodes,
-the container fingerprints of the two translators, the cadences of the node records, the size of the largest pull
-as JSON and as protobuf against the receiver's limit, and the breaches of the rules decided for the translators,
-marked BLOCKING (a count above 0 holds the release; the informational counts hold nothing). It prints the report and writes `result.json` and `report.txt` to `-out` (default a new
-directory under `~/Downloads`; it refuses a directory inside a git work tree)
-(`go run ./cmd/capturereplay -capture ~/spikebench/k3s-capture/run1`). Its numbers are local and informational.
+(`go run ./cmd/producercost -capture <dir with run1.jsonl and run2.jsonl>`). The 2026-10-12 capture has 2,535
+log records; the translator makes 656 records of them and the coalescer (5-minute pull setting) writes 615.
+Its numbers are local and informational. It writes one small store, so its cost moves by about half a
+percentage point with the exact bytes of the filler; the decision takes it and the bench measurement at scale
+(R2, R7) together.
 
 `streamstats` prints three models of what a deadline index would cost: every extension rewriting its
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
@@ -422,13 +393,14 @@ plans), which is recorded in the manifest as `go_memory_limit` and in `job.json`
 #### The store's retention gate: storegate
 
 The root store (`Lroot/off` and `Lroot/<policy>`) is judged apart from the spike's gates, by five limits fixed
-before anything is measured, which `spikebench storegate` prints with a digest of their text on every report
+before anything is measured (rules version 2), which `spikebench storegate` prints with a digest of their text on every report
 (the text is a constant in `runner/storegate.go`, and a test pins its digest, so a change to a limit shows in the
 diff). The command never reads `runner.Rules`: the spike's rules version and digest do not depend on it.
 
 ```sh
 spikebench build -candidate Lroot/off         -out D/R7 -metrics-every 10s -retention-mode sync
 spikebench build -candidate Lroot/k64a2l1ns   -out D/R7 -metrics-every 10s -retention-mode sync
+spikebench build -candidate Lroot/k64a2l1ns   -out D/R7w -sync -metrics-every 10s -retention-mode background -pace 4500   # over the plan of a window
 spikebench storegate D/R7                     # or the build directories themselves, or a directory of CI artifacts
 ```
 
@@ -440,7 +412,7 @@ during a synchronous settle.
 
 | Row | Limit |
 | --- | --- |
-| Q1 | The longest batch inside a window takes at most 250 ms. The longest outside every window and settle is printed beside it as the control; a build over 250 ms with a control above 150 ms, or with no control, is not judged (rerun it), and a control never prevents a pass. The largest `retain.max_prefix_records` and `retain.chunk_hold_ns` of the build and the sum of `retain.touch_rewrites` (not recorded by this store) are reported with it. |
+| Q1 | The longest batch inside a window takes at most 250 ms. The longest outside every window and settle is printed beside it as the control; a build over 250 ms with a control above 150 ms, or with no control, is not judged (rerun it), and a control never prevents a pass. The largest `retain.max_prefix_records` and `retain.chunk_hold_ns` of the build and the sum of `retain.touch_rewrites` (recorded by a background build only) are reported with it. |
 | Q2 | The 99th percentile of a batch's commit inside windows is at most the larger of twice the same outside windows and 50 ms. A histogram bucket is within an eighth of the value it holds, so the inside is read at the top of its bucket and the outside at the bottom of its: neither reading lets a batch pass that the true values would not (and a value within an eighth under the limit may be refused). |
 | Q3 | With 30 days kept, the longest rewrite (publication to the end of the rewrite, not of the settle nor the return of the call) takes at most 2 h, at a load outside windows of at least 3000 records/s. The load is printed; a build below it, or one that keeps fewer than 30 days, shows its figure and is not judged. The tombstones after the settle are reported, not judged. |
 | Q4 | The records of the batches inside windows over the windows' total time plus the time of those batches that lies outside the windows are at least 3000 records/s (a big batch over a short window is not a quick writer). |
@@ -455,13 +427,39 @@ window over the time the stream took, less the rests and the time the builder wa
 return until it was done.
 
 `-retention-mode` (on `build`, `run` and `windows`, passed to the `Lroot` candidates only) accepts `sync`, which is
-what no value means, and refuses `background`: the store does not have it yet ("Background: not available on this
-store"). In synchronous mode the writer is blocked for the whole of each window, so no batch is written inside one:
-Q1, Q2 and Q4 are then not judged, with the longest time the writer was blocked in the reason, and Q3 and Q5 are
-judged. Repetitions of a candidate on an architecture are one row, the worst of those that could be judged, marked
-`(partial)` when some could not be; a build that is untimed, not through the root store, without the gate's record or
-with a window that never ended is listed under `NOT JUDGED` with its reason. Only a build through the root store
-records the gate's trace. It reads files and writes nothing.
+what no value means, and `background`; anything else is refused. In synchronous mode the writer is blocked for the
+whole of each window, so no batch is written inside one: Q1, Q2 and Q4 are then not judged, with the longest time the
+writer was blocked in the reason, and Q3 and Q5 are judged, as in rules version 1. In background mode a retention
+returns when its horizons are published and the build goes on writing while the store rewrites and then settles (a
+flush and a compaction of the key ranges of the layers it moved, with no lock held). The store reports the end of
+each phase of each retention to the build as it happens, so the windows are the store's own; a retention that a later
+one replaces before it ends is marked replaced and ends at the later one's publication. The build waits for the last
+retention, its settle included, before it reads, sizes or compacts anything.
+
+**Rules version 2: a build in the background.** Q3 assumes the product calls Retain at most once a day per store;
+its bound is one twelfth of that. A background build of a window of W days is judged on its paced part only:
+`-pace 4500` holds the writer to 4,500 records/s on a fixed wall-clock schedule (open-loop: it writes without
+sleeping when behind, never runs ahead) from stream day D = 2W + 1.5 - ceil(W/2) (11.5 for 7 days, 46.5 for 30), and
+the days before are written unpaced. Only a build with `-retention-mode background` is paced, and its plan must be a
+window plan (`-window`; `windows` makes one for each of its windows). Q1 to Q4 are judged on the windows published at
+or after D; a batch that starts before D is unpaced, and one that overlaps an unjudged window or its settle is
+excluded, and neither is inside, settling or outside; Q1's control, Q2's outside and Q3's load are the paced batches
+only. A window a later retention replaced, or still open when the stream ended, ends there. Q3 takes the rewrite time
+of each judged pass, or for a replaced or unfinished pass the least it took: it fails if any is over 2 h, is not
+judged if some pass has only a lower bound, and otherwise passes; its load is over the paced writing time, from D to
+the end of the stream, and Q4's time ends at the end of the stream. A build that is unpaced, or paced at another rate,
+prints its values and is not judged; one paced from another day than D is refused. Q5 compares builds of the same
+retention mode, sync setting, pacing rate and pacing start, and the repetitions of a candidate on an architecture
+must share them, or the set is refused (status 3, naming the values); a baseline that differs leaves Q5 not judged.
+The manifest records `pace_records_per_second` (0: unpaced) and `pace_from_day`, and the report prints, for each
+build in the background, how it was paced, how its batches divided, the number of inside batches Q2 is taken over,
+and for each pass the time of its rewrite (or its lower bound), of its settle, and whether the settle reached its
+deadline, with the Q3 note of the rules. The spike's timing judge refuses a paced build.
+
+Repetitions of a candidate on an architecture are one row, the worst of those that could be judged, marked
+`(partial)` when some could not be; a build that is untimed, not through the root store, without the gate's record or,
+in a synchronous build, with a window that never ended is listed under `NOT JUDGED` with its reason. Only a build
+through the root store records the gate's trace. It reads files and writes nothing.
 
 Exit status of `storegate`:
 

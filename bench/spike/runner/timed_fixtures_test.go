@@ -128,6 +128,12 @@ type fixtureBuild struct {
 	// default leaves the key out, as a manifest made before the limit was recorded does;
 	// the job's go_mem_limit follows it.
 	MemLimit string
+	// RetentionMode is the description retention_mode; the default leaves the key out, as
+	// the manifest of a build that is not through the root store does.
+	RetentionMode string
+	// Pace is the description pace_records_per_second; the default leaves the key out, as
+	// the manifest of a build that was not paced does.
+	Pace string
 	// Stream names the stream of the plan (default: one per window), ManifestStream
 	// the one the manifest says it holds (default: the plan's).
 	Stream, ManifestStream string
@@ -266,7 +272,7 @@ func (b fixtureBuild) manifest() *runner.Manifest {
 	for k, v := range map[string]string{
 		runner.SyncKey: b.Sync, runner.RestKey: b.Rest, runner.CanonicalKey: b.Canonical, runner.MetricsKey: b.Metrics,
 		runner.SettleKey: b.Settle, "settle_deadline": b.Deadline, runner.PostRetentionKey: b.PostBatches,
-		runner.GoMemoryLimitKey: b.MemLimit,
+		runner.GoMemoryLimitKey: b.MemLimit, runner.RetentionModeKey: b.RetentionMode, runner.PaceKey: b.Pace,
 	} {
 		if v != "-" && v != "" {
 			describe[k] = v

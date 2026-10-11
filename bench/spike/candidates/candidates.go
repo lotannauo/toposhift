@@ -75,32 +75,48 @@ type Options struct {
 	// [pebblekv.Config].
 	ReadOnly bool
 	// RetentionMode is how the root store's retention runs, for the Lroot variants
-	// only (every other variant ignores it): "" and [RetentionSync] are the only mode
-	// the store has, [RetentionBackground] is refused until it has one. See
-	// [CheckRetentionMode].
+	// only (every other variant ignores it): "" and [RetentionSync] are the store's
+	// Synchronous mode, [RetentionBackground] its Background one, opened with the
+	// settle of [Options.SettleRetention] if that is on. See [CheckRetentionMode].
 	RetentionMode string
+	// RetainObserver, if not nil, is passed to the root store of a Lroot variant, and
+	// is told when each retention of a store in the background mode reaches the
+	// points that bound its phases (see [pebblestore.RetainObserver]); a Synchronous
+	// store never calls it. Every other variant ignores it.
+	RetainObserver pebblestore.RetainObserver
 }
 
 // The retention modes a build can ask of the root store.
 const (
 	// RetentionSync makes a retention do all of its work, settling included, before
-	// it returns: the only mode the store has, and the one "" means.
+	// it returns: the store's Synchronous mode, and the one "" means.
 	RetentionSync = "sync"
-	// RetentionBackground is the mode in which a retention runs beside the writer.
-	// The store does not have it yet.
+	// RetentionBackground is the mode in which a retention runs beside the writer: the
+	// store's Background mode. A build in it waits for the pass and its settle before
+	// it reads anything.
 	RetentionBackground = "background"
 )
 
 // CheckRetentionMode returns why mode is not one the root store can be opened in, or
-// nil for "" and [RetentionSync].
+// nil for "", [RetentionSync] and [RetentionBackground].
 func CheckRetentionMode(mode string) error {
 	switch mode {
-	case "", RetentionSync:
+	case "", RetentionSync, RetentionBackground:
 		return nil
-	case RetentionBackground:
-		return fmt.Errorf("candidates: retention mode %q: Background: not available on this store (the only mode is %q)", mode, RetentionSync)
 	}
 	return fmt.Errorf("candidates: retention mode %q is not %q or %q", mode, RetentionSync, RetentionBackground)
+}
+
+// storeRetention is the retention mode of the root store that mode names, or the
+// error [CheckRetentionMode] gives.
+func storeRetention(mode string) (pebblestore.RetentionMode, error) {
+	if err := CheckRetentionMode(mode); err != nil {
+		return 0, err
+	}
+	if mode == RetentionBackground {
+		return pebblestore.Background, nil
+	}
+	return pebblestore.Synchronous, nil
 }
 
 func (o Options) config() pebblekv.Config {
@@ -172,10 +188,11 @@ func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 // checkpoints, stated outright to the store.
 func LrootNoCheckpoints() Variant {
 	return Variant{Name: "Lroot/off", Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
-		if err := CheckRetentionMode(o.RetentionMode); err != nil {
+		mode, err := storeRetention(o.RetentionMode)
+		if err != nil {
 			return nil, err
 		}
-		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder})
+		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver})
 	}}
 }
 
@@ -183,11 +200,12 @@ func LrootNoCheckpoints() Variant {
 // checkpoint policy of [LCheckpoints].
 func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
-		if err := CheckRetentionMode(o.RetentionMode); err != nil {
+		mode, err := storeRetention(o.RetentionMode)
+		if err != nil {
 			return nil, err
 		}
 		return rootlog.Open(dir, rootlog.Options{
-			Config: o.config(), Recorder: o.Recorder,
+			Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver,
 			Checkpoints: pebblestore.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
 		})
 	}}

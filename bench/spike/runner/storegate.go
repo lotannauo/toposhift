@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -45,8 +46,26 @@ const (
 	// control, or none, Q1 is not judged. A control never prevents a pass, and the
 	// 250ms limit is unchanged. The version stays 1.
 
+	// Log (2026-10-10, version 2, before any background build was judged by the gate on a
+	// measurement): Q3 assumes a retention at most once a day per store. For a build whose
+	// retention runs in the background: Q1 to Q4 are judged only on the paced part, from
+	// stream day 2W + 1.5 − ⌈W/2⌉, with the writer paced at 4,500 records/s on an open-loop
+	// schedule and its commits synced; the rest, including batches in unjudged windows,
+	// prints its values for information. Q3 fails when a rewrite, or a lower bound of one
+	// (a pass replaced, or unfinished at the end of the stream), exceeds its limit; it is
+	// not judged when a judged pass has only a lower bound, and otherwise passes. At 4,500
+	// records/s a stream day lasts minutes of wall time, so Q3 can fail only if the writer
+	// stalls for about its limit, and a rewrite that outlasts its stream day is caught by
+	// the reopen check before dispatch. Q3's load is taken over the paced writing time, a
+	// window's time for Q4 ends at the end of the stream, and Q5 also matches the sync
+	// setting, pacing rate and pacing start. A build whose retention is synchronous is
+	// judged as in version 1.
+
 	// StoreGateRulesVersion is the version of the gate's rules text.
-	StoreGateRulesVersion = 1
+	StoreGateRulesVersion = 2
+	// StoreGatePaceRate is the offered load, in records per second, that a build whose
+	// retention runs in the background is paced at and is judged at.
+	StoreGatePaceRate = 4500
 	// StoreGateQ1MaxWait is the most the longest batch inside a retention window may take.
 	StoreGateQ1MaxWait = 250 * time.Millisecond
 	// StoreGateQ1NoiseCeiling is the most the control, the longest batch outside every
@@ -76,19 +95,40 @@ const (
 	StoreGateRSSCeiling   = 14_000_000_000
 )
 
+// The paragraphs of version 2 for a build whose retention runs in the background.
+const (
+	storeGateCadence = "Q3 assumes the product calls Retain at most once a day per store, each call moving every layer that is due; its bound is one twelfth of that interval. A shorter product cadence needs a new rule."
+	storeGatePacing  = "In a build whose retention runs in the background, `-pace R`: records are due on a fixed wall-clock schedule of R per second from the moment pacing starts; when the writer is behind it writes without sleeping until it is back on schedule, and never runs ahead of it. A build of window W is unpaced for its first D = 2W + 1.5 − ⌈W/2⌉ stream days and paced for the rest (7 days: D = 11.5; 30 days: D = 46.5); any other D is refused. A build whose retention is synchronous is not paced."
+)
+
+var storeGateBackgroundRules = []string{
+	"In a build whose retention runs in the background, Q1, Q2, Q3 and Q4 are judged only on the paced part of a build paced at the pre-registered offered load of 4,500 records/s: its windows that start at or after D (the judged windows) and, for Q1's control, Q2's outside and Q3's load, its batches that start at or after D. Inside, for Q1, Q2 and Q4, means inside a judged window. A batch that overlaps an unjudged window, or its settle, is counted in neither the inside nor the outside, and is reported. Everything else, and every build that is unpaced or paced at another rate, is reported with its values, for information, and not judged.",
+	"A window replaced by a later retention, or still open when the stream ended, ends there, for Q1, Q2 and Q4, and does not refuse the build.",
+	"Q3's load is taken over the paced writing time, from D to the end of the stream.",
+	"Q3 takes the rewrite time of each judged pass whose rewrite ended. A judged pass that a later retention replaced, or whose rewrite had not ended when the stream ended, has as a lower bound of its rewrite the time from its publication to the publication that replaced it, or to the end of the stream. Q3 fails if any rewrite time or any lower bound exceeds its limit, at Q3's load. Otherwise, if any judged pass has only a lower bound, Q3 is not judged. Otherwise it passes. The report gives the number of passes with only a lower bound and their bounds, and prints, for each pass, the rewrite time, the settle time and whether the settle reached its deadline.",
+	"A window's time for Q4 ends at the end of the stream.",
+	"Q5 compares builds with the same retention mode, sync setting, pacing rate and pacing start.",
+	"A control never prevents a pass.",
+	"A build whose retention is synchronous is judged as in version 1.",
+}
+
+// StoreGateQ3Note is printed with the report when a build in the background mode is in it.
+const StoreGateQ3Note = "At 4,500 records/s a stream day lasts minutes of wall time, so in the Background arm Q3 can fail only if no retention follows a publication for its whole limit, that is, if the writer stalls for about that long; otherwise it passes or is not judged. A rewrite that outlasts its stream day is caught by the reopen check before dispatch."
+
 // StoreGateRulesText is the text of the rules, made from the constants above: a change
 // to a limit or to a word changes it, and with it [StoreGateRulesDigest].
 func StoreGateRulesText() string {
-	return fmt.Sprintf(`store gate rules %d
+	v1 := fmt.Sprintf(`store gate rules %d
 window: from a retention's publication to the end of its rewrite; a batch that overlaps it, its first and last instants included, is inside; the settle runs from the end of the rewrite to its own end, and a batch that overlaps it and no window is settling: it is counted in neither the inside nor the outside (so not in the control, and not in Q2's baseline) and its longest and 99th percentile are reported
 Q1: the longest batch inside a window is at most %s; the longest batch outside every window and every settle is reported as the control. A build over that limit is over it only if its control is at most %s; with a control above %s, or no batch outside every window and every settle, Q1 is not judged for the build, with the control in the reason, because the machine's own longest batch then leaves too little of the limit to tell a retention's wait from its noise. A control never prevents a pass.
 Q2: the 99th percentile of a batch's commit inside windows, read as the upper bound of its histogram bucket, is at most max(%dx the same outside windows and settles, read as the lower bound of its bucket, %s)
 Q3: with %d days kept, the longest rewrite (from the publication to the end of the rewrite) is at most %s, at a load outside windows of at least %d records/s; a build below that load is not judged
 Q4: the records of the batches inside windows over the windows' total time plus the time of those batches outside the windows are at least %d records/s
-Q5: the peak live heap is at most that of Lroot/off on the same plan plus %d MB, both built with the same GOGC, GOMEMLIMIT and metrics interval; the peak resident set of the build process is at most %d GB; MB and GB are 10^6 and 10^9 bytes
+Q5: the peak live heap is at most that of Lroot/off on the same plan plus %d MB, both built with the same GOGC, GOMEMLIMIT and metrics interval, and with the same retention mode, sync setting, pacing rate and pacing start; the peak resident set of the build process is at most %d GB; MB and GB are 10^6 and 10^9 bytes
 `, StoreGateRulesVersion, StoreGateQ1MaxWait, StoreGateQ1NoiseCeiling, StoreGateQ1NoiseCeiling, StoreGateQ2Factor, StoreGateQ2Floor,
 		StoreGateQ3KeepDays, StoreGateQ3Max, StoreGateRate, StoreGateRate,
 		StoreGateQ5HeapMargin/1_000_000, int64(StoreGateRSSCeiling)/1_000_000_000)
+	return v1 + storeGateCadence + "\n" + storeGatePacing + "\n" + strings.Join(storeGateBackgroundRules, "\n") + "\n"
 }
 
 // StoreGateRulesDigest is the SHA-256 of [StoreGateRulesText], as hex.
@@ -99,7 +139,7 @@ func StoreGateRulesDigest() string {
 
 const (
 	// RetentionModeKey is the key of a manifest's Describe that gives how the root
-	// store's retention ran in the build: "sync", the store's only mode. A manifest of a
+	// store's retention ran in the build: "sync" or "background". A manifest of a
 	// candidate that is not built through the root store does not have it.
 	RetentionModeKey = "retention_mode"
 	// GoGCKey is the key of a manifest's Describe that gives the Go runtime's GC target
@@ -115,9 +155,18 @@ const gateWindowOpen = math.MaxInt64
 // writing: the retention's publication, the end of its rewrite, the end of its settle,
 // and the instant the call that made it returned to the writer. In synchronous mode
 // the call returns after the settle and the writer is blocked until then; in the mode
-// that runs beside the writer it returns at the publication.
+// that runs beside the writer it returns at the publication. A retention that a later
+// one replaced before it ended ends at the later one's publication.
 type GateWindow struct {
 	StartNs, RewriteEndNs, SettleEndNs, ReturnNs int64
+	// SupersededNs is the instant of the publication of the retention that replaced this
+	// one while it was still rewriting, which ended its rewrite there (0 if none did: a
+	// retention that replaced one that had finished rewriting cut its settle short, and
+	// left the rewrite as it was). A background store never settles a pass it replaced
+	// in its rewrite.
+	SupersededNs int64 `json:",omitempty"`
+	// SettleDeadlineHit says the settle of this pass reached its deadline.
+	SettleDeadlineHit bool `json:",omitempty"`
 }
 
 // GateBatches counts the batches a build wrote inside, or outside, every window: how
@@ -152,6 +201,18 @@ type GateTrace struct {
 	// Maxima are the largest values of the samples "retain.max_prefix_records" and
 	// "retain.chunk_hold_ns".
 	Maxima map[string]int64
+	// StreamEndNs is the instant the last batch of the stream was written and the last
+	// retention called, before the build waited for the pass of a background store: the
+	// end of the stream for the gate. PaceStartNs is the start of the first paced batch
+	// of a build that is paced, 0 for one that is not. Unpaced are the batches that
+	// start before it; Excluded the paced batches that overlap a window that started
+	// before it (an unjudged window) or its settle, which are counted in neither the
+	// inside nor the outside. For a build that is not paced, Inside, Settling and Outside
+	// mean what they always did.
+	StreamEndNs, PaceStartNs int64 `json:",omitempty"`
+	Unpaced, Excluded        GateBatches
+	// PacedRestNs is the part of RestNs that falls after the pacing started.
+	PacedRestNs int64 `json:",omitempty"`
 }
 
 // gateMaxima are the samples whose largest value a build keeps.
@@ -163,10 +224,22 @@ type maxRecorder struct {
 	engine.Recorder
 	mu  sync.Mutex
 	max map[string]int64
+	// gate, if not nil, is told each count of a settle that reached its deadline.
+	gate *gateTracker
 }
 
 func newMaxRecorder(r engine.Recorder) *maxRecorder {
 	return &maxRecorder{Recorder: r, max: map[string]int64{}}
+}
+
+// Count implements [engine.Recorder]. The store counts "retain.settle_deadline_hits" once
+// for each settle, 1 if it reached its deadline and 0 if not, just before it tells its
+// observer that the settle ended.
+func (m *maxRecorder) Count(name string, n int64) {
+	if name == "retain.settle_deadline_hits" {
+		m.gate.settleCounted(n)
+	}
+	m.Recorder.Count(name, n)
 }
 
 // Sample implements [engine.Recorder].
@@ -199,6 +272,20 @@ type gateTracker struct {
 	windows                   []GateWindow
 	inside, settling, outside GateBatches
 	rest                      time.Duration
+	// byGen is the window of each generation a background store published, by the
+	// number the store's marker carries.
+	byGen map[uint64]int
+	// paced says the build is paced: its batches before paceStartNs (0 until the pacing
+	// starts) are unpaced, and those after it that touch a window that started before it
+	// are excluded. restPaced is the part of rest after the pacing started.
+	paced       bool
+	paceStartNs int64
+	unpaced     GateBatches
+	excluded    GateBatches
+	restPaced   time.Duration
+	// pendingHit is whether the last settle the store counted reached its deadline, until
+	// the observer is told that settle ended (see settleCounted).
+	pendingHit bool
 }
 
 func newGateTracker(epoch time.Time) *gateTracker { return &gateTracker{epoch: epoch} }
@@ -263,6 +350,131 @@ func (g *gateTracker) open() *GateWindow {
 	return nil
 }
 
+// count is how many windows there are.
+func (g *gateTracker) count() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.windows)
+}
+
+// returnedSince sets the instant the call that made the window after the first n
+// returned to the writer, if it made one: a retention that moved nothing makes none.
+func (g *gateTracker) returnedSince(n int, at time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if n < len(g.windows) {
+		g.windows[n].ReturnNs = g.off(at)
+	}
+}
+
+// The three calls that follow feed the windows of a store that retains in the
+// background, from its observer. They come from the goroutine that reached the point,
+// so one may arrive after a later one of another goroutine; the instant given, not
+// the order of arrival, says when it happened, and a phase's end is the earliest
+// instant it is given. A phase that a later publication cuts short ends there.
+
+// publishedGen opens the window of generation gen at its publication. A window before
+// it that has not ended ends here, with the rewrite or the settle it was in: the store
+// replaced that retention, and its settle, if it was settling, is not part of any
+// window from now on.
+func (g *gateTracker) publishedGen(gen uint64, at time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	s := g.off(at)
+	g.pendingHit = false
+	for i := range g.windows {
+		w := &g.windows[i]
+		if w.SettleEndNs == gateWindowOpen && (w.RewriteEndNs == gateWindowOpen || w.RewriteEndNs == s) {
+			// The store reports a pass it replaced in its rewrite as ended at the instant
+			// of the publication that replaced it, and never settles it.
+			w.SupersededNs = s
+		}
+		if w.RewriteEndNs == gateWindowOpen {
+			w.RewriteEndNs = s
+		}
+		if w.SettleEndNs == gateWindowOpen {
+			w.SettleEndNs = max(s, w.RewriteEndNs)
+		}
+	}
+	if g.byGen == nil {
+		g.byGen = map[uint64]int{}
+	}
+	g.byGen[gen] = len(g.windows)
+	g.windows = append(g.windows, GateWindow{StartNs: s, RewriteEndNs: gateWindowOpen, SettleEndNs: gateWindowOpen, ReturnNs: s})
+}
+
+// rewriteEndedGen ends the rewrite of generation gen's window. A generation the
+// tracker was not told the publication of (a pass an earlier process left) has none.
+func (g *gateTracker) rewriteEndedGen(gen uint64, at time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// The settle that follows is counted after this and before the pass is told it
+	// ended; a count that is still pending is of a pass that was replaced as it settled.
+	g.pendingHit = false
+	if i, ok := g.byGen[gen]; ok {
+		w := &g.windows[i]
+		w.RewriteEndNs = min(w.RewriteEndNs, g.off(at))
+		if w.SupersededNs > 0 && g.off(at) < w.SupersededNs {
+			// The rewrite ended before the publication that replaced it, and was told late: it
+			// was the settle that was replaced.
+			w.SupersededNs = 0
+		}
+		if w.SettleEndNs != gateWindowOpen {
+			w.SettleEndNs = max(w.SettleEndNs, w.RewriteEndNs)
+		}
+	}
+}
+
+// settleCounted is told the store's count of the settle it has just done: 1 if it
+// reached its deadline, 0 if not. The store counts a settle, then tells the observer
+// that it ended, from one goroutine, so the count is the one the next settleEndedGen
+// takes; a count no settleEndedGen takes (of a pass that was replaced as it settled) is
+// dropped when the next pass is published or its rewrite ends.
+func (g *gateTracker) settleCounted(hits int64) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.pendingHit = hits > 0
+	g.mu.Unlock()
+}
+
+// settleEndedGen ends the settle of generation gen's window.
+func (g *gateTracker) settleEndedGen(gen uint64, at time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if i, ok := g.byGen[gen]; ok {
+		w := &g.windows[i]
+		w.SettleEndNs = max(min(w.SettleEndNs, g.off(at)), w.RewriteEndNs)
+		w.SettleDeadlineHit = g.pendingHit
+	}
+	g.pendingHit = false
+}
+
+// gateObserver tells a gateTracker what a background store reports of its retentions;
+// it is the store's observer (pebblestore.RetainObserver, which it satisfies without
+// naming), and is given to the candidate that is built.
+type gateObserver struct{ g *gateTracker }
+
+func (o gateObserver) Published(gen uint64, at time.Time)    { o.g.publishedGen(gen, at) }
+func (o gateObserver) RewriteEnded(gen uint64, at time.Time) { o.g.rewriteEndedGen(gen, at) }
+func (o gateObserver) SettleEnded(gen uint64, at time.Time)  { o.g.settleEndedGen(gen, at) }
+
 // syncWindow records the window of a retention that did all of its work before it
 // returned: the rewrite took work from the call at start, then the flush and the
 // settle, and the call returned at ret. A retention that rewrote nothing makes none.
@@ -276,7 +488,32 @@ func (g *gateTracker) syncWindow(start, ret time.Time, work, flush, settle time.
 	g.returned(ret)
 }
 
-// batch records a batch that began at start and took d to commit.
+// setPaced says the build is paced: its batches before the pacing starts are unpaced.
+func (g *gateTracker) setPaced() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.paced = true
+	g.mu.Unlock()
+}
+
+// startPacing records the start of the first paced batch, once.
+func (g *gateTracker) startPacing(at time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.paceStartNs == 0 {
+		g.paceStartNs = g.off(at)
+	}
+}
+
+// batch records a batch that began at start and took d to commit. In a paced build a
+// batch that starts before the pacing did is unpaced, and one that overlaps a window
+// that started before it (an unjudged window), or that window's settle, is excluded;
+// neither is inside, settling or outside.
 func (g *gateTracker) batch(start time.Time, d time.Duration, records int) {
 	if g == nil {
 		return
@@ -285,32 +522,50 @@ func (g *gateTracker) batch(start time.Time, d time.Duration, records int) {
 	defer g.mu.Unlock()
 	s := g.off(start)
 	e := s + d.Nanoseconds()
-	in, settling := false, false
+	count := func(b *GateBatches) {
+		b.Batches++
+		b.Records += int64(records)
+		b.Commit.Add(d)
+	}
+	if g.paced && (g.paceStartNs == 0 || s < g.paceStartNs) {
+		count(&g.unpaced)
+		return
+	}
+	in, settling, excluded := false, false, false
 	var overlap int64 // the time of the batch inside windows
 	for i := len(g.windows) - 1; i >= 0; i-- {
 		w := g.windows[i]
 		if w.SettleEndNs < s { // the windows are in order: the earlier ones end earlier
 			break
 		}
+		unjudged := g.paced && w.StartNs < g.paceStartNs
 		switch {
 		case w.StartNs <= e && s <= w.RewriteEndNs:
+			if unjudged {
+				excluded = true
+				break
+			}
 			in = true
 			overlap += min(e, w.RewriteEndNs) - max(s, w.StartNs)
 		case s <= w.SettleEndNs && e >= w.RewriteEndNs:
+			if unjudged {
+				excluded = true
+				break
+			}
 			settling = true
 		}
 	}
-	b := &g.outside
 	switch {
+	case excluded:
+		count(&g.excluded)
 	case in:
-		b = &g.inside
-		b.SpillNs += max(e-s-overlap, 0)
+		g.inside.SpillNs += max(e-s-overlap, 0)
+		count(&g.inside)
 	case settling:
-		b = &g.settling
+		count(&g.settling)
+	default:
+		count(&g.outside)
 	}
-	b.Batches++
-	b.Records += int64(records)
-	b.Commit.Add(d)
 }
 
 // rested adds the time the builder waited for the database to be at rest.
@@ -320,17 +575,24 @@ func (g *gateTracker) rested(d time.Duration) {
 	}
 	g.mu.Lock()
 	g.rest += d
+	if g.paceStartNs > 0 {
+		g.restPaced += d
+	}
 	g.mu.Unlock()
 }
 
-// trace is the record of the build up to end. Windows still open stay open in it, and
-// the judge refuses them.
+// trace is the record of the build: the end of the stream is end, and the windows are
+// as they are when it is taken. Windows still open stay open in it; the judge refuses
+// them in a synchronous build and ends them at the end of the stream in a background
+// one.
 func (g *gateTracker) trace(end time.Time, mode string, keep time.Duration, maxima map[string]int64) *GateTrace {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return &GateTrace{
 		Mode: mode, Windows: slices.Clone(g.windows), Inside: g.inside, Settling: g.settling, Outside: g.outside,
 		WriteNs: g.off(end), RestNs: g.rest.Nanoseconds(), KeepNs: keep.Nanoseconds(), Maxima: maxima,
+		StreamEndNs: g.off(end), PaceStartNs: g.paceStartNs, Unpaced: g.unpaced, Excluded: g.excluded,
+		PacedRestNs: g.restPaced.Nanoseconds(),
 	}
 }
 
@@ -545,6 +807,9 @@ type StoreGateReport struct {
 	// Over is the number of rows over their limit, and Unexpected the number of rows of
 	// a build that were not judged though its mode has something to judge in them.
 	Over, Unexpected int
+	// Refusal, if not empty, is why nothing was judged: the builds are not a set the
+	// gate judges (see [CheckStoreGateSettings]). Rows and the counts are then empty.
+	Refusal string
 }
 
 // gateRow is one build's verdict on one row.
@@ -601,13 +866,63 @@ func (b *StoreGateBuild) refusal() string {
 	case m.Gate.Mode == "":
 		return "no retention mode recorded"
 	}
+	if m.Gate.Mode == "background" {
+		if why := b.paceRefusal(); why != "" {
+			return why
+		}
+	}
 	for i, w := range m.Gate.Windows {
 		switch {
-		case w.RewriteEndNs == gateWindowOpen || w.SettleEndNs == gateWindowOpen:
+		// A window of a build in the background that is open when the stream ends ends
+		// there; a synchronous one that never ended is a build that did not finish.
+		case m.Gate.Mode != "background" && (w.RewriteEndNs == gateWindowOpen || w.SettleEndNs == gateWindowOpen):
 			return fmt.Sprintf("window %d never ended", i+1)
 		case w.RewriteEndNs < w.StartNs || w.SettleEndNs < w.RewriteEndNs || w.ReturnNs < w.StartNs:
 			return fmt.Sprintf("window %d ends before it starts", i+1)
 		}
+	}
+	return ""
+}
+
+// paceOf is the rate a build was paced at, in records per second (0: not paced), and
+// the day it was paced from as the manifest records it ("" if it was not paced).
+func (b *StoreGateBuild) paceOf() (rate int, fromDay string) {
+	rate, _ = strconv.Atoi(describedOr(b.Manifest, PaceKey, "0"))
+	return rate, b.Manifest.Describe[PaceFromDayKey]
+}
+
+// window is the days of retained history a build kept, or false if it kept no whole
+// number of them.
+func (t *GateTrace) window() (days int, ok bool) {
+	d := time.Duration(t.KeepNs)
+	if d <= 0 || d%(24*time.Hour) != 0 {
+		return 0, false
+	}
+	return int(d / (24 * time.Hour)), true
+}
+
+// paceRefusal is why a build in the background that was paced is not one the rules
+// know: it kept no whole number of days, or it was paced from another day than the one
+// the rules give for its window.
+func (b *StoreGateBuild) paceRefusal() string {
+	rate, from := b.paceOf()
+	if rate <= 0 {
+		return ""
+	}
+	if b.Manifest.Gate.PaceStartNs <= 0 {
+		return "paced, but the pacing never started"
+	}
+	days, ok := b.Manifest.Gate.window()
+	if !ok {
+		return fmt.Sprintf("paced, and keeping %s, which is not a whole number of days: the rules give the day to pace from for a window of whole days", time.Duration(b.Manifest.Gate.KeepNs))
+	}
+	want := PaceFromDay(days)
+	got, err := strconv.ParseFloat(from, 64)
+	if err != nil || got != want {
+		if from == "" {
+			from = "not recorded"
+		}
+		return fmt.Sprintf("pace from day %s, the rule gives %s for the window of %d days", from, strconv.FormatFloat(want, 'f', -1, 64), days)
 	}
 	return ""
 }
@@ -630,6 +945,133 @@ func (g *GateTrace) load() (perSecond float64, ok bool) {
 	return float64(records) / (float64(ns) / 1e9), true
 }
 
+// streamEnd is the end of the stream for the gate: the instant the last batch was
+// written and the last retention called. A trace that does not say (a build before the
+// field) took it as the time the stream took.
+func (t *GateTrace) streamEnd() int64 {
+	if t.StreamEndNs > 0 {
+		return t.StreamEndNs
+	}
+	return t.WriteNs
+}
+
+// judged says whether a window is one the gate judges in a background build: one that
+// starts at or after the pacing did (every window of a build that was not paced).
+func (t *GateTrace) judged(w GateWindow) bool { return w.StartNs >= t.PaceStartNs }
+
+// pacedLoad is the builder's records per second over the paced writing time of a
+// background build: the records of the paced batches that are inside, settling or
+// outside (not those of an unjudged window or its settle) over the time from the start
+// of the pacing to the end of the stream, less the rests and the time of unjudged
+// windows and their settles that falls in that span. The time of a judged window is not
+// removed: the builder writes beside it. A build that was not paced has no unjudged
+// window, and its span is the whole stream.
+func (t *GateTrace) pacedLoad() (perSecond float64, ok bool) {
+	end := t.streamEnd()
+	rest := t.PacedRestNs
+	if t.PaceStartNs <= 0 {
+		rest = t.RestNs
+	}
+	ns := end - t.PaceStartNs - rest
+	for _, w := range t.Windows {
+		if t.judged(w) {
+			continue
+		}
+		if hi := min(w.SettleEndNs, end); hi > t.PaceStartNs {
+			ns -= hi - t.PaceStartNs
+		}
+	}
+	records := t.Inside.Records + t.Settling.Records + t.Outside.Records
+	if ns <= 0 || records == 0 {
+		return 0, false
+	}
+	return float64(records) / (float64(ns) / 1e9), true
+}
+
+// gatePass is a window of a background build seen as a pass of the store: how long its
+// rewrite took, or the least it took.
+type gatePass struct {
+	n      int // among the windows of the build, from 1
+	w      GateWindow
+	judged bool
+	// rewrite is the rewrite time; if bound, it is a lower bound of it, because a later
+	// retention replaced the pass or the stream ended before its rewrite did.
+	rewrite int64
+	bound   bool
+	why     string
+	// settle is the time of the settle, 0 for a pass that was not settled (replaced in
+	// its rewrite, or unfinished at the end of the stream); unfinished says the settle
+	// had not ended when the stream did.
+	settle     int64
+	unfinished bool
+}
+
+// passes are the windows of a background build as passes.
+func (t *GateTrace) passes() []gatePass {
+	end := t.streamEnd()
+	out := make([]gatePass, 0, len(t.Windows))
+	for i, w := range t.Windows {
+		p := gatePass{n: i + 1, w: w, judged: t.judged(w)}
+		switch {
+		case w.SupersededNs > 0:
+			p.rewrite, p.bound, p.why = w.SupersededNs-w.StartNs, true, "replaced by the next retention"
+		case w.RewriteEndNs > end:
+			p.rewrite, p.bound, p.why = end-w.StartNs, true, "not ended when the stream ended"
+		default:
+			p.rewrite = w.RewriteEndNs - w.StartNs
+			p.settle = min(w.SettleEndNs, end) - w.RewriteEndNs
+			p.unfinished = w.SettleEndNs > end
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// judgeQ3Background judges Q3 for a build in the background: the rewrite time of each
+// judged pass whose rewrite ended, and for a judged pass that was replaced or had not
+// ended when the stream did, the lower bound of its rewrite. The row fails if any of
+// them is over the limit, at the load the build ran at; otherwise it is not judged if
+// some judged pass has only a lower bound; otherwise it passes.
+func judgeQ3Background(r *gateRow, t *GateTrace, load float64, loadOK bool) {
+	var done, bounded int
+	var rewriteMax, boundMax int64
+	for _, p := range t.passes() {
+		switch {
+		case !p.judged:
+		case p.bound:
+			bounded++
+			boundMax = max(boundMax, p.rewrite)
+		default:
+			done++
+			rewriteMax = max(rewriteMax, p.rewrite)
+		}
+	}
+	loadText := "load not determinable"
+	if loadOK {
+		loadText = fmt.Sprintf("load %.0f records/s over the paced writing time", load)
+	}
+	value := fmt.Sprintf("longest rewrite %s over %d passes", fmtDur(rewriteMax), done)
+	if bounded > 0 {
+		value += fmt.Sprintf(", and %d passes with only a lower bound, the longest %s", bounded, fmtDur(boundMax))
+	}
+	r.value = fmt.Sprintf("%s (%s)", value, loadText)
+	r.limit = fmt.Sprintf("%s with %d days kept, at a load of at least %d records/s", StoreGateQ3Max, StoreGateQ3KeepDays, StoreGateRate)
+	worst := max(rewriteMax, boundMax)
+	over := worst > int64(StoreGateQ3Max)
+	r.pass = !over
+	r.margin = float64(worst) / float64(StoreGateQ3Max)
+	switch keep := time.Duration(t.KeepNs); {
+	case !loadOK:
+		r.judged, r.reason = false, "the load over the paced writing time cannot be worked out (no paced batch outside an unjudged window)"
+	case load < StoreGateRate:
+		r.judged, r.reason = false, fmt.Sprintf("the load %.0f records/s is below the %d records/s the rule is judged at: a rewrite is not shown quick by writing slowly beside it", load, StoreGateRate)
+	case keep < StoreGateQ3KeepDays*24*time.Hour:
+		r.judged, r.reason = false, fmt.Sprintf("the limit is for %d days kept, and this build keeps %.1f", StoreGateQ3KeepDays, keep.Hours()/24)
+	case !over && bounded > 0:
+		r.judged, r.reason = false, fmt.Sprintf("%d judged passes have only a lower bound of their rewrite (replaced by a later retention, or not ended when the stream ended), the longest %s, within the limit: whether they pass is not known", bounded, fmtDur(boundMax))
+	}
+}
+
 // judgeBuild gives the build's verdict on each row; base is the Lroot/off build of the
 // same plan, architecture and repetition (nil if there is none, with baseWhy saying why).
 func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow, info string) {
@@ -646,17 +1088,48 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 	t := m.Gate
 	ni := func(i int, reason string) { rows[i].judged, rows[i].reason = false, reason }
 
-	var rewriteMax, settleMax, returnMax, windowsNs int64
+	// A build in the background is judged on the paced part when it was paced at the
+	// rule's rate; otherwise its values are reported and no row is judged.
+	bg := t.Mode == "background"
+	rate, fromDay := b.paceOf()
+	unjudgedWhy := ""
+	switch {
+	case !bg:
+	case rate == 0:
+		unjudgedWhy = fmt.Sprintf("a build in the background is judged only when paced at %d records/s from stream day D; this one was not paced", StoreGatePaceRate)
+	case rate != StoreGatePaceRate:
+		unjudgedWhy = fmt.Sprintf("paced at %d records/s, not at the pre-registered offered load of %d records/s", rate, StoreGatePaceRate)
+	}
+
+	end := t.streamEnd()
+	var rewriteMax, settleMax, returnMax, windowsNs, judgedWindows int64
 	for _, w := range t.Windows {
-		rewriteMax = max(rewriteMax, w.RewriteEndNs-w.StartNs)
-		settleMax = max(settleMax, w.SettleEndNs-w.StartNs)
+		if bg && !t.judged(w) {
+			continue
+		}
+		judgedWindows++
+		// A window of a build in the background that is open when the stream ends, or
+		// that a later retention replaced, ends there.
+		rewriteEnd, settleEnd := w.RewriteEndNs, w.SettleEndNs
+		if bg {
+			rewriteEnd, settleEnd = min(rewriteEnd, end), min(settleEnd, end)
+			if w.SupersededNs > 0 {
+				rewriteEnd, settleEnd = min(rewriteEnd, w.SupersededNs), min(settleEnd, w.SupersededNs)
+			}
+		}
+		rewriteMax = max(rewriteMax, rewriteEnd-w.StartNs)
+		settleMax = max(settleMax, settleEnd-w.StartNs)
 		returnMax = max(returnMax, w.ReturnNs-w.StartNs)
-		windowsNs += w.RewriteEndNs - w.StartNs
+		windowsNs += rewriteEnd - w.StartNs
 	}
 	noInside := ""
 	switch {
 	case len(t.Windows) == 0:
 		noInside = "no retention window (the build retained nothing, or its engine does not say how a retention spent its time)"
+	case bg && judgedWindows == 0:
+		noInside = "no judged window: no retention was published at or after the day the pacing started"
+	case bg && t.Inside.Batches == 0:
+		noInside = "no batch was written inside a judged window"
 	case t.Inside.Batches == 0 && t.Mode == "sync":
 		noInside = fmt.Sprintf("synchronous retention: no batch is written inside a window, the writer is blocked for all of it (the longest %s)", fmtDur(returnMax))
 	case t.Inside.Batches == 0:
@@ -708,7 +1181,7 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 		_, in := quantileBounds(t.Inside.Commit, 0.99)
 		outLo, outHi := quantileBounds(t.Outside.Commit, 0.99)
 		lim := max(StoreGateQ2Factor*outLo, int64(StoreGateQ2Floor))
-		rows[gateQ2].value = fmt.Sprintf("%s (outside: from %s to %s)", fmtDur(in), fmtDur(outLo), fmtDur(outHi))
+		rows[gateQ2].value = fmt.Sprintf("%s (outside: from %s to %s; over %d inside batches)", fmtDur(in), fmtDur(outLo), fmtDur(outHi), t.Inside.Batches)
 		rows[gateQ2].limit = fmt.Sprintf("max(%dx the outside's lower bound, %s) = %s", StoreGateQ2Factor, StoreGateQ2Floor, fmtDur(lim))
 		rows[gateQ2].pass = in <= lim
 		rows[gateQ2].margin = float64(in) / float64(lim)
@@ -716,10 +1189,17 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 
 	// Q3: the longest rewrite, from the publication to its end, at the load the build ran at.
 	load, loadOK := t.load()
+	if bg {
+		load, loadOK = t.pacedLoad()
+	}
 	rows[gateQ3] = gateRow{build: b, judged: true}
 	switch {
 	case len(t.Windows) == 0:
 		ni(gateQ3, noInside)
+	case bg && judgedWindows == 0:
+		ni(gateQ3, noInside)
+	case bg:
+		judgeQ3Background(&rows[gateQ3], t, load, loadOK)
 	default:
 		loadText := "load not determinable"
 		if loadOK {
@@ -790,6 +1270,12 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 		rows[gateQ5RSS].margin = float64(t.PeakRSS) / float64(int64(StoreGateRSSCeiling))
 	}
 
+	if unjudgedWhy != "" {
+		for i := range rows {
+			rows[i].judged, rows[i].reason, rows[i].byConstruction = false, unjudgedWhy, false
+		}
+	}
+
 	touch := "not recorded by this store"
 	if n, ok := m.Counters["retain.touch_rewrites"]; ok {
 		touch = strconv.FormatInt(n, 10)
@@ -813,16 +1299,66 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 		_, p99 := quantileBounds(st.Commit, 0.99)
 		settling = fmt.Sprintf("%d batches, longest %s, 99th percentile %s", st.Batches, fmtDur(st.Commit.MaxNs), fmtDur(p99))
 	}
-	info = fmt.Sprintf("%s: mode %s; %d windows, longest rewrite %s, longest settle end %s, longest call %s; retain.max_prefix_records max %s, retain.chunk_hold_ns max %s, retain.touch_rewrites %s; load outside windows %s; settling (inside no window): %s; tombstones: peak %d sampled, %d at the end of the stream, %d after the compaction (reported, not judged)",
+	info = fmt.Sprintf("%s: mode %s; %d windows, longest rewrite %s, longest settle end %s, longest call %s; retain.max_prefix_records max %s, retain.chunk_hold_ns max %s, retain.touch_rewrites %s; load outside windows %s; settling (inside no window): %s; tombstones: peak %d sampled, %d at the end of the stream, %d after the compaction (reported, not judged); commits synced: %s",
 		b.label(), t.Mode, len(t.Windows), fmtDur(rewriteMax), fmtDur(settleMax), fmtDur(returnMax),
 		maxima("retain.max_prefix_records"), chunk, touch, loadText, settling,
-		b.Metrics.TombstonesPeak, m.StatsBuilt["tombstones"], m.StatsCompacted["tombstones"])
+		b.Metrics.TombstonesPeak, m.StatsBuilt["tombstones"], m.StatsCompacted["tombstones"], describedOr(m, SyncKey, "false"))
+	if bg {
+		info += backgroundDetail(b, rate, fromDay)
+	}
 	return rows, info
+}
+
+// backgroundDetail is what the report says of a build in the background besides its
+// verdicts: its settings, how its batches were divided, and each pass with the time of
+// its rewrite (or the least it took), the time of its settle and whether the settle
+// reached its deadline.
+func backgroundDetail(b *StoreGateBuild, rate int, fromDay string) string {
+	t := b.Manifest.Gate
+	if fromDay == "" {
+		fromDay = "-"
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n    paced at %d records/s from day %s (pacing started %s into the build, the stream ended at %s); batches: %d unpaced, %d excluded (beside an unjudged window or its settle), %d inside, %d settling, %d outside; Q2 is taken over %d inside batches",
+		rate, fromDay, fmtDur(t.PaceStartNs), fmtDur(t.streamEnd()),
+		t.Unpaced.Batches, t.Excluded.Batches, t.Inside.Batches, t.Settling.Batches, t.Outside.Batches, t.Inside.Batches)
+	var bounds []string
+	for _, p := range t.passes() {
+		kind := "judged"
+		if !p.judged {
+			kind = "before the day the pacing started, not judged"
+		}
+		rewrite := fmtDur(p.rewrite)
+		if p.bound {
+			rewrite = fmt.Sprintf("at least %s (%s)", rewrite, p.why)
+			if p.judged {
+				bounds = append(bounds, fmt.Sprintf("pass %d: at least %s", p.n, fmtDur(p.rewrite)))
+			}
+		}
+		settle, hit := "none (the pass was not settled)", "-"
+		if !p.bound {
+			settle = fmtDur(p.settle)
+			if p.unfinished {
+				settle = "not ended when the stream ended (" + settle + " so far)"
+			}
+			hit = "no"
+			if p.w.SettleDeadlineHit {
+				hit = "yes"
+			}
+		}
+		fmt.Fprintf(&sb, "\n    pass %d (%s): published at %s, rewrite %s, settle %s, settle reached its deadline: %s", p.n, kind, fmtDur(p.w.StartNs), rewrite, settle, hit)
+	}
+	if len(bounds) > 0 {
+		fmt.Fprintf(&sb, "\n    %d judged passes have only a lower bound of their rewrite: %s", len(bounds), strings.Join(bounds, "; "))
+	}
+	return sb.String()
 }
 
 // sameSettings returns why the live heaps of two builds cannot be compared: their GC
 // target, their memory limit or their metrics interval differ (the peak of a sample
-// depends on how often it is taken) or, for the target, was not recorded.
+// depends on how often it is taken) or, for the target, was not recorded; or they differ
+// in the retention mode, the sync setting, the pacing rate or the day the pacing started,
+// which change how the store ran. A key a manifest lacks is read as its default.
 func sameSettings(a, b *Manifest) string {
 	ga, gb := a.Describe[GoGCKey], b.Describe[GoGCKey]
 	switch {
@@ -837,13 +1373,43 @@ func sameSettings(a, b *Manifest) string {
 	if ia, ib := describedOr(a, MetricsKey, "0s"), describedOr(b, MetricsKey, "0s"); ia != ib {
 		return fmt.Sprintf("%s differs (%s and %s): the sampled peaks of builds sampled at different intervals are not compared", MetricsKey, ia, ib)
 	}
+	for _, k := range storeGateSettingKeys {
+		if x, y := k.of(a), k.of(b); x != y {
+			return fmt.Sprintf("%s differs (%q and %q): builds under different settings are not compared", k.key, x, y)
+		}
+	}
 	return ""
+}
+
+// storeGateSettingKeys are the settings of a build that a verdict's repetitions must
+// share and that its Q5 baseline must share with it, with the value a manifest that
+// lacks the key stands for.
+var storeGateSettingKeys = []struct {
+	key string
+	of  func(*Manifest) string
+}{
+	{RetentionModeKey, func(m *Manifest) string {
+		if v := m.Describe[RetentionModeKey]; v != "" {
+			return v
+		}
+		if m.Gate != nil {
+			return m.Gate.Mode
+		}
+		return ""
+	}},
+	{SyncKey, func(m *Manifest) string { return describedOr(m, SyncKey, "false") }},
+	{PaceKey, func(m *Manifest) string { return describedOr(m, PaceKey, "0") }},
+	{PaceFromDayKey, func(m *Manifest) string { return m.Describe[PaceFromDayKey] }},
 }
 
 // JudgeStoreGate judges the builds, each candidate on each architecture, from its
 // repetitions: the worst of the repetitions that could be judged is the row.
 func JudgeStoreGate(builds []*StoreGateBuild) *StoreGateReport {
 	rep := &StoreGateReport{RulesText: StoreGateRulesText(), RulesDigest: StoreGateRulesDigest()}
+	if err := CheckStoreGateSettings(builds); err != nil {
+		rep.Refusal = err.Error()
+		return rep
+	}
 	bs := slices.Clone(builds)
 	sort.SliceStable(bs, func(i, j int) bool {
 		a, b := bs[i], bs[j]
@@ -959,20 +1525,73 @@ func JudgeStoreGate(builds []*StoreGateBuild) *StoreGateReport {
 	return rep
 }
 
+// retentionModeOf is the retention mode a build recorded: the manifest's description,
+// or the gate's own record if the description lacks it, or "" for a build that has none
+// (a candidate not built through the root store).
+func (b *StoreGateBuild) retentionModeOf() string { return storeGateSettingKeys[0].of(b.Manifest) }
+
+// CheckStoreGateSettings returns an error naming the values and the builds if the
+// repetitions of one candidate on one architecture (a verdict's pool) were made under
+// different retention modes, sync settings, pacing rates or pacing starts: the gate
+// judges a pool as one set, and the worst of its repetitions is the row. A build of
+// another candidate, such as the Lroot/off baseline, is a pool of its own; one that
+// differs from the baseline gets its Q5 not judged instead.
+func CheckStoreGateSettings(builds []*StoreGateBuild) error {
+	type pool struct{ cand, arch string }
+	pools := map[pool][]*StoreGateBuild{}
+	var order []pool
+	for _, b := range builds {
+		if b.retentionModeOf() == "" {
+			continue
+		}
+		k := pool{b.Manifest.Candidate, b.arch()}
+		if _, ok := pools[k]; !ok {
+			order = append(order, k)
+		}
+		pools[k] = append(pools[k], b)
+	}
+	var problems []string
+	for _, k := range order {
+		for _, setting := range storeGateSettingKeys {
+			byValue := map[string][]string{}
+			for _, b := range pools[k] {
+				v := setting.of(b.Manifest)
+				byValue[v] = append(byValue[v], b.label())
+			}
+			if len(byValue) < 2 {
+				continue
+			}
+			var parts []string
+			for _, v := range slices.Sorted(maps.Keys(byValue)) {
+				parts = append(parts, fmt.Sprintf("%s=%q: %s", setting.key, v, strings.Join(byValue[v], ", ")))
+			}
+			problems = append(problems, fmt.Sprintf("the builds of %s on %s were made under different %s (%s)", k.cand, k.arch, setting.key, strings.Join(parts, "; ")))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("runner: %s: the store gate judges the repetitions of a candidate as one set, and builds under different settings are not repetitions of one another; give it the builds of one setting", strings.Join(problems, "; "))
+}
+
 // WriteStoreGate prints the report: the rules and their digest, the retention modes, one
 // line per row, what the builds reported that is not judged, and what was not judged.
 func WriteStoreGate(w io.Writer, rep *StoreGateReport) {
 	fmt.Fprintf(w, "store retention gate; rules digest %s\n%s", rep.RulesDigest, rep.RulesText)
+	if rep.Refusal != "" {
+		fmt.Fprintf(w, "NOT JUDGED: %s\n", rep.Refusal)
+		return
+	}
 	modes := "none"
 	if len(rep.Modes) > 0 {
 		modes = strings.Join(rep.Modes, ", ")
 	}
 	fmt.Fprintf(w, "retention mode: %s\n", modes)
-	if !slices.Contains(rep.Modes, "background") {
-		fmt.Fprintln(w, "Background: not available on this store")
-	}
 	if slices.Contains(rep.Modes, "sync") {
 		fmt.Fprintln(w, "synchronous retention: the writer is blocked for the whole of each window, so no batch is written inside one and Q1, Q2 and Q4 have nothing to judge")
+	}
+	if slices.Contains(rep.Modes, "background") {
+		fmt.Fprintln(w, StoreGateQ3Note)
 	}
 	fmt.Fprintln(w)
 	tw := tabwriter.NewWriter(w, 2, 0, 2, ' ', 0)
