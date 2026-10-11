@@ -305,18 +305,28 @@ compared, and a build that rested after each retention, or did not record those 
 on G2. The local report judges the absolute budget only; the relative fallback for a window where no layout fits
 it belongs to the judgement of the timed builds. The rules' log of 2026-10-08 has the rule in full.
 
-`producercost` measures, on a local capture of the Kubernetes objects receiver, what a longer producer name
+`producercost` measures, on a local capture of the Kubernetes receivers, what a longer producer name
 costs a store: it translates the capture with the real translator, coalesces it and writes it to the real
 store with no record, with producer names of 18 bytes (the baseline) and with each length of `-lengths` (a comma
 list from 14 to 64, not 18; default `32,64`: 64 is the longest the rule allows and not a typical name, so the
 other lengths show the curve), compacts each to the bottom level and prints the record counts at each step,
 the live table bytes, the bytes written and, for each length, the cost
 `(live_N - live18) / (live18 - liveEmpty)`
-(`go run ./cmd/producercost -capture <dir with run1.jsonl and run2.jsonl>`). The 2026-10-12 capture has 2,535
-log records; the translator makes 656 records of them and the coalescer (5-minute pull setting) writes 615.
-Its numbers are local and informational. It writes one small store, so its cost moves by about half a
-percentage point with the exact bytes of the filler; the decision takes it and the bench measurement at scale
-(R2, R7) together.
+(`go run ./cmd/producercost -capture <dir with run1.jsonl and run2.jsonl>`). The tool prints the counts at each step:
+what the capture holds, what the translators make of it and what the coalescer writes.
+`-files` names the files of the capture to read, in order and each in replay order (default
+`run1.jsonl,run2.jsonl`). `-translators` says which translators the capture goes through: `objects` (the
+default, the output above) is the objects translator alone with a fixed 15-minute TTL and the coalescer's runs
+bounded at 10 minutes of age; `cluster` is the cluster translator alone on the entity events; `both` is the
+shipped mix, with every record sent to the translator of its kind, each with a producer of exactly N bytes
+(`k8sobjects/<fill>` and `k8scluster/<fill>`), the objects translator taking a 5-minute pull interval, the
+cluster translator the interval each event reports (5 minutes where it reports none; each translator's TTL is three
+intervals), and both writing to one
+coalescer, whose runs are bounded by their own extension interval, and one store. With `cluster` or `both` the
+table has two more columns, the records each translator made, and a last line says what the cluster translator
+set aside (an entity type the catalog does not have, say). Its numbers are local and informational. On a small
+capture (the kwok one, one table's worth) its cost moves by about half a percentage point with the exact bytes of
+the filler; the decision takes it and the bench measurement at scale (R2, R7) together.
 
 `streamstats` prints three models of what a deadline index would cost: every extension rewriting its
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses

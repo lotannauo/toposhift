@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +18,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/coalesce"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
@@ -27,34 +31,100 @@ import (
 // different lengths, and the tables the store ends in are weighed.
 
 const (
-	// defaultProducer is the producer name a translator is configured with when
-	// nothing else is said. It is 18 bytes.
+	// defaultProducer is the producer name the objects translator is configured with
+	// when nothing else is said. It is 18 bytes.
 	defaultProducer = "k8sobjects/default"
-	// producerPrefix begins the producer names of other lengths.
+	// producerPrefix begins the producer names of the objects translator of other
+	// lengths.
 	producerPrefix = "k8sobjects/"
+	// defaultClusterProducer and clusterProducerPrefix are those of the cluster
+	// translator. Their prefixes have the same length, so that for any length the two
+	// producers have names of the same length.
+	defaultClusterProducer = "k8scluster/default"
+	clusterProducerPrefix  = "k8scluster/"
 
-	// entityTTL is the TTL of every pod and node observation: that of a poller.
+	// entityTTL is the TTL of every pod and node observation when only the objects
+	// translator is measured: that of a poller.
 	entityTTL = 15 * time.Minute
+	// pullInterval is the interval at which the collector of the capture lists pods and
+	// nodes, and the receiver's own collection interval: what the translators are
+	// configured with when both are measured. The objects translator's TTL is then
+	// three of them, and so is the cluster translator's for an event that reports 300
+	// seconds or none.
+	pullInterval = 5 * time.Minute
 )
 
-// producerName is the producer of exactly n bytes: the default one for 18, and
-// otherwise the prefix of the default one and filler that does not repeat in a short
-// characters (a run of one character would compress to nothing and hide the cost), which is
-// how a deployment would come to name a source longer.
-func producerName(n int) (lifecycle.Producer, error) {
-	switch {
-	case n == len(defaultProducer):
-		return defaultProducer, nil
-	case n <= len(producerPrefix):
-		return "", fmt.Errorf("a producer name of %d bytes does not leave room after %q", n, producerPrefix)
+// The values of the flags when they are not given.
+const (
+	defaultFiles       = "run1.jsonl,run2.jsonl"
+	defaultTranslators = "objects"
+)
+
+// mode says which translators the capture goes through.
+type mode int
+
+const (
+	// objectsOnly is the objects translator alone, as the tool began: the whole capture
+	// goes to it, a fixed TTL and the coalescer with a fixed bound on a run's age.
+	objectsOnly mode = iota
+	// clusterOnly is the cluster translator alone, on the entity events of the capture.
+	clusterOnly
+	// bothTranslators is the shipped default: the object records go to the objects
+	// translator and the entity events to the cluster translator, and both write to
+	// the same coalescer and store.
+	bothTranslators
+)
+
+// parseTranslators reads the value of -translators.
+func parseTranslators(s string) (mode, error) {
+	switch s {
+	case "objects":
+		return objectsOnly, nil
+	case "cluster":
+		return clusterOnly, nil
+	case "both":
+		return bothTranslators, nil
 	}
-	return producerPrefix + lifecycle.Producer(workload.ProducerFill(n-len(producerPrefix))), nil
+	return 0, fmt.Errorf("-translators: %q is not objects, cluster or both", s)
 }
 
-// coalesceConfig is the setting of a pull every five minutes: a refresh extends its run
-// at most once per half its TTL, and a run continues as a new one at ten minutes of age.
-func coalesceConfig() coalesce.Config {
-	return coalesce.Config{ExtendTTLFraction: 0.5, RunMaxAge: 10 * time.Minute}
+func (m mode) usesObjects() bool { return m == objectsOnly || m == bothTranslators }
+func (m mode) usesCluster() bool { return m == clusterOnly || m == bothTranslators }
+
+// producerOf is the producer of exactly n bytes: the default one for 18, and otherwise
+// the prefix of the default one and filler that does not repeat within a few characters (a
+// run of one character would compress to nothing and hide the cost), which is how a
+// deployment would come to name a source longer.
+func producerOf(n int, def, prefix string) (lifecycle.Producer, error) {
+	switch {
+	case n == len(def):
+		return lifecycle.Producer(def), nil
+	case n <= len(prefix):
+		return "", fmt.Errorf("a producer name of %d bytes does not leave room after %q", n, prefix)
+	}
+	return lifecycle.Producer(prefix) + lifecycle.Producer(workload.ProducerFill(n-len(prefix))), nil
+}
+
+// producerName is the objects translator's producer of exactly n bytes.
+func producerName(n int) (lifecycle.Producer, error) {
+	return producerOf(n, defaultProducer, producerPrefix)
+}
+
+// clusterProducerName is the cluster translator's producer of exactly n bytes.
+func clusterProducerName(n int) (lifecycle.Producer, error) {
+	return producerOf(n, defaultClusterProducer, clusterProducerPrefix)
+}
+
+// coalesceConfig is the coalescer's setting. With the objects translator alone it is
+// that of a pull every five minutes: a refresh extends its run at most once per half its
+// TTL, and a run continues as a new one at ten minutes of age. With the cluster translator
+// it is the shipped one: a run continues as a new one at the age of its own extension
+// interval, which each TTL sets.
+func coalesceConfig(m mode) coalesce.Config {
+	if m == objectsOnly {
+		return coalesce.Config{ExtendTTLFraction: 0.5, RunMaxAge: 10 * time.Minute}
+	}
+	return coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true}
 }
 
 // item is one log record of a capture with its resource.
@@ -66,6 +136,15 @@ type item struct {
 // batch is the records of consecutive refs of one line of a capture: what the
 // collector delivered in one export.
 type batch []item
+
+// loadDir reads the named files of a capture's directory, in the order given.
+func loadDir(dir string, files []string) ([]batch, error) {
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = filepath.Join(dir, f)
+	}
+	return loadCapture(paths...)
+}
 
 // loadCapture reads the files in order, each in the replay order of its own records
 // (by sequence if every record has one, and otherwise by time), and returns the batches
@@ -129,8 +208,14 @@ func loadFile(path string) (_ []batch, err error) {
 // counts says how many records each step of the pipeline made.
 type counts struct {
 	// captured is the log records of the capture, translated the store records the
-	// translator made of them, and written what the coalescer left to write.
+	// translators made of them, and written what the coalescer left to write.
 	captured, translated, written int
+	// objects and cluster are the part of translated that each translator made. Both
+	// are zero for a translator that was not used.
+	objects, cluster int
+	// clusterSkipped is what the cluster translator set aside, by reason, such as an entity
+	// of a type the catalog does not have. It is nil if the translator was not used.
+	clusterSkipped map[string]int
 }
 
 // captured is how many log records the batches hold.
@@ -142,32 +227,81 @@ func captured(in []batch) int {
 	return n
 }
 
-// translate runs the batches through a translator with the given producer, then the
-// coalescer, and gives back what the store is to be written, a slice per batch, with
-// Seq assigned from 1 in order, and how many records each step made.
-func translate(in []batch, producer lifecycle.Producer) ([][]store.Record, counts, error) {
-	tr, err := k8sobjects.New(k8sobjects.Config{
-		Producer: producer, Resolver: identity.NewResolver(catalog.Default()), EntityTTL: entityTTL,
-	})
-	if err != nil {
-		return nil, counts{}, err
+// isEntityEvent says that a log record is an entity event of the cluster receiver, the
+// kind the objects translator sets aside.
+func isEntityEvent(r capture.LogRecord) bool { return strings.HasPrefix(r.EventName, "entity.") }
+
+// translate runs the batches through the translators of the mode, each with its own
+// producer of n bytes, then the coalescer, and gives back what the store is to be
+// written, a slice per batch, with Seq assigned from 1 in order, and how many records each
+// step made. With both translators an entity event goes to the cluster translator and every
+// other record to the objects translator, and both write to the one coalescer, so that
+// both producers are in every batch as in a deployment.
+func translate(in []batch, n int, m mode) ([][]store.Record, counts, error) {
+	resolver := identity.NewResolver(catalog.Default())
+	var objects *k8sobjects.Translator
+	var cluster *k8scluster.Translator
+	if m.usesObjects() {
+		p, err := producerName(n)
+		if err != nil {
+			return nil, counts{}, err
+		}
+		cfg := k8sobjects.Config{Producer: p, Resolver: resolver}
+		if m == objectsOnly {
+			cfg.EntityTTL = entityTTL
+		} else {
+			cfg.PullInterval = pullInterval // the TTL is the translator's default multiple of it
+		}
+		if objects, err = k8sobjects.New(cfg); err != nil {
+			return nil, counts{}, err
+		}
 	}
-	co, err := coalesce.New(coalesceConfig())
+	if m.usesCluster() {
+		p, err := clusterProducerName(n)
+		if err != nil {
+			return nil, counts{}, err
+		}
+		// The producer's clock is trusted and no receipt time is given, which are the
+		// translator's defaults; the TTL of an event is that of the interval it reports.
+		if cluster, err = k8scluster.New(k8scluster.Config{Producer: p, Resolver: resolver, CollectionInterval: pullInterval}); err != nil {
+			return nil, counts{}, err
+		}
+	}
+	co, err := coalesce.New(coalesceConfig(m))
 	if err != nil {
 		return nil, counts{}, err
 	}
 	c := counts{captured: captured(in)}
+	if cluster != nil {
+		c.clusterSkipped = make(map[string]int)
+	}
 	var out [][]store.Record
 	var seq uint64
 	for i, b := range in {
 		var recs []store.Record
 		for _, it := range b {
-			res, err := tr.Translate(it.res, it.rec)
-			if err != nil {
-				return nil, counts{}, fmt.Errorf("batch %d: %w", i, err)
+			var made []store.Record
+			switch {
+			case cluster != nil && isEntityEvent(it.rec):
+				res, err := cluster.Translate(it.res, it.rec, time.Time{})
+				if err != nil {
+					return nil, counts{}, fmt.Errorf("batch %d: %w", i, err)
+				}
+				made = res.Records
+				c.cluster += len(made)
+				for _, s := range res.Skipped {
+					c.clusterSkipped[s.Reason] += s.Count
+				}
+			case objects != nil:
+				res, err := objects.Translate(it.res, it.rec)
+				if err != nil {
+					return nil, counts{}, fmt.Errorf("batch %d: %w", i, err)
+				}
+				made = res.Records
+				c.objects += len(made)
 			}
-			c.translated += len(res.Records)
-			for _, r := range res.Records {
+			c.translated += len(made)
+			for _, r := range made {
 				recs = co.Add(r, recs)
 			}
 		}
@@ -195,6 +329,11 @@ type Row struct {
 	// zero for the empty store.
 	Captured, Translated int
 	Records              int
+	// ByObjects and ByCluster are the part of Translated that each translator made, and
+	// ClusterSkipped what the cluster translator set aside, by reason; they are filled
+	// for a measurement with the cluster translator.
+	ByObjects, ByCluster int
+	ClusterSkipped       map[string]int
 	// PayloadBytes is the sum of their payloads' lengths.
 	PayloadBytes uint64
 	// LiveTableBytes is the bytes of the tables the store holds once everything is
@@ -335,12 +474,8 @@ func parseLengths(list string) ([]int, error) {
 }
 
 // measureLength translates the capture with producer names of n bytes and measures the store.
-func measureLength(ctx context.Context, tmp string, in []batch, n int) (Row, error) {
-	p, err := producerName(n)
-	if err != nil {
-		return Row{}, err
-	}
-	recs, counted, err := translate(in, p)
+func measureLength(ctx context.Context, tmp string, in []batch, n int, m mode) (Row, error) {
+	recs, counted, err := translate(in, n, m)
 	if err != nil {
 		return Row{}, fmt.Errorf("%d bytes: %w", n, err)
 	}
@@ -349,6 +484,7 @@ func measureLength(ctx context.Context, tmp string, in []batch, n int) (Row, err
 		return Row{}, fmt.Errorf("%d bytes: %w", n, err)
 	}
 	row.Captured, row.Translated = counted.captured, counted.translated
+	row.ByObjects, row.ByCluster, row.ClusterSkipped = counted.objects, counted.cluster, counted.clusterSkipped
 	if row.Records != counted.written {
 		return Row{}, fmt.Errorf("%d bytes: wrote %d records, the coalescer left %d", n, row.Records, counted.written)
 	}
@@ -357,21 +493,44 @@ func measureLength(ctx context.Context, tmp string, in []batch, n int) (Row, err
 
 // run measures an empty store, the capture with producer names of 18 bytes, and the capture
 // with each of the lengths, which are valid per [parseLengths].
-func run(ctx context.Context, tmp string, in []batch, lengths []int) (Result, error) {
+func run(ctx context.Context, tmp string, in []batch, lengths []int, m mode) (Result, error) {
 	var res Result
 	var err error
 	if res.Empty, err = measure(ctx, tmp, "empty", 0, nil); err != nil {
 		return Result{}, fmt.Errorf("empty: %w", err)
 	}
-	if res.Baseline, err = measureLength(ctx, tmp, in, baselineLen); err != nil {
+	if res.Baseline, err = measureLength(ctx, tmp, in, baselineLen, m); err != nil {
 		return Result{}, err
 	}
 	for _, n := range lengths {
-		row, err := measureLength(ctx, tmp, in, n)
+		row, err := measureLength(ctx, tmp, in, n, m)
 		if err != nil {
 			return Result{}, err
 		}
 		res.Lengths = append(res.Lengths, row)
 	}
 	return res, nil
+}
+
+// parseFiles reads a comma-separated list of the names of the files of a capture, in the
+// order they are to be read. An empty entry is refused.
+func parseFiles(list string) ([]string, error) {
+	var out []string
+	for _, f := range strings.Split(list, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			return nil, fmt.Errorf("-files: %q has an empty entry", list)
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// skippedLine says what the cluster translator set aside, by reason, or is empty if it
+// set nothing aside.
+func skippedLine(skipped map[string]int) string {
+	var parts []string
+	for _, reason := range slices.Sorted(maps.Keys(skipped)) {
+		parts = append(parts, fmt.Sprintf("%s: %d", reason, skipped[reason]))
+	}
+	return strings.Join(parts, "; ")
 }
