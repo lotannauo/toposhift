@@ -49,8 +49,13 @@
 // The statuses follow the OTLP/HTTP specification:
 //
 //   - 200 with an empty ExportLogsServiceResponse: zero bytes for protobuf and
-//     {} for JSON. A request is accepted whole or refused whole; there is no
-//     partial success.
+//     {} for JSON. A sink that is a [PartialSink] may accept a request in part:
+//     the 200 then carries partial_success, with the number of log records
+//     rejected (rejected_log_records, an int64, written as a decimal string in
+//     JSON) and the sink's message (error_message, made valid UTF-8 and bounded
+//     as a status message is). A client logs a partial success and does not send
+//     the request again, so a sink rejects a record this way only for a reason
+//     that would hold on any retry.
 //   - 400 for a body that does not decode (including a bad or truncated gzip
 //     stream), and for a request the sink refuses whole by returning a
 //     [RefusedError]; the status carries the sink's message, and the client is
@@ -64,8 +69,10 @@
 //     costs at most the limit, in time and in memory.
 //   - 415 for a Content-Type that is neither protobuf nor JSON, or a
 //     Content-Encoding that is neither gzip nor identity.
-//   - 503 with Retry-After: 1 when the sink returns [ErrBusy]; the client is
-//     expected to send the same request again later.
+//   - 503 with Retry-After: 1 when the sink returns [ErrBusy], or at once,
+//     before the body is read, when the request would take the bytes in flight
+//     above [Options.MaxInFlightBytes]; the client is expected to send the same
+//     request again later.
 //   - 503 with Retry-After: 30 when the sink returns an [UnavailableError],
 //     which says ingest is off; the message says what to do about it. It
 //     takes precedence over the other sink errors, also when one error holds
@@ -109,14 +116,32 @@
 // The limit applies to the bytes on the wire as well as to the bytes after
 // decompression, whichever encoding the sender uses.
 //
+// # Admission
+//
+// With [Options.MaxInFlightBytes] set, the handler bounds the bytes the
+// requests it is serving hold together, so that a number of large requests
+// cannot together take the memory of the machine. Each request reserves its
+// decoded size, estimated before its body is read: its Content-Length when the
+// body is not compressed, and [Options.MaxBodyBytes] when the length is not
+// declared (a chunked body) or the body is gzip, whose Content-Length is the
+// compressed size. A request whose reservation would take the total above the
+// bound is answered 503 with Retry-After: 1 at once, and its body is not read.
+// The reservation is released when the request is answered, on every path. A
+// reservation is never above the bound itself, so a request alone is always
+// admitted.
+//
+// The bound counts decoded bytes of the body, not what decoding them costs: the
+// decoded Go structures are several times the body (see "What a request
+// costs"), so the bound is an estimate of the memory it protects, not a
+// measure of it. Zero is no bound, as before.
+//
 // # What the server has to provide
 //
-// This package is a handler. It limits one request and nothing across
-// requests. The lane that serves it must bound the requests in flight, by a
-// count or by the bytes they hold, so that a number of large requests cannot
-// together take the memory of the machine; it must set read-header and read
-// timeouts, so that a client that sends nothing, or sends a body slowly, does
-// not hold a connection and a buffer for ever; and it must decide what a body
-// read that is too slow gets (the handler answers 400 if the connection fails
-// mid-body, and cannot tell slow from broken).
+// This package is a handler. Beyond one request it limits only the bytes in
+// flight, and only when [Options.MaxInFlightBytes] is set. The lane that serves
+// it must set read-header and read timeouts, so that a client that sends
+// nothing, or sends a body slowly, does not hold a connection and a buffer for
+// ever; and it must decide what a body read that is too slow gets (the handler
+// answers 400 if the connection fails mid-body, and cannot tell slow from
+// broken).
 package otlphttp

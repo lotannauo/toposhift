@@ -13,7 +13,8 @@
 //
 // A receiver decodes and nothing else. It checks that a request is well formed
 // and within its limits, converts it to one input type, and gives it to a sink.
-// It does not look inside the records, and it keeps no state between requests.
+// It does not look inside the records. Across requests it keeps only what
+// bounds them: the bytes the requests being served hold.
 //
 //   - otlphttp receives OpenTelemetry logs over OTLP/HTTP, as protobuf or JSON,
 //     as an http.Handler with no gRPC in the build.
@@ -21,4 +22,8 @@
 //     events and list items for pods and nodes.
 //   - k8scluster translates the entity events of the Kubernetes cluster receiver
 //     into records of nodes, pods and containers and their edges.
+//   - sequencer is the sink of the receiver: one goroutine that owns the
+//     translators, the coalescer and the detector, and commits the records of
+//     the requests waiting, in arrival order, in one synced write before it
+//     answers them.
 package ingest

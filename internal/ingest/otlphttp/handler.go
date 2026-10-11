@@ -10,7 +10,9 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -98,12 +100,39 @@ type Sink interface {
 	Accept(ctx context.Context, d capture.LogsData) error
 }
 
+// Partial is what a [PartialSink] did not take of a request it accepted: the
+// number of OTLP log records it rejected, and a message saying why. A record is
+// rejected only for a reason that would hold on any retry, because a client
+// drops what a partial success rejects and does not send it again.
+type Partial struct {
+	// Rejected counts the OTLP log records rejected. Zero or negative is none.
+	Rejected int64
+	// Message says why, for the client's log. It is made valid UTF-8 and cut to
+	// [MaxStatusMessageBytes], as a status message is.
+	Message string
+}
+
+// PartialSink is a [Sink] that can accept a request in part. The handler calls
+// AcceptPartial instead of Accept when the sink has it. Its error is mapped as
+// Accept's is. With a nil error the request is answered 200, and a [Partial]
+// whose Rejected is above zero is carried in the response as the OTLP
+// partial_success.
+type PartialSink interface {
+	AcceptPartial(ctx context.Context, d capture.LogsData) (Partial, error)
+}
+
 // Options configures [Handler]. The zero value is usable.
 type Options struct {
 	// MaxBodyBytes limits the body: the bytes on the wire, and the bytes after
 	// decompression. A body above it is answered with 413. Zero or negative is
 	// [DefaultMaxBodyBytes].
 	MaxBodyBytes int64
+	// MaxInFlightBytes bounds the bytes that the requests being served hold
+	// together, counted as decoded bytes and estimated before each body is read
+	// (see "Admission" in the package documentation). A request that would take
+	// the total above it is answered 503 with Retry-After: 1 at once, and its
+	// body is not read. Zero or negative is no bound.
+	MaxInFlightBytes int64
 }
 
 // Handler returns the handler of POST /v1/logs. It panics if s is nil.
@@ -114,12 +143,45 @@ func Handler(s Sink, o Options) http.Handler {
 	if o.MaxBodyBytes <= 0 {
 		o.MaxBodyBytes = DefaultMaxBodyBytes
 	}
-	return &handler{sink: s, limit: o.MaxBodyBytes}
+	h := &handler{sink: s, limit: o.MaxBodyBytes, budget: max(o.MaxInFlightBytes, 0)}
+	h.partial, _ = s.(PartialSink)
+	return h
 }
 
 type handler struct {
-	sink  Sink
-	limit int64
+	sink    Sink
+	partial PartialSink // the sink, when it accepts in part
+	limit   int64
+	// budget is Options.MaxInFlightBytes, zero for none, and inFlight is what
+	// the requests being served have reserved of it.
+	budget   int64
+	inFlight atomic.Int64
+}
+
+// reservation is what a request is counted for before its body is read: its
+// declared length when the body is not compressed, and the body limit when the
+// length is not declared or the body is gzip, whose declared length is the
+// compressed size and says nothing of the decoded one. It is never above the
+// budget, so that a request alone is always admitted.
+func (h *handler) reservation(r *http.Request, gz bool) int64 {
+	n := r.ContentLength
+	if gz || n < 0 {
+		n = h.limit
+	}
+	return min(n, h.budget)
+}
+
+// admit reserves n bytes of the budget, and reports whether it could.
+func (h *handler) admit(n int64) bool {
+	for {
+		cur := h.inFlight.Load()
+		if cur+n > h.budget {
+			return false
+		}
+		if h.inFlight.CompareAndSwap(cur, cur+n) {
+			return true
+		}
+	}
 }
 
 // kind is the encoding of a body.
@@ -162,6 +224,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, k, http.StatusRequestEntityTooLarge, h.tooLarge())
 		return
 	}
+	if h.budget > 0 {
+		n := h.reservation(r, gz)
+		if !h.admit(n) {
+			// The body is not read: what it would cost is what is refused.
+			w.Header().Set("Retry-After", retryAfterBusy)
+			writeStatus(w, k, http.StatusServiceUnavailable, "busy: too many bytes in flight; send the request again later")
+			return
+		}
+		// Released when the request is answered, on every path, a panic included.
+		defer h.inFlight.Add(-n)
+	}
 	body, status, err := h.readBody(w, r, gz)
 	if err != nil {
 		writeStatus(w, k, status, err.Error())
@@ -172,11 +245,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, k, http.StatusBadRequest, "malformed request body: "+err.Error())
 		return
 	}
-	if err := h.sink.Accept(r.Context(), d); err != nil {
+	var p Partial
+	if h.partial != nil {
+		p, err = h.partial.AcceptPartial(r.Context(), d)
+	} else {
+		err = h.sink.Accept(r.Context(), d)
+	}
+	if err != nil {
 		h.writeSinkError(w, k, err)
 		return
 	}
-	writeSuccess(w, k)
+	writeSuccess(w, k, p)
 }
 
 // writeSinkError answers the error a sink returned. The order is the one
@@ -467,16 +546,50 @@ func valueDepth(v capture.AnyValue) int {
 	return 1 + deepest
 }
 
-// writeSuccess writes the empty ExportLogsServiceResponse.
-func writeSuccess(w http.ResponseWriter, k kind) {
-	if k == kindJSON {
-		w.Header().Set("Content-Type", contentJSON)
+// writeSuccess writes the ExportLogsServiceResponse: empty when nothing was
+// rejected, and otherwise with its partial_success, whose message is made valid
+// UTF-8 and bounded as a status message is.
+func writeSuccess(w http.ResponseWriter, k kind, p Partial) {
+	if p.Rejected <= 0 {
+		if k == kindJSON {
+			w.Header().Set("Content-Type", contentJSON)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, "{}")
+			return
+		}
+		w.Header().Set("Content-Type", contentProto)
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "{}")
 		return
 	}
-	w.Header().Set("Content-Type", contentProto)
+	msg := boundMessage(strings.ToValidUTF8(p.Message, "�"))
+	var body []byte
+	if k == kindJSON {
+		w.Header().Set("Content-Type", contentJSON)
+		// OTLP JSON writes a 64-bit integer as a decimal string.
+		type partialSuccess struct {
+			RejectedLogRecords string `json:"rejectedLogRecords"`
+			ErrorMessage       string `json:"errorMessage,omitempty"`
+		}
+		body, _ = json.Marshal(struct {
+			PartialSuccess partialSuccess `json:"partialSuccess"`
+		}{partialSuccess{strconv.FormatInt(p.Rejected, 10), msg}})
+	} else {
+		w.Header().Set("Content-Type", contentProto)
+		// ExportLogsServiceResponse field 1 is partial_success, an
+		// ExportLogsPartialSuccess: field 1 rejected_log_records (int64), field 2
+		// error_message (string).
+		var inner []byte
+		inner = protowire.AppendTag(inner, 1, protowire.VarintType)
+		inner = protowire.AppendVarint(inner, uint64(p.Rejected))
+		if msg != "" {
+			inner = protowire.AppendTag(inner, 2, protowire.BytesType)
+			inner = protowire.AppendString(inner, msg)
+		}
+		body = protowire.AppendTag(body, 1, protowire.BytesType)
+		body = protowire.AppendBytes(body, inner)
+	}
 	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 
 // rpcCode is the google.rpc.Code of an HTTP status, as the OTLP specification
