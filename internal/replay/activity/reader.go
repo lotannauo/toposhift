@@ -46,12 +46,12 @@ const (
 // relates to what the writer buffers.
 const recordCost = 256
 
-// MaxText is the longest producer or relation, in bytes, that a record in an
-// activity file may carry. (A fingerprint text is at most
-// [catalog.MaxNameLen] + 33 bytes, and a boot id at most [store.MaxBootLen].)
-// [Writer.Write] refuses a longer one and the reader refuses a file that holds
-// one, so that no text field can make a row group larger than the limit the
-// reader holds it to.
+// MaxText is the longest relation, in bytes, that a record in an activity file may
+// carry; a producer is held to the shorter [store.MaxProducerFormat]. (A fingerprint
+// text is at most [catalog.MaxNameLen] + 33 bytes, and a boot id at most
+// [store.MaxBootLen].) [Writer.Write] refuses a longer one and the reader refuses a
+// file that holds one, so that no text field can make a row group larger than the
+// limit the reader holds it to.
 const MaxText = 64 << 10
 
 // entryCost is what each distinct text a row group holds once (a producer, a
@@ -851,7 +851,7 @@ func (r *Reader) decode(i int) (store.Record, error) {
 			return rec, err
 		}
 	}
-	if cr.producer, err = r.name(colProducer, r.strs[colProducer][i], MaxText); err != nil {
+	if cr.producer, err = r.name(colProducer, r.strs[colProducer][i], store.MaxProducerFormat); err != nil {
 		return rec, err
 	}
 

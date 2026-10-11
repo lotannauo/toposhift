@@ -443,10 +443,13 @@ func (r Result) CostOf(row Row) (float64, error) {
 	return Cost(row.LiveTableBytes, r.Baseline.LiveTableBytes, r.Empty.LiveTableBytes)
 }
 
-// Producer lengths that may be asked for: those the workload allows.
+// Producer lengths that may be asked for: those the workload allows and the store
+// writes. The store refuses a producer longer than store.MaxProducerLen, so a longer
+// length cannot be measured through it; measurements made at longer lengths, before the
+// store had that limit, stand as they were recorded.
 const (
 	minLen = workload.MinProducerLen
-	maxLen = workload.MaxProducerLen
+	maxLen = store.MaxProducerLen
 )
 
 // parseLengths reads a comma-separated list of producer lengths, each from minLen to maxLen,
@@ -462,7 +465,9 @@ func parseLengths(list string) ([]int, error) {
 			return nil, fmt.Errorf("-lengths: %q is not a number", f)
 		case n == baselineLen:
 			return nil, fmt.Errorf("-lengths: %d is the baseline, which is always measured", baselineLen)
-		case n < minLen || n > maxLen:
+		case n > maxLen:
+			return nil, fmt.Errorf("-lengths: %d is above %d, the longest producer name the store writes", n, maxLen)
+		case n < minLen:
 			return nil, fmt.Errorf("-lengths: %d is not from %d to %d", n, minLen, maxLen)
 		case seen[n]:
 			return nil, fmt.Errorf("-lengths: %d is given twice", n)

@@ -151,7 +151,9 @@ type Record struct {
 // Validate checks the rules a storage layout relies on. The assertion rules
 // (producer, kind, TTL, Through, the delete rules) are the lifecycle
 // specification's own, by folding the record's single assertion, so the store
-// contract cannot drift from the specification. Event times must also fit in
+// contract cannot drift from the specification. The producer must have the
+// format of [ValidProducer]; Validate does not apply the limit on what a store
+// writes, [MaxProducerLen], which is the write path's. Event times must also fit in
 // an int64 of Unix nanoseconds (1970 to 2262), and so must the deadline of a
 // record with a TTL: a layout may carry them in a narrower field than the
 // lifecycle specification allows. Every error wraps [ErrInvalid].
@@ -224,10 +226,66 @@ func (r Record) Validate() error {
 		// The specification refuses a blank boot id (empty or white space only).
 		policy.BootKey = lifecycle.BootID
 	}
+	if err := ValidProducer(r.Producer); err != nil {
+		return fmt.Errorf("record seq %d: %w", r.Seq, err)
+	}
 	if _, err := lifecycle.Fold([]lifecycle.Assertion{r.Assertion()}, policy); err != nil {
 		return fmt.Errorf("record seq %d: %w: %w", r.Seq, err, ErrInvalid)
 	}
 	return nil
+}
+
+// MaxProducerFormat is the longest producer name any reader accepts, in bytes.
+const MaxProducerFormat = 64
+
+// MaxProducerLen is the longest producer name a store writes, in bytes.
+const MaxProducerLen = 32
+
+// ValidProducer checks a producer name against the format every reader accepts:
+// 1 to [MaxProducerFormat] bytes of ASCII from [A-Za-z0-9._:/-], exact (no
+// trimming, no case-folding). It does not check [MaxProducerLen], which is the
+// limit on what a store writes ([WritableProducer]); the format is the bound a
+// reader holds, so it stays the same when the limit is raised. Every error wraps
+// [ErrInvalid].
+func ValidProducer(p lifecycle.Producer) error {
+	if p == "" {
+		return fmt.Errorf("producer is empty: %w", ErrInvalid)
+	}
+	if len(p) > MaxProducerFormat {
+		return fmt.Errorf("producer %q is %d bytes, more than %d: %w", string(p), len(p), MaxProducerFormat, ErrInvalid)
+	}
+	for i := 0; i < len(p); i++ {
+		if !producerByte(p[i]) {
+			return fmt.Errorf("producer %q has byte %q outside [A-Za-z0-9._:/-]: %w", string(p), p[i], ErrInvalid)
+		}
+	}
+	return nil
+}
+
+// WritableProducer checks that a store may write a producer name: it has the
+// format ([ValidProducer]) and is at most [MaxProducerLen] bytes. Every error
+// wraps [ErrInvalid].
+func WritableProducer(p lifecycle.Producer) error {
+	if err := ValidProducer(p); err != nil {
+		return err
+	}
+	if len(p) > MaxProducerLen {
+		return fmt.Errorf("producer %q is %d bytes, more than %d: %w", string(p), len(p), MaxProducerLen, ErrInvalid)
+	}
+	return nil
+}
+
+// producerByte reports whether c is one of the bytes of the producer format.
+func producerByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '.', '_', ':', '/', '-':
+		return true
+	}
+	return false
 }
 
 // MaxBootLen is the longest boot id, in bytes, a record may carry. Boot ids are

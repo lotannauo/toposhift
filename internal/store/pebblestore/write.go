@@ -16,12 +16,12 @@ import (
 // and by the rules, in the order, of the reference store, before it stores any, so
 // a refused batch stores nothing and leaves LastSeq unchanged: the store is closed;
 // the context is done; the batch is empty (nil); and then, record by record, the
-// record is invalid, its Seq is not above the previous one, its Seq is
-// [store.Latest], it is before the horizon of its layer ([store.ErrBeforeHorizon]),
-// it puts a subject in two layers within the batch, and, for an entity record
-// under a policy that names a boot key, the policy cannot fold it. The context is
-// checked again just before the commit, and never after it: a context error means
-// nothing was stored.
+// record is invalid or its producer is longer than [store.MaxProducerLen], its Seq
+// is not above the previous one, its Seq is [store.Latest], it is before the
+// horizon of its layer ([store.ErrBeforeHorizon]), it puts a subject in two layers
+// within the batch, and, for an entity record under a policy that names a boot
+// key, the policy cannot fold it. The context is checked again just before the
+// commit, and never after it: a context error means nothing was stored.
 //
 // The batch is one commit, carrying both copies of every edge, the new last
 // sequence number and the deletion of every checkpoint a record of the batch makes
@@ -63,6 +63,12 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	invalid := make([]error, len(batch))
 	for i, r := range batch {
 		invalid[i] = r.Validate()
+		if invalid[i] == nil {
+			// The limit on a producer name is the write path's, not Validate's.
+			if err := store.WritableProducer(r.Producer); err != nil {
+				invalid[i] = fmt.Errorf("record seq %d: %w", r.Seq, err)
+			}
+		}
 		if invalid[i] == nil {
 			// The codec is the last defence against a value it cannot encode.
 			if err := s.checkValue(pebblekv.FromRecord(r)); err != nil {

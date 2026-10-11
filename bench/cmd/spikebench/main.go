@@ -38,6 +38,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 	"github.com/lotannauo/toposhift/bench/spike/runner"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
+	"github.com/lotannauo/toposhift/internal/store"
 )
 
 const (
@@ -445,8 +446,30 @@ func doBuild(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkProducerLen([]string{name}, plan.Spec.Workload.ProducerLen); err != nil {
+		return err
+	}
 	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), b.options(), progress)
 	return err
+}
+
+// checkProducerLen refuses a -producer-len above store.MaxProducerLen when any of the
+// candidates is built through the root store, which writes no producer name longer
+// than that. The candidates of the spike's own layouts (L/..., M/...) do not call
+// the store's validation, so they keep the lengths the workload allows, up to
+// workload.MaxProducerLen. A name that is not a candidate is left to the caller's
+// own lookup.
+func checkProducerLen(names []string, producerLen int) error {
+	if producerLen <= store.MaxProducerLen {
+		return nil
+	}
+	for _, n := range names {
+		if v, err := candidates.Lookup(n); err == nil && v.Root() {
+			return fmt.Errorf("-producer-len %d is above %d, the longest producer name the root store writes, so %s cannot be built with it (the candidates that are not Lroot take up to %d)",
+				producerLen, store.MaxProducerLen, n, workload.MaxProducerLen)
+		}
+	}
+	return nil
 }
 
 // buildFlags are the choices of a build that do not change what it writes. build
@@ -681,6 +704,9 @@ func doRun(ctx context.Context, args []string) error {
 	if err := c.require(); err != nil {
 		return err
 	}
+	if err := checkProducerLen(strings.Split(names, ","), p.producerLen); err != nil {
+		return err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -709,6 +735,9 @@ func doRun(ctx context.Context, args []string) error {
 	}
 	plan, err := loadPlan(c)
 	if err != nil {
+		return err
+	}
+	if err := checkProducerLen(list, plan.Spec.Workload.ProducerLen); err != nil {
 		return err
 	}
 	planDigest, err := plan.Digest()
@@ -890,6 +919,9 @@ func doWindows(ctx context.Context, args []string) error {
 	}
 	if p.window != 0 || p.pins != "" {
 		return fmt.Errorf("windows: -window and -pins are set for each window, from -windows")
+	}
+	if err := checkProducerLen(strings.Split(names, ","), p.producerLen); err != nil {
+		return err
 	}
 	days, err := parseWindows(windows)
 	if err != nil {

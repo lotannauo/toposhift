@@ -4,7 +4,7 @@
 // run1.jsonl and run2.jsonl by default, each in the order of replay), translates it with
 // the real translators, coalesces it with the real coalescer and writes it to the real
 // store with no record, with producer names of 18 bytes (the baseline), and with each length
-// of -lengths (default 32 and 64). Each store is flushed, compacted to the bottom level and
+// of -lengths (default 32). Each store is flushed, compacted to the bottom level and
 // left to rest before its tables are weighed. It prints one table and the cost lines:
 //
 //	cost_N = (live_N - live18) / (live18 - liveEmpty), for each N of -lengths
@@ -40,7 +40,7 @@ func main() {
 	files := flag.String("files", defaultFiles, "the names of the files of the capture to read, in order, each in the order of replay")
 	translators := flag.String("translators", defaultTranslators, "the translators the capture goes through: objects, cluster or both")
 	tmp := flag.String("tmp", "", "the directory the stores are made in (default: the system's temporary directory); each is removed when it has been weighed")
-	lengths := flag.String("lengths", "32,64", "the producer name lengths to measure besides the baseline of 18 bytes, each from 14 to 64 and none 18")
+	lengths := flag.String("lengths", "32", "the producer name lengths to measure besides the baseline of 18 bytes, each from 14 to 32 (the longest the store writes) and none 18")
 	timeout := flag.Duration("timeout", 10*time.Minute, "the longest the measurement may take")
 	flag.Parse()
 	ns, err := parseLengths(*lengths)
