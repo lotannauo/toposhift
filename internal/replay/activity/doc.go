@@ -60,8 +60,9 @@
 //     is the store's and is part of the format. The reader refuses any other
 //     number, and the column is last so that the order of the others does not
 //     change.
-//   - producer and relation are at most [MaxText] bytes each, so that no text
-//     field can make a row group larger than the reader is willing to hold.
+//   - a producer is at most [store.MaxProducerFormat] bytes and a relation at most
+//     [MaxText], so that no text field can make a row group larger than the
+//     reader is willing to hold.
 //
 // A [store.Record] read back has EventTime and Through in UTC, Through zero when
 // the column is null, and a nil Payload when the stored payload is empty. A null
@@ -114,8 +115,8 @@
 // record in it passes [store.Record.Validate]. [Writer.Write] refuses a record
 // that does not, with an error wrapping [store.ErrInvalid], before anything is
 // buffered; it also refuses a record whose Seq does not rise, whose payload is
-// over [MaxPayload], whose producer or relation is over [MaxText] bytes, or whose
-// producer, relation or boot id is not valid UTF-8 (a Parquet string must be).
+// over [MaxPayload], whose relation is over [MaxText] bytes, or whose producer,
+// relation or boot id is not valid UTF-8 (a Parquet string must be).
 // The reader does not trust the writer: it verifies all of it and refuses a file
 // otherwise, with an error wrapping [ErrFormat]. It checks the
 // footer (the schema column by column, the version, the metadata against the row
@@ -158,9 +159,10 @@
 // boot id and fingerprint text, held once for the group however often it
 // repeats, its length and 96 bytes for its entry in the map that holds it. The
 // group is refused with an error naming the limit as soon as the total passes L,
-// before the memory is allocated. Producer and relation are limited to [MaxText]
-// bytes, a boot id to [store.MaxBootLen], a fingerprint text to its longest
-// form and a payload to [MaxPayload].
+// before the memory is allocated. A producer is limited to
+// [store.MaxProducerFormat] bytes, a relation to [MaxText], a boot id to
+// [store.MaxBootLen], a fingerprint text to its longest form and a payload to
+// [MaxPayload].
 //
 // What the reader can be made to hold is therefore a small multiple of L, plus
 // the buffers of the Parquet library:

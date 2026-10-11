@@ -26,6 +26,11 @@
 // is descriptive and changes no answer. A record does not carry its
 // ingest wall time.
 //
+// # Producer names
+//
+// A producer name is 1 to [MaxProducerFormat] ASCII bytes from [A-Za-z0-9._:/-],
+// compared exactly; a store writes none longer than [MaxProducerLen].
+//
 // # Facts only
 //
 // A store holds what producers asserted, as [Record] values. Liveness expiry,

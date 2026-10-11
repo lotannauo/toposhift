@@ -282,7 +282,7 @@ func TestMeasureCompactsCountsAndCleansUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmp := t.TempDir()
-	res, err := run(context.Background(), tmp, in, []int{32, 40, 64}, objectsOnly)
+	res, err := run(context.Background(), tmp, in, []int{32, 24}, objectsOnly)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,13 +290,13 @@ func TestMeasureCompactsCountsAndCleansUp(t *testing.T) {
 		t.Errorf("the temporary directory holds %v after the measurement (%v)", left, err)
 	}
 	rows := res.Rows()
-	if len(rows) != 5 {
-		t.Fatalf("%d rows, want the empty store, 18, 32, 40 and 64", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("%d rows, want the empty store, 18, 32 and 24", len(rows))
 	}
 	for i, want := range []struct {
 		label string
 		n     int
-	}{{"empty", 0}, {"18", 18}, {"32", 32}, {"40", 40}, {"64", 64}} {
+	}{{"empty", 0}, {"18", 18}, {"32", 32}, {"24", 24}} {
 		if rows[i].Label != want.label || rows[i].N != want.n {
 			t.Errorf("row %d is %q (N %d), want %q (%d)", i, rows[i].Label, rows[i].N, want.label, want.n)
 		}
@@ -349,10 +349,10 @@ func TestLengthsAreParsedAndRefused(t *testing.T) {
 	t.Parallel()
 
 	for list, want := range map[string][]int{
-		"32,64":     {32, 64},
-		"64,32":     {64, 32}, // the order asked
-		" 40 , 14 ": {40, 14},
-		"64":        {64},
+		"32,24":     {32, 24},
+		"24,32":     {24, 32}, // the order asked
+		" 30 , 14 ": {30, 14},
+		"32":        {32},
 		"19,17":     {19, 17},
 	} {
 		if got, err := parseLengths(list); err != nil || !slices.Equal(got, want) {
@@ -361,13 +361,16 @@ func TestLengthsAreParsedAndRefused(t *testing.T) {
 	}
 	for list, why := range map[string]string{
 		"18":       "the baseline",
-		"32,18,64": "the baseline",
+		"32,18,24": "the baseline",
 		"13":       "below 14",
+		"33":       "above the longest the store writes",
+		"64":       "above the longest the store writes",
+		"32,64":    "above the longest the store writes",
 		"65":       "above 64",
 		"0":        "below 14",
 		"-1":       "below 14",
 		"32,32":    "a duplicate",
-		"32,64,32": "a duplicate",
+		"32,24,32": "a duplicate",
 		"":         "empty",
 		"32,":      "an empty entry",
 		"x":        "not a number",
@@ -375,6 +378,10 @@ func TestLengthsAreParsedAndRefused(t *testing.T) {
 		if got, err := parseLengths(list); err == nil {
 			t.Errorf("parseLengths(%q) = %v, want an error (%s)", list, got, why)
 		}
+	}
+	// A length above the limit is refused with a message that says why.
+	if _, err := parseLengths("33"); err == nil || !strings.Contains(err.Error(), "33 is above 32, the longest producer name the store writes") {
+		t.Errorf("parseLengths(33) = %v, want it to say that 33 is above the 32 the store writes", err)
 	}
 }
 
@@ -404,25 +411,25 @@ func TestTheReportHasARowAndACostLineForEachLength(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	var out bytes.Buffer
-	if err := report(&out, dir, files, tmp, m, []int{32, 40, 64}, time.Minute); err != nil {
+	if err := report(&out, dir, files, tmp, m, []int{32, 24}, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != 1+5+3 {
-		t.Fatalf("%d lines, want a header, five rows and three cost lines:\n%s", len(lines), out.String())
+	if len(lines) != 1+4+2 {
+		t.Fatalf("%d lines, want a header, four rows and two cost lines:\n%s", len(lines), out.String())
 	}
 	if got, want := strings.Join(strings.Fields(lines[0]), " "), "N capture log records translated written (records) live table bytes bytes written live bytes per record mean payload bytes"; got != want {
 		t.Errorf("the header is %q, want %q", got, want)
 	}
-	for i, label := range []string{"empty", "18", "32", "40", "64"} {
+	for i, label := range []string{"empty", "18", "32", "24"} {
 		f := strings.Fields(lines[1+i])
 		if f[0] != label || len(f) != 8 {
 			t.Errorf("row %d is %q, want %q and 8 columns", i, lines[1+i], label)
 		}
 	}
-	for i, n := range []string{"32", "40", "64"} {
-		if want := "cost_a(" + n + ") = (live_" + n + " - live_18) / (live_18 - live_empty) = ("; !strings.HasPrefix(lines[6+i], want) {
-			t.Errorf("cost line %d is %q, want it to begin %q", i, lines[6+i], want)
+	for i, n := range []string{"32", "24"} {
+		if want := "cost_a(" + n + ") = (live_" + n + " - live_18) / (live_18 - live_empty) = ("; !strings.HasPrefix(lines[5+i], want) {
+			t.Errorf("cost line %d is %q, want it to begin %q", i, lines[5+i], want)
 		}
 	}
 	if strings.Contains(out.String(), "k8scluster") {
@@ -637,7 +644,7 @@ func TestEveryModeIsMeasuredAndCleansUp(t *testing.T) {
 		objects, cluster, wrote int
 	}{{objectsOnly, 3, 0, 3}, {clusterOnly, 0, 3, 3}, {bothTranslators, 3, 3, 6}} {
 		tmp := t.TempDir()
-		res, err := run(context.Background(), tmp, in, []int{32, 64}, c.m)
+		res, err := run(context.Background(), tmp, in, []int{32, 24}, c.m)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -669,7 +676,7 @@ func TestTheReportOfBothTranslatorsHasTheExtraColumns(t *testing.T) {
 
 	tmp := t.TempDir()
 	var out bytes.Buffer
-	if err := report(&out, writeMixed(t), []string{"run1.jsonl", "run2.jsonl"}, tmp, bothTranslators, []int{32, 64}, time.Minute); err != nil {
+	if err := report(&out, writeMixed(t), []string{"run1.jsonl", "run2.jsonl"}, tmp, bothTranslators, []int{32, 24}, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
@@ -679,7 +686,7 @@ func TestTheReportOfBothTranslatorsHasTheExtraColumns(t *testing.T) {
 	if got, want := strings.Join(strings.Fields(lines[0]), " "), "N capture log records translated written (records) live table bytes bytes written live bytes per record mean payload bytes translated by k8sobjects translated by k8scluster"; got != want {
 		t.Errorf("the header is %q, want %q", got, want)
 	}
-	for i, label := range []string{"empty", "18", "32", "64"} {
+	for i, label := range []string{"empty", "18", "32", "24"} {
 		f := strings.Fields(lines[1+i])
 		if f[0] != label || len(f) != 10 {
 			t.Errorf("row %d is %q, want %q and 10 columns", i, lines[1+i], label)

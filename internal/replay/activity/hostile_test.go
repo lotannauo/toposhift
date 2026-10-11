@@ -419,8 +419,14 @@ func TestBadRows(t *testing.T) {
 		{"a blank boot", hostEntity, func(r *activity.RawRow) { r.Boot = str("  \t") }, "boot"},
 		{"a present but empty boot", hostEntity, func(r *activity.RawRow) { r.Boot = str("") }, "boot"},
 		{"a boot that is not UTF-8", hostEntity, func(r *activity.RawRow) { r.Boot = str("b\xff") }, "boot"},
-		{"a producer of the longest length (control)", good, func(r *activity.RawRow) { r.Producer = strings.Repeat("p", activity.MaxText) }, ""},
-		{"a producer over MaxText", good, func(r *activity.RawRow) { r.Producer = strings.Repeat("p", activity.MaxText+1) }, "producer"},
+		{"a producer of the longest length (control)", good, func(r *activity.RawRow) { r.Producer = strings.Repeat("p", store.MaxProducerFormat) }, ""},
+		// The reader's own bound, which comes before the text is interned.
+		{
+			"a producer over MaxProducerFormat", good, func(r *activity.RawRow) { r.Producer = strings.Repeat("p", store.MaxProducerFormat+1) },
+			"column producer: text of 65 bytes is over the limit of 64",
+		},
+		{"a producer of MaxText bytes", good, func(r *activity.RawRow) { r.Producer = strings.Repeat("p", activity.MaxText) }, "column producer: text of 65536 bytes is over the limit of 64"},
+		{"a producer with a space", good, func(r *activity.RawRow) { r.Producer = "a b" }, "producer"},
 		{"a relation of the longest length (control)", good, func(r *activity.RawRow) { r.Relation = str(strings.Repeat("r", activity.MaxText)) }, ""},
 		{"a relation over MaxText", good, func(r *activity.RawRow) { r.Relation = str(strings.Repeat("r", activity.MaxText+1)) }, "relation"},
 		{"a source that is far too long", good, func(r *activity.RawRow) { r.Source = strings.Repeat("s", 4096) }, "source"},

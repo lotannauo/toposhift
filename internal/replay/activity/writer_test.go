@@ -64,7 +64,9 @@ func TestWriteRefusals(t *testing.T) {
 			r.Layer = catalog.L1
 			r.Boot = strings.Repeat("b", store.MaxBootLen+1)
 		})},
-		{"producer over MaxText", mutate(func(r *store.Record) { r.Producer = lifecycle.Producer(strings.Repeat("p", activity.MaxText+1)) })},
+		{"producer over MaxProducerFormat", mutate(func(r *store.Record) {
+			r.Producer = lifecycle.Producer(strings.Repeat("p", store.MaxProducerFormat+1))
+		})},
 		{"relation over MaxText", mutate(func(r *store.Record) {
 			r.Subject.Relation = catalog.RelationType(strings.Repeat("r", activity.MaxText+1))
 		})},
@@ -442,7 +444,8 @@ func TestMaxRecordFields(t *testing.T) {
 	requireSame(t, recs, readFile(t, writeFile(t, recs, activity.WriterOptions{}), activity.ReaderOptions{}))
 }
 
-// The longest producer, relation and boot id are accepted and read back.
+// The longest producer (the format's), relation and boot id are accepted and read
+// back.
 func TestTextAtTheLimit(t *testing.T) {
 	t.Parallel()
 
@@ -452,7 +455,7 @@ func TestTextAtTheLimit(t *testing.T) {
 	recs := []store.Record{
 		{
 			Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, catalog.RelationType(strings.Repeat("r", activity.MaxText))),
-			Producer: lifecycle.Producer(strings.Repeat("p", activity.MaxText)), EventTime: epoch, Seq: 1, Kind: lifecycle.Observe,
+			Producer: lifecycle.Producer(strings.Repeat("p", store.MaxProducerFormat)), EventTime: epoch, Seq: 1, Kind: lifecycle.Observe,
 		},
 		{
 			Layer: catalog.L1, Subject: store.EntitySubject(host), Producer: "cloud", EventTime: epoch, Seq: 2, Kind: lifecycle.Observe,
@@ -460,4 +463,27 @@ func TestTextAtTheLimit(t *testing.T) {
 		},
 	}
 	requireSame(t, recs, readFile(t, writeFile(t, recs, activity.WriterOptions{}), activity.ReaderOptions{}))
+}
+
+// A producer longer than the format is refused by Validate on writing, before the
+// text limit of the file is reached, and the writer stays usable.
+func TestProducerOverTheFormatBoundIsRefusedOnWriting(t *testing.T) {
+	t.Parallel()
+
+	pod := fingerprint(t, catalog.K8sPod, catalog.K8sPodUID, "p")
+	r := store.Record{
+		Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: lifecycle.Producer(strings.Repeat("p", store.MaxProducerFormat+1)),
+		EventTime: epoch, Seq: 1, Kind: lifecycle.Observe,
+	}
+	w, err := activity.NewWriter(io.Discard, activity.WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := r.Validate()
+	if !errors.Is(want, store.ErrInvalid) {
+		t.Fatalf("Validate = %v, want an error wrapping store.ErrInvalid", want)
+	}
+	if err := w.Write(r); err == nil || err.Error() != want.Error() {
+		t.Errorf("Write = %v, want the error of Validate: %v", err, want)
+	}
 }

@@ -176,6 +176,7 @@ func Run(t *testing.T, f Factory) {
 		{"layer horizons", lifecycle.Policy{}, CheckLayerHorizons},
 		{"instant", lifecycle.Policy{}, CheckInstant},
 		{"producers", lifecycle.Policy{}, CheckProducers},
+		{"producer names", lifecycle.Policy{}, CheckProducerNames},
 		{"relations", lifecycle.Policy{}, CheckRelations},
 		{"extremes", lifecycle.Policy{}, CheckExtremes},
 		{"entity window", lifecycle.Policy{}, CheckEntityWindow},

@@ -325,12 +325,12 @@ func TestAKeyAndValueThatDisagreeAreRefused(t *testing.T) {
 	}
 }
 
-// Producer names are arbitrary non-empty strings, and the producer is the last
-// part of a reference: one that is a prefix of another, or holds any byte, must
-// still be its own reference.
+// The producer is the last part of a reference: a name that is a prefix of another,
+// or that differs from it by the last byte, must still be its own reference. The
+// names are the format's own, and one of them is the longest a store writes.
 func TestAwkwardProducerNames(t *testing.T) {
 	t.Parallel()
-	names := []lifecycle.Producer{"a", "a\x00", "a\x00b", "a\x00\x00", "\xff", "\xff\xff", "ab", lifecycle.Producer(strings.Repeat("x", 300))}
+	names := []lifecycle.Producer{"a", "a.", "a.b", "a..", "ab", lifecycle.Producer(strings.Repeat("x", store.MaxProducerLen))}
 	p := newPair(t, Options{})
 	var seq uint64
 	var batch []store.Record
@@ -364,7 +364,7 @@ func TestAwkwardProducerNames(t *testing.T) {
 	p.same([]identity.Fingerprint{podFP, nodeFP}, []time.Time{t0.Add(30 * time.Second), t0.Add(time.Minute)}, []uint64{seq, store.Latest})
 }
 
-// Producers whose names differ only by trailing zero bytes hold separate
+// Producers whose names differ only by trailing dots hold separate
 // references at overlapping times, so one's delete or expiry must not end
 // another's, before and after a retention that carries them as baseline entries.
 func TestProducersNamedAlikeAreSeparateReferences(t *testing.T) {
@@ -372,9 +372,9 @@ func TestProducersNamedAlikeAreSeparateReferences(t *testing.T) {
 	p := newPair(t, Options{})
 	p.write(
 		edgeRecord(1, "a", t0, lifecycle.Observe, 0),
-		edgeRecord(2, "a\x00", t0.Add(500*time.Millisecond), lifecycle.Observe, 0),
-		edgeRecord(3, "a\x00", t0.Add(time.Second), lifecycle.Delete, 0),                  // ends only its own
-		edgeRecord(4, "a\x00\x00", t0.Add(2*time.Second), lifecycle.Observe, time.Second), // lapses at +3s
+		edgeRecord(2, "a.", t0.Add(500*time.Millisecond), lifecycle.Observe, 0),
+		edgeRecord(3, "a.", t0.Add(time.Second), lifecycle.Delete, 0),               // ends only its own
+		edgeRecord(4, "a..", t0.Add(2*time.Second), lifecycle.Observe, time.Second), // lapses at +3s
 	)
 	times := []time.Time{t0.Add(-time.Nanosecond), t0, t0.Add(time.Second), t0.Add(2 * time.Second), t0.Add(3 * time.Second), t0.Add(5 * time.Second), t0.Add(time.Hour)}
 	toks := []uint64{0, 1, 2, 3, 4, store.Latest}

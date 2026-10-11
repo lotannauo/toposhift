@@ -50,6 +50,9 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		if err := r.Validate(); err != nil {
 			return fmt.Errorf("memstore: Write: batch[%d]: %w", i, err)
 		}
+		if err := store.WritableProducer(r.Producer); err != nil {
+			return fmt.Errorf("memstore: Write: batch[%d] seq %d: %w", i, r.Seq, err)
+		}
 		if r.Seq <= prev {
 			return fail("seq is not above the previous seq %d", prev)
 		}

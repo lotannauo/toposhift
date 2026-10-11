@@ -196,7 +196,13 @@ func (b *broken) Write(ctx context.Context, batch []store.Record) error {
 			hz := b.layerHorizon(b.writeHorizonLayer(r.Layer))
 			return !hz.IsZero() && r.EventTime.Before(hz.Time)
 		}
-		if slices.ContainsFunc(batch, stale) {
+		// A refusal comes at the record's turn: a record with a producer the store does
+		// not write is refused as invalid, and the records after it are not looked at.
+		turn := slices.IndexFunc(batch, func(r store.Record) bool { return store.WritableProducer(r.Producer) != nil })
+		if turn < 0 {
+			turn = len(batch)
+		}
+		if slices.ContainsFunc(batch[:turn], stale) {
 			rest := slices.DeleteFunc(slices.Clone(batch), stale)
 			if !b.acceptMixed || len(rest) == 0 {
 				if b.tokenOnRefusal && len(rest) > 0 {

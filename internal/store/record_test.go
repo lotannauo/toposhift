@@ -110,7 +110,8 @@ func TestValidateWrapsTheFoldError(t *testing.T) {
 	pod, node := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p"), fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
 	r := store.Record{
 		Layer: catalog.L2, Subject: store.EdgeSubject(pod, node, catalog.ScheduledOn),
-		EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe, // no producer
+		Producer: "k8s", EventTime: time.Unix(10, 0).UTC(), Seq: 1, Kind: lifecycle.Observe,
+		TTL: -time.Second, // the specification refuses a negative TTL
 	}
 	err := r.Validate()
 	if !errors.Is(err, store.ErrInvalid) || !errors.Is(err, lifecycle.ErrInvalid) {
@@ -377,5 +378,130 @@ func TestAssertionIgnoresTheEventTimeBasis(t *testing.T) {
 				t.Errorf("%s with basis %s: assertion = %+v, want %+v", kind, b, got, want)
 			}
 		}
+	}
+}
+
+// producerOf is a producer name of n bytes, from the format.
+func producerOf(n int) lifecycle.Producer { return lifecycle.Producer(strings.Repeat("a", n)) }
+
+func TestProducerFormatAndLimit(t *testing.T) {
+	t.Parallel()
+
+	// The limit is below the format, so the two checks differ.
+	if store.MaxProducerLen >= store.MaxProducerFormat {
+		t.Fatalf("MaxProducerLen %d is not below MaxProducerFormat %d", store.MaxProducerLen, store.MaxProducerFormat)
+	}
+	// Every byte of the format, in names of at most the limit.
+	const allBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-"
+	type producerCase struct {
+		name     string
+		p        lifecycle.Producer
+		validErr string // a part of the error of ValidProducer, or "" for none
+		writeErr string // a part of the error of WritableProducer, or "" for none
+	}
+	cases := []producerCase{
+		{name: "one byte", p: "a"},
+		{name: "the limit", p: producerOf(store.MaxProducerLen)},
+		{name: "one byte over the limit", p: producerOf(store.MaxProducerLen + 1), writeErr: "is 33 bytes, more than 32"},
+		{name: "the format bound", p: producerOf(store.MaxProducerFormat), writeErr: "is 64 bytes, more than 32"},
+		{
+			name: "one byte over the format bound", p: producerOf(store.MaxProducerFormat + 1),
+			validErr: "is 65 bytes, more than 64", writeErr: "is 65 bytes, more than 64",
+		},
+		{name: "empty", p: "", validErr: "producer is empty", writeErr: "producer is empty"},
+		{name: "a space", p: "a b", validErr: `has byte ' ' outside`, writeErr: `has byte ' ' outside`},
+		{name: "an @", p: "a@b", validErr: `has byte '@' outside`, writeErr: `has byte '@' outside`},
+		{name: "a control byte", p: "a\x01", validErr: `has byte '\x01' outside`, writeErr: `has byte '\x01' outside`},
+		{name: "a NUL byte", p: "a\x00", validErr: `has byte '\x00' outside`, writeErr: `has byte '\x00' outside`},
+		{name: "a high byte", p: "\xff", validErr: `has byte 'ÿ' outside`, writeErr: `has byte 'ÿ' outside`},
+		{name: "a trailing newline", p: "a\n", validErr: `has byte '\n' outside`, writeErr: `has byte '\n' outside`},
+		{name: "a leading space", p: " a", validErr: `has byte ' ' outside`, writeErr: `has byte ' ' outside`},
+		{name: "a rune of two bytes", p: "abc\u00e9", validErr: `has byte 'Ã' outside`, writeErr: `has byte 'Ã' outside`},
+		{
+			// 63 bytes and a rune of two: 65 bytes, 64 runes. It is refused for its
+			// bytes, whichever check runs first.
+			name: "63 bytes and a rune of two bytes", p: producerOf(63) + "\u00e9",
+			validErr: "is 65 bytes, more than 64", writeErr: "is 65 bytes, more than 64",
+		},
+		{name: "a lower-case name is not folded", p: "k8sObjects"},
+		// The names in use.
+		{name: "k8sobjects", p: "k8sobjects"},
+		{name: "k8sobjects/default", p: "k8sobjects/default"},
+		{name: "fabric", p: "fabric"},
+		{name: "node-collector", p: "node-collector"},
+		{name: "k8s-cluster", p: "k8s-cluster"},
+		{name: "traces", p: "traces"},
+		{name: "kubelet", p: "kubelet"},
+		{name: "fixture/x", p: "fixture/x"},
+	}
+	for i := 0; i < len(allBytes); i += store.MaxProducerLen {
+		p := lifecycle.Producer(allBytes[i:min(i+store.MaxProducerLen, len(allBytes))])
+		cases = append(cases, producerCase{name: "every byte of the format, from " + string(p[:1]), p: p})
+	}
+	check := func(t *testing.T, what string, err error, want string) {
+		t.Helper()
+		switch {
+		case want == "" && err != nil:
+			t.Errorf("%s refused: %v", what, err)
+		case want != "" && err == nil:
+			t.Errorf("%s accepted, want an error with %q", what, want)
+		case want != "":
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s: err = %v, want ErrInvalid", what, err)
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: err = %q, want it to contain %q", what, err, want)
+			}
+		}
+	}
+	for _, c := range cases {
+		check(t, c.name+" (ValidProducer)", store.ValidProducer(c.p), c.validErr)
+		check(t, c.name+" (WritableProducer)", store.WritableProducer(c.p), c.writeErr)
+	}
+}
+
+// TestValidateHoldsTheFormatNotTheLimit checks that Validate refuses a producer
+// outside the format, for every kind of record, and accepts one of the format's
+// longest length, which only a write refuses.
+func TestValidateHoldsTheFormatNotTheLimit(t *testing.T) {
+	t.Parallel()
+
+	pod, node := fp(t, catalog.K8sPod, catalog.K8sPodUID, "p"), fp(t, catalog.K8sNode, catalog.K8sNodeUID, "n")
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	entity := store.Record{
+		Layer: catalog.L2, Subject: store.EntitySubject(pod), Producer: "k8s",
+		EventTime: at, Seq: 1, Kind: lifecycle.Observe,
+	}
+	edge := entity
+	edge.Subject = store.EdgeSubject(pod, node, catalog.ScheduledOn)
+	del := entity
+	del.Kind = lifecycle.Delete
+	for name, r := range map[string]store.Record{"entity": entity, "edge": edge, "delete": del} {
+		for _, p := range []lifecycle.Producer{producerOf(store.MaxProducerFormat), producerOf(store.MaxProducerLen + 1)} {
+			r.Producer = p
+			if err := r.Validate(); err != nil {
+				t.Errorf("%s with a producer of %d bytes: %v", name, len(p), err)
+			}
+		}
+		for what, p := range map[string]lifecycle.Producer{
+			"a producer over the format bound": producerOf(store.MaxProducerFormat + 1),
+			"a producer with a space":          "a b",
+			"a producer with a rune":           "abc\u00e9",
+			"the empty producer":               "",
+		} {
+			r.Producer = p
+			err := r.Validate()
+			if !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("%s with %s: err = %v, want ErrInvalid", name, what, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), "producer") {
+				t.Errorf("%s with %s: err = %q does not name the producer", name, what, err)
+			}
+		}
+	}
+	// The record's own sequence number leads the message.
+	entity.Producer = ""
+	if err := entity.Validate(); err == nil || !strings.HasPrefix(err.Error(), "record seq 1: producer is empty") {
+		t.Errorf("err = %v, want it to start with %q", err, "record seq 1: producer is empty")
 	}
 }

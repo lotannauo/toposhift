@@ -198,8 +198,8 @@ func (w *Writer) check(r store.Record) error {
 	if len(r.Payload) > MaxPayload {
 		return fmt.Errorf("record seq %d: payload of %d bytes is over the limit of %d: %w", r.Seq, len(r.Payload), MaxPayload, store.ErrInvalid)
 	}
-	if len(r.Producer) > MaxText || len(r.Subject.Relation) > MaxText {
-		return fmt.Errorf("record seq %d: producer and relation are at most %d bytes: %w", r.Seq, MaxText, store.ErrInvalid)
+	if len(r.Subject.Relation) > MaxText {
+		return fmt.Errorf("record seq %d: relation is at most %d bytes: %w", r.Seq, MaxText, store.ErrInvalid)
 	}
 	if !utf8.ValidString(string(r.Producer)) || !utf8.ValidString(string(r.Subject.Relation)) || !utf8.ValidString(r.Boot) {
 		return fmt.Errorf("record seq %d: producer, relation and boot must be valid UTF-8: %w", r.Seq, store.ErrInvalid)
