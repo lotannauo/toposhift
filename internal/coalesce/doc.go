@@ -41,9 +41,11 @@
 // refresh closer than the extension interval to the last extension is absorbed without
 // a record. The run then understates how long its producer was seen by less than the
 // extension interval, so existence can end early but never late, and only the end of an
-// interval moves. When a run is replaced by another the store is first given what its
-// deadline lacks to reach the new run, so an interval has no hole the producer did not
-// have. Both zero extends on every refresh, which loses nothing.
+// interval moves; [Coalescer.Flush] writes the absorbed refresh before the stored copy
+// lapses, so that it ends early only for the cases "Flush" below names. When a run is
+// replaced by another the store is first given what its deadline lacks to reach the new
+// run, so an interval has no hole the producer did not have. Both zero extends on every
+// refresh, which loses nothing.
 //
 // Absorption can also hide a clone collision for a while, and shortens a boot's last
 // sighting the way it shortens existence. Boot A seen at 0 and again at 60 (absorbed),
@@ -105,16 +107,52 @@
 // record. A delete or a record with no TTL before the horizon, which has no Through, is
 // passed on as given, and left to that path as well.
 //
+// # Flush
+//
+// A run that absorbs refreshes is stored only through its last extension, so its stored
+// copy can lapse before its producer's promise does. Flush writes what was absorbed
+// before that happens. The rule:
+//
+//	The coalescer's absorbed refreshes are written before the stored copy lapses.
+//	The sequencer calls Flush(now) on its ingest clock at least every 30 s. For every
+//	run whose last refresh was absorbed and whose stored deadline is no later than 60 s
+//	after now (including one already past), Flush writes the extension the coalescer
+//	would have written at that refresh: a run that began before its layer's horizon is
+//	continued as closeRun continues it. Flush writes in a fixed order. On a graceful
+//	stop every absorbed refresh is written. A run's stored lapse is then its
+//	producer's last refresh plus the TTL, except for a run whose last refresh is before
+//	its layer's horizon, and a run ended by a delete, a watch-mode assertion or a
+//	record that carries its own Through, whose absorbed refresh is not written. Every
+//	record written asserts only what the producer's refreshes did: the span from the
+//	run's start (for a run that began before the horizon, from the horizon or the
+//	stored lapse) through its last refresh.
+//
+// [FlushPeriod] is the 30 s and [FlushLead] the 60 s; neither is a [Config] setting.
+// [Coalescer.Flush] takes the caller's now and writes into out; [Coalescer.FlushAll] is
+// the same with no deadline test, for a graceful stop. Both write in a fixed order: by
+// the stored deadline the run had before the flush, then the subject, then the
+// producer. [Coalescer.Prune] keeps a run with an absorbed refresh until one of them
+// has written it, unless its last refresh is before its layer's horizon.
+//
+// The coalescer stays clockless: now is the caller's ingest clock, compared with the
+// event-time deadlines of the runs. If event times run behind the ingest clock by more
+// than the lead, Flush writes early, which costs an extra record per run and never
+// asserts anything false, because each record asserts only what the refreshes did. If
+// they run ahead, it writes late: the stored copy can lapse first, and the gap closes
+// in valid time when Flush writes.
+//
 // # A restart loses the runs and the horizons
 //
 // The coalescer keeps its runs and its horizons in memory. After a restart the next
 // refresh of each producer starts a new run, and existence can show a gap of up to one
 // extension interval where the old run's stored deadline falls short of the new run's
-// start. The horizons are lost too: the caller tells the coalescer every horizon the
-// store holds ([Coalescer.SetHorizon] or [Coalescer.SetHorizonAll]) before the first
-// [Coalescer.Add] after a restart, and, while running, calls SetHorizon in the same
-// sequential flow as the store's Retain, before the next Add, so that no Add sees a
-// store that has retained further than the coalescer knows.
+// start. A graceful stop calls [Coalescer.FlushAll] first, so only a crash leaves the
+// gap: the absorbed state is lost with the process. The horizons are lost too: the
+// caller tells the coalescer every horizon the store holds ([Coalescer.SetHorizon] or
+// [Coalescer.SetHorizonAll]) before the first [Coalescer.Add] after a restart, and,
+// while running, calls SetHorizon in the same sequential flow as the store's Retain,
+// before the next Add, so that no Add sees a store that has retained further than the
+// coalescer knows.
 // [Coalescer.Prune] forgets runs that have ended, so a stream of subjects that come and
 // go does not grow the map without bound.
 //

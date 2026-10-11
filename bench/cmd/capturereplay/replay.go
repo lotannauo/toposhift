@@ -16,6 +16,11 @@ type replayOptions struct {
 	Keep bool
 	// Progress, if not nil, gets a line for each run.
 	Progress io.Writer
+	// FlushTimes are the times, in order, at which each pass flushes its coalescer, on
+	// the capture's clock: before a batch whose time is at or after one that has not
+	// been used, and after the last run for the rest. The sequencer flushes on its
+	// ingest clock at least every 30 s; the replay uses the times the truth was listed.
+	FlushTimes []time.Time
 }
 
 // replayed is the result of replaying the runs of a capture: the counts that do not
@@ -71,6 +76,7 @@ func replayRuns(ctx context.Context, paths []string, o replayOptions) (_ *replay
 	if rep.B, err = newPass("B", true, mb, pb); err != nil {
 		return nil, err
 	}
+	rep.A.flushTimes, rep.B.flushTimes = o.FlushTimes, o.FlushTimes
 	for i, path := range paths {
 		rf, err := scanRun(path, i+1)
 		if err != nil {
@@ -84,7 +90,7 @@ func replayRuns(ctx context.Context, paths []string, o replayOptions) (_ *replay
 		rep.Files = append(rep.Files, rf)
 		rep.Stats = append(rep.Stats, rs)
 		for _, p := range []*pass{rep.A, rep.B} {
-			if err := p.startRun(rf.N); err != nil {
+			if err := p.startRun(ctx, rf.N); err != nil {
 				return nil, err
 			}
 		}
@@ -108,8 +114,12 @@ func replayRuns(ctx context.Context, paths []string, o replayOptions) (_ *replay
 			fmt.Fprintf(o.Progress, "run %d: %d lines, %d records, %s elapsed\n", rf.N, len(rf.Lines), rs.Records, time.Since(start).Round(time.Second))
 		}
 	}
-	rep.A.snapshot()
-	rep.B.snapshot()
+	for _, p := range []*pass{rep.A, rep.B} {
+		if err := p.flushRest(ctx); err != nil {
+			return nil, err
+		}
+		p.snapshot()
+	}
 	rep.Elapsed = time.Since(start)
 	return rep, nil
 }

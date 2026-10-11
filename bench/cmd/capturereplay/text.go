@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+
+	"github.com/lotannauo/toposhift/internal/coalesce"
 )
 
 func heading(w io.Writer, format string, args ...any) {
@@ -30,6 +32,9 @@ func writeText(w io.Writer, r *Report) error {
 	fmt.Fprintf(w, "replay %s, analysis %s; truth margin %s\n", r.Elapsed, r.AnalysisElapsed, r.Margin)
 	fmt.Fprintf(w, "truth: %d pod samples (%d unavailable), %d pod UIDs; %d node samples (%d unavailable), %d node UIDs\n",
 		r.Truth.PodSamples, r.Truth.PodUnavailable, r.Truth.PodUIDs, r.Truth.NodeSamples, r.Truth.NodeUnavailable, r.Truth.NodeUIDs)
+	fmt.Fprintln(w, "the coalescer is flushed at each listing sample (every 30 s), and in pass B fully at each restart")
+	fmt.Fprintf(w, "largest gap between listing samples: %s (flush lead %s)%s\n",
+		r.Truth.PodSampleLargestGap, coalesce.FlushLead, map[bool]string{true: ": OVER THE LEAD", false: ""}[r.Truth.FlushGapOverLead])
 
 	heading(w, "BLOCKING (a decided rule was breached)")
 	if len(r.Blocking) == 0 {
@@ -125,6 +130,7 @@ func mib(n int) float64 { return float64(n) / (1 << 20) }
 
 func writePass(w io.Writer, r *Report, p *passReport) {
 	heading(w, "PASS %s (%d restarts of the translators and the coalescer)", p.Name, p.Restarts)
+	fmt.Fprintf(w, "flush records written: %d\n", p.FlushRecords)
 	fmt.Fprintln(w, "\nrecords per run (translated by each translator; written after the coalescer):")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "run\tbatches\tobjects\tcluster\twritten\tobjects errors\tcluster errors\t")

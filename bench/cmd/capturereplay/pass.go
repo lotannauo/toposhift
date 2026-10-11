@@ -157,6 +157,13 @@ type pass struct {
 	mem, peb store.Store
 	seq      uint64
 
+	// flushTimes are the times the coalescer is flushed at, in order, on the capture's
+	// clock; nextFlush is how many of them have been used.
+	flushTimes []time.Time
+	nextFlush  int
+	// FlushRecords are the records the flushes wrote, which are among those written.
+	FlushRecords int
+
 	Runs     []*passRun
 	cur      *passRun
 	Restarts int
@@ -216,10 +223,18 @@ func (p *pass) reset() (err error) {
 }
 
 // startRun begins the records of run n. In a pass that restarts, every run after the
-// first begins with new translators and a new coalescer.
-func (p *pass) startRun(n int) error {
+// first begins with new translators and a new coalescer, after a graceful stop: the
+// coalescer writes every refresh it has absorbed, and those records belong to the run
+// that ends, and to its deadlines.
+func (p *pass) startRun(ctx context.Context, n int) error {
+	restart := p.Restart && len(p.Runs) > 0
+	if restart {
+		if err := p.flushAll(ctx, fmt.Sprintf("flush before the restart that begins run %d", n)); err != nil {
+			return err
+		}
+	}
 	p.snapshot()
-	if p.Restart && len(p.Runs) > 0 {
+	if restart {
 		if err := p.reset(); err != nil {
 			return err
 		}
@@ -376,6 +391,11 @@ func (p *pass) observeRecords(src source, st time.Time, recs []store.Record) {
 func (p *pass) feed(ctx context.Context, b batch) error {
 	pr := p.cur
 	pr.Batches++
+	if t, ok := p.batchTime(b); ok {
+		if err := p.flushTo(ctx, t); err != nil {
+			return err
+		}
+	}
 	var out []store.Record
 	for _, it := range b.Items {
 		recs, src, err := p.translate(it)
@@ -391,6 +411,13 @@ func (p *pass) feed(ctx context.Context, b batch) error {
 			out = p.co.Add(r, out)
 		}
 	}
+	return p.write(ctx, out, fmt.Sprintf("batch of line %d of run %d", p.lineNumber(b), pr.N))
+}
+
+// write gives the records the coalescer left to both stores: it numbers them in order,
+// validates them, notes the pods' deadlines, and counts them in the current run. what
+// says where they come from, for an error.
+func (p *pass) write(ctx context.Context, out []store.Record, what string) error {
 	if len(out) == 0 {
 		return nil
 	}
@@ -401,15 +428,56 @@ func (p *pass) feed(ctx context.Context, b batch) error {
 			p.Invalid.add("after the coalescer: %v", err)
 		}
 	}
-	pr.Written += len(out)
+	p.cur.Written += len(out)
 	p.noteDeadlines(out)
 	if err := p.mem.Write(ctx, out); err != nil {
-		return fmt.Errorf("memstore: batch of line %d of run %d: %w", p.lineNumber(b), pr.N, err)
+		return fmt.Errorf("memstore: %s: %w", what, err)
 	}
 	if err := p.peb.Write(ctx, out); err != nil {
-		return fmt.Errorf("pebblestore: batch of line %d of run %d: %w", p.lineNumber(b), pr.N, err)
+		return fmt.Errorf("pebblestore: %s: %w", what, err)
 	}
 	return nil
+}
+
+// batchTime is the time of a batch on the capture's clock: the latest time any of its
+// records says it describes, which for the collector is what it observed.
+func (p *pass) batchTime(b batch) (t time.Time, ok bool) {
+	for _, it := range b.Items {
+		if st := srcTime(dispatch(it.rec), it.rec); !ok || st.After(t) {
+			t, ok = st, true
+		}
+	}
+	return t, ok
+}
+
+// flushTo flushes the coalescer at each of the flush times, not yet used, that are at
+// or before t, in order.
+func (p *pass) flushTo(ctx context.Context, t time.Time) error {
+	for p.nextFlush < len(p.flushTimes) && !p.flushTimes[p.nextFlush].After(t) {
+		now := p.flushTimes[p.nextFlush]
+		p.nextFlush++
+		out := p.co.Flush(now, nil)
+		p.FlushRecords += len(out)
+		if err := p.write(ctx, out, fmt.Sprintf("flush at %s", now.Format(time.RFC3339))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flushRest flushes at every flush time not yet used: the end of the capture.
+func (p *pass) flushRest(ctx context.Context) error {
+	if n := len(p.flushTimes); n > 0 {
+		return p.flushTo(ctx, p.flushTimes[n-1])
+	}
+	return nil
+}
+
+// flushAll writes every refresh the coalescer has absorbed, as it does when it stops.
+func (p *pass) flushAll(ctx context.Context, what string) error {
+	out := p.co.FlushAll(nil)
+	p.FlushRecords += len(out)
+	return p.write(ctx, out, what)
 }
 
 func (p *pass) lineNumber(b batch) int { return b.Line + 1 }

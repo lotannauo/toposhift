@@ -2,10 +2,12 @@ package coalesce
 
 import (
 	"bytes"
+	"cmp"
 	"slices"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -125,7 +127,9 @@ func (c *Coalescer) Runs() int { return len(c.runs) }
 // and one that ends before h is passed on unchanged and leaves the runs alone.
 // Nothing is written for the tail of the run that its absorbed refreshes stood for,
 // so existence can show a gap of less than one extension interval before such a
-// record, as it can before a watch-mode record; that gap is accepted.
+// record, as it can before a watch-mode record or a delete; that gap is accepted. A
+// caller that calls [Coalescer.Flush] accepts it only for these records, and for a
+// run whose last refresh is before its layer's horizon.
 //
 // An extension re-asserts the run at its first event time, so once the store has
 // retained past that time it would be refused and the run would silently die at
@@ -146,7 +150,8 @@ func (c *Coalescer) Runs() int { return len(c.runs) }
 // is what the store is missing in that case. A run that ends in a real silence (the
 // next refresh comes after the producer's own deadline) is not closed: it ends at
 // its stored deadline, early by less than the extension interval, which is what
-// bounding the extension trades away.
+// bounding the extension trades away, unless [Coalescer.Flush] wrote the absorbed
+// refreshes before the stored copy lapsed.
 func (c *Coalescer) Add(r store.Record, out []store.Record) []store.Record {
 	r.Seq = 0
 	key := runKey{r.Subject, r.Producer}
@@ -173,7 +178,10 @@ func (c *Coalescer) Add(r store.Record, out []store.Record) []store.Record {
 		// is not written: if the run's stored deadline falls short of its last refresh
 		// (an extension interval longer than the TTL), a record from the same producer
 		// that starts after the deadline shows a gap of less than one extension interval
-		// that the producer never had. That gap is accepted.
+		// that the producer never had. That gap is accepted for these records, which end
+		// a run before Flush has written its absorbed refreshes; any other run's
+		// absorbed refreshes are written by Flush, when the caller calls it, before its
+		// stored copy lapses.
 		delete(c.runs, key)
 		return append(out, r)
 	}
@@ -245,13 +253,24 @@ func (c *Coalescer) closeRun(key runKey, st *run, until time.Time, out []store.R
 	if !st.deadline().Before(until) || until.After(st.last.Add(st.ttl)) || until.Before(horizon) {
 		return out
 	}
+	return append(out, c.carry(key, st))
+}
+
+// carry is the record that carries st to its last refresh: the extension the
+// coalescer would have written at that refresh, or, for a run that began before the
+// horizon of its layer, the record that continues it (see closeRun). It is the one
+// place the two are built, so a run closed by the refresh that replaces it and a run
+// flushed before its stored copy lapses are written alike. It carries a copy of the
+// run's payload, and Seq is zero.
+func (c *Coalescer) carry(key runKey, st *run) store.Record {
+	horizon := c.Horizon(st.layer)
 	rec := store.Record{
 		Layer: st.layer, Subject: key.subject, Producer: key.producer,
 		Kind: lifecycle.Observe, TTL: st.ttl, Payload: slices.Clone(st.payload), Boot: st.boot, EventTimeBasis: st.basis,
 	}
 	if !st.start.Before(horizon) {
 		rec.EventTime, rec.Through = st.start, st.last
-		return append(out, rec)
+		return rec
 	}
 	at := st.last
 	if d := st.deadline(); d.Before(at) {
@@ -270,7 +289,107 @@ func (c *Coalescer) closeRun(key runKey, st *run, until time.Time, out []store.R
 		// of the one before it, so the producer was seen continuously from at to last.
 		rec.Through = st.last
 	}
-	return append(out, rec)
+	return rec
+}
+
+// FlushPeriod is the longest the caller of [Coalescer.Flush] lets pass between two calls.
+const FlushPeriod = 30 * time.Second
+
+// FlushLead is how close to its stored deadline a run is flushed: [Coalescer.Flush]
+// writes a run's absorbed refreshes when the run's stored copy lapses no later than
+// FlushLead after now. It is two flush periods, so a caller that misses one period
+// still writes them before the copy lapses.
+const FlushLead = 2 * FlushPeriod
+
+// Flush appends to out the records that write the refreshes the coalescer has
+// absorbed, for the runs whose stored copy lapses no later than [FlushLead] after now
+// (or has lapsed already). now is the caller's clock, compared with event-time
+// deadlines; the coalescer has none of its own. The caller calls Flush at least every
+// [FlushPeriod]. See "Flush" in the package documentation.
+//
+// For a run with something absorbed (its last refresh is after its latest extension
+// written), Flush writes the extension the coalescer would have written at that
+// refresh, and the run's stored deadline becomes its last refresh plus the TTL. A run
+// that began before the horizon of its layer is continued as closeRun continues it,
+// by a new run that starts where the record does and carries the old one as its
+// previous run, so that a late refresh the old run covered is still covered. A run
+// whose last refresh is before the horizon of its layer is left as it is, and nothing
+// is written for it: the store keeps nothing of it.
+//
+// The records are in a fixed order: by the stored deadline the run had before the
+// flush, then by subject (kind, then each entity by type and hash, then the
+// relation), then by producer. Seq is zero on output, as for [Coalescer.Add]; the
+// caller assigns it in order. The cost is a scan of the runs and a sort of the records
+// written.
+func (c *Coalescer) Flush(now time.Time, out []store.Record) []store.Record {
+	return c.flush(now.Add(FlushLead), true, out)
+}
+
+// FlushAll is Flush with no deadline test: it writes the absorbed refreshes of every
+// run, in the same order. The caller uses it when ingest stops gracefully.
+func (c *Coalescer) FlushAll(out []store.Record) []store.Record {
+	return c.flush(time.Time{}, false, out)
+}
+
+// flushed is a record written by a flush with the stored deadline its run had before.
+type flushed struct {
+	lapse time.Time
+	key   runKey
+	rec   store.Record
+}
+
+func (c *Coalescer) flush(limit time.Time, bounded bool, out []store.Record) []store.Record {
+	var written []flushed
+	for key, st := range c.runs {
+		if !st.last.After(st.recorded) || (bounded && st.deadline().After(limit)) {
+			continue
+		}
+		horizon := c.Horizon(st.layer)
+		if st.last.Before(horizon) {
+			continue // wholly before what the store keeps
+		}
+		lapse := st.deadline()
+		rec := c.carry(key, st)
+		if st.start.Before(horizon) {
+			// The record starts at rec.EventTime and its run is continued from there. The
+			// old run stays as the previous run, for a refresh that arrives late.
+			st.prev = nil
+			c.runs[key] = &run{
+				prev: st, layer: st.layer, start: rec.EventTime, last: st.last, recorded: st.last,
+				ttl: st.ttl, boot: st.boot, basis: st.basis, payload: st.payload, // never written to
+			}
+		} else {
+			st.recorded = st.last
+		}
+		written = append(written, flushed{lapse, key, rec})
+	}
+	slices.SortFunc(written, func(a, b flushed) int {
+		return cmp.Or(
+			a.lapse.Compare(b.lapse),
+			compareSubjects(a.key.subject, b.key.subject),
+			cmp.Compare(a.key.producer, b.key.producer),
+		)
+	})
+	for _, w := range written {
+		out = append(out, w.rec)
+	}
+	return out
+}
+
+// compareSubjects orders subjects by kind, then source entity (type, then hash), then
+// target entity, then relation. It is total on the subjects the store takes.
+func compareSubjects(a, b store.Subject) int {
+	return cmp.Or(
+		cmp.Compare(a.Kind, b.Kind),
+		compareFingerprints(a.A, b.A),
+		compareFingerprints(a.B, b.B),
+		cmp.Compare(a.Relation, b.Relation),
+	)
+}
+
+func compareFingerprints(a, b identity.Fingerprint) int {
+	ha, hb := a.Hash(), b.Hash()
+	return cmp.Or(cmp.Compare(a.Type(), b.Type()), bytes.Compare(ha[:], hb[:]))
 }
 
 // Prune forgets the runs whose producer's own deadline (last refresh plus TTL) is before
@@ -283,13 +402,24 @@ func (c *Coalescer) closeRun(key runKey, st *run, until time.Time, out []store.R
 // refresh of a forgotten run would have started a new run anyway, because it came after
 // the deadline; only a record that arrives late enough to have continued the run is
 // passed through instead, and passing a record through is always valid.
+//
+// Prune keeps a run with an absorbed refresh (its last refresh is after its latest
+// extension written) whose last refresh is at or after the horizon of its layer,
+// until [Coalescer.Flush] or [Coalescer.FlushAll] writes it: forgetting it would lose
+// the refresh. A run whose last refresh is before the horizon of its layer is
+// forgotten as before, because nothing is ever written for it. A caller that prunes
+// but never flushes keeps every such run in memory.
 func (c *Coalescer) Prune(now time.Time) int {
 	n := 0
 	for k, st := range c.runs {
-		if st.last.Add(st.ttl).Before(now) {
-			delete(c.runs, k)
-			n++
+		if !st.last.Add(st.ttl).Before(now) {
+			continue
 		}
+		if st.last.After(st.recorded) && !st.last.Before(c.Horizon(st.layer)) {
+			continue // Flush has yet to write what it absorbed
+		}
+		delete(c.runs, k)
+		n++
 	}
 	return n
 }

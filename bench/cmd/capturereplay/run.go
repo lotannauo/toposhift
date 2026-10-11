@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lotannauo/toposhift/internal/coalesce"
 )
 
 // capture layout: the run files, and the logs beside them.
@@ -85,6 +87,15 @@ func checkLines(files []*runFile, wl *workload) []string {
 	return bad
 }
 
+// largestGap is the largest gap between consecutive times, which are in order.
+func largestGap(times []time.Time) time.Duration {
+	var gap time.Duration
+	for i := 1; i < len(times); i++ {
+		gap = max(gap, times[i].Sub(times[i-1]))
+	}
+	return gap
+}
+
 func openParse[T any](path string, parse func(*os.File) (T, error)) (T, error) {
 	var zero T
 	f, err := os.Open(path)
@@ -127,7 +138,7 @@ func build(ctx context.Context, cfg config) (_ *Report, err error) {
 	}
 	say("truth: %d pod samples (%d uids), %d node samples (%d uids)", len(pods.Times), len(pods.UIDs), len(nodesT.Times), len(nodesT.UIDs))
 
-	rep, err := replayRuns(ctx, paths, replayOptions{Tmp: cfg.Tmp, Keep: cfg.Keep, Progress: cfg.Progress})
+	rep, err := replayRuns(ctx, paths, replayOptions{Tmp: cfg.Tmp, Keep: cfg.Keep, Progress: cfg.Progress, FlushTimes: pods.Times})
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +155,11 @@ func build(ctx context.Context, cfg config) (_ *Report, err error) {
 		if u {
 			r.Truth.PodUnavailable++
 		}
+	}
+	gap := largestGap(pods.Times)
+	r.Truth.PodSampleLargestGap = gap.String()
+	if r.Truth.FlushGapOverLead = gap > coalesce.FlushLead; r.Truth.FlushGapOverLead {
+		r.Findings = append(r.Findings, fmt.Sprintf("the largest gap between pod listing samples, %s, is more than the flush lead, %s: the coalescer is flushed less often than its guarantee needs", gap, coalesce.FlushLead))
 	}
 	for _, u := range nodesT.Unavail {
 		if u {

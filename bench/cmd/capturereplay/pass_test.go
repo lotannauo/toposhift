@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func observeSchedule(pod, node identity.Fingerprint, at, through time.Time) stor
 func startedPass(t *testing.T) *pass {
 	t.Helper()
 	p := passForTest(t)
-	if err := p.startRun(1); err != nil {
+	if err := p.startRun(context.Background(), 1); err != nil {
 		t.Fatal(err)
 	}
 	return p
