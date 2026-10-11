@@ -328,6 +328,25 @@ set aside (an entity type the catalog does not have, say). Its numbers are local
 capture (the kwok one, one table's worth) its cost moves by about half a percentage point with the exact bytes of
 the filler; the decision takes it and the bench measurement at scale (R2, R7) together.
 
+`capturereplay` replays a local capture of a k3s cluster through both translators, the coalescer and both
+stores, and compares what the stores say exists with what the cluster itself listed. The capture is a directory
+with `out/run1.jsonl` to `run5.jsonl` (a collector restarted between runs), and `logs/` with the host's listing
+of the pods and the nodes every 30 seconds, the timeline of the run (`workload.txt`) and `sizes.txt`; the command
+never writes under it. Each record goes, in the order of its file, to the cluster translator if it is an entity
+event and to the objects translator if not; one coalescer sees both, and each line is one batch to a memory store
+and a Pebble store, which must answer every question alike. It does this twice: in pass A one translator pair and
+one coalescer see all five runs, and in pass B new ones begin each run, as a restart of toposhift with the
+collector would. For every pod and node UID of the listing, at every sample, the report says whether the store
+agreed, had it absent while it was listed, or had it alive after it left, with the pairs within `-margin` (60
+seconds) of a UID's first or last listing not judged. It sums these per window of the timeline (each collector
+stop, each API restart, the node scenario, the 400-pod pull), against the predictions recomputed with the measured
+time from the last pull to the stop and with the store's own deadline for each pod, and adds the ghost rate, the `scheduled_on` edges against the listed nodes,
+the container fingerprints of the two translators, the cadences of the node records, the size of the largest pull
+as JSON and as protobuf against the receiver's limit, and the breaches of the rules decided for the translators,
+marked BLOCKING (a count above 0 holds the release; the informational counts hold nothing). It prints the report and writes `result.json` and `report.txt` to `-out` (default a new
+directory under `~/Downloads`; it refuses a directory inside a git work tree)
+(`go run ./cmd/capturereplay -capture ~/spikebench/k3s-capture/run1`). Its numbers are local and informational.
+
 `streamstats` prints three models of what a deadline index would cost: every extension rewriting its
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
 or moves its deadline into another bucket.
