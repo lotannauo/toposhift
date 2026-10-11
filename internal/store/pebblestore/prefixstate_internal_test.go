@@ -176,6 +176,14 @@ func mapState(s *Store) (complete, installed bool) {
 	return s.complete, s.filterInstalled()
 }
 
+// completeOf says the map is complete, read under the lock: a scan installs from a
+// goroutine of its own.
+func completeOf(s *Store) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.complete
+}
+
 // covered says the prefix is in the filter or a live delta, read under the lock.
 func covered(s *Store, prefix []byte) bool {
 	s.mu.Lock()

@@ -482,7 +482,7 @@ func TestTheWritersMemoryOfAnUnmovedLayerSurvivesARetain(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitScanned(t, s)
-			if !s.complete {
+			if !completeOf(s) {
 				t.Error("the scan that follows the Retain did not make the map complete")
 			}
 			for k, st := range unmoved {
@@ -517,8 +517,8 @@ func TestARetainPastTheRangeForgetsOnlyTheLayersItRewrote(t *testing.T) {
 	cs := newChunkStream(t, 90*time.Second)
 	s := mustOpen(t, layerOptions(vfs.NewMem(), testOffsets, testKeep))
 	cs.writeTo(t, s)
-	if !s.anyCkpt || !s.complete {
-		t.Fatalf("anyCkpt %v, complete %v", s.anyCkpt, s.complete)
+	if !s.anyCkpt || !completeOf(s) {
+		t.Fatalf("anyCkpt %v, complete %v", s.anyCkpt, completeOf(s))
 	}
 	kept := map[string]*prefixState{}
 	for k, st := range s.states.all() {
@@ -530,7 +530,7 @@ func TestARetainPastTheRangeForgetsOnlyTheLayersItRewrote(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitScanned(t, s)
-	if !s.complete {
+	if !completeOf(s) {
 		t.Error("the scan that follows the retention did not make the map complete")
 	}
 	for k, st := range kept {

@@ -377,26 +377,40 @@ func TestTheWriterStateEqualsAWholeRead(t *testing.T) {
 						t.Fatalf("step %d: the counts differ: %v and %v\n%v", step, ca, cb, log)
 					}
 					disk := checkpointsOnDisk(t, full)
-					if full.complete {
+					if completeOf(full) {
 						t.Fatalf("step %d: the whole read store believes its map is complete\n%v", step, log)
 					}
 					// A prefix the whole read store remembers and the other does not keep
 					// is read by the other when it is next touched, unless its map is
-					// complete and knows the prefix to be empty: then it must be.
+					// complete and knows the prefix to be empty: then it must be. (The
+					// tail store's map is read under its lock: its scans install from a
+					// goroutine of their own.)
+					held := prefixesWithKeys(t, tail)
+					var wrong string
+					tail.mu.Lock()
+					tailComplete := tail.complete
 					for k, a := range full.states.all() {
-						if tail.states.peek(k) == nil && tail.complete && !tail.inFilterOrDelta([]byte(k)) && !a.empty() {
-							t.Fatalf("step %d: the whole read remembers %+v of a prefix the other takes for empty\n%v", step, *a, log)
+						if tail.states.peek(k) == nil && tailComplete && !tail.inFilterOrDelta([]byte(k)) && !a.empty() {
+							wrong = fmt.Sprintf("the whole read remembers %+v of a prefix the other takes for empty", *a)
+							break
 						}
 					}
-					if tail.complete {
+					if tailComplete && wrong == "" {
+						for k := range held {
+							if tail.states.peek(k) == nil && !tail.inFilterOrDelta([]byte(k)) {
+								wrong = "the map is complete and takes a prefix that holds keys for empty"
+								break
+							}
+						}
+					}
+					tail.mu.Unlock()
+					if wrong != "" {
+						t.Fatalf("step %d: %s\n%v", step, wrong, log)
+					}
+					if tailComplete {
 						mu.Lock()
 						completes++
 						mu.Unlock()
-						for k := range prefixesWithKeys(t, tail) {
-							if tail.states.peek(k) == nil && !tail.inFilterOrDelta([]byte(k)) {
-								t.Fatalf("step %d: the map is complete and takes a prefix that holds keys for empty\n%v", step, log)
-							}
-						}
 					}
 					// Everything the tail store remembers is what a whole read finds
 					// (the same as the whole read store's own, which has read and

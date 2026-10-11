@@ -644,8 +644,8 @@ func TestAWriteThatDoesNotFinishDoesNotLoseTheCheckpointList(t *testing.T) {
 		if !errors.Is(err, context.Canceled) || calls != 2 || p.s.LastSeq() != 2 {
 			t.Fatalf("Write = %v after %d looks, LastSeq %d; want the context's error at the second look and nothing stored", err, calls, p.s.LastSeq())
 		}
-		if p.s.states.len() != 0 || p.s.complete {
-			t.Fatalf("after a Write that did not finish the writer remembers %d prefixes (complete %v)", p.s.states.len(), p.s.complete)
+		if p.s.states.len() != 0 || completeOf(p.s) {
+			t.Fatalf("after a Write that did not finish the writer remembers %d prefixes (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
 		p.write(late) // the same record again: it must delete the checkpoints it makes untrue
 		if got, err := p.s.Neighbors(bg, podFP, store.Forward, sec(60), store.Current(catalog.L2)); err != nil || len(got) != 1 {
@@ -688,8 +688,8 @@ func TestAWriteThatDoesNotFinishDoesNotLoseTheCheckpointList(t *testing.T) {
 		if s.LastSeq() != 2 {
 			t.Fatalf("a refused write moved LastSeq to %d", s.LastSeq())
 		}
-		if s.states.len() != 0 || s.complete {
-			t.Fatalf("after a failed commit the writer remembers %d prefixes (complete %v)", s.states.len(), s.complete)
+		if s.states.len() != 0 || completeOf(s) {
+			t.Fatalf("after a failed commit the writer remembers %d prefixes (complete %v)", s.states.len(), completeOf(s))
 		}
 		if err := s.Write(bg, cloneAll([]store.Record{late})); err == nil {
 			t.Fatal("a store whose commit failed took another write")

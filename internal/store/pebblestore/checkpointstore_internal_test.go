@@ -128,7 +128,7 @@ func TestAPrefixKeptWholeForBootsHasItsOwnStateWorkedOut(t *testing.T) {
 		t.Fatalf("the checkpoints on disk after the retention = %v: a prefix kept whole keeps them all", got)
 	}
 	waitScanned(t, p.s)
-	if !p.s.complete {
+	if !completeOf(p.s) {
 		t.Fatal("the map is not complete after the scan that follows a retention")
 	}
 	requireWholeReads(t, p.s)
@@ -205,8 +205,8 @@ func TestARetentionThatLeavesALayerAloneKeepsWhatIsRememberedOfIt(t *testing.T) 
 	if err := s.Instrument().CheckpointEdges(catalog.L2, podFP, store.Forward, mid.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if !s.complete || !s.anyCkpt {
-		t.Fatalf("the writes left complete = %v, anyCkpt = %v", s.complete, s.anyCkpt)
+	if !completeOf(s) || !s.anyCkpt {
+		t.Fatalf("the writes left complete = %v, anyCkpt = %v", completeOf(s), s.anyCkpt)
 	}
 	l1Prefix, _ := s.prefixOf(catalog.L1, podL1, byte(store.Forward))
 	if len(checkpointsOnDisk(t, s)[string(l1Prefix)]) != 1 {
@@ -229,7 +229,7 @@ func TestARetentionThatLeavesALayerAloneKeepsWhatIsRememberedOfIt(t *testing.T) 
 		t.Fatalf("the retention changed what is remembered of the layer it left alone: %+v, was %+v", got, l1Before)
 	}
 	waitScanned(t, s)
-	if !s.complete {
+	if !completeOf(s) {
 		t.Error("the map is not complete after the scan that follows the retention")
 	}
 	if rec.counters["retain.state_keys"] == 0 {

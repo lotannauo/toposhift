@@ -74,8 +74,8 @@ func TestABackgroundRetentionLeavesTheBytesOfASynchronousOne(t *testing.T) {
 			if !slices.Equal(dataBytes(t, bgs), dataBytes(t, syn)) {
 				t.Fatal("the background retention left other data than the synchronous one")
 			}
-			if bgs.complete != syn.complete || bgs.states.len() != syn.states.len() {
-				t.Errorf("the background pass leaves a map of %d prefixes (complete %v), the synchronous one %d (%v)", bgs.states.len(), bgs.complete, syn.states.len(), syn.complete)
+			if completeOf(bgs) != completeOf(syn) || bgs.states.len() != syn.states.len() {
+				t.Errorf("the background pass leaves a map of %d prefixes (complete %v), the synchronous one %d (%v)", bgs.states.len(), completeOf(bgs), syn.states.len(), completeOf(syn))
 			}
 			if ck.On {
 				requireWholeReads(t, bgs)
@@ -1046,7 +1046,7 @@ func TestAWriteBeforeTheFirstChunkOfAResumedPassRewritesItsPrefixes(t *testing.T
 	p := r.pass
 	if p == nil || p.marker.generation != 1 || p.derive || r.complete || bytes.Equal(p.marker.resume, firstKey()) {
 		r.mu.Unlock()
-		t.Fatalf("Open left the pass %+v (complete %v)", p, r.complete)
+		t.Fatalf("Open left the pass %+v (complete %v)", p, completeOf(r))
 	}
 	r.mu.Unlock()
 	if rec.Counter("retain.resumed") != 1 {

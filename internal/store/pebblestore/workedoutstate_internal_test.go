@@ -46,7 +46,9 @@ func checkpointsFrom(ckpts []int64, below int64) []int64 {
 }
 
 // rememberedStateMismatch is requireWholeReads without a test: it returns the
-// first way the store's map is not what a read of the whole database finds.
+// first way the store's map is not what a read of the whole database finds. The
+// caller holds e.mu: a scan of the stored prefixes installs its filter, the deltas
+// and completeness under it, from a goroutine of its own.
 func rememberedStateMismatch(e *Store) error {
 	probe := wholeReader(e)
 	for k, b := range e.states.all() {
@@ -79,7 +81,10 @@ func rememberedStateMismatch(e *Store) error {
 // retention.
 func requireWholeReads(t *testing.T, e *Store) {
 	t.Helper()
-	if err := rememberedStateMismatch(e); err != nil {
+	e.mu.Lock()
+	err := rememberedStateMismatch(e)
+	e.mu.Unlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -122,13 +127,13 @@ func TestOnlyAnEmptyDatabaseOpensComplete(t *testing.T) {
 			}
 			rec := &countRecorder{}
 			e := open(rec, stress(0))
-			if !e.complete {
+			if !completeOf(e) {
 				t.Fatal("a new database does not open complete")
 			}
 			if err := e.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if e = open(rec, stress(0)); !e.complete {
+			if e = open(rec, stress(0)); !completeOf(e) {
 				t.Fatal("a database that was opened and closed with nothing written does not open complete")
 			}
 			ora := newRef(t)
@@ -141,8 +146,8 @@ func TestOnlyAnEmptyDatabaseOpensComplete(t *testing.T) {
 					}
 				}
 			}
-			if !e.complete || rec.counts()["checkpoint.loads"] != 0 {
-				t.Fatalf("writing to new prefixes read %d of them or ended completeness (%v)", rec.counts()["checkpoint.loads"], e.complete)
+			if !completeOf(e) || rec.counts()["checkpoint.loads"] != 0 {
+				t.Fatalf("writing to new prefixes read %d of them or ended completeness (%v)", rec.counts()["checkpoint.loads"], completeOf(e))
 			}
 			c1, c2 := sec(10).UnixNano()+1, sec(20).UnixNano()+1
 			if got := checkpoints(dump(t, e), byte(store.Forward)); len(got) != 2 || got[0][0] != c1 || got[1][0] != c2 {
@@ -193,14 +198,14 @@ func TestOnlyAnEmptyDatabaseOpensComplete(t *testing.T) {
 func TestWritingWithoutRememberingEndsCompleteness(t *testing.T) {
 	t.Parallel()
 	e := openMem(t, Options{Checkpoints: off()})
-	if !e.complete {
+	if !completeOf(e) {
 		t.Fatal("a new database does not open complete")
 	}
 	if err := e.Write(bg, []store.Record{edgeRecord(1, "p", sec(1), lifecycle.Observe, 0)}); err != nil {
 		t.Fatal(err)
 	}
-	if e.complete || e.states.len() != 0 {
-		t.Fatalf("after a write nothing remembers, complete = %v with %d prefixes", e.complete, e.states.len())
+	if completeOf(e) || e.states.len() != 0 {
+		t.Fatalf("after a write nothing remembers, complete = %v with %d prefixes", completeOf(e), e.states.len())
 	}
 }
 
@@ -251,7 +256,7 @@ func TestARetentionWorksOutWhatAWholeReadFinds(t *testing.T) {
 	}
 	p.retain(h)
 	waitScanned(t, p.s)
-	if !p.s.complete {
+	if !completeOf(p.s) {
 		t.Fatal("the map is not complete after the scan that follows a retention")
 	}
 	requireWholeReads(t, p.s)
@@ -301,7 +306,7 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		t.Parallel()
 		p := newPair(t, Options{Checkpoints: policy(stress(0))})
 		p.write(edgeRecord(1, "p", sec(1), lifecycle.Observe, 0), edgeRecord(2, "q", store.MaxEventTime, lifecycle.Observe, 0))
-		if p.s.states.len() == 0 || !p.s.complete {
+		if p.s.states.len() == 0 || !completeOf(p.s) {
 			t.Fatal("the writes left nothing remembered")
 		}
 		// The record at the last instant has no checkpoint after it, so the hook
@@ -313,8 +318,8 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 			t.Fatal("the hook wrote no checkpoint")
 		}
 		p.retain(store.MaxEventTime.Add(time.Hour))
-		if p.s.states.len() != 0 || p.s.complete {
-			t.Fatalf("after a retention past the end of time, %d prefixes are remembered (complete %v)", p.s.states.len(), p.s.complete)
+		if p.s.states.len() != 0 || completeOf(p.s) {
+			t.Fatalf("after a retention past the end of time, %d prefixes are remembered (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
 	})
 	t.Run("the policy is off", func(t *testing.T) {
@@ -345,8 +350,8 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 			t.Fatal(err)
 		}
 		_ = ora.Retain(bg, sec(10))
-		if e.states.len() != 0 || e.complete {
-			t.Fatalf("a retention with the policy off left %d prefixes remembered (complete %v)", e.states.len(), e.complete)
+		if e.states.len() != 0 || completeOf(e) {
+			t.Fatalf("a retention with the policy off left %d prefixes remembered (complete %v)", e.states.len(), completeOf(e))
 		}
 		if _, ok := rec.counts()["retain.state_keys"]; ok {
 			t.Fatal("a retention that works nothing out counted keys read for it")
@@ -368,13 +373,13 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		p := newPair(t, Options{Checkpoints: policy(stress(0))})
 		p.write(edgeRecord(1, "p", store.MinEventTime.Add(time.Second), lifecycle.Observe, 0))
 		n := p.s.states.len()
-		if n == 0 || !p.s.complete {
+		if n == 0 || !completeOf(p.s) {
 			t.Fatal("the write left nothing remembered")
 		}
 		before := dump(t, p.s)
 		p.retain(store.MinEventTime)
-		if p.s.states.len() != n || !p.s.complete {
-			t.Fatalf("after a retention that changed nothing, %d of %d prefixes are remembered (complete %v)", p.s.states.len(), n, p.s.complete)
+		if p.s.states.len() != n || !completeOf(p.s) {
+			t.Fatalf("after a retention that changed nothing, %d of %d prefixes are remembered (complete %v)", p.s.states.len(), n, completeOf(p.s))
 		}
 		if !slices.Equal(dump(t, p.s), before) {
 			t.Fatal("the retention changed what is stored")
@@ -388,8 +393,8 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		p := newPair(t, Options{Checkpoints: policy(CheckpointOptions{On: true, KMin: 1000})})
 		p.write(edgeRecord(1, "p", sec(1), lifecycle.Observe, 0), edgeRecord(2, "p", sec(20), lifecycle.Observe, 0))
 		p.retain(sec(10))
-		if p.s.states.len() != 0 || p.s.complete {
-			t.Fatalf("a retention in a database with no checkpoint left %d prefixes remembered (complete %v)", p.s.states.len(), p.s.complete)
+		if p.s.states.len() != 0 || completeOf(p.s) {
+			t.Fatalf("a retention in a database with no checkpoint left %d prefixes remembered (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
 		p.write(edgeRecord(3, "p", sec(30), lifecycle.Observe, 0))
 		p.same([]identity.Fingerprint{podFP, nodeFP}, []time.Time{sec(10), sec(25), sec(40)}, []uint64{2, 3, store.Latest})
@@ -398,12 +403,12 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		t.Parallel()
 		p := newPair(t, Options{Checkpoints: policy(stress(0)), fullStateRead: true})
 		p.write(edgeRecord(1, "p", sec(1), lifecycle.Observe, 0), edgeRecord(2, "p", sec(20), lifecycle.Observe, 0))
-		if p.s.complete {
+		if completeOf(p.s) {
 			t.Fatal("a store that reads whole prefixes opens complete")
 		}
 		p.retain(sec(10))
-		if p.s.states.len() != 0 || p.s.complete {
-			t.Fatalf("a whole-reading store left %d prefixes remembered (complete %v)", p.s.states.len(), p.s.complete)
+		if p.s.states.len() != 0 || completeOf(p.s) {
+			t.Fatalf("a whole-reading store left %d prefixes remembered (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
 	})
 }
@@ -516,8 +521,8 @@ func TestEveryFailureThatDropsTheStateEndsCompleteness(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if tail := sides[1].e; !tail.complete || tail.states.len() == 0 {
-				t.Fatalf("the store starts with complete = %v and %d prefixes remembered", tail.complete, tail.states.len())
+			if tail := sides[1].e; !completeOf(tail) || tail.states.len() == 0 {
+				t.Fatalf("the store starts with complete = %v and %d prefixes remembered", completeOf(tail), tail.states.len())
 			}
 			var errs []error
 			for _, s := range sides {
@@ -529,8 +534,8 @@ func TestEveryFailureThatDropsTheStateEndsCompleteness(t *testing.T) {
 			if fmt.Sprint(errs[0]) != fmt.Sprint(errs[1]) || (errs[0] != nil && !errors.Is(errs[0], errInjected)) {
 				t.Fatalf("the stores returned %v and %v", errs[0], errs[1])
 			}
-			if tail := sides[1].e; tail.complete || tail.states.len() != 0 {
-				t.Fatalf("after the failure the map is complete = %v with %d prefixes remembered", tail.complete, tail.states.len())
+			if tail := sides[1].e; completeOf(tail) || tail.states.len() != 0 {
+				t.Fatalf("after the failure the map is complete = %v with %d prefixes remembered", completeOf(tail), tail.states.len())
 			}
 			if tc.skipReference {
 				// A store whose record commit failed stops until it is reopened.
@@ -600,7 +605,7 @@ func TestAReadThatFailsEndsCompleteness(t *testing.T) {
 			t.Fatal(err)
 		}
 		prefix := entityPrefix(t, e, fp)
-		if !e.complete || e.states.peek(string(prefix)) == nil {
+		if !completeOf(e) || e.states.peek(string(prefix)) == nil {
 			t.Fatal("the write left the prefix unremembered or the map incomplete")
 		}
 		return e, rec, prefix
@@ -616,8 +621,8 @@ func TestAReadThatFailsEndsCompleteness(t *testing.T) {
 		st := e.states.peek(string(prefix))
 		st.below, st.since, st.latest = math.MaxInt64, 5, sec(20).UnixNano() // what is known reaches no further down than this
 		e.writeCheckpoints(map[string]struct{}{string(prefix): {}}, nil)
-		if rec.counts()["checkpoint.errors"] != 1 || e.states.peek(string(prefix)) != nil || e.complete {
-			t.Fatalf("errors %d, prefix remembered %v, complete %v", rec.counts()["checkpoint.errors"], e.states.peek(string(prefix)) != nil, e.complete)
+		if rec.counts()["checkpoint.errors"] != 1 || e.states.peek(string(prefix)) != nil || completeOf(e) {
+			t.Fatalf("errors %d, prefix remembered %v, complete %v", rec.counts()["checkpoint.errors"], e.states.peek(string(prefix)) != nil, completeOf(e))
 		}
 	})
 	t.Run("the walk that builds a checkpoint", func(t *testing.T) {
@@ -627,8 +632,8 @@ func TestAReadThatFailsEndsCompleteness(t *testing.T) {
 		st := e.states.peek(string(prefix))
 		st.since, st.latest = 5, sec(20).UnixNano()
 		e.writeCheckpoints(map[string]struct{}{string(prefix): {}}, nil)
-		if rec.counts()["checkpoint.errors"] != 1 || e.states.peek(string(prefix)) != nil || e.complete {
-			t.Fatalf("errors %d, prefix remembered %v, complete %v", rec.counts()["checkpoint.errors"], e.states.peek(string(prefix)) != nil, e.complete)
+		if rec.counts()["checkpoint.errors"] != 1 || e.states.peek(string(prefix)) != nil || completeOf(e) {
+			t.Fatalf("errors %d, prefix remembered %v, complete %v", rec.counts()["checkpoint.errors"], e.states.peek(string(prefix)) != nil, completeOf(e))
 		}
 	})
 	t.Run("the lookup before the hook places a checkpoint", func(t *testing.T) {
@@ -639,8 +644,8 @@ func TestAReadThatFailsEndsCompleteness(t *testing.T) {
 		if err := e.Instrument().CheckpointEntity(catalog.L2, fp, sec(20)); err == nil {
 			t.Fatal("the hook did not fail")
 		}
-		if e.states.peek(string(prefix)) != nil || e.complete {
-			t.Fatalf("prefix remembered %v, complete %v", e.states.peek(string(prefix)) != nil, e.complete)
+		if e.states.peek(string(prefix)) != nil || completeOf(e) {
+			t.Fatalf("prefix remembered %v, complete %v", e.states.peek(string(prefix)) != nil, completeOf(e))
 		}
 	})
 	t.Run("the lookup before a record invalidates checkpoints", func(t *testing.T) {
@@ -651,8 +656,8 @@ func TestAReadThatFailsEndsCompleteness(t *testing.T) {
 		if err := e.Write(bg, []store.Record{entityRecord(2, fp, "p", sec(5))}); err == nil {
 			t.Fatal("the write did not fail")
 		}
-		if e.states.len() != 0 || e.complete {
-			t.Fatalf("%d prefixes remembered, complete %v", e.states.len(), e.complete)
+		if e.states.len() != 0 || completeOf(e) {
+			t.Fatalf("%d prefixes remembered, complete %v", e.states.len(), completeOf(e))
 		}
 	})
 }
@@ -727,7 +732,7 @@ func TestACompleteMapNeverAnswersAPrefixThatHoldsKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitScanned(t, e)
-	if !e.complete {
+	if !completeOf(e) {
 		t.Fatal("the scan that follows the retention did not complete the map")
 	}
 	requireWholeReads(t, e)
@@ -804,8 +809,8 @@ func TestAHistoryNeedsNoStateReadsOnceItsRetentionsHaveWorkedItOut(t *testing.T)
 			}
 		}
 		waitScanned(t, sides[1].e)
-		if !sides[1].e.complete || sides[0].e.complete {
-			t.Fatalf("round %d: complete is %v, and %v for the whole reader", round, sides[1].e.complete, sides[0].e.complete)
+		if !completeOf(sides[1].e) || completeOf(sides[0].e) {
+			t.Fatalf("round %d: complete is %v, and %v for the whole reader", round, completeOf(sides[1].e), completeOf(sides[0].e))
 		}
 		requireWholeReads(t, sides[1].e)
 	}
@@ -881,8 +886,8 @@ func TestAnUnreadableKeyAfterTheHorizonLeavesTheMapEmptyAndIncomplete(t *testing
 	if rec.counts()["retain.state_keys"] == 0 {
 		t.Fatal("the retention did not try to work the state out, so the test shows nothing")
 	}
-	if tail := sides[1]; tail.states.len() != 0 || tail.complete {
-		t.Fatalf("after a retention that met a key it cannot read, %d prefixes are remembered (complete %v)", tail.states.len(), tail.complete)
+	if tail := sides[1]; tail.states.len() != 0 || completeOf(tail) {
+		t.Fatalf("after a retention that met a key it cannot read, %d prefixes are remembered (complete %v)", tail.states.len(), completeOf(tail))
 	}
 	var errs []error
 	for _, e := range sides {
