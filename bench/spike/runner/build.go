@@ -85,6 +85,13 @@ const (
 	// engine's own description, not one the runner adds, and is among the descriptions
 	// a read must find as the build gave them.
 	SyncKey = "sync"
+	// PaceKey is the key of a manifest's Describe that gives the rate, in records per
+	// second, a background build held its writer to from the day it was paced from ("0":
+	// not paced; a manifest without it is of a build that was not). PaceFromDayKey gives
+	// that day, in stream days from the start ("11.5"), and is left out of a build that
+	// was not paced.
+	PaceKey        = "pace_records_per_second"
+	PaceFromDayKey = "pace_from_day"
 	// MetricsKey is the key of a manifest's Describe that gives the interval at which
 	// the build sampled its metrics, as a duration ("0s" for none).
 	MetricsKey = "metrics_every"
@@ -141,6 +148,29 @@ type buildSink struct {
 	prog *buildProgress
 	// gate is told the batches and the retentions, for the store gate; nil for none.
 	gate *gateTracker
+	// background says the engine retains beside the writer: its windows are fed by the
+	// store's observer, not made from the phases a retention reports when it returns,
+	// and the build waits for a pass (its settle included) before it rests.
+	background bool
+	// pace holds the writer to a rate from a stream day on; nil for a build that is not
+	// paced.
+	pace *paceState
+}
+
+// paceState is the pacing of a build: it switches on at the first batch whose stream day
+// is fromDay or later and stays on.
+type paceState struct {
+	pacer    *pacer
+	fromDay  float64
+	streamAt time.Time // the start of the stream
+	on       bool
+}
+
+// streamDay is the stream day of a batch: its last record's event time, which is what
+// the stream is driven by (a retention comes when the last record of a batch reaches
+// its instant), from the start of the stream, in days.
+func (p *paceState) streamDay(batch []engine.Record) float64 {
+	return batch[len(batch)-1].EventTime.Sub(p.streamAt).Hours() / 24
 }
 
 // postState is how many more batches after the last retention are to be recorded in
@@ -154,8 +184,28 @@ type lastRetainer interface {
 	LastRetain() (work, flush, settle time.Duration, deadlineHit bool)
 }
 
+// retainWaiter is what an engine that retains beside the writer offers: a wait for
+// the retention in the background to end, its settle included.
+type retainWaiter interface {
+	WaitRetained(ctx context.Context) error
+}
+
 func (s buildSink) Write(batch []engine.Record) error {
+	// The wait for the schedule comes before the batch's clock starts: neither the gate
+	// nor the timings ever hold the sleep.
+	if ps := s.pace; ps != nil {
+		if !ps.on && ps.streamDay(batch) >= ps.fromDay {
+			ps.on = true
+		}
+		if ps.on {
+			ps.pacer.wait(len(batch))
+			defer ps.pacer.done(len(batch))
+		}
+	}
 	start := time.Now()
+	if s.pace != nil && s.pace.on {
+		s.gate.startPacing(start)
+	}
 	err := s.e.Write(batch)
 	d := time.Since(start)
 	s.t.Writes.Add(d)
@@ -181,12 +231,20 @@ func (s buildSink) Write(batch []engine.Record) error {
 
 func (s buildSink) Retain(h time.Time) error {
 	s.prog.setPhase(phaseRetain)
+	windows := s.gate.count()
 	start := time.Now()
 	err := s.e.Retain(h)
-	s.t.Retains = append(s.t.Retains, int64(time.Since(start)))
+	returned := time.Now()
+	s.t.Retains = append(s.t.Retains, int64(returned.Sub(start)))
 	if lr, ok := s.e.(lastRetainer); ok {
 		work, flush, settle, hit := lr.LastRetain()
-		if err == nil {
+		switch {
+		case err != nil:
+		case s.background:
+			// The store has told the tracker of the publication, from the call, and will
+			// tell it of the rest as it happens.
+			s.gate.returnedSince(windows, returned)
+		default:
 			s.gate.syncWindow(start, time.Now(), work, flush, settle)
 		}
 		s.t.RetainPhases = append(s.t.RetainPhases, RetainPhase{Work: int64(work), Flush: int64(flush), Settle: int64(settle), DeadlineHit: hit})
@@ -209,6 +267,12 @@ func (s buildSink) Retain(h time.Time) error {
 	defer s.prog.setPhase(phaseWrite)
 	restStart := time.Now()
 	defer func() { s.gate.rested(time.Since(restStart)) }()
+	if s.background {
+		// A pass that is still running is not at rest: wait for it and its settle first.
+		if err := s.e.(retainWaiter).WaitRetained(s.ctx); err != nil {
+			return err
+		}
+	}
 	// The retention is timed alone; then, untimed, the build waits until the database
 	// is at rest. A retention writes a deletion for every prefix it rewrites, and a
 	// writer that runs on before the compactions and Pebble's statistics of those
@@ -256,10 +320,24 @@ type BuildOptions struct {
 	// builds sampled the same way, which [Check] enforces. Zero is off.
 	MetricsEvery time.Duration
 	// RetentionMode is how the root store's retention runs, for the candidates built
-	// through it and ignored by the others: "" and "sync" are the one mode it has (see
-	// [candidates.CheckRetentionMode]). It is recorded in the manifest of such a candidate
-	// (Describe, key retention_mode), and builds in different modes are not compared.
+	// through it and ignored by the others: "" and "sync" are its Synchronous mode,
+	// "background" its Background one (see [candidates.CheckRetentionMode]). In the
+	// background mode a retention returns when its horizons are published, the build
+	// goes on writing while the store rewrites and settles, the gate's windows come from
+	// the store's own report of each phase, and the build waits for the last retention to
+	// end, its settle included, before it reads, sizes or compacts anything. It is
+	// recorded in the manifest of such a candidate (Describe, key retention_mode), and
+	// builds in different modes are not compared.
 	RetentionMode string
+	// Pace, in records per second, holds the writer of a build in the background mode to
+	// that rate from stream day [PaceFromDay] of its window on, on an open-loop schedule
+	// (see [pacer]); the days before are written as fast as the store takes them. 0 is not
+	// paced. The store gate judges a build in the background only when paced at
+	// [StoreGatePaceRate]. A build whose retention is synchronous, or that is not built
+	// through the root store, or whose plan is not a window plan, is not paced. It is
+	// recorded in the manifest (Describe, keys pace_records_per_second and
+	// pace_from_day), and builds paced differently are not compared.
+	Pace int
 }
 
 // Build is [BuildWith] with the options of a build by this binary: it rests after
@@ -274,6 +352,10 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 // directory must be new and outside any git worktree.
 func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, opts BuildOptions, say Progress) (*Manifest, error) {
 	if err := g.Check(); err != nil {
+		return nil, err
+	}
+	paceFrom, err := checkPace(plan, v, opts)
+	if err != nil {
 		return nil, err
 	}
 	if err := CheckOutside(dir); err != nil {
@@ -297,7 +379,20 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		maxima = newMaxRecorder(rec)
 		recorder = maxima
 	}
-	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode})
+	var gate *gateTracker // nil for a candidate that is not built through the root store
+	if v.Root() {
+		gate = newGateTracker(time.Now())
+		maxima.gate = gate
+		if opts.Pace > 0 {
+			gate.setPaced()
+		}
+	}
+	background := v.Root() && opts.RetentionMode == candidates.RetentionBackground
+	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode}
+	if background {
+		co.RetainObserver = gateObserver{gate}
+	}
+	opened, err := v.Open(filepath.Join(dir, DBDir), co)
 	if err != nil {
 		return nil, err
 	}
@@ -328,13 +423,30 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	var timing Timing
 	after := false
 	postBatches := DefaultRules().PostRetentionBatches
-	var gate *gateTracker // nil for a candidate that is not built through the root store
-	if v.Root() {
-		gate = newGateTracker(time.Now())
+	if background {
+		if _, ok := opened.(retainWaiter); !ok {
+			return nil, fmt.Errorf("runner: %s retains in the background and cannot be waited for", v.Name)
+		}
 	}
-	info, err := Drive(ctx, plan.Spec, buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate})
+	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background}
+	if opts.Pace > 0 {
+		sink.pace = &paceState{pacer: newPacer(opts.Pace), fromDay: paceFrom, streamAt: plan.Stream.Start}
+	}
+	info, err := Drive(ctx, plan.Spec, sink)
+	streamEnd := time.Now() // the end of the stream for the gate, whatever the pass of a background store still has to do
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+	}
+	if sink.pace != nil && !sink.pace.on {
+		return nil, fmt.Errorf("runner: %s: the stream ended before stream day %v, which the writer was to be paced from", v.Name, paceFrom)
+	}
+	if background {
+		// Everything after this reads, sizes or compacts the database: the last pass is
+		// over first, its settle included, and the windows of the gate have ended.
+		prog.setPhase(phaseRetain)
+		if err := opened.(retainWaiter).WaitRetained(ctx); err != nil {
+			return nil, fmt.Errorf("runner: %s: waiting for the retention in the background: %w", v.Name, err)
+		}
 	}
 	mode := ""
 	if v.Root() {
@@ -348,7 +460,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	var trace *GateTrace
 	if gate != nil {
-		trace = gate.trace(time.Now(), mode, keep, maxima.maxima())
+		trace = gate.trace(streamEnd, mode, keep, maxima.maxima())
 	}
 	if err := sameAsPlan(plan.Stream, info); err != nil {
 		return nil, fmt.Errorf("runner: %s wrote a different stream than planned: %w", v.Name, err)
@@ -398,6 +510,10 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	if mode != "" {
 		m.Describe[RetentionModeKey] = mode
+		m.Describe[PaceKey] = strconv.Itoa(opts.Pace)
+		if opts.Pace > 0 {
+			m.Describe[PaceFromDayKey] = strconv.FormatFloat(paceFrom, 'f', -1, 64)
+		}
 	}
 	parts, err := e.Breakdown()
 	if err != nil {
@@ -442,6 +558,47 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	say.say("build %s: %d table bytes, %d records", v.Name, m.StatsCompacted["live_table_bytes"], info.Records)
 	return m, nil
+}
+
+// checkPace refuses a pacing that cannot be judged, before anything is written, and
+// returns the stream day the build is paced from (0 for a build that is not paced).
+func checkPace(plan *Plan, v candidates.Variant, opts BuildOptions) (float64, error) {
+	switch {
+	case opts.Pace < 0:
+		return 0, fmt.Errorf("runner: pace %d: a rate in records per second, or 0 for none", opts.Pace)
+	case opts.Pace == 0:
+		return 0, nil
+	case !v.Root():
+		return 0, fmt.Errorf("runner: %s is not built through the root store: only a build in the background mode of the root store is paced", v.Name)
+	case opts.RetentionMode != candidates.RetentionBackground:
+		return 0, fmt.Errorf("runner: pace %d with the retention mode %q: a build whose retention is synchronous is not paced", opts.Pace, opts.RetentionMode)
+	}
+	days, err := windowOf(plan.Spec)
+	if err != nil {
+		return 0, fmt.Errorf("runner: pace %d: %w", opts.Pace, err)
+	}
+	return PaceFromDay(days), nil
+}
+
+// windowOf is the days of retained history a spec is the window of: its retentions all
+// keep that many whole days, and the stream is 2W + 1.5 days long (see [WindowSpec]).
+func windowOf(s Spec) (int, error) {
+	if len(s.Retentions) == 0 {
+		return 0, errors.New("the plan has no retention, so it is not a window plan (a stream of 2W + 1.5 days with a daily retention that keeps W days)")
+	}
+	keep := s.Retentions[0].Keep
+	for _, r := range s.Retentions {
+		if r.Keep != keep {
+			return 0, errors.New("the plan's retentions do not all keep the same time, so it is not a window plan")
+		}
+	}
+	if keep <= 0 || keep%(24*time.Hour) != 0 {
+		return 0, fmt.Errorf("the plan's retentions keep %s, which is not a whole number of days: it is not a window plan", keep)
+	}
+	if s.Workload.Duration != 2*keep+36*time.Hour {
+		return 0, fmt.Errorf("the plan is %s long and its retentions keep %s: it is not a window plan, a stream of 2W + 1.5 days that keeps W", s.Workload.Duration, keep)
+	}
+	return int(keep / (24 * time.Hour)), nil
 }
 
 // checkAsRead opens the database a build has closed read-only, as [Read] does, and

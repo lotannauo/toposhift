@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -388,8 +389,8 @@ func TestWrapIsNotACandidate(t *testing.T) {
 }
 
 // The retention mode reaches the variants built through the root store and no other:
-// they open in no mode and in sync, and refuse background (which the store does not
-// have) and anything else, saying so; every other variant ignores it.
+// they open in no mode, in sync and in background, and refuse anything else, saying
+// so; every other variant ignores it.
 func TestTheRetentionModeIsTheRootVariantsOnly(t *testing.T) {
 	t.Parallel()
 
@@ -403,14 +404,14 @@ func TestTheRetentionModeIsTheRootVariantsOnly(t *testing.T) {
 		}
 		for _, mode := range []string{"", candidates.RetentionSync, candidates.RetentionBackground, "async"} {
 			e, err := v.Open("db", candidates.Options{FS: vfs.NewMem(), RetentionMode: mode})
-			refused := mode == candidates.RetentionBackground || mode == "async"
+			refused := mode == "async"
 			switch {
 			case v.Root() && refused:
 				if err == nil {
 					_ = e.Close()
 					t.Errorf("%s in mode %q: opened", name, mode)
-				} else if mode == candidates.RetentionBackground && !strings.Contains(err.Error(), "Background: not available on this store") {
-					t.Errorf("%s in mode %q: %v, want it to say the mode is not available", name, mode, err)
+				} else if !strings.Contains(err.Error(), `"async" is not`) {
+					t.Errorf("%s in mode %q: %v, want it to say the mode is not one there is", name, mode, err)
 				}
 			case err != nil:
 				t.Errorf("%s in mode %q: %v", name, mode, err)
@@ -424,3 +425,81 @@ func TestTheRetentionModeIsTheRootVariantsOnly(t *testing.T) {
 		t.Error("a wrapped root variant is not root")
 	}
 }
+
+// CheckRetentionMode says what the root store can be opened in: no mode, sync and
+// background, and nothing else.
+func TestCheckRetentionModeAcceptsSyncAndBackground(t *testing.T) {
+	t.Parallel()
+
+	for mode, ok := range map[string]bool{"": true, candidates.RetentionSync: true, candidates.RetentionBackground: true, "async": false, "Background": false} {
+		if err := candidates.CheckRetentionMode(mode); (err == nil) != ok {
+			t.Errorf("CheckRetentionMode(%q) = %v, want ok %v", mode, err, ok)
+		}
+	}
+}
+
+// The mode and the observer reach the store of a root variant: in background the
+// observer is told of the publication, the end of the rewrite and the end of the
+// settle of a retention, before WaitRetained returns; in sync (and with no mode) it is
+// never told, because the store does all its work under its lock.
+func TestTheObserverReachesTheStoreOfARootVariantInTheBackground(t *testing.T) {
+	t.Parallel()
+
+	cfg := workload.Tiny()
+	cfg.Duration = 5 * time.Minute
+	g, err := workload.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs := g.All()
+	horizon := recs[len(recs)-1].EventTime.Add(-2 * time.Minute)
+	for _, c := range []struct {
+		mode string
+		told bool
+	}{{"", false}, {candidates.RetentionSync, false}, {candidates.RetentionBackground, true}} {
+		for _, name := range []string{"Lroot/off", "Lroot/k8a1"} {
+			v, err := candidates.Lookup(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var told []string
+			var mu sync.Mutex
+			obs := phaseLog(func(what string) { mu.Lock(); told = append(told, what); mu.Unlock() })
+			e, err := v.Open("db", candidates.Options{FS: vfs.NewMem(), RetentionMode: c.mode, SettleRetention: true, RetainObserver: obs})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Write(recs); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Retain(horizon); err != nil {
+				t.Fatal(err)
+			}
+			if w, ok := e.(interface{ WaitRetained(context.Context) error }); !ok {
+				t.Errorf("%s in mode %q: cannot be waited for", name, c.mode)
+			} else if err := w.WaitRetained(context.Background()); err != nil {
+				t.Errorf("%s in mode %q: %v", name, c.mode, err)
+			}
+			mu.Lock()
+			got := slices.Clone(told)
+			mu.Unlock()
+			want := []string(nil)
+			if c.told {
+				want = []string{"published", "rewrite", "settle"}
+			}
+			if !slices.Equal(got, want) {
+				t.Errorf("%s in mode %q: the observer was told %v, want %v", name, c.mode, got, want)
+			}
+			if err := e.Close(); err != nil {
+				t.Errorf("%s in mode %q: Close = %v", name, c.mode, err)
+			}
+		}
+	}
+}
+
+// phaseLog is a RetainObserver that names each call.
+type phaseLog func(what string)
+
+func (f phaseLog) Published(uint64, time.Time)    { f("published") }
+func (f phaseLog) RewriteEnded(uint64, time.Time) { f("rewrite") }
+func (f phaseLog) SettleEnded(uint64, time.Time)  { f("settle") }

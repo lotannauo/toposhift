@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,8 @@ func TestARunRefusesToResumeOverABuildMadeOtherwise(t *testing.T) {
 		{"sync build, flags with sync", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "sync"}, buildFlags{rest: true, retentionMode: "sync"}, ""},
 		{"sync build, flags without a mode", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "sync"}, plain, ""},
 		{"background build, flags without a mode", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "background"}, plain, "retention_mode"},
+		{"background build, flags with background", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "background"}, buildFlags{rest: true, retentionMode: "background"}, ""},
+		{"sync build, flags with background", map[string]string{runner.RestKey: "true", runner.RetentionModeKey: "sync"}, buildFlags{rest: true, retentionMode: "background"}, "retention_mode"},
 	} {
 		writeManifest(t, runner.CandidateDir(out, "M/crdb1"), c.describe)
 		err := c.b.agreeAll(out)
@@ -262,10 +265,10 @@ func TestAgreeAllFollowsALinkToACandidate(t *testing.T) {
 	}
 }
 
-// -retention-mode accepts none and sync, which are the same mode, and refuses
-// background (the store does not have it) and anything else, naming the flag; what is
-// passed on to a build step says the mode when one was given.
-func TestRetentionModeFlagAcceptsOnlySync(t *testing.T) {
+// -retention-mode accepts none and sync, which are the same mode, and background, and
+// refuses anything else, naming the flag; what is passed on to a build step says the
+// mode when one was given.
+func TestRetentionModeFlagAcceptsSyncAndBackground(t *testing.T) {
 	t.Parallel()
 
 	for _, c := range []struct {
@@ -274,7 +277,7 @@ func TestRetentionModeFlagAcceptsOnlySync(t *testing.T) {
 	}{
 		{"", ""},
 		{"sync", ""},
-		{"background", "Background: not available on this store"},
+		{"background", ""},
 		{"async", `"async" is not`},
 	} {
 		fs := flag.NewFlagSet("t", flag.ContinueOnError)
@@ -306,6 +309,81 @@ func TestRetentionModeFlagAcceptsOnlySync(t *testing.T) {
 	}
 }
 
+// -pace is for a build in the background: with a synchronous retention, or none given,
+// or a negative rate, it is refused naming the flag; a run that makes its plan needs a
+// window for it; it is passed on to the build steps and to the build, recorded, and
+// checked against the builds that are there already.
+func TestPaceFlag(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-pace=4500", "-retention-mode=background"}, ""},
+		{[]string{"-pace=0"}, ""},
+		{[]string{"-pace=4500"}, "needs -retention-mode background"},
+		{[]string{"-pace=4500", "-retention-mode=sync"}, "needs -retention-mode background"},
+		{[]string{"-pace=-1", "-retention-mode=background"}, "-pace -1"},
+	} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		var b buildFlags
+		b.flags(fs)
+		if err := fs.Parse(c.args); err != nil {
+			t.Fatal(err)
+		}
+		err := b.resolve(fs, false)
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%v: refused: %v", c.args, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%v: %v, want a refusal saying %q", c.args, err, c.want)
+		}
+	}
+
+	b := parseBuild(t, false, "-pace=4500", "-retention-mode=background")
+	if got := b.options().Pace; got != 4500 {
+		t.Errorf("the build options say pace %d", got)
+	}
+	if !slices.Contains(b.args(), "-pace=4500") {
+		t.Errorf("passed on as %v", b.args())
+	}
+	if again := parseBuild(t, false, b.args()...); again != b {
+		t.Errorf("a step makes %+v, want %+v", again, b)
+	}
+	if slices.ContainsFunc(parseBuild(t, false).args(), func(a string) bool { return strings.HasPrefix(a, "-pace") }) {
+		t.Error("an unpaced build passes -pace on")
+	}
+
+	// a run that makes its plan needs a window; one over a plan made before does not
+	if err := b.paceNeedsAWindow(planFlags{}, false); err == nil || !strings.Contains(err.Error(), "needs -window") {
+		t.Errorf("a plan with no window: %v", err)
+	}
+	if err := b.paceNeedsAWindow(planFlags{window: 7}, false); err != nil {
+		t.Errorf("a plan of a window: %v", err)
+	}
+	if err := b.paceNeedsAWindow(planFlags{}, true); err != nil {
+		t.Errorf("a plan made before: %v", err)
+	}
+	if err := parseBuild(t, false).paceNeedsAWindow(planFlags{}, false); err != nil {
+		t.Errorf("no pace: %v", err)
+	}
+
+	// a family is built all at one pace
+	out := t.TempDir()
+	writeManifest(t, runner.CandidateDir(out, "Lroot/off"), map[string]string{runner.RestKey: "false", runner.RetentionModeKey: "background", runner.PaceKey: "0"})
+	if err := b.agreeAll(out); err == nil || !strings.Contains(err.Error(), runner.PaceKey) {
+		t.Errorf("an unpaced build, flags with a pace: %v", err)
+	}
+	writeManifest(t, runner.CandidateDir(out, "Lroot/off"), map[string]string{runner.RestKey: "false", runner.RetentionModeKey: "background", runner.PaceKey: "4500"})
+	if err := b.agreeAll(out); err != nil {
+		t.Errorf("a build paced as the flags say: %v", err)
+	}
+	if err := parseBuild(t, false, "-retention-mode=background").agreeAll(out); err == nil || !strings.Contains(err.Error(), runner.PaceKey) {
+		t.Errorf("a paced build, flags without a pace: %v", err)
+	}
+}
+
 // exitCode is the status the program ends with for the error of a command: 1 for any
 // error, and the code an exitCodeError carries.
 func exitCode(err error) int {
@@ -323,13 +401,25 @@ func exitCode(err error) int {
 // file if peak is above 0, and returns its directory.
 func writeGateBuild(t *testing.T, root, cand string, gate *runner.GateTrace, peak int64) string {
 	t.Helper()
-	dir := filepath.Join(root, strings.ReplaceAll(cand, "/", "_"))
+	return writeGateBuildIn(t, root, strings.ReplaceAll(cand, "/", "_"), cand, gate, peak)
+}
+
+// writeGateBuildIn is writeGateBuild in a directory of the given name. A build in the
+// background is described as paced at the rate the rules judge, from the day they give
+// for the days it kept.
+func writeGateBuildIn(t *testing.T, root, name, cand string, gate *runner.GateTrace, peak int64) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	m := runner.Manifest{
 		Candidate: cand, Layout: "L", PlanDigest: "p", Gate: gate,
 		Describe: map[string]string{runner.RetentionModeKey: gate.Mode, runner.GoGCKey: "100"},
+	}
+	if gate.Mode == "background" {
+		m.Describe[runner.PaceKey] = strconv.Itoa(runner.StoreGatePaceRate)
+		m.Describe[runner.PaceFromDayKey] = strconv.FormatFloat(runner.PaceFromDay(int(gate.KeepNs/int64(24*time.Hour))), 'f', -1, 64)
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
@@ -392,11 +482,11 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 		var in runner.Histogram
 		in.Add(longest)
 		return &runner.GateTrace{
-			Mode:    "background",
-			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
+			Mode:        "background",
+			PaceStartNs: 1, Windows: []runner.GateWindow{{StartNs: 1, RewriteEndNs: 1e9 + 1, SettleEndNs: 1e9 + 1, ReturnNs: 1}},
 			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
 			Outside: runner.GateBatches{Batches: 1, Records: 10, Commit: h}, // a control of 1 ms
-			WriteNs: 10e9,
+			WriteNs: 10e9, KeepNs: 30 * day,
 		}
 	}
 	run := func(dirs ...string) (int, string) {
@@ -413,7 +503,7 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 	if code != 0 {
 		t.Errorf("synchronous builds judged on Q3 and Q5: status %d\n%s", code, text)
 	}
-	for _, want := range []string{"store retention gate; rules digest " + runner.StoreGateRulesDigest(), "Q3 longest rewrite", "NOT JUDGED:", "Background: not available on this store"} {
+	for _, want := range []string{"store retention gate; rules digest " + runner.StoreGateRulesDigest(), "Q3 longest rewrite", "NOT JUDGED:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the report lacks %q:\n%s", want, text)
 		}
@@ -464,6 +554,57 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 	}
 }
 
+// A directory with repetitions of one candidate made in different retention modes (or
+// under a different sync setting, pacing rate or pacing start) is refused with status 3,
+// the status of a run that could not judge, naming the setting and the builds, and
+// prints no verdict; the same builds in one mode are judged.
+func TestStoreGateRefusesRepetitionsMadeUnderDifferentSettings(t *testing.T) {
+	t.Parallel()
+
+	h := func() runner.Histogram { var h runner.Histogram; h.Add(time.Millisecond); return h }()
+	trace := func(mode string) *runner.GateTrace {
+		return &runner.GateTrace{
+			Mode:    mode,
+			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 1e9}},
+			Outside: runner.GateBatches{Batches: 1, Records: 4_000_000, Commit: h},
+			WriteNs: 1000e9, KeepNs: int64(30 * 24 * time.Hour), PeakRSS: 1 << 30,
+		}
+	}
+	var out, errOut strings.Builder
+	root := t.TempDir()
+	writeGateBuildIn(t, root, "rep1", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
+	writeGateBuildIn(t, root, "rep2", "Lroot/k64a2l1ns", trace("background"), 1<<30)
+	err := runStoreGate([]string{root}, &out, &errOut)
+	if exitCode(err) != 3 {
+		t.Fatalf("status %d (%v), want 3", exitCode(err), err)
+	}
+	for _, want := range []string{"different retention_mode", `retention_mode="background"`, `retention_mode="sync"`, "rep1", "rep2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error is %q, want it to say %q", err, want)
+		}
+	}
+	if strings.Contains(out.String(), "Q3") {
+		t.Errorf("a verdict was printed for a refused set:\n%s", out.String())
+	}
+
+	// a baseline of another mode is a pool of its own: it is not a refusal (its Q5 is not judged)
+	root = t.TempDir()
+	writeGateBuild(t, root, "Lroot/off", trace("sync"), 1<<30)
+	writeGateBuild(t, root, "Lroot/k64a2l1ns", trace("background"), 1<<30)
+	out.Reset()
+	if err := runStoreGate([]string{root}, &out, &errOut); exitCode(err) == 3 {
+		t.Errorf("a baseline of another mode was refused: %v", err)
+	}
+
+	root = t.TempDir()
+	writeGateBuildIn(t, root, "rep1", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
+	writeGateBuildIn(t, root, "rep2", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
+	out.Reset()
+	if err := runStoreGate([]string{root}, &out, &errOut); exitCode(err) == 3 {
+		t.Errorf("repetitions of one mode: status %d (%v)\n%s", exitCode(err), err, out.String())
+	}
+}
+
 // A build whose only row that is not judged is Q1, because its control is too high for
 // the limit to tell a wait from the machine's noise, still ends the run with the status
 // for a row that should have been judged: a run is not a pass for having judged the rest.
@@ -477,8 +618,8 @@ func TestStoreGateExitsTwoWhenOnlyQ1IsWithheldByItsControl(t *testing.T) {
 		in.Add(inside)
 		out.Add(control)
 		return &runner.GateTrace{
-			Mode:    "background",
-			Windows: []runner.GateWindow{{StartNs: 0, RewriteEndNs: 1e9, SettleEndNs: 1e9, ReturnNs: 0}},
+			Mode:        "background",
+			PaceStartNs: 1, Windows: []runner.GateWindow{{StartNs: 1, RewriteEndNs: 1e9 + 1, SettleEndNs: 1e9 + 1, ReturnNs: 1}},
 			Inside:  runner.GateBatches{Batches: 1, Records: 4000, Commit: in},
 			Outside: runner.GateBatches{Batches: 1, Records: 4_000_000, Commit: out},
 			WriteNs: 1000e9, KeepNs: 30 * day, PeakRSS: 1 << 30,

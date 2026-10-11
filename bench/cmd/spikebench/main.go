@@ -481,13 +481,17 @@ type buildFlags struct {
 	metricsEvery          time.Duration
 	// retentionMode is how the root store's retention runs; "" is the store's own, sync.
 	retentionMode string
+	// pace is the rate, in records per second, a background build holds its writer to
+	// from stream day 2W + 1.5 - ceil(W/2) on; 0 is none.
+	pace int
 }
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
 	fs.BoolVar(&b.sync, "sync", false, "commit every batch with a sync of the log to the disk, as production does; recorded in the manifest, and a report refuses to compare builds with and without it (default: off)")
-	fs.StringVar(&b.retentionMode, "retention-mode", "", "how the root store's retention runs, for the Lroot candidates (the others ignore it): sync, the default and until the store has a background mode the only one; recorded in the manifest, and a family is built all in one mode")
+	fs.StringVar(&b.retentionMode, "retention-mode", "", "how the root store's retention runs, for the Lroot candidates (the others ignore it): sync, the default, or background; recorded in the manifest, and a family is built all in one mode")
+	fs.IntVar(&b.pace, "pace", 0, "records per second the writer is held to from stream day 2W + 1.5 - ceil(W/2) on, for a background build of a window (0: unpaced); recorded in the manifest, and a family is built all at one pace")
 	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
 }
 
@@ -506,6 +510,22 @@ func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 	if err := candidates.CheckRetentionMode(b.retentionMode); err != nil {
 		return fmt.Errorf("-retention-mode: %w", err)
 	}
+	switch {
+	case b.pace < 0:
+		return fmt.Errorf("-pace %d: give a rate in records per second, or 0 for none", b.pace)
+	case b.pace > 0 && b.retentionMode != candidates.RetentionBackground:
+		return fmt.Errorf("-pace %d needs -retention-mode background: a build whose retention is synchronous is not paced", b.pace)
+	}
+	return nil
+}
+
+// paceNeedsAWindow refuses -pace for a run that makes its plan without -window: a build
+// is paced from stream day 2W + 1.5 - ceil(W/2) of a window of W days, so the plan it
+// makes must be a window plan. A plan made before is checked by the build.
+func (b buildFlags) paceNeedsAWindow(p planFlags, planExists bool) error {
+	if b.pace > 0 && p.window == 0 && !planExists {
+		return fmt.Errorf("-pace %d needs -window: a build is paced from stream day 2W + 1.5 - ceil(W/2) of a window of W days", b.pace)
+	}
 	return nil
 }
 
@@ -518,11 +538,14 @@ func (b buildFlags) args() []string {
 	if b.retentionMode != "" { // left out, it is the store's own mode, which a step makes of its own
 		out = append(out, "-retention-mode="+b.retentionMode)
 	}
+	if b.pace != 0 {
+		out = append(out, "-pace="+strconv.Itoa(b.pace))
+	}
 	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode}
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace}
 }
 
 // forward is step with b's flags added to every build it starts.
@@ -566,6 +589,7 @@ func (b buildFlags) agrees(dir string) error {
 		{"-sync", runner.SyncKey, orDefault(runner.SyncKey, "false"), strconv.FormatBool(b.sync)},
 		{"-metrics-every", runner.MetricsKey, orDefault(runner.MetricsKey, "0s"), b.metricsEvery.String()},
 		{"-retention-mode", runner.RetentionModeKey, orDefault(runner.RetentionModeKey, candidates.RetentionSync), mode},
+		{"-pace", runner.PaceKey, orDefault(runner.PaceKey, "0"), strconv.Itoa(b.pace)},
 	} {
 		if f.have != f.want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for %s=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, f.key, f.have, f.flag, f.want)
@@ -705,6 +729,10 @@ func doRun(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := checkProducerLen(strings.Split(names, ","), p.producerLen); err != nil {
+		return err
+	}
+	_, statErr := os.Stat(filepath.Join(c.out, planFile))
+	if err := b.paceNeedsAWindow(p, statErr == nil); err != nil {
 		return err
 	}
 	self, err := os.Executable()
@@ -1086,6 +1114,9 @@ func runStoreGate(args []string, stdout, stderr io.Writer) error {
 	}
 	builds, err := runner.LoadStoreGateBuilds(fs.Args())
 	if err != nil {
+		return exitCodeError{storeGateErrorStatus, err.Error()}
+	}
+	if err := runner.CheckStoreGateSettings(builds); err != nil {
 		return exitCodeError{storeGateErrorStatus, err.Error()}
 	}
 	rep := runner.JudgeStoreGate(builds)

@@ -26,6 +26,15 @@ type Options struct {
 	// Checkpoints says when interleaved checkpoints are written. The zero value
 	// writes none, stated outright to the store: it is not the store's default.
 	Checkpoints pebblestore.CheckpointOptions
+	// Retention says how the store's Retain works. The zero value is the store's
+	// Synchronous mode; Background makes Retain return when the horizons are
+	// published, and the pass runs beside the writer (with Config.SettleRetention,
+	// it ends with a settle that holds no lock). A measurement of a Background engine
+	// calls [Engine.WaitRetained] before it reads anything.
+	Retention pebblestore.RetentionMode
+	// Observer, if not nil, is told when each retention of a Background engine
+	// reaches the points that bound its phases (see [pebblestore.RetainObserver]).
+	Observer pebblestore.RetainObserver
 }
 
 // Engine is layout L through the root module's store. It implements
@@ -60,6 +69,8 @@ func Open(dir string, opts Options) (*Engine, error) {
 		Config:      pebblekv.Quiet(opts.Config),
 		Policy:      lifecycle.Policy{},
 		Checkpoints: &ckpt,
+		Retention:   opts.Retention,
+		Observer:    opts.Observer,
 	}
 	if opts.Recorder != nil { // a nil engine.Recorder must stay a nil recorder, not a typed one
 		so.Recorder = opts.Recorder
@@ -188,6 +199,13 @@ func (e *Engine) Window(fp identity.Fingerprint, dir engine.Direction, from, to 
 // Retain implements [engine.Engine].
 func (e *Engine) Retain(horizon time.Time) error {
 	return mapError(e.s.Retain(context.Background(), horizon))
+}
+
+// WaitRetained returns when the retention in the background has ended, its settle
+// included, and its marker is gone; see [pebblestore.Instrument.WaitRetained]. A
+// Synchronous engine returns at once.
+func (e *Engine) WaitRetained(ctx context.Context) error {
+	return mapError(e.ins.WaitRetained(ctx))
 }
 
 // LastRetain is how the last call of Retain spent its time; see

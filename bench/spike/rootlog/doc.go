@@ -19,6 +19,12 @@
 // reports that the spike's engine did not (the phases of a write, the checkpoint
 // build time) are extra names in the recorder and change no other.
 //
+// The store's retention runs in the mode [Options.Retention] names, Synchronous
+// unless it says otherwise. In the Background mode the engine's Retain returns when
+// the store has published the horizons, and [Engine.WaitRetained] waits for the pass
+// and its settle: a measurement that reads the database, sizes it or compacts it
+// calls it first. An [Options.Observer] is told when each phase of a retention ends.
+//
 // Where the store's contract is stricter than the spike's engine, the adapter does
 // not hide it: a read before a layer's retention horizon is refused with
 // [engine.ErrBeforeHorizon], which the engine's own contract leaves unspecified.
