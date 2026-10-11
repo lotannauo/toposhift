@@ -973,7 +973,13 @@ func TestARetainBehindEveryHorizonCommitsNothing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if committed != 0 || len(rec.counters) != 1 || s.LastSeq() != 1 {
+	counted := 0
+	for n := range rec.counters {
+		if !strings.HasPrefix(n, "writer_map.") { // the writer's map counts what it holds
+			counted++
+		}
+	}
+	if committed != 0 || counted != 1 || s.LastSeq() != 1 {
 		t.Errorf("Retain behind every horizon committed %d times, counted %v, LastSeq %d", committed, rec.counters, s.LastSeq())
 	}
 	if !slices.Equal(dump(t, s), before) {

@@ -532,7 +532,10 @@ func requireCarriesOn(s *Store, ref *memstore.Store, all []store.Record, pos int
 	// read of the whole prefix finds (where the database holds a checkpoint, which
 	// is where the whole read looks).
 	if retained && s.anyCkpt {
-		if err := rememberedStateMismatch(s); err != nil {
+		s.mu.Lock() // the scan that follows the retention installs under it, beside this check
+		err := rememberedStateMismatch(s)
+		s.mu.Unlock()
+		if err != nil {
 			return fmt.Errorf("what the reopened store remembers of the prefixes after a retention: %w", err)
 		}
 	}

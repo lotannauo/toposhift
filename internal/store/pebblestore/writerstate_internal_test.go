@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math/rand"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -337,21 +338,34 @@ func TestTheWriterStateEqualsAWholeRead(t *testing.T) {
 					}
 
 					full, tail := sides[0].e, sides[1].e
+					// The tail store scans the stored prefixes after an opening and a
+					// retention, on a goroutine of its own; what it has read by now, and
+					// so its counts, depends on when the scan ends, so the step waits.
+					waitScanned(t, tail)
 					if a, b := rawDump(t, full), rawDump(t, tail); !slices.EqualFunc(a, b, func(x, y [2][]byte) bool {
 						return bytes.Equal(x[0], y[0]) && bytes.Equal(x[1], y[1])
 					}) {
 						t.Fatalf("step %d: the databases differ\n%v", step, log)
 					}
 					ca, cb := sides[0].rec.counts(), sides[1].rec.counts()
-					// The tail store reads less to learn what it knows, and the
-					// lookups it needs differ with what each read left unknown.
-					if cb["checkpoint.loads"] > ca["checkpoint.loads"] {
-						t.Fatalf("step %d: the store that works the state out loaded %d times, the whole read %d\n%v", step, cb["checkpoint.loads"], ca["checkpoint.loads"], log)
+					// The tail store reads less to learn what it knows (every read it
+					// makes, before a first scan, of a prefix its filter claims, or
+					// otherwise), and the lookups it needs differ with what each read left
+					// unknown.
+					reads := cb["checkpoint.loads"] + cb["checkpoint.loads_cold"] + cb["writer_map.false_positive_reads"]
+					if reads > ca["checkpoint.loads"] {
+						t.Fatalf("step %d: the store that works the state out read %d prefixes, the whole read %d\n%v", step, reads, ca["checkpoint.loads"], log)
 					}
 					mu.Lock()
-					saved += ca["checkpoint.loads"] - cb["checkpoint.loads"]
+					saved += ca["checkpoint.loads"] - reads
 					mu.Unlock()
 					for _, m := range []map[string]int64{ca, cb} {
+						for n := range m {
+							if strings.HasPrefix(n, "writer_map.") {
+								delete(m, n) // only the tail store has a filter, deltas and a budget
+							}
+						}
+						delete(m, "checkpoint.loads_cold")
 						delete(m, "retain.state_keys")
 						delete(m, "checkpoint.loads")
 						delete(m, "checkpoint.load_keys")
@@ -363,34 +377,49 @@ func TestTheWriterStateEqualsAWholeRead(t *testing.T) {
 						t.Fatalf("step %d: the counts differ: %v and %v\n%v", step, ca, cb, log)
 					}
 					disk := checkpointsOnDisk(t, full)
-					if full.complete {
+					if completeOf(full) {
 						t.Fatalf("step %d: the whole read store believes its map is complete\n%v", step, log)
 					}
-					// A prefix the whole read store remembers and the other does not
-					// is one the other knows to be empty.
-					for k, a := range full.states {
-						if _, ok := tail.states[k]; !ok && (!tail.complete || !a.empty()) {
-							t.Fatalf("step %d: the whole read remembers %+v of a prefix the other does not (complete %v)\n%v", step, *a, tail.complete, log)
+					// A prefix the whole read store remembers and the other does not keep
+					// is read by the other when it is next touched, unless its map is
+					// complete and knows the prefix to be empty: then it must be. (The
+					// tail store's map is read under its lock: its scans install from a
+					// goroutine of their own.)
+					held := prefixesWithKeys(t, tail)
+					var wrong string
+					tail.mu.Lock()
+					tailComplete := tail.complete
+					for k, a := range full.states.all() {
+						if tail.states.peek(k) == nil && tailComplete && !tail.inFilterOrDelta([]byte(k)) && !a.empty() {
+							wrong = fmt.Sprintf("the whole read remembers %+v of a prefix the other takes for empty", *a)
+							break
 						}
 					}
-					if tail.complete {
+					if tailComplete && wrong == "" {
+						for k := range held {
+							if tail.states.peek(k) == nil && !tail.inFilterOrDelta([]byte(k)) {
+								wrong = "the map is complete and takes a prefix that holds keys for empty"
+								break
+							}
+						}
+					}
+					tail.mu.Unlock()
+					if wrong != "" {
+						t.Fatalf("step %d: %s\n%v", step, wrong, log)
+					}
+					if tailComplete {
 						mu.Lock()
 						completes++
 						mu.Unlock()
-						for k := range prefixesWithKeys(t, tail) {
-							if _, ok := tail.states[k]; !ok {
-								t.Fatalf("step %d: the map is complete and lacks a prefix that holds keys\n%v", step, log)
-							}
-						}
 					}
 					// Everything the tail store remembers is what a whole read finds
 					// (the same as the whole read store's own, which has read and
 					// changed the same since, or, for a prefix that one has not
 					// touched since a retention, a whole read made now).
 					probe := wholeReader(full)
-					for k, b := range tail.states {
-						a, ok := full.states[k]
-						if !ok {
+					for k, b := range tail.states.all() {
+						a := full.states.peek(k)
+						if a == nil {
 							var err error
 							if a, err = probe.state([]byte(k)); err != nil {
 								t.Fatal(err)

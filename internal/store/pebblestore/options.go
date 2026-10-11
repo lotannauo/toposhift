@@ -23,9 +23,21 @@ import (
 //     bytes), "checkpoint.build_ns" (the time spent building them, in nanoseconds),
 //     "checkpoint.invalidated", "checkpoint.errors", "checkpoint.loads" (prefixes
 //     whose state was read from the database: not those a retention worked out, nor
-//     the new ones a complete map knows to be empty), "checkpoint.lookups",
-//     "checkpoint.load_keys" (the keys both read) and
+//     those a complete map knows to be empty, nor the reads below),
+//     "checkpoint.loads_cold" (prefixes read before the first scan of the stored
+//     prefixes has installed a filter), "checkpoint.lookups",
+//     "checkpoint.load_keys" (the keys all of those read) and
 //     "checkpoint.build_records_walked".
+//   - the writer's map (see the package comment): "writer_map.false_positive_reads"
+//     (prefixes a complete map read because its filter or a delta named them, and
+//     found to hold nothing), "writer_map.lru_evictions", "writer_map.scan_ns" (the
+//     scans of the stored prefixes that installed a filter, start to end) and
+//     "writer_map.scan_errors"; and, counted up and down so that their sum is what
+//     the store holds now, and back to zero when it is closed,
+//     "writer_map.filter_bytes", "writer_map.delta_prefixes" and
+//     "writer_map.lru_bytes" (the estimated bytes of the states kept). The counts of
+//     a scan are given with the next call to the store that writes, retains, places
+//     a checkpoint or waits for a scan, not from the scan's goroutine.
 //   - reads: "read.records_stepped", "read.baseline_entries_decoded",
 //     "read.checkpoint_hits", "read.checkpoint_skipped_w",
 //     "read.checkpoint_skipped_version" and "read.checkpoint_entries_decoded". Every
@@ -153,6 +165,14 @@ type Options struct {
 	// never moves its horizon, whatever its offset. A layer that an earlier
 	// opening retained keeps the horizon it was given.
 	Keep [4]bool
+	// StateCacheBytes bounds the memory of the states the writer keeps of the
+	// prefixes it has touched most recently, by an estimate of each state's size;
+	// the states a Write touches are kept until it returns, whatever the budget. A
+	// state not kept is read from the database when it is needed, unless the
+	// writer's filter of the stored prefixes says the prefix holds nothing (see the
+	// package comment). Zero means [DefaultStateCacheBytes]; Open refuses a negative
+	// value.
+	StateCacheBytes int64
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes] and retainChunkTime
 	// [defaultRetainChunkTime], the two limits of a chunk of a retention.
@@ -198,7 +218,15 @@ type Options struct {
 	fullStateRead bool
 	// clock replaces the clock the phases of a Write are timed with, for tests.
 	clock func() time.Time
+	// scanHook, if not nil, is called by each scan of the stored prefixes at each
+	// of its points (see scanPoint), on the scan's goroutine and with the store's
+	// lock free, with the prefixes visited so far and the last of them: for tests.
+	scanHook func(at scanPoint, hops int, last []byte)
 }
+
+// DefaultStateCacheBytes is the memory the writer's states of the prefixes it has
+// touched most recently may take when [Options.StateCacheBytes] is zero.
+const DefaultStateCacheBytes = 128 << 20
 
 // DefaultOptions are the options of a store that boots with no configuration:
 // the benchmark tuning, a retention that settles the database before it returns,

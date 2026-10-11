@@ -283,8 +283,13 @@ func TestRandomBootHistories(t *testing.T) {
 								}
 							}
 							log = append(log, fmt.Sprintf("retain %d (last seq %d)", horizon, seq))
-							if s.complete {
-								if err := rememberedStateMismatch(s); err != nil {
+							waitScanned(t, s) // the scan that follows the pass, which completes the map
+							s.mu.Lock()
+							complete := s.complete
+							err := rememberedStateMismatch(s)
+							s.mu.Unlock()
+							if complete {
+								if err != nil {
 									t.Fatalf("%v\n%v", err, log)
 								}
 								if n := rec.counters["retain.prefixes_kept_for_boots"]; n > keptBefore {

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"math"
 	"runtime"
 	"slices"
@@ -84,14 +83,16 @@ import (
 // not released between chunks.
 //
 // What the writer remembers of each prefix (see checkpoint.go) is out of date once
-// a retention begins to rewrite, so it is dropped then. Where the checkpoint policy
-// is on and the database may hold a checkpoint, the retention works out what a
-// read of each prefix would find from the keys it leaves, and when it has done so
-// for every prefix, after its last commit, the writer's memory is complete again
-// and the first write to a prefix needs no read. The keys it reads for that are
-// counted as "retain.state_keys". A retention that stops or fails leaves the
-// memory empty, and the prefixes are read as they are touched; so does one that
-// Open finishes.
+// a retention begins to rewrite, so it is not used from then on. Where the
+// checkpoint policy is on and the database may hold a checkpoint, the retention
+// works out what a read of each prefix would find from the keys it leaves, and puts
+// it in the states the writer keeps of the prefixes it rewrites, so that the next
+// write to one needs no read; it does not add states the writer did not keep. The
+// keys it reads for that are counted as "retain.state_keys". A retention that
+// stops or fails leaves those states unknown, and the prefixes are read as they are
+// touched; so does one that Open finishes. When the rewriting is over, the stored
+// prefixes are scanned again for the writer's filter (see prefixstate.go); a scan
+// that is running when a retention publishes stops.
 func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if s.closed.Load() {
 		return closedError("Retain")
@@ -109,6 +110,7 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.flushCounts()
 	if s.failed != nil {
 		return s.failedError("Retain")
 	}
@@ -174,14 +176,19 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		return nil // nothing changes, and nothing is forgotten
 	}
 	s.retainGen = marker.generation
+	// No scan runs during a pass: one that is running stops and installs nothing,
+	// and the pass's own follows its rewriting. The writes from here on go to a
+	// delta of their own.
+	s.cancelScan()
+	s.newDelta()
 	var publishedAt time.Time
 	if s.retention == Background {
 		publishedAt = s.stamp()
 	}
 	// What was remembered of each prefix of a layer about to be rewritten is out of
-	// date. It is worked out again below, and stays forgotten if the retention does
-	// not finish. What is remembered of the other layers is as true as it was.
-	wasComplete := s.complete
+	// date. It is worked out again below, for the prefixes the writer keeps, and
+	// stays unknown if the retention does not finish. What is remembered of the
+	// other layers is as true as it was.
 	s.forgetLayers(marker.layers)
 
 	// What the writer would find if it read each prefix after this retention, worked
@@ -192,10 +199,8 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	// read is the kind that stops at the tail, and where every horizon the pass
 	// rewrites to is inside the range (past it the retention rewrites every prefix
 	// in a way the keys it leaves do not describe). The prefixes of the layers the
-	// pass leaves alone keep what is remembered of them, and the map is complete
-	// afterwards if it was before or if the pass rewrote every layer, since it
-	// vouches for the layers it rewrites and for no other. The cost is a read of
-	// the keys at or after the horizon of each prefix, up to its newest checkpoint,
+	// pass leaves alone keep what is remembered of them. The cost is a read of the
+	// keys at or after the horizon of each prefix, up to its newest checkpoint,
 	// counted as "retain.state_keys".
 	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && allInside
 	if s.retention == Background {
@@ -207,7 +212,7 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		if s.pass != nil && s.pass.marker.phase == phaseRewrite {
 			replaced = s.pass.marker.generation
 		}
-		if err := s.startPass(*marker, derive, wasComplete); err != nil {
+		if err := s.startPass(*marker, derive); err != nil {
 			return err
 		}
 		if o := s.observer; o != nil {
@@ -226,9 +231,11 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		return err
 	}
 	defer p.close()
-	p.wasComplete = wasComplete
 	err = p.run()
 	workEnd = p.workEnd
+	if err == nil {
+		s.startScan() // the scan of the stored prefixes that follows the pass
+	}
 	return err
 }
 
@@ -288,12 +295,9 @@ type retainPass struct {
 	boots bool
 
 	// derive says the writer's state is being worked out as the pass goes by; next
-	// is what has been worked out; derived says it was meant to be, for the count
-	// of the keys read. wasComplete says the writer's map was complete when the
-	// retention began, and so is again when the pass ends having worked out the
-	// state of the layers it rewrote.
+	// is what has been worked out, for the prefixes whose state the writer keeps;
+	// derived says it was meant to be, for the count of the keys read.
 	derive, derived bool
-	wasComplete     bool
 	next            map[string]*prefixState
 	stateKeys       int64
 
@@ -308,12 +312,10 @@ type retainPass struct {
 	// everything else a write reads. marker.resume is the first key the pass has
 	// not reached: a prefix before it is rewritten. touched holds the prefixes at
 	// or after it that a write rewrote in its own batch, which the chunks skip.
-	// intact says nothing has dropped what the writer remembers since the pass
-	// began (see Store.lose): only then may the pass, when it ends, call the map
-	// complete.
+	// scanned says the scan that follows its rewriting has been started.
 	bg      bool
 	touched map[string]struct{}
-	intact  bool
+	scanned bool
 
 	visited, replayed, records, baselines, deletes, seeks, kept, maxPrefixRecords int64
 }
@@ -359,14 +361,11 @@ func (p *retainPass) run() error {
 			return err
 		}
 	}
-	if p.derive {
-		// Only now, with every commit landed, is what was worked out true of the
-		// database. Every prefix of the layers rewritten was visited, so the map is
-		// complete if it was before, and also if every layer was rewritten, since
-		// then nothing is left that it has not been told of.
-		maps.Copy(s.states, p.next)
-		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
-	}
+	// Only now, with every commit landed, is what was worked out true of the
+	// database. The states of the prefixes rewritten that it did not work out are
+	// dropped, and read when they are next touched.
+	p.install()
+	s.states.dropStale()
 	p.report()
 	// Settling changes no data, and no iterator is open: it would pin the tables
 	// the compactions replace.
@@ -471,20 +470,22 @@ func (p *retainPass) chunk() error {
 	return nil
 }
 
-// install puts what the chunk just committed worked out of the writer's state in
-// the writer's map, for the prefixes no write has rewritten since the pass began
-// (the writer holds those, and is newer). It is done in the chunk's own critical
-// section, so no write falls between the commit and the install; and it is done
-// chunk by chunk, never for the whole pass at its end, because the writes that
-// came between the chunks have moved on the prefixes the pass has passed, and a
-// copy at the end would put an older state over theirs.
+// install puts what has been worked out of the writer's state, since the last
+// install, in the states the writer keeps (stale, since the pass began, or fresh),
+// for the prefixes no write has rewritten since the pass began (the writer holds
+// those, and is newer). It adds no state the writer does not keep. A background
+// pass does it in each chunk's own critical section, so no write falls between the
+// commit and the install, and chunk by chunk, never for the whole pass at its end,
+// because the writes that came between the chunks have moved on the prefixes the
+// pass has passed, and a copy at the end would put an older state over theirs; the
+// synchronous pass does it once, after its last commit.
 func (p *retainPass) install() {
 	if !p.derive {
 		return
 	}
 	for k, st := range p.next {
 		if _, done := p.touched[k]; !done {
-			p.s.states[k] = st
+			p.s.states.replace(k, st)
 		}
 	}
 	p.next = map[string]*prefixState{}
@@ -526,10 +527,11 @@ func (p *retainPass) commit(next retainMarker, begin time.Time) error {
 }
 
 // remember keeps the state the writer would find in a prefix, if the pass is
-// working that out and the state is not empty (an empty state is what a missing
-// prefix means).
+// working that out and the writer keeps a state of the prefix (stale or not):
+// what the pass works out of the others is left, so that the states it installs
+// stay within the cache's budget.
 func (p *retainPass) remember(prefix []byte, st *prefixState) {
-	if p.derive && !st.empty() {
+	if p.derive && p.s.states.has(string(prefix)) {
 		c := *st
 		p.next[string(prefix)] = &c
 	}
@@ -851,7 +853,7 @@ func (s *Store) newBackgroundPass(m retainMarker, derive bool, stopAfter int) (*
 	if err != nil {
 		return nil, err
 	}
-	p.bg, p.touched, p.intact = true, map[string]struct{}{}, true
+	p.bg, p.touched = true, map[string]struct{}{}
 	return p, nil
 }
 
@@ -859,7 +861,7 @@ func (s *Store) newBackgroundPass(m retainMarker, derive bool, stopAfter int) (*
 // older one, and wakes the retainer. The pass starts from the marker's first key,
 // with no prefix touched: the prefixes the older pass or the writes rewrote are
 // rewritten again at the new horizons.
-func (s *Store) startPass(m retainMarker, derive, wasComplete bool) error {
+func (s *Store) startPass(m retainMarker, derive bool) error {
 	p, err := s.newBackgroundPass(m, derive, s.stopAfter)
 	if err != nil {
 		// The marker of the new generation is stored, and the older pass must not go on
@@ -870,7 +872,6 @@ func (s *Store) startPass(m retainMarker, derive, wasComplete bool) error {
 		s.releaseWaiters()
 		return s.failedError("Retain")
 	}
-	p.wasComplete = wasComplete
 	s.dropPass()
 	s.pass = p
 	s.expectWaiters()
@@ -1060,8 +1061,10 @@ func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool, w 
 		landed = p.chunks > before
 		if err == nil && p.marker.phase == phaseSettle {
 			w.rewriteEnded, w.rewriteAt = true, s.stamp()
-			s.vouch(p)
 		}
+	}
+	if err == nil && p.marker.phase == phaseSettle && !p.scanned {
+		s.rewritten(p)
 	}
 	if err == nil && p.marker.phase == phaseSettle {
 		if s.kv.Config().SettleRetention || s.observer != nil {
@@ -1095,17 +1098,16 @@ func (s *Store) settleRangesOf(p *retainPass) [][2][]byte {
 	return out
 }
 
-// vouch calls the writer's map complete, as the synchronous pass does when its last
-// commit has landed, if the pass vouches for it: it worked out the state of the
-// layers it rewrote and nothing has dropped what the writer remembers since it
-// began. A write or a later Retain that does forget something clears it again (see
-// Store.lose). The caller holds the lock.
-func (s *Store) vouch(p *retainPass) {
-	if p.derive && p.intact {
-		// A prefix forgotten after the pass passed it would be missing from the map,
-		// which would then claim it holds nothing: that is what intact is for.
-		s.complete = p.wasComplete || !slices.Contains(p.moved[:], false)
-	}
+// rewritten is the end of a background pass's rewriting, or the start of a pass
+// that Open resumed in its settling phase: the states of the prefixes it rewrote
+// that it did not work out are dropped, as the synchronous pass drops them after
+// its last commit, and the scan of the stored prefixes that follows the pass
+// starts, with the lock free once the caller releases it, beside the settle. The
+// caller holds the lock.
+func (s *Store) rewritten(p *retainPass) {
+	p.scanned = true
+	s.states.dropStale()
+	s.startScan()
 }
 
 // settleBackground settles a pass whose rewriting is over, and ends it. It runs on
@@ -1232,6 +1234,7 @@ func (p *retainPass) owes(prefix []byte) bool {
 // nothing below the horizon. Nothing a write can put is below the horizon of its
 // layer, and the step reaches no further than the instant before it.
 func (s *Store) rewriteForWrite(b *pebble.Batch, prefix []byte, track bool) error {
+	s.written(prefix)
 	if err := s.touchPrefix(b, prefix); err != nil {
 		return err
 	}
@@ -1240,7 +1243,7 @@ func (s *Store) rewriteForWrite(b *pebble.Batch, prefix []byte, track bool) erro
 	}
 	if !s.anyCkpt {
 		// What the state lookup finds in a database that has no checkpoint.
-		s.states[string(prefix)] = &prefixState{latest: -1}
+		s.states.pin(string(prefix), &prefixState{latest: -1})
 		return nil
 	}
 	s.iterators++
@@ -1251,7 +1254,7 @@ func (s *Store) rewriteForWrite(b *pebble.Batch, prefix []byte, track bool) erro
 	if unreadable != nil {
 		return unreadable
 	}
-	s.states[string(prefix)] = &res
+	s.states.pin(string(prefix), &res)
 	s.rec.Count("checkpoint.loads", 1)
 	s.rec.Count("checkpoint.load_keys", keys)
 	return nil

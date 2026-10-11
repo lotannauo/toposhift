@@ -412,8 +412,8 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 	syn.mu.Lock()
 	defer syn.mu.Unlock()
 	for k := range res.touched {
-		a, aok := bgs.states[k]
-		b, bok := syn.states[k]
+		a, b := bgs.states.peek(k), syn.states.peek(k)
+		aok, bok := a != nil, b != nil
 		if aok != bok {
 			continue // one of the two maps does not hold it: the checks above compared it with a whole read
 		}
@@ -437,7 +437,7 @@ func asyncStateMismatch(e *Store, exact bool) error {
 		return nil
 	}
 	probe := wholeReader(e)
-	for k, b := range e.states {
+	for k, b := range e.states.all() {
 		a, err := probe.state([]byte(k))
 		if err != nil {
 			return err
@@ -452,8 +452,8 @@ func asyncStateMismatch(e *Store, exact bool) error {
 			return err
 		}
 		for k := range held {
-			if _, ok := e.states[k]; !ok {
-				return fmt.Errorf("the map is complete and lacks the prefix %x, which holds keys", k)
+			if e.states.peek(k) == nil && !e.inFilterOrDelta([]byte(k)) {
+				return fmt.Errorf("the map is complete and takes the prefix %x, which holds keys, for empty", k)
 			}
 		}
 	}
@@ -752,8 +752,8 @@ func TestAPrefixARewritesFirstIsRememberedAsTheSynchronousStoreRemembersIt(t *te
 		if res.before == 0 {
 			t.Error("no write touched a prefix")
 		}
-		if res.bg.complete || res.syn.complete {
-			t.Error("the pass called the map complete, but no pass derives anything when a horizon is after the range")
+		if n := res.rec.counters["retain.state_keys"]; n != 0 {
+			t.Errorf("the pass read %d keys to work states out, but no pass derives anything when a horizon is after the range", n)
 		}
 	})
 

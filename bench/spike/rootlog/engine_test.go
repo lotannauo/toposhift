@@ -177,10 +177,14 @@ func TestErrorsMatchBothContracts(t *testing.T) {
 // the blocks a read loaded (they depend on how the database was laid out in
 // tables, which the extra keys the root store keeps, and the way a retention
 // interleaves with the compactions, change) and the allocations of a read (the
-// adapter converts the records it is given and returns).
+// adapter converts the records it is given and returns), and the reads of the
+// writer's state (the root store keeps the states it touched most recently, knows
+// the other prefixes by a filter that a scan beside the writes builds, and reads
+// otherwise than the spike's engine, which kept every state).
 func timingOrLayout(name string) bool {
 	return strings.HasSuffix(name, "_ns") || strings.Contains(name, "block_bytes") || strings.Contains(name, "block_read_ns") ||
-		strings.HasPrefix(name, "cold_") || strings.HasPrefix(name, "alloc") || name == "block_loads"
+		strings.HasPrefix(name, "cold_") || strings.HasPrefix(name, "alloc") || name == "block_loads" ||
+		name == "checkpoint.loads" || name == "checkpoint.load_keys"
 }
 
 // What only the store counts: the phases of a write and the time of building
@@ -189,8 +193,11 @@ func timingOrLayout(name string) bool {
 // retention into chunks (the spike's engine retained in one piece). The counters
 // "retain.resumed" and "retain.superseded" appear only when Open finishes or
 // discards a retention an earlier process left, so the tiny run never produces
-// them, but a build that crashed and was reopened would.
+// them, but a build that crashed and was reopened would. The writer's map ("writer_map."
+// counters, and the reads before its first scan, "checkpoint.loads_cold") is the
+// root store's alone.
 var onlyTheStore = map[string]bool{
+	"checkpoint.loads_cold":          true,
 	"write.iterators":                true,
 	"checkpoint.build_ns":            true,
 	"retain.max_prefix_records":      true,
@@ -202,7 +209,7 @@ var onlyTheStore = map[string]bool{
 }
 
 func isOnlyTheStores(name string) bool {
-	return onlyTheStore[name] || strings.HasPrefix(name, "write.phase_ns.")
+	return onlyTheStore[name] || strings.HasPrefix(name, "write.phase_ns.") || strings.HasPrefix(name, "writer_map.")
 }
 
 func sameCounters(t *testing.T, what string, spike, root map[string]int64, extra func(string) bool) {
