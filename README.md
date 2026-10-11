@@ -27,6 +27,10 @@ curl http://127.0.0.1:7070/healthz
 
 If mise cannot install a tool on your platform, install that tool with your package manager at the pinned version.
 
+## Collecting from Kubernetes
+
+A ready-made OpenTelemetry collector configuration, with its README, is in [deploy/otel-collector](deploy/otel-collector).
+
 ## Install
 
 ```sh

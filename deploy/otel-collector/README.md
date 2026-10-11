@@ -1,0 +1,72 @@
+# OpenTelemetry collector configuration for toposhift
+
+`toposhift.yaml` is an OpenTelemetry collector configuration that reads a Kubernetes cluster and sends it to toposhift. It is written for the collector contrib distribution, version 0.162.0.
+
+Taking in logs, and the cluster-name flag, arrive in toposhift with a later change. Until then toposhift answers every export with 503, and the collector's queue fills.
+
+The collector is the buffer. While toposhift is down or busy, the collector keeps what it has read on its own disk, retries without giving up, and sends it in order when toposhift is back. toposhift needs none of these settings to start: they are a recommendation, not a requirement.
+
+## What to edit
+
+Edit these and nothing else:
+
+| Placeholder | Where | What to put |
+| --- | --- | --- |
+| `<CLUSTER_NAME>` | `processors.resource` | A name for this cluster. |
+| `<TOPOSHIFT_HOST>` | `exporters.otlphttp/toposhift.endpoint` | The host (and so the address) at which the collector reaches toposhift. |
+| the storage directory | `extensions.file_storage/toposhift` | Only if `/var/lib/otelcol/toposhift` is not writable by the collector. Change `directory` and `compaction.directory` together. |
+
+**The cluster name.** It is at most 21 bytes, each one of `A-Z a-z 0-9 . _ : / -`. It is part of every producer name toposhift stores, and a store records the name it was started with, so choose it once. To send no name, delete the `resource` processor and its entry in `service.pipelines.logs.processors`: toposhift then uses `default`, or the cluster name toposhift is configured with, when that flag exists.
+
+**An unedited `<CLUSTER_NAME>` passes the collector's validation, but toposhift refuses it.** Once ingest is available, `<` being outside the name format means every export gets a permanent 400 (`INVALID_ARGUMENT`) and the collector drops it. The collector starts, looks healthy, and nothing reaches the store. Check the collector's logs for refused exports after the first start.
+
+**Reaching toposhift.** toposhift listens on `127.0.0.1:7070` and nowhere else unless told to. A collector in a cluster cannot reach that. Start toposhift with `TOPOSHIFT_LISTEN` set to an address the cluster can reach (for example `TOPOSHIFT_LISTEN=0.0.0.0:7070`), and put that host in `<TOPOSHIFT_HOST>`. Listening beyond loopback exposes the port to whatever can route to it, so restrict it with the network.
+
+Once ingest is available, toposhift also needs a data directory (`TOPOSHIFT_DATA_DIR`) to ingest. Without one it answers `503` with `Retry-After: 30`, which the collector retries, so the data waits in the queue.
+
+## Start the collector with the feature gate
+
+The `k8s_cluster` receiver sends entities as entity events only when this feature gate is on:
+
+```sh
+otelcol-contrib --config toposhift.yaml \
+  --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+```
+
+Without the gate the receiver does not send the entity events toposhift reads. In a Helm chart or an operator, pass the same flag in the collector's arguments.
+
+The collector's service account needs permission to `get`, `list` and `watch` pods and nodes (for `k8s_objects`), and the objects `k8s_cluster` reads (namespaces, deployments, replica sets, and so on).
+
+## What each setting is for
+
+- **Receivers.** `k8s_objects` reads pods and nodes twice: in watch mode, which sends each change as it happens, and in pull mode every 5 minutes, which lists the whole kind and repairs what a dropped watch missed. `k8s_cluster` reads cluster entities every 5 minutes (`metadata_collection_interval: 5m`), which makes the entity report interval 300 seconds. Both are on the logs pipeline, the only pipeline there is. `events` objects are not read: toposhift does not translate them yet.
+- **Exporter.** OTLP over HTTP, protobuf, gzip, with a 30 second timeout. 429, 502, 503 and 504 are retried, and a `Retry-After` on 429 and 503 is honoured. Every other status is permanent: the request is dropped. `max_elapsed_time: 0` means the collector never gives up on a retryable failure. The retry interval starts at 5 seconds and grows to at most 30.
+- **Sending queue.** `num_consumers: 1` means one request is sent at a time, in the order it was queued, which toposhift relies on. The queue is on disk (`storage`), so a restart of the collector keeps it. In the collector's design the queue holds the receivers' own requests, and its consumer merges or splits what it reads off the queue before sending. Each export is merged or split to at most 16,000,000 bytes, by size in bytes whatever the objects weigh, so it stays well under toposhift's limit of 64 MiB for a decoded request body. That bound protects toposhift from a 413 (payload too large); it does not bound the queue's disk.
+- **Storage.** The `file_storage/toposhift` extension holds the queue in `directory`. `create_directory: true` makes the collector create it. The directory must be writable by the user the collector runs as, which is usually not root: in a container, mount a volume there and make it writable by that user (for Kubernetes, `fsGroup` in the pod's security context). `compaction` shrinks the file when the collector starts, and again once the stored data has grown past `rebound_needed_threshold_mib` (default 100) and then fallen below `rebound_trigger_threshold_mib` (default 10), which the extension checks every 5 seconds.
+
+## `fsync: true` costs throughput
+
+With `fsync: true` the collector syncs the queue's file to disk on every write. A queued request then survives the host losing power, not only a crash of the collector. The price is collector throughput, which has not been measured for this configuration. If the collector falls behind a busy cluster, set `fsync: false` and accept that a power loss can lose the most recent writes.
+
+## A full queue drops
+
+The queue holds 1,000 requests (`queue_size: 1000`, the collector's default, kept explicit here). **When it is full the collector drops new data.** `block_on_overflow` stays off, so the receivers are not slowed either. A long outage fills the queue, and whatever the collector reads after that is lost at the collector: toposhift never sees it and cannot say it is missing. The pull-mode lists repair some of this once toposhift is back, but a change that came and went inside the outage is gone.
+
+To keep more, raise `queue_size`. The disk it needs is up to `queue_size` times the largest request a receiver emits, as an estimate: a pull of a whole kind is one request and can be tens of megabytes on a large cluster, so a full queue of 1,000 such requests takes tens of gigabytes, and a larger queue takes proportionally more. Size the volume at `directory` for the queue you set, and the compaction directory needs room for a copy of the file while it compacts. A queue that counts bytes instead of requests would make an outage's capacity predictable; this configuration counts requests.
+
+## What a backlog does to toposhift
+
+After an outage the collector sends the backlog it held. Those records are late: each carries an event time earlier than records toposhift already has, and toposhift diffs a late record against the record just before it in event time and deletes the checkpoints newer than it, since they are no longer true. Checkpoints are derived, so no answer is wrong, but the ones deleted are not put back at once. Until the next ones are due, reads over the replayed interval replay more events than the usual bound, in the worst case about twice as many on a hot prefix. After a long outage a single gap between checkpoints might cover the whole outage (inferred, not measured). The holes are removed only when retention removes that stretch of history; `serve` does not retain yet.
+
+The persistent queue is what keeps the backlog through an outage and replays it, so this follows from the settings above. Re-placing the deleted checkpoints is planned work in toposhift (not in this directory).
+
+## Checking the file
+
+`config_test.go` in this directory reads `toposhift.yaml` and checks the values that matter (the intervals of each pull object, the queue, the retry, the storage and the pipeline) and that this README mentions every placeholder. It does not parse YAML, so it cannot say the collector accepts the file. To check that, validate it with the collector, with the same feature gate:
+
+```sh
+otelcol-contrib validate --config toposhift.yaml \
+  --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+```
+
+An unknown key fails validation. An unedited placeholder does not.
