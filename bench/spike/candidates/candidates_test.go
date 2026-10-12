@@ -15,6 +15,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/conformance"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
+	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
 )
 
@@ -32,12 +33,16 @@ var sweepPoints = append([]string{"L/k8a1", "L/k32a0.5", "L/k128a8l1ns", "L/k64a
 
 // The variants built through the root module's store. They are found by Lookup
 // and are not in All.
+// Policies that put checkpoints back (see pebblelog.CheckpointOptions.Replace): found
+// by Lookup, in no default set.
+var replacePoints = []string{"L/k64a2l1nsr4", "L/k64a2r4", "L/k8a1l2sr1", "L/k64a4l1h30mr4"}
+
 var rootPoints = []string{"Lroot/off", "Lroot/k8a1", "Lroot/k64a2l1ns", "Lroot/k64a1l1ns", "Lroot/k64a4l1h30m"}
 
 func everyVariant(t *testing.T) []candidates.Variant {
 	t.Helper()
 	out := candidates.All()
-	for _, name := range append(slices.Clone(sweepPoints), rootPoints...) {
+	for _, name := range slices.Concat(sweepPoints, replacePoints, rootPoints) {
 		v, err := candidates.Lookup(name)
 		if err != nil {
 			t.Fatal(err)
@@ -114,6 +119,75 @@ func TestNamesRoundTripAndBadOnesAreRefused(t *testing.T) {
 	}
 }
 
+// A name with a replacement count finds the variant it names, and only that: the
+// suffix comes after the lag, only when above zero, and the root store has none.
+func TestReplacementNamesParseAndRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, name := range replacePoints {
+		v, err := candidates.Lookup(name)
+		if err != nil || v.Name != name || v.Layout != "L" || v.Root() {
+			t.Errorf("Lookup(%q) = %+v, %v", name, v, err)
+		}
+		if slices.Contains(candidates.Names(), name) || slices.Contains(candidates.SweepGrid(), name) {
+			t.Errorf("%s is in a default set", name)
+		}
+	}
+	// A count of zero is the policy without one, under its own name.
+	if got := candidates.LCheckpointsReplacing(64, 2, time.Nanosecond, 0).Name; got != "L/k64a2l1ns" {
+		t.Errorf("a replacement count of zero is named %q", got)
+	}
+	if got := candidates.LCheckpointsReplacing(64, 2, time.Nanosecond, 4).Name; got != "L/k64a2l1nsr4" {
+		t.Errorf("a replacement count of four is named %q", got)
+	}
+	for _, name := range []string{"L/k64a4l1h30m", "L/k64a4l1h30mr4"} {
+		if _, err := candidates.Lookup(name); err != nil { // a multi-unit lag stops where the suffix begins
+			t.Error(err)
+		}
+	}
+	for _, bad := range []string{
+		"Lroot/k64a2l1nsr4",                              // the root store has no such option
+		"L/k64a2l1nsr0",                                  // no count has no suffix
+		"L/k64a2l1nsr04",                                 // a second spelling of L/k64a2l1nsr4
+		"L/k64a2l1nsr",                                   // no count
+		"L/k64a2l1nsr-1",                                 // not a count
+		"L/k64a2r4l1ns",                                  // the lag comes first
+		"L/k64a2l1nsr4r4",                                // one suffix
+		"L/k64a2l1nsR4", "L/k64a2l1nsx4", "L/k64a2l1ns4", // not the suffix
+		"L/off4", "L/offr4", "Lroot/offr4", // the policy off has no count
+	} {
+		if v, err := candidates.Lookup(bad); err == nil {
+			t.Errorf("Lookup(%q) = %q, want an error", bad, v.Name)
+		}
+	}
+	if _, err := candidates.Lookup("Lroot/k64a2l1nsr4"); err == nil || !strings.Contains(err.Error(), "root store") {
+		t.Errorf("Lookup of a root store variant with a count: %v, want an error that says the root store has none", err)
+	}
+}
+
+// Options.TallyPrefixes reaches the engines of layout L and only those: the root
+// store's variants do not have the tallies.
+func TestTalliesAreKeptByTheSpikesLayoutOnly(t *testing.T) {
+	t.Parallel()
+	for name, want := range map[string]bool{"L/k64a2l1nsr4": true, "L/k64a2l1ns": true, "L/off": true, "Lroot/k64a2l1ns": false, "M/crdb1": false} {
+		v, err := candidates.Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tally := range []bool{false, true} {
+			e, err := factory(v, candidates.Options{Tuning: tiny(), TallyPrefixes: tally})(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			pt, ok := e.(pebblelog.PrefixTallier)
+			got := ok && pt.PrefixTallies() != nil
+			if got != (want && tally) {
+				t.Errorf("%s with TallyPrefixes %v: tallies kept %v, want %v", name, tally, got, want && tally)
+			}
+			_ = e.Close()
+		}
+	}
+}
+
 // The variants of the root store are looked up and are not run by default: a
 // default measurement is the spike's, unchanged.
 func TestRootVariantsAreFoundAndNotInTheDefaultSet(t *testing.T) {
@@ -164,6 +238,8 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 		"L/k64a4l1ns":      {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1ns"},
 		"L/k128a0.5l1ns":   {"layout": "L", "checkpoints": "kmin=128 alpha=0.5 lag=1ns"},
 		"L/k64a4l1h30m":    {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
+		// Said only when above zero, so that no earlier description changes.
+		"L/k64a2l1nsr4": {"layout": "L", "checkpoints": "kmin=64 alpha=2 lag=1ns replace=4"},
 		// The root store's variants say so, and the others do not.
 		"Lroot/off":         {"layout": "L", "store": "root", "checkpoints": "off", "collectors_in_tables": "obsolete-key"},
 		"Lroot/k64a2l1ns":   {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=2 lag=1ns"},

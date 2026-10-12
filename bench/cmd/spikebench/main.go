@@ -9,6 +9,7 @@
 //	spikebench pins   -preset ci -window 2 -out DIR  choose the prefixes the windows are read at
 //	spikebench windows -preset ci -out DIR           run over windows of 2, 7, 14 and 30 days of retained history
 //	spikebench g1     -out DIR                       judge G1 from the windows
+//	spikebench gaps   -out DIR -candidate L/k64a2l1ns  where a build's checkpoints lie in the pinned node prefixes
 //	spikebench timing -in DIR...                     judge G2, G3 and G4 from the bench workflow's artifacts
 //	spikebench storegate DIR...                      judge the root store's retention (Q1 to Q5) from builds
 //
@@ -83,6 +84,8 @@ func main() {
 		err = doWindows(ctx, args)
 	case "g1":
 		err = doG1(args)
+	case "gaps":
+		err = doGaps(args)
 	case "timing":
 		err = doTiming(ctx, args)
 	case "storegate":
@@ -109,7 +112,7 @@ type exitCodeError struct {
 func (e exitCodeError) Error() string { return e.msg }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|timing|storegate [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 
@@ -1083,6 +1086,49 @@ func doG1(args []string) error {
 		return fmt.Errorf("these windows cannot be judged together (%d reasons, listed above): %s", len(problems), problems[0])
 	}
 	return nil
+}
+
+// doGaps says where the checkpoints of a built candidate lie in the pinned
+// `node<-` prefixes of its plan: the gaps between them, the holes among those, and
+// the steps a read at each pinned instant walks (see runner.Gaps). It opens the
+// database read-only and writes gaps.json beside the manifest, unless -json says
+// where.
+func doGaps(args []string) error {
+	fs := flag.NewFlagSet("gaps", flag.ExitOnError)
+	var out, name, jsonPath string
+	var window int
+	fs.StringVar(&out, "out", "", "a window's directory (it holds plan.json), or the directory that holds R<window> (required)")
+	fs.StringVar(&name, "candidate", "", "the built candidate to look at (required)")
+	fs.IntVar(&window, "window", 30, "the window of days to look at when -out holds R<days> directories rather than a plan")
+	fs.StringVar(&jsonPath, "json", "", "where to write the figures for tools (default: gaps.json in the candidate's directory)")
+	_ = fs.Parse(args)
+	if out == "" || name == "" {
+		return fmt.Errorf("-out and -candidate are required")
+	}
+	if _, err := os.Stat(filepath.Join(out, planFile)); err != nil {
+		if window < 1 {
+			return fmt.Errorf("-window %d: give the days of a window", window)
+		}
+		out = runner.WindowDir(out, window)
+	}
+	plan, err := runner.LoadPlan(filepath.Join(out, planFile))
+	if err != nil {
+		return err
+	}
+	v, err := candidates.Lookup(name)
+	if err != nil {
+		return err
+	}
+	dir := runner.CandidateDir(out, v.Name)
+	rep, err := runner.Gaps(plan, v, dir)
+	if err != nil {
+		return err
+	}
+	rep.Write(os.Stdout)
+	if jsonPath == "" {
+		jsonPath = filepath.Join(dir, runner.GapsFile)
+	}
+	return runner.WriteGapsFile(jsonPath, rep)
 }
 
 // storeGateErrorStatus is the status of storegate when it could not judge: a usage

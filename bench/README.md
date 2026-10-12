@@ -286,6 +286,27 @@ checkpoint 1 h 30 min behind the newest record of its prefix, which with `-run-m
 interval of 30 min is behind every run that can still be extended (a lag is written without the units that
 are zero at its end).
 
+A name may end in `r<N>` after the lag (`L/k64a2l1nsr4`, `L/k64a4l1h30mr4`; there is no `r0`, and the root store's `Lroot`
+has none): a write that deletes checkpoints in a prefix, because a record arrives with an event time before them, then
+puts back the newest N of them in each prefix, each at its own instant and in the write's own checkpoint commit, up to 32
+in a write (`checkpoint.replaced` counts them, `checkpoint.replace_capped` the ones over either limit, and their bytes are
+in `checkpoint.bytes_written` and not in `checkpoint.written`). The policy's spacing does not move: a put-back checkpoint is
+not the last one written. A reader pinned to a token below the late record cannot use a put-back checkpoint and walks to an
+older one, as it would after the deletion. The variant is a prototype of the spike's layout L: `Lookup` finds it, no default
+set or sweep holds it, and every earlier name and every byte stored without it are unchanged. An `-untimed` build of layout L
+also writes `tallies.json` beside `manifest.json` (`{"<prefix in hex>": [invalidated, replaced, capped], ...}`, only the
+prefixes with a count above zero; the manifest keeps its shape). `spikebench gaps -out D -candidate C [-window 30]` opens a
+built candidate read-only (`-out` is a window's directory, or the directory that holds `R<days>`) and, for each prefix of
+the plan's `node<- hot-records neighbors` group, prints its checkpoints, the gaps between consecutive checkpoints in records
+(median, 90th percentile by nearest rank, largest), the holes (gaps over 1.6 times the prefix's median, taking the upper
+middle value of an even count; hole counts use the gaps between checkpoints only, and the earlier evidence's scan also counted the span down to the baseline, so the two are not comparable), for each 9 h and 1 d read the steps a model of the read walks and the gap it sits in as
+a multiple of the median, and, if there is a tallies file, the prefix's counts; it also writes `gaps.json` beside the
+manifest (`-json` says where else). The model counts the iterator's steps exactly on a canonical build (`-canonical-layout`);
+on another it is a lower bound, and the tool says so. With a results file the model's steps are printed next to the read's
+`internal_steps`. `g1 -out` judges every candidate under the directory, so the verdicts of the arms being judged are to be
+read from a `g1` run made before an extra arm (such as one with a lag) is added to the directory, or that arm's line is
+ignored.
+
 What a build records besides the tables: how long each batch, each retention and the first batch after
 each took (informational: a timing of the machine that built it), the reads of "now" at the end of the build
 before anything was compacted (a labelled cell, outside the verdicts, with each answer checked), and, for

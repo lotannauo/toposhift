@@ -17,6 +17,7 @@ import (
 
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
 )
 
 // Manifest says what a built database is: which candidate, built from which plan,
@@ -74,6 +75,11 @@ const (
 	ManifestFile = "manifest.json"
 	ResultsFile  = "results.json"
 	DBDir        = "db"
+	// TalliesFile is where an untimed build of the spike's layout L writes, beside
+	// the manifest, how many checkpoints each prefix lost to a late record and had
+	// put back or not (see [WriteTallies]). It is not part of the manifest, whose
+	// shape other tools read.
+	TalliesFile = "tallies.json"
 	// RestKey is the key of a manifest's Describe that says whether the build rested
 	// after each retention ([BuildOptions]).
 	RestKey = "rest_after_retention"
@@ -388,7 +394,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		}
 	}
 	background := v.Root() && opts.RetentionMode == candidates.RetentionBackground
-	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode}
+	// An untimed build keeps the per-prefix tallies of layout L: it changes no stored
+	// byte, and a build whose time may be a result does not carry its cost.
+	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, TallyPrefixes: g.Untimed}
 	if background {
 		co.RetainObserver = gateObserver{gate}
 	}
@@ -468,6 +476,10 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	totals := rec.Totals()
 	if n := totals["checkpoint.errors"]; n > 0 {
 		return nil, fmt.Errorf("runner: %s failed to write %d checkpoints (counted, not returned)", v.Name, n)
+	}
+	var tallies map[string][3]int64
+	if pt, ok := opened.(pebblelog.PrefixTallier); ok {
+		tallies = pt.PrefixTallies()
 	}
 	m := &Manifest{
 		Candidate: v.Name, Layout: v.Layout, PlanDigest: planDigest, Stream: info,
@@ -553,11 +565,59 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		trace.PeakRSS = peakRSS()
 		m.Gate = trace
 	}
+	// The tallies go first: a directory that has a manifest is a finished build.
+	if tallies != nil {
+		if err := WriteTallies(filepath.Join(dir, TalliesFile), tallies); err != nil {
+			return nil, err
+		}
+	}
 	if err := writeJSON(filepath.Join(dir, ManifestFile), m); err != nil {
 		return nil, err
 	}
 	say.say("build %s: %d table bytes, %d records", v.Name, m.StatsCompacted["live_table_bytes"], info.Records)
 	return m, nil
+}
+
+// WriteTallies writes the per-prefix counts of a build to path: {"<prefix hex>":
+// [invalidated, replaced, capped], ...}, only the prefixes with a count above zero,
+// in key order.
+func WriteTallies(path string, tallies map[string][3]int64) error {
+	hexed := make(map[string][3]int64, len(tallies))
+	for k, t := range tallies {
+		if t != ([3]int64{}) {
+			hexed[hex.EncodeToString([]byte(k))] = t
+		}
+	}
+	b, err := json.Marshal(hexed) // a map's keys are sorted
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(path, append(b, '\n'))
+}
+
+// LoadTallies reads what [WriteTallies] wrote, by prefix (the key bytes). A build
+// without a tallies file gives ok false.
+func LoadTallies(dir string) (tallies map[string][3]int64, ok bool, err error) {
+	b, err := os.ReadFile(filepath.Join(dir, TalliesFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	var hexed map[string][3]int64
+	if err := json.Unmarshal(b, &hexed); err != nil {
+		return nil, false, fmt.Errorf("runner: %s: %w", filepath.Join(dir, TalliesFile), err)
+	}
+	tallies = make(map[string][3]int64, len(hexed))
+	for k, t := range hexed {
+		raw, err := hex.DecodeString(k)
+		if err != nil {
+			return nil, false, fmt.Errorf("runner: %s: %q is not a prefix in hex: %w", filepath.Join(dir, TalliesFile), k, err)
+		}
+		tallies[string(raw)] = t
+	}
+	return tallies, true, nil
 }
 
 // checkPace refuses a pacing that cannot be judged, before anything is written, and

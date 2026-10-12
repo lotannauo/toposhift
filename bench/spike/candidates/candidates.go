@@ -17,6 +17,10 @@
 //	L/k64a4l1h30m       the same 1 h 30 min behind: behind every run that can still be
 //	                    extended when the coalescer bounds a run's age (RunMaxAge) and
 //	                    the bound plus the extension interval is at most the lag
+//	L/k64a2l1nsr4       the policy of L/k64a2l1ns that, when a write deletes checkpoints
+//	                    in a prefix, puts back the newest four, each at its own instant
+//	                    (r<N>, after the lag, only when N is above zero; a prototype,
+//	                    not in any default set)
 //	Lroot/off           layout L built through the root module's store, with no
 //	                    checkpoints
 //	Lroot/k64a2l1ns     the same with checkpoints, named as the L variants are, under the
@@ -84,6 +88,10 @@ type Options struct {
 	// points that bound its phases (see [pebblestore.RetainObserver]); a Synchronous
 	// store never calls it. Every other variant ignores it.
 	RetainObserver pebblestore.RetainObserver
+	// TallyPrefixes makes a variant of the spike's own layout L (not the root
+	// store's) keep per-prefix counts of the checkpoints a record deleted and a
+	// write put back, in memory (see [pebblelog.Options]); the others ignore it.
+	TallyPrefixes bool
 }
 
 // The retention modes a build can ask of the root store.
@@ -168,7 +176,7 @@ func layoutM(schema pebblekv.Schema, filter bool) Variant {
 // LNoCheckpoints is layout L with no checkpoints.
 func LNoCheckpoints() Variant {
 	return Variant{Name: "L/off", Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
-		return pebblelog.Open(dir, pebblelog.Options{Config: o.config(), Recorder: o.Recorder})
+		return pebblelog.Open(dir, pebblelog.Options{Config: o.config(), Recorder: o.Recorder, TallyPrefixes: o.TallyPrefixes})
 	}}
 }
 
@@ -176,10 +184,17 @@ func LNoCheckpoints() Variant {
 // records since its last, scaled by alpha, with the instant lag behind the newest
 // (see [pebblelog.CheckpointOptions]).
 func LCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
-	return Variant{Name: "L/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
+	return LCheckpointsReplacing(kMin, alpha, lag, 0)
+}
+
+// LCheckpointsReplacing is [LCheckpoints] with [pebblelog.CheckpointOptions].Replace
+// set: with replace above zero, a write that deletes checkpoints in a prefix puts back
+// up to that many, each at its own instant. Zero is [LCheckpoints], by the same name.
+func LCheckpointsReplacing(kMin int, alpha float64, lag time.Duration, replace int) Variant {
+	return Variant{Name: "L/" + checkpointSuffix(kMin, alpha, lag, replace), Layout: "L", open: func(dir string, o Options) (engine.Engine, error) {
 		return pebblelog.Open(dir, pebblelog.Options{
-			Config: o.config(), Recorder: o.Recorder,
-			Checkpoints: pebblelog.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
+			Config: o.config(), Recorder: o.Recorder, TallyPrefixes: o.TallyPrefixes,
+			Checkpoints: pebblelog.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag, Replace: replace},
 		})
 	}}
 }
@@ -199,7 +214,7 @@ func LrootNoCheckpoints() Variant {
 // LrootCheckpoints is layout L built through the root module's store with the
 // checkpoint policy of [LCheckpoints].
 func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
-	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag), Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: "Lroot/" + checkpointSuffix(kMin, alpha, lag, 0), Layout: "L", root: true, open: func(dir string, o Options) (engine.Engine, error) {
 		mode, err := storeRetention(o.RetentionMode)
 		if err != nil {
 			return nil, err
@@ -212,11 +227,15 @@ func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 }
 
 // checkpointSuffix is the part of a checkpoint variant's name after its prefix:
-// k<K>a<alpha>[l<lag>].
-func checkpointSuffix(kMin int, alpha float64, lag time.Duration) string {
+// k<K>a<alpha>[l<lag>][r<N>]: the lag when it is not zero, and the replacement
+// count when it is above zero, so that no earlier name changes.
+func checkpointSuffix(kMin int, alpha float64, lag time.Duration, replace int) string {
 	name := fmt.Sprintf("k%da%s", kMin, strconv.FormatFloat(alpha, 'g', -1, 64))
 	if lag != 0 {
 		name += "l" + lagName(lag)
+	}
+	if replace > 0 {
+		name += "r" + strconv.Itoa(replace)
 	}
 	return name
 }
@@ -288,12 +307,15 @@ func Names() []string {
 	return out
 }
 
-var checkpointName = regexp.MustCompile(`^(L|Lroot)/k([0-9]+)a([0-9.]+)(?:l(.+))?$`)
+// The lag is one or more number-and-unit pieces (1h30m), and no unit has an r in it,
+// so the lag stops where the replacement count begins.
+var checkpointName = regexp.MustCompile(`^(L|Lroot)/k([0-9]+)a([0-9.]+)(?:l((?:[0-9.]+[a-zµ]+)+))?(?:r([0-9]+))?$`)
 
 // Lookup finds a variant by name. Besides the names in [All] it accepts any
-// checkpoint policy of layout L (L/k32a2, L/k128a0.5l1ns), which is how a sweep
-// names the points it runs, and the root-store variants (Lroot/off and any
-// checkpoint policy under the prefix Lroot/).
+// checkpoint policy of layout L (L/k32a2, L/k128a0.5l1ns, and with a replacement
+// count L/k64a2l1nsr4), which is how a sweep names the points it runs, and the
+// root-store variants (Lroot/off and any checkpoint policy under the prefix Lroot/,
+// without a replacement count).
 func Lookup(name string) (Variant, error) {
 	for _, v := range All() {
 		if v.Name == name {
@@ -311,10 +333,17 @@ func Lookup(name string) (Variant, error) {
 		if m[4] != "" {
 			lag, err3 = time.ParseDuration(m[4])
 		}
-		if err != nil || err2 != nil || err3 != nil || k < 1 || alpha <= 0 || lag < 0 {
+		replace, err4 := 0, error(nil)
+		if m[5] != "" {
+			replace, err4 = strconv.Atoi(m[5])
+		}
+		if err != nil || err2 != nil || err3 != nil || err4 != nil || k < 1 || alpha <= 0 || lag < 0 {
 			return Variant{}, fmt.Errorf("candidates: %q is not a checkpoint policy (K at least 1, alpha above 0, lag not negative)", name)
 		}
-		v := LCheckpoints(k, alpha, lag)
+		if m[1] == "Lroot" && m[5] != "" {
+			return Variant{}, fmt.Errorf("candidates: %q: the root store has no replacement of checkpoints (r<N> is for the L variants)", name)
+		}
+		v := LCheckpointsReplacing(k, alpha, lag, replace)
 		if m[1] == "Lroot" {
 			v = LrootCheckpoints(k, alpha, lag)
 		}

@@ -37,6 +37,11 @@ func TestRandomCheckpointHistories(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			lags := []time.Duration{0, 1, 3, 7}
 			ck := CheckpointOptions{On: rng.Intn(4) != 0, KMin: 1 + rng.Intn(3), Lag: lags[rng.Intn(len(lags))]}
+			// The count of checkpoints put back is drawn apart from the rest, so that
+			// each seed keeps the history it always had.
+			if ck.On {
+				ck.Replace = []int{0, 1, 4}[rand.New(rand.NewSource(seed+1000)).Intn(3)]
+			}
 			cfg := pebblekv.Config{Tuning: pebblekv.TinyTuning(), FS: vfs.NewMem()}
 			open := func() *Engine {
 				o := ck
