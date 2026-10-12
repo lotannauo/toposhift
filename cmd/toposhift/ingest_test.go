@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"maps"
 	"reflect"
 	"strings"
@@ -13,19 +14,25 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // B8. The store serve opens ranks the objects receiver's producer above the
 // cluster receiver's, for the configured cluster name and for "default" when
-// none is set; every other option is the one every command opens its store
-// with.
+// none is set; it retains in the background, with the observer given; every
+// other option is the one every command opens its store with.
 func TestServeStoreOptionsRankTheProducers(t *testing.T) {
+	obs := newRetainLog(slog.New(slog.DiscardHandler), storeOptions())
 	for _, tt := range []struct {
 		name    string
 		set     bool
 		cluster string
 	}{{"prod", true, "prod"}, {"", false, "default"}} {
-		o := serveStoreOptions(tt.name, tt.set)
+		o := serveStoreOptions(tt.name, tt.set, obs)
+		if o.Retention != pebblestore.Background || o.Observer != obs {
+			t.Errorf("%q set %v: retention %v observer %v, want Background with the observer given", tt.name, tt.set, o.Retention, o.Observer)
+		}
+		o.Retention, o.Observer = storeOptions().Retention, nil
 		want := map[lifecycle.Producer]int{
 			lifecycle.Producer("k8sobjects/" + tt.cluster): 2,
 			lifecycle.Producer("k8scluster/" + tt.cluster): 1,
@@ -39,7 +46,7 @@ func TestServeStoreOptionsRankTheProducers(t *testing.T) {
 		}
 	}
 	// Each call makes its own map, so a caller cannot change another's.
-	a, b := serveStoreOptions("x", true), serveStoreOptions("x", true)
+	a, b := serveStoreOptions("x", true, nil), serveStoreOptions("x", true, nil)
 	a.Policy.Rank["k8sobjects/x"] = 9
 	if b.Policy.Rank["k8sobjects/x"] != 2 {
 		t.Error("two calls share one Rank map")

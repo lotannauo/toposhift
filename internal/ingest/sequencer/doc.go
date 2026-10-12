@@ -179,4 +179,125 @@
 //
 // The sequencer never reads or writes the store's cursor meta key, and imports
 // no broker.
+//
+// # Retention
+//
+// With [Config.Retain] set, the loop retains the store once a day, between
+// groups and flushes, so that nothing else calls Retain and no Write runs beside
+// it. Every [RetainConfig.Every] (10 minutes in serve) a check reads the stored
+// horizon of L2, the reference layer, plus its offset (h_stored; absent when L2
+// was never retained) and the target, the ingest clock less the window W (30
+// days in serve) truncated to the hour, in UTC. A retention is due once the
+// target is at least a day past h_stored, so the store holds up to W plus a day:
+// L2 up to 31 days and L1 up to 91. The rule keeps no schedule of its own: a
+// restart finds the stored horizon where the last retention left it.
+//
+// The ingest clock is the clock under suspicion: a clock a year ahead would
+// discard everything. The check therefore compares it with the clocks of other
+// machines. After each write that committed (or that returned an error but whose
+// batch the last sequence number shows stored), and after each refusal of a
+// record as before a horizon, the newest event time of that batch among the
+// records stamped by another machine's clock (basis observed or producer_event)
+// replaces what was kept, with the monotonic uptime of the batch. Records on the
+// receipt clock (this server's own, which always agrees with itself), on an
+// object's own field or of unknown basis never count, and a batch with none
+// leaves what was kept. At each check that time, moved forward by the uptime
+// since its batch, is compared with the ingest clock: within a day they agree,
+// further they disagree, and with no such batch since start the agreement is
+// unknown. The latest batch counts, not the largest time ever seen, so a
+// collector whose clock was ahead stops retention only while its batches are the
+// latest; with mixed producers, a wrong one and a right one in alternate batches
+// flip the state between disagree and agree, which is harmless, since the ingest
+// clock is the one under suspicion and only agree retains in one large step. An
+// idle server on a right clock stays in agreement, and one whose clock then jumps
+// becomes disagree. A replay of old records reads disagree while it lasts, and
+// the next fresh batch agrees again. Go's monotonic clock may not advance while
+// the machine sleeps, so a host suspended for more than a day reads disagree
+// until its next batch; retention is only delayed, and the supported deployment
+// is a server. The guard protects only against producers on other hosts: a
+// collector on the same host shares its clock, and agrees with it whatever it
+// reads.
+//
+// The agreement data is read from the records the sequencer writes: the
+// coalesced batch of each group and the output of each flush, not the records
+// the translators gave. A coalesced record that extends, closes or continues a
+// run carries an event time the coalescer computed (the run's start, a stored
+// deadline, or a horizon), not the producer's latest reading. Under the bound on
+// a run's age those times are minutes old, and the worst case is a spurious
+// disagree, which retains nothing: the safe direction.
+//
+// The check, in order:
+//
+//   - retention stopped by an error: no call, and an error log at every check;
+//   - disagree: no call, and a log at every check, at warning level for the first
+//     day of uptime in disagreement, then at error level. A capped advance is not
+//     made either: from W behind, gaining a day a day, it would pass true time
+//     after about W days and then refuse the producers on true time;
+//   - h_stored absent (a store never retained, empty or not): one call to the
+//     target, logged at warning level, once the agreement is agree; until then
+//     no call, and a warning at every check;
+//   - not due: nothing;
+//   - due, and the target at most two days past h_stored: one call to the target;
+//   - further, and agree: one catch-up call to the target;
+//   - further, and unknown: a capped call to h_stored plus two days, at most once
+//     per day of uptime, logged at warning level. Uptime is monotonic, so a clock
+//     that keeps jumping forward does not make a day pass at once. The limit is
+//     kept in memory, so a crash loop resets it and may advance two days per
+//     restart; the cap limits the damage of a wrong clock, it does not prevent
+//     it.
+//
+// A call is made only when no pass is pending: a due check while one is pending
+// is skipped, counted and logged at warning level, and at error level too once
+// the pass has been pending for more than two hours. Pending is told by a
+// goroutine that waits on [RetainConfig.Wait], started before the first check
+// (the store may have resumed a pass at open, which no observer announces) and
+// after each call; the pass is marked pending before the goroutine starts. Run
+// cancels its context and waits for it before it returns, on a stop and on a
+// cancel alike, so that no call of the store is in flight when the caller closes
+// the store; its report goes to a buffered channel that nobody needs to read.
+//
+// Horizons never move backward: a clock behind the stored horizon is not due,
+// and neither is a target equal to it. A smaller W is a catch-up, under the same
+// guard; a larger W pauses retention until time catches up with it, and brings
+// nothing back.
+//
+// An error from Retain, or from the wait other than the store's closing or the
+// context's end, stops retention until a restart, with an error log at every
+// check. A store that latched a failed commit refuses every write too, and
+// ingest answers 503 until the restart; a validation error from Retain latches
+// nothing, and ingest goes on while retention stays stopped. Automatic reopening
+// is not built. A write refused for a horizon a retention moved is rerun once
+// (see "Failed writes"): the horizons are read before each group and flush.
+//
+// Accepted limits:
+//
+//   - With disagreeing clocks, or during a replay of old records, nothing is
+//     retained, and the store grows past W.
+//   - Producers that send only receipt-basis records never give agreement: a
+//     store never retained is then never retained, and a catch-up advances only
+//     in capped steps. With the clock far ahead and only such producers, the
+//     capped advance carries L2's horizon past true time after about W days;
+//     later records on true time are refused, and the state becomes disagree
+//     once they are seen.
+//   - Host prefixes with boots are kept whole by the store until boot-prefix
+//     retention exists.
+//   - A deployment whose every producer runs on the server's own host (a single
+//     machine, such as kind, k3s or a development box) has no second clock: its
+//     records agree with the server's clock whatever that clock reads, and the
+//     guard is void. A host clock that jumps a year ahead then agrees with
+//     itself, and the first catch-up discards the whole real history in one
+//     call.
+//
+// The cases:
+//
+//	no RetainConfig (serve --retain off)    no retention asked for; a pass already started completes
+//	Retain or wait error, store latched     retention stopped, error at every check; ingest 503 until restart
+//	Retain error, validation                retention stopped, error at every check; ingest goes on
+//	refused write after a retention         the group is rerun once against the new horizons
+//	clock behind the stored horizon         not due
+//	disagree (clock far ahead, or a replay) nothing retained; warning for a day, then error, at every check
+//	unknown, clock far ahead                capped: two days per day of uptime; warning
+//	never retained, not agree               nothing retained; warning at every check
+//	pass longer than a day                  skips logged; error after two hours pending
+//	store closed or context ended           shutdown; no error
 package sequencer

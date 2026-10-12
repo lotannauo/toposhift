@@ -9,7 +9,9 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
@@ -99,13 +101,36 @@ func setFlags(fs *flag.FlagSet) map[string]bool {
 	return set
 }
 
+// The retention of every store a command opens: L2 keeps the window W behind
+// the horizon serve asks for, L1 another 60 days (90 days in all), L0 is kept,
+// and L3 is retained with L2 until its rollups decide otherwise.
+const (
+	retainWindow = 30 * 24 * time.Hour
+	l1Offset     = 60 * 24 * time.Hour
+)
+
 // storeOptions are the options of the store, whichever engine holds it. Its
 // lifecycle policy is the one a store that boots with no configuration has: it
 // tells the boots of a host apart by the boot id the activity file carries on
 // every host observation, so two live boots of one host are a loud clone
 // collision and not a silent merge. A store that ignored the boot column would
 // lose exactly that.
-func storeOptions() pebblestore.Options { return pebblestore.DefaultOptions() }
+//
+// They carry the retention of each layer: L0 kept, L1 offset 60 days (90 days
+// of history with serve's window of 30), L2 and L3 offset zero. The store does
+// not record Keep or Offsets, so a command that opened it with others would
+// retain it differently, and one that retained L0 would discard it for good:
+// this function is the one place they are set, and every command opens its
+// store through it. The L1 default is provisional: its growth over 90 days has
+// not been measured yet.
+func storeOptions() pebblestore.Options {
+	o := pebblestore.DefaultOptions()
+	o.Keep[0] = true // L0
+	o.Offsets[catalog.L1-catalog.L0] = l1Offset
+	o.Offsets[catalog.L2-catalog.L0] = 0
+	o.Offsets[catalog.L3-catalog.L0] = 0
+	return o
+}
 
 // markerPrefix starts the name of the file Pebble keeps in every database
 // directory to name its current manifest.

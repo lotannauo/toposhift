@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/datadir"
 	"github.com/lotannauo/toposhift/internal/ingest/clustername"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
@@ -18,6 +22,13 @@ import (
 
 // envClusterName is the environment twin of --cluster-name.
 const envClusterName = "TOPOSHIFT_CLUSTER_NAME"
+
+// envRetain is the environment twin of --retain.
+const envRetain = "TOPOSHIFT_RETAIN"
+
+// retainEvery is the interval of the retention check, a constant of serve. It is
+// a variable only so tests can lower it.
+var retainEvery = sequencer.DefaultRetainEvery
 
 // ingestStarting is what the receiver answers while the store opens.
 const ingestStarting = "ingest is starting: the store is opening; send the request again later"
@@ -48,6 +59,8 @@ type ingestConfig struct {
 	acceptGiven bool
 	// pullInterval is the objects receiver's pull interval.
 	pullInterval time.Duration
+	// retain is --retain on: the sequencer retains the store once a day.
+	retain bool
 }
 
 // serveStoreOptions are the options serve opens its store with: those of the
@@ -60,9 +73,14 @@ type ingestConfig struct {
 // wins by the order of the names; that shows only in descriptions, and goes
 // when ranking follows the producer's prefix.
 //
-// Retention is not set here: serve does not retain yet.
-func serveStoreOptions(clusterName string, set bool) pebblestore.Options {
+// Retention runs in the background, so that a retention does not hold the
+// writer for its whole pass, and obs, when not nil, is told of its phases. The
+// layers' retention is storeOptions', whether or not serve retains: a pass an
+// earlier boot left is resumed all the same.
+func serveStoreOptions(clusterName string, set bool, obs pebblestore.RetainObserver) pebblestore.Options {
 	o := storeOptions()
+	o.Retention = pebblestore.Background
+	o.Observer = obs
 	c := sequencer.DefaultClusterName
 	if set {
 		c = clusterName
@@ -94,6 +112,163 @@ func (w *switchSink) AcceptPartial(ctx context.Context, d capture.LogsData) (otl
 	return otlphttp.Partial{}, s.Accept(ctx, d)
 }
 
+// retainLog is the store's retention observer, which logs the phases of each
+// pass, and the retention check's store, which notes the horizon each call asks
+// for so that the publication can name the layers' horizons. Its methods are
+// called by the store's goroutines and the sequencer's loop.
+type retainLog struct {
+	log     *slog.Logger
+	offsets [4]time.Duration
+	keep    [4]bool
+	st      sequencer.Retainer // set once the store is open
+
+	mu        sync.Mutex
+	asked     time.Time
+	published map[uint64]time.Time
+	rewritten map[uint64]time.Time
+}
+
+func newRetainLog(log *slog.Logger, o pebblestore.Options) *retainLog {
+	return &retainLog{
+		log: log, offsets: o.Offsets, keep: o.Keep,
+		published: map[uint64]time.Time{}, rewritten: map[uint64]time.Time{},
+	}
+}
+
+// Retain asks the store for a retention to horizon.
+func (r *retainLog) Retain(ctx context.Context, horizon time.Time) error {
+	r.mu.Lock()
+	r.asked = horizon
+	r.mu.Unlock()
+	return r.st.Retain(ctx, horizon)
+}
+
+// layer is the horizon a retention to h asks of layer l, or "kept".
+func (r *retainLog) layer(l catalog.Layer, h time.Time) any {
+	if r.keep[l-catalog.L0] {
+		return "kept"
+	}
+	return h.Add(-r.offsets[l-catalog.L0])
+}
+
+func (r *retainLog) Published(gen uint64, at time.Time) {
+	r.mu.Lock()
+	h := r.asked
+	for g := range r.published {
+		if g < gen {
+			delete(r.published, g)
+			delete(r.rewritten, g)
+		}
+	}
+	r.published[gen] = at
+	r.mu.Unlock()
+	r.log.Info("retention published", "gen", gen, "L1", r.layer(catalog.L1, h), "L2", r.layer(catalog.L2, h), "at", at)
+}
+
+func (r *retainLog) RewriteEnded(gen uint64, at time.Time) {
+	r.mu.Lock()
+	r.rewritten[gen] = at
+	pub, ok := r.published[gen]
+	r.mu.Unlock()
+	if !ok {
+		r.log.Info("rewrite ended", "gen", gen, "resumed", true)
+		return
+	}
+	r.log.Info("rewrite ended", "gen", gen, "after", at.Sub(pub))
+}
+
+func (r *retainLog) SettleEnded(gen uint64, at time.Time) {
+	r.mu.Lock()
+	pub, published := r.published[gen]
+	rew, rewritten := r.rewritten[gen]
+	delete(r.published, gen)
+	delete(r.rewritten, gen)
+	r.mu.Unlock()
+	attrs := []any{"gen", gen}
+	if published {
+		attrs = append(attrs, "after", at.Sub(pub))
+	} else {
+		attrs = append(attrs, "resumed", true)
+	}
+	if rewritten {
+		attrs = append(attrs, "settle", at.Sub(rew))
+	}
+	r.log.Info("settle ended", attrs...)
+}
+
+// serveRetainConfig is the retention check of serve: L2's window, the offset of
+// L2 in the options the store was opened with, the wait for a pass, and the
+// fixed interval.
+func serveRetainConfig(st *pebblestore.Store, o pebblestore.Options, rl *retainLog) *sequencer.RetainConfig {
+	return &sequencer.RetainConfig{
+		Store:  rl,
+		Wait:   st.Instrument().WaitRetained,
+		Window: retainWindow,
+		Offset: o.Offsets[catalog.L2-catalog.L0],
+		Every:  retainEvery,
+	}
+}
+
+// statusRoute answers GET /status with the retention check's last snapshot,
+// which the sequencer published: the handler never calls the store.
+type statusRoute struct {
+	retain bool
+	seq    atomic.Pointer[sequencer.Sequencer]
+}
+
+// retentionOff is the retention status of serve --retain off.
+type retentionOff struct {
+	Mode string `json:"mode"`
+}
+
+// retentionOn is the retention status of serve --retain on.
+type retentionOn struct {
+	Mode          string                `json:"mode"`
+	CheckedAt     *time.Time            `json:"checked_at"`
+	Horizons      map[string]*time.Time `json:"horizons"`
+	Agreement     string                `json:"agreement"`
+	PendingSince  *time.Time            `json:"pending_since"`
+	LastSettleEnd *time.Time            `json:"last_settle_end"`
+	StoppedBy     string                `json:"stopped_by"`
+	Counters      map[string]uint64     `json:"counters"`
+}
+
+func orNull(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
+
+func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	var body any = retentionOff{Mode: "off"}
+	if s.retain {
+		on := retentionOn{Mode: "on", StoppedBy: "ingest is not running"}
+		if seq := s.seq.Load(); seq != nil {
+			st, _ := seq.RetentionStatus()
+			on = retentionOn{
+				Mode:          "on",
+				CheckedAt:     orNull(st.CheckedAt),
+				Horizons:      map[string]*time.Time{},
+				Agreement:     st.Agreement.String(),
+				PendingSince:  orNull(st.PendingSince),
+				LastSettleEnd: orNull(st.LastSettleEnd),
+				StoppedBy:     st.StoppedBy,
+				Counters: map[string]uint64{
+					"serve.retain_calls": st.Calls, "serve.retain_skipped": st.Skipped,
+					"serve.retain_capped": st.Capped, "serve.retain_catchups": st.CatchUps,
+				},
+			}
+			for l := catalog.L0; l <= catalog.L3; l++ {
+				on.Horizons[l.String()] = orNull(st.Horizons[l-catalog.L0])
+			}
+		}
+		body = on
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body})
+}
+
 // ingest is what boot opened for ingest: the store, and the sequencer with its
 // own context once it runs.
 type ingest struct {
@@ -111,9 +286,11 @@ type ingest struct {
 // stays up. stopped is closed when the server has ended; boot that finds it
 // ended, or ctx done, after the store opened closes the store and starts
 // nothing.
-func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *switchSink, log *slog.Logger, stopped <-chan struct{}) *ingest {
+func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *switchSink, status *statusRoute, log *slog.Logger, stopped <-chan struct{}) *ingest {
 	start := time.Now()
-	st, err := openStore(dir.Store, serveStoreOptions(ic.clusterName, ic.set))
+	rl := newRetainLog(log, storeOptions())
+	opts := serveStoreOptions(ic.clusterName, ic.set, rl)
+	st, err := openStore(dir.Store, opts)
 	if err != nil {
 		log.Error("ingest is off: the store could not be opened", "path", dir.Store, "err", err)
 		sink.set(gateSink{message: "ingest is off: the store could not be opened: " + err.Error() + "; see the server's log"})
@@ -161,12 +338,18 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		log.Info("recorded the cluster name", "cluster_name", showName(ic))
 	}
 
+	var retain *sequencer.RetainConfig
+	if ic.retain {
+		rl.st = st
+		retain = serveRetainConfig(st, opts, rl)
+	}
 	seq, err := sequencer.New(sequencer.Config{
 		Store:          writerFor(st),
 		ClusterName:    ic.clusterName,
 		ClusterNameSet: ic.set,
 		PullInterval:   ic.pullInterval,
 		Logger:         log,
+		Retain:         retain,
 	})
 	if err != nil {
 		log.Error("ingest is off: the sequencer could not be made", "err", err)
@@ -178,11 +361,16 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 	seqCtx, cancel := context.WithCancel(context.Background())
 	in.seq, in.cancel, in.runDone = seq, cancel, make(chan error, 1)
 	go func() { in.runDone <- seq.Run(seqCtx) }()
+	status.seq.Store(seq)
 	if beforeSwitch != nil {
 		beforeSwitch(st)
 	}
 	sink.set(seq)
 	log.Info("ingest is on", "cluster_name", showName(ic), "took", time.Since(start))
+	if ic.retain {
+		log.Info("retention is on: once a day, L2 keeps 30 days, L1 90 days, and L0 is kept",
+			"check_every", retainEvery)
+	}
 	return in
 }
 
@@ -196,9 +384,14 @@ func showName(ic ingestConfig) string {
 // stop ends ingest after the server has stopped: the sequencer answers what it
 // has claimed and writes the coalescer's absorbed refreshes, within
 // sequencerStopTimeout; past it, its context is cancelled and Run is waited
-// for, so that no Write is in flight when the store closes. Then the store is
-// closed. Each step's time is logged. A stop that timed out is not an error:
-// the stored data is valid, and only absorbed refreshes may be unwritten.
+// for. Run returns only once its retention waiter has, so no Write, Retain or
+// wait is in flight when the store closes. Then the store is closed, which
+// stops a retention pass at a chunk boundary, or between two ranges of its
+// settle, and leaves its marker for the next open to resume. The wait for Run
+// is bounded by one commit, one retention chunk, or one settle sub-range
+// (seconds) [estimate]. Each step's time is logged. A stop that timed out is
+// not an error: the stored data is valid, and only absorbed refreshes may be
+// unwritten.
 func (in *ingest) stop(log *slog.Logger) {
 	if in == nil {
 		return
@@ -250,4 +443,35 @@ Ingest
   A store that keeps failing every write stays so until serve is restarted:
   the receiver answers 503 and the log says why. On a stop, serve finishes the
   requests in flight, writes what the coalescer holds, and closes the store.
+
+Retention
+
+  --retain on (the default, or $TOPOSHIFT_RETAIN) discards old history once a
+  day, in the background: L2 (pods, nodes) keeps 30 days, L1 (hosts) 90 days,
+  and L0 is kept. A retention runs once a day, so the store holds up to a day
+  more: L2 up to 31 days, L1 up to 91. The L1 default is provisional.
+  --retain off asks for no retention, and nothing more is discarded, though a
+  pass an earlier boot started still completes below the horizon it already
+  published. Any other value is refused.
+
+  This server's clock decides what is old, so it is checked against the
+  clocks of the producers on other hosts: the times their records carry must
+  agree with it within a day. While they disagree (a clock that jumped, or a
+  collector replaying old records), nothing is discarded, and the log warns,
+  then errs after a day. A store never retained waits for that agreement
+  before its first retention; with no producer clock to compare (only records
+  stamped on receipt), a store that fell behind catches up two days per day
+  of uptime. A collector on this host shares its clock, and confirms nothing.
+
+  A store filled by replay, or by serve --retain off, loses its records older
+  than 30 days (90 for L1) at its first retention, once the clocks agree.
+
+  An error from a retention stops retention until serve is restarted, and the
+  log says so at every check. A store that has latched a failed commit also
+  refuses ingest (503) until the restart; a retention refused as invalid does
+  not, and ingest goes on.
+
+  GET /status answers the retention's state as JSON: its mode, each layer's
+  horizon, the clock agreement, the pass pending, the last settle, and why
+  retention stopped, if it did.
 `

@@ -32,8 +32,10 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 	last, err := s.write(ctx, batch)
 	switch {
 	case err == nil:
+		s.observeClocks(batch, ws)
 		s.answer(ws, nil)
 	case errors.Is(err, store.ErrBeforeHorizon):
+		s.observeClocks(nil, ws)
 		// A retention moved a horizon after it was read. Horizons only move
 		// forward, so one rerun against the horizons now published converges; the
 		// records now before them are rejected into each request's partial
@@ -45,6 +47,7 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 		}
 		s.answer(ws, busy(err))
 	case errors.Is(err, store.ErrInvalid):
+		s.observeClocks(nil, ws)
 		// A case the checks missed. It is deterministic, so the group is not
 		// written again whole: each request is written on its own, and the one the
 		// store refuses is refused.
@@ -60,9 +63,11 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 		// Whether the batch was stored is told by the last sequence number.
 		if len(batch) > 0 && s.cfg.Store.LastSeq() >= last {
 			s.log.Warn("sequencer: the write returned an error but its batch was stored", "error", err, "last_seq", last)
+			s.observeClocks(batch, ws)
 			s.answer(ws, nil)
 			return
 		}
+		s.observeClocks(nil, ws)
 		s.reset("the write failed and its batch was not stored", err)
 		s.answer(ws, writeFailed(err))
 	}
@@ -94,10 +99,12 @@ func (s *Sequencer) writeDerived(ctx context.Context, out []store.Record, what s
 	last, err := s.write(ctx, out)
 	switch {
 	case err == nil:
+		s.observeClocks(out, nil)
 		return
 	case errors.Is(err, store.ErrInvalid):
 	case s.cfg.Store.LastSeq() >= last:
 		s.log.Warn("sequencer: the write returned an error but its batch was stored", "what", what, "error", err, "last_seq", last)
+		s.observeClocks(out, nil)
 		return
 	}
 	s.log.Error("sequencer: dropped the records of "+what, "records", len(out), "error", err)

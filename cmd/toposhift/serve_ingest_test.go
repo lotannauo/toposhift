@@ -113,7 +113,7 @@ func dirEnv(t testing.TB, dir string) func(string) string {
 // openStopped opens the store a stopped serve left in dir.
 func openStopped(t *testing.T, dir string) *pebblestore.Store {
 	t.Helper()
-	st, err := pebblestore.Open(filepath.Join(dir, "store"), serveStoreOptions("", false))
+	st, err := pebblestore.Open(filepath.Join(dir, "store"), serveStoreOptions("", false, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

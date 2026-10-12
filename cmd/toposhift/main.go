@@ -72,6 +72,11 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	}
 	// An empty TOPOSHIFT_CLUSTER_NAME is the same as an unset one: no name.
 	clusterName := getenv(envClusterName)
+	// An empty TOPOSHIFT_RETAIN is the same as an unset one: on.
+	retain := getenv(envRetain)
+	if retain == "" {
+		retain = "on"
+	}
 
 	fs := flag.NewFlagSet("toposhift serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -82,6 +87,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	accept := fs.String(clustername.FlagName, "",
 		"accept, for this boot, that the store's recorded cluster name changes to the configured one (command line only; give it empty to accept that none is set)")
 	pullInterval := fs.Duration("pull-interval", sequencer.DefaultPullInterval, "the interval of the collector's pulls of pods and nodes")
+	fs.StringVar(&retain, "retain", retain, "on or off: discard history older than each layer's window once a day, or keep everything (env "+envRetain+")")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, serveUsage)
 		fs.PrintDefaults()
@@ -115,8 +121,19 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		_, _ = fmt.Fprintf(stderr, "toposhift serve: --pull-interval %s is not above zero\n", ic.pullInterval)
 		return 2
 	}
+	switch retain {
+	case "on":
+		ic.retain = true
+	case "off":
+	default:
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: --retain %q: give on or off\n", retain)
+		return 2
+	}
 
 	log := slog.New(slog.NewTextHandler(stderr, nil))
+	if !ic.retain {
+		log.Info("retention is off: no retention is asked for; a pass an earlier boot started still completes")
+	}
 	dir, gate, code := bootDataDir(*dataDir, getenv, log, stderr)
 	if code != 0 {
 		return code
@@ -127,9 +144,13 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	// answered 503 while the store opens.
 	sink := &switchSink{}
 	sink.set(gateSink{message: gate})
+	status := &statusRoute{retain: ic.retain}
 	cfg.Routes = []server.Route{{
 		Pattern: "POST /v1/logs",
 		Handler: otlphttp.Handler(sink, otlphttp.Options{MaxInFlightBytes: 2 * otlphttp.DefaultMaxBodyBytes}),
+	}, {
+		Pattern: "GET /status",
+		Handler: status,
 	}}
 	signalled := make(chan time.Time, 1)
 	context.AfterFunc(ctx, func() { signalled <- time.Now() })
@@ -142,7 +163,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 
 	var in *ingest
 	if dir != nil {
-		in = startIngest(ctx, dir, ic, sink, log, stopped)
+		in = startIngest(ctx, dir, ic, sink, status, log, stopped)
 	}
 
 	// The server returns after its graceful shutdown, while the sequencer still
