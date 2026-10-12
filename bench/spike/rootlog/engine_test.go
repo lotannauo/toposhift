@@ -190,7 +190,8 @@ func timingOrLayout(name string) bool {
 // What only the store counts: the phases of a write and the time of building
 // checkpoints (timings, or nothing the spike's engine had a name for), what a
 // retention does with the prefixes a boot key keeps, and how the store cuts a
-// retention into chunks (the spike's engine retained in one piece). The counters
+// retention into chunks and flushes its range deletions as it goes (the spike's
+// engine retained in one piece). The counters
 // "retain.resumed" and "retain.superseded" appear only when Open finishes or
 // discards a retention an earlier process left, so the tiny run never produces
 // them, but a build that crashed and was reopened would. The writer's map ("writer_map."
@@ -206,6 +207,12 @@ var onlyTheStore = map[string]bool{
 	"retain.chunk_hold_ns":           true,
 	"retain.resumed":                 true,
 	"retain.superseded":              true,
+	"retain.chunk_prefixes":          true,
+	"retain.chunk_open_ns":           true,
+	"retain.unflushed_range_deletes": true,
+	"retain.flushes":                 true,
+	"retain.flush_errors":            true,
+	"retain.flush_deferred":          true,
 }
 
 func isOnlyTheStores(name string) bool {

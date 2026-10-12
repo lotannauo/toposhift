@@ -803,6 +803,25 @@ func TestABuildRecordsWhatTheGateJudges(t *testing.T) {
 	}
 	var text strings.Builder
 	runner.WriteStoreGate(&text, rep)
+	// What the build recorded of its chunks and its database is reported: the stalls
+	// and the sublevels were sampled (the spread of the chunks depends on how many
+	// chunks the tiny plan's passes have, beyond the last of each, and may count none).
+	for _, want := range []string{"the whole build, not only its judged part (reported, not judged): chunks of all passes pooled, each pass's last left out: ", "; least prefixes in a chunk ", "; flushes: retain.flushes ", "; write stalls ", "; level 0 sublevels: peak "} {
+		if !strings.Contains(text.String(), want) {
+			t.Errorf("the report lacks %q:\n%s", want, text.String())
+		}
+	}
+	if strings.Contains(text.String(), "write stalls not recorded") || strings.Contains(text.String(), "sublevels: peak not recorded") {
+		t.Errorf("a build sampled every 5ms has no stalls or sublevels:\n%s", text.String())
+	}
+	if len(g.Chunks) != 3 {
+		t.Errorf("the build recorded the spread of %d samples of its chunks, want 3: %v", len(g.Chunks), g.Chunks)
+	}
+	for name, sp := range g.Chunks {
+		if sp.Count < 0 || (sp.Count > 0 && (sp.Min > sp.P50 || sp.P50 > sp.P99 || sp.P99 > sp.Max+sp.Max/8)) {
+			t.Errorf("the spread of %s is %+v", name, sp)
+		}
+	}
 	if strings.Contains(text.String(), "not available on this store") {
 		t.Errorf("the report says a mode is not available, and both are:\n%s", text.String())
 	}
@@ -816,6 +835,56 @@ func TestABuildRecordsWhatTheGateJudges(t *testing.T) {
 	}
 	if _, err := runner.LoadStoreGateBuild(rootDir); err == nil {
 		t.Error("a damaged job loaded")
+	}
+}
+
+// The report gives the spread of the samples of the chunks, the write stalls and the
+// peak sublevels of level 0 of each build through the root store, for information, and
+// says what a build did not record; none of it changes a row.
+func TestTheReportGivesTheChunksAndTheStallsForInformation(t *testing.T) {
+	t.Parallel()
+	recorded := synth("Lroot/off", func(b *runner.StoreGateBuild) {
+		b.Manifest.Gate.Chunks = map[string]runner.GateSpread{
+			"retain.chunk_prefixes": {Count: 40, Min: 3, P50: 120, P99: 400, Max: 410},
+			"retain.chunk_open_ns":  {Count: 40, Min: int64(time.Millisecond), P50: int64(2 * time.Millisecond), P99: int64(5 * time.Millisecond), Max: int64(6 * time.Millisecond)},
+			"retain.chunk_hold_ns":  {Count: 40, Min: int64(10 * time.Millisecond), P50: int64(22 * time.Millisecond), P99: int64(29 * time.Millisecond), Max: int64(31 * time.Millisecond)},
+		}
+		b.Metrics.WriteStalls, b.Metrics.WriteStallsRead, b.Metrics.L0SublevelsPeak = 2, true, 9
+		b.Manifest.Counters = map[string]int64{"retain.flushes": 7, "retain.flush_deferred": 3}
+	})
+	bare := synth("Lroot/off")
+	repRecorded, repBare := runner.JudgeStoreGate([]*runner.StoreGateBuild{recorded}), runner.JudgeStoreGate([]*runner.StoreGateBuild{bare})
+	info := strings.Join(repRecorded.Info, "\n")
+	for _, want := range []string{
+		"retain.chunk_prefixes min 3, p50 120, p99 400, max 410 over 40",
+		"retain.chunk_open_ns min 1ms, p50 2ms, p99 5ms, max 6ms over 40",
+		"retain.chunk_hold_ns min 10ms, p50 22ms, p99 29ms, max 31ms over 40",
+		"; least prefixes in a chunk 3; flushes: retain.flushes 7, retain.flush_deferred 3, retain.flush_errors 0; write stalls at least 2, summed over the openings of the database; level 0 sublevels: peak 9 sampled",
+	} {
+		if !strings.Contains(info, want) {
+			t.Errorf("the report lacks %q:\n%s", want, info)
+		}
+	}
+	collapsed := synth("Lroot/off", func(b *runner.StoreGateBuild) {
+		b.Manifest.Gate.Chunks = map[string]runner.GateSpread{"retain.chunk_prefixes": {Count: 40, Min: 1, P50: 120, P99: 400, Max: 410}}
+	})
+	info = strings.Join(runner.JudgeStoreGate([]*runner.StoreGateBuild{collapsed}).Info, "\n")
+	if want := "least prefixes in a chunk 1 (a chunk that was not its pass's last rewrote one prefix)"; !strings.Contains(info, want) {
+		t.Errorf("the report of a build with a one-prefix chunk lacks %q:\n%s", want, info)
+	}
+	info = strings.Join(repBare.Info, "\n")
+	for _, want := range []string{"retain.chunk_prefixes not recorded", "least prefixes in a chunk not recorded", "flushes: not recorded", "write stalls not recorded", "level 0 sublevels: peak 0 sampled"} {
+		if !strings.Contains(info, want) {
+			t.Errorf("the report of a build that recorded none lacks %q:\n%s", want, info)
+		}
+	}
+	for _, q := range []string{"Q1", "Q2", "Q3", "Q4", "Q5"} {
+		if a, b := find(t, repRecorded, "Lroot/off", q), find(t, repBare, "Lroot/off", q); a.State != b.State {
+			t.Errorf("%s is %v with the chunks recorded and %v without", q, a.State, b.State)
+		}
+	}
+	if repRecorded.RulesDigest != repBare.RulesDigest || repRecorded.RulesDigest != runner.StoreGateRulesDigest() {
+		t.Error("the rules digest moved")
 	}
 }
 

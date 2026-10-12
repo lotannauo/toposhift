@@ -3,6 +3,8 @@ package pebblestore
 import (
 	"time"
 
+	"github.com/cockroachdb/pebble/v2"
+
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store/pebblekv"
 )
@@ -50,10 +52,24 @@ import (
 //     "retain.state_keys" (the keys a retention reads to work out the writer's
 //     state, when it does; see [Store.Retain]) and, as samples for each retention
 //     that rewrites, "retain.max_prefix_records" (the most records replayed for one
-//     prefix) and "retain.chunks" (how many chunks it committed); and, as a sample
-//     for each chunk, "retain.chunk_hold_ns" (the nanoseconds from the chunk's start
-//     to the end of its commit, which is how long a writer would wait for it if the
-//     lock were released between chunks); and, in a Background store,
+//     prefix) and "retain.chunks" (how many chunks it committed); and, as samples
+//     for each chunk, given once its commit has landed in this order,
+//     "retain.chunk_open_ns" (the opening and first positioning of its iterator,
+//     which grows with the range deletions in the memtable),
+//     "retain.chunk_prefixes" (the prefixes it rewrote) and "retain.chunk_hold_ns"
+//     (the nanoseconds from the chunk's start, before its iterator is opened, to
+//     the end of its commit, which is how long a writer waits for it, the lock being
+//     released between chunks in a Background store); and, as a sample at the start
+//     of each chunk, "retain.unflushed_range_deletes" (the range deletions retention
+//     has committed since the start of the last flush known to have completed: an
+//     upper bound of those the memtables hold); and "retain.flushes", the flushes a
+//     pass started to bound those deletions, one each time they reach a count (one
+//     per 32,768 prefixes rewritten or so: more, smaller tables in level 0 during a
+//     pass, which its settle or later compactions merge); "retain.flush_deferred",
+//     the flushes it put off because level 0 was near the sublevel count at which
+//     Pebble stops writes, and "retain.flush_errors", those AsyncFlush refused
+//     (which this version of Pebble does only for a database opened read-only):
+//     both are tried again after the pass's next chunk; and, in a Background store,
 //     "retain.touch_rewrites" (the prefixes a write rewrote in its own batch because
 //     the pass had not reached them); and, when Open finishes a retention that
 //     an earlier process left, "retain.resumed", counted once before that retention
@@ -192,6 +208,28 @@ type Options struct {
 	// for tests. (afterRetainCommit runs after each chunk, the same way.)
 	beforeRetainChunk func()
 	retainerExited    chan struct{}
+	// retainFlushDels overrides [defaultRetainFlushDels], the count of unflushed
+	// range deletions at which a pass flushes; a negative value turns the flushes off.
+	// retainFlushL0Margin overrides [defaultRetainFlushL0Margin], how far below its
+	// stop threshold level 0 must be for a flush to start (a negative value never
+	// puts one off), and l0Sublevels replaces the reading of level 0's sublevels and
+	// stop threshold.
+	// chunkNow replaces the clock a chunk's time and its samples are read from.
+	// afterChunkOpen runs in a chunk once its iterator is open and positioned, before
+	// the clock is read for the opening's cost. flushHook, if not nil, starts each
+	// flush a pass starts, given the database's AsyncFlush. beforeFlushWait runs
+	// before a pass waits for a flush, beforeApply before each commit of a chunk or of
+	// records is applied, with its batch, and beforeKVClose in Close just before the
+	// database is closed. All for tests.
+	retainFlushDels     int
+	retainFlushL0Margin int
+	l0Sublevels         func() (n, stop int)
+	chunkNow            func() time.Time
+	afterChunkOpen      func()
+	flushHook           func(flush func() (<-chan struct{}, error)) (<-chan struct{}, error)
+	beforeFlushWait     func()
+	beforeApply         func(*pebble.Batch)
+	beforeKVClose       func()
 	// betweenSettleRanges runs after each range of a Background settle has been
 	// compacted, with the number done so far, with the store's lock free (see
 	// [pebblekv.WithCompactRangesHook]): for tests.

@@ -72,6 +72,23 @@ type Store struct {
 	stopAfter         int
 	resumeStopAfter   int
 	afterRetainCommit func()
+	// retainFlushDels is the count of unflushed range deletions at which a pass
+	// flushes, none if it is not above zero (see flushBound); fl is the count,
+	// guarded by mu. chunkNow is the clock of a chunk's time, and afterChunkOpen,
+	// flushHook, beforeFlushWait, beforeApply and beforeKVClose are the test hooks
+	// of the same names in Options.
+	retainFlushDels int64
+	// retainFlushL0Margin and l0Sublevels decide when a flush is put off (see
+	// [Store.nearStall]).
+	retainFlushL0Margin int
+	l0Sublevels         func() (n, stop int)
+	fl                  flushBound
+	chunkNow            func() time.Time
+	afterChunkOpen      func()
+	flushHook           func(flush func() (<-chan struct{}, error)) (<-chan struct{}, error)
+	beforeFlushWait     func()
+	beforeApply         func(*pebble.Batch)
+	beforeKVClose       func()
 
 	// retention is the mode Retain works in. In Background mode ctx is the store's
 	// own context, which Close cancels, wake tells the retainer there is a pass,
@@ -219,7 +236,8 @@ type retainPhases struct {
 // holds such a marker has the retention finished, in the caller's goroutine, before
 // Open returns (see [Store.Retain]). That work can fail, for instance on a key in
 // the range that cannot be parsed, and then Open fails with it, loudly: the store
-// is not handed out half retained. Only a database opened read-only still opens, and
+// is not handed out half retained; and it can wait, without end, for a flush that
+// keeps failing (see [Store.Retain]). Only a database opened read-only still opens, and
 // is left as it is. A marker whose horizons the stored ones have all moved past (a
 // writer that did not know the marker moved them) is removed and counted as
 // "retain.superseded". A database that holds checkpoints opens, whatever
@@ -275,6 +293,8 @@ func Open(dir string, o Options) (*Store, error) {
 		retention: o.Retention, retainerExited: o.retainerExited, beforeRetainChunk: o.beforeRetainChunk,
 		betweenSettleRanges: o.betweenSettleRanges, observer: o.Observer,
 		scanHook: o.scanHook,
+		chunkNow: o.chunkNow, afterChunkOpen: o.afterChunkOpen, flushHook: o.flushHook,
+		beforeFlushWait: o.beforeFlushWait, beforeApply: o.beforeApply, beforeKVClose: o.beforeKVClose,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
 	if s.retention == Background && !cfg.ReadOnly {
@@ -301,6 +321,23 @@ func Open(dir string, o Options) (*Store, error) {
 	}
 	if s.retainBytes == 0 {
 		s.retainBytes = defaultRetainBatchBytes
+	}
+	if s.chunkNow == nil {
+		s.chunkNow = time.Now
+	}
+	s.retainFlushL0Margin = o.retainFlushL0Margin
+	if s.retainFlushL0Margin == 0 {
+		s.retainFlushL0Margin = defaultRetainFlushL0Margin
+	}
+	s.l0Sublevels = o.l0Sublevels
+	if s.l0Sublevels == nil {
+		s.l0Sublevels = kv.L0Sublevels
+	}
+	switch {
+	case o.retainFlushDels == 0:
+		s.retainFlushDels = defaultRetainFlushDels
+	case o.retainFlushDels > 0:
+		s.retainFlushDels = int64(o.retainFlushDels)
 	}
 	if s.chunkTime == 0 {
 		s.chunkTime = defaultRetainChunkTime
@@ -744,6 +781,9 @@ func (s *Store) Close() error {
 	s.mu.Lock()
 	s.releaseWriterMap()
 	s.mu.Unlock()
+	if s.beforeKVClose != nil {
+		s.beforeKVClose()
+	}
 	err := s.kv.Close()
 	if stopped != nil {
 		return errors.Join(fmt.Errorf("pebblestore: Close: the retention stopped: %w", stopped), err)
