@@ -1,6 +1,7 @@
 package pebblelog
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -32,6 +33,13 @@ import (
 //   - A record written later with an event time before c invalidates it: it is
 //     deleted in the same commit as the record, in both stored copies of an edge.
 //     A record at exactly c does not (it is read before the checkpoint).
+//   - With Replace above zero, the Write that deletes checkpoints puts some of them
+//     back, each at its own instant, in its own checkpoint commit: built the same
+//     way as a due checkpoint, so it covers the late record, and with a W at or
+//     above that record's Seq. A read pinned to an older token cannot use it and
+//     walks to an older checkpoint, as it would have after the deletion. It is not
+//     "the last checkpoint written": the spacing of the policy does not move (see
+//     [Engine.writeCheckpointsAfter]).
 //   - It is never written at or below the retention horizon (one older than a
 //     later horizon may remain where a retention did not rewrite its prefix, and
 //     is true): there it would sort
@@ -80,7 +88,15 @@ type CheckpointOptions struct {
 	// time in the prefix plus one nanosecond, minus Lag. With no Lag a checkpoint
 	// covers everything so far; a Lag keeps a late record from invalidating it.
 	Lag time.Duration
+	// Replace is how many of the checkpoints one Write deletes in a prefix are put
+	// back, each at its own instant, in that Write's checkpoint commit. Zero (the
+	// default) puts none back, as before.
+	Replace int
 }
+
+// replaceBatchMax caps the checkpoints one Write puts back, across all its
+// prefixes.
+const replaceBatchMax = 32
 
 // prefixState is what the writer remembers about one prefix. Everything but
 // below and the part of ckpts it bounds is exactly what a read of the whole prefix
@@ -433,11 +449,33 @@ func (e *Engine) applyCheckpoints(b *pebble.Batch) error {
 	return err
 }
 
-// writeCheckpoints builds and writes, in one commit, the checkpoints of the
-// prefixes this write touched that are due, in key order. It never returns an
-// error: the records are committed, so a failure is counted and the prefixes it
-// concerned are forgotten and will be read from the database next time.
+// writeCheckpoints is [Engine.writeCheckpointsAfter] for a write that deleted none.
 func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
+	e.writeCheckpointsAfter(touched, nil)
+}
+
+// made is a checkpoint built for a commit: where, at which instant, and how many
+// bytes its value is.
+type made struct {
+	prefix string
+	c      int64
+	size   int
+}
+
+// writeCheckpointsAfter builds and writes, in one commit, the checkpoints of the
+// prefixes this write touched that are due, in key order, and, when the policy asks
+// for it, those of the checkpoints the write deleted (deleted, by prefix, the
+// instants) that it puts back. It never returns an error: the records are
+// committed, so a failure is counted and the prefixes it concerned are forgotten
+// and will be read from the database next time.
+//
+// The replacements are built first and kept in a list of their own, apart from the
+// due ones (done): a replacement is not "the last checkpoint written", so the
+// spacing of the policy (since, sinceBytes, lastBytes) is set by the due ones alone,
+// and a replacement only enters the list of instants the prefix has. The bytes of
+// both lists are added up once, for "checkpoint.bytes_written", where "written" and
+// "replaced" count each its own.
+func (e *Engine) writeCheckpointsAfter(touched map[string]struct{}, deleted map[string][]int64) {
 	if !e.ckpt.On {
 		return
 	}
@@ -448,12 +486,20 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 	slices.Sort(keys)
 	b := e.kv.NewBatch()
 	defer func() { _ = b.Close() }()
-	type made struct {
-		prefix string
-		c      int64
-		size   int
+	var back, done []made
+	for _, r := range e.chooseReplacements(keys, deleted) {
+		val, err := e.build([]byte(r.prefix), r.c)
+		if err != nil {
+			e.rec.Count("checkpoint.errors", 1)
+			e.forget(r.prefix)
+			continue
+		}
+		if err := b.Set(stampKey([]byte(r.prefix), r.c, kindCheckpoint), val, nil); err != nil {
+			e.rec.Count("checkpoint.errors", 1)
+			continue
+		}
+		back = append(back, made{r.prefix, r.c, len(val)})
 	}
-	var done []made
 	for _, k := range keys {
 		st := e.states[k]
 		if st == nil || !e.ckpt.due(st) {
@@ -468,7 +514,15 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 			e.forget(k)
 			continue
 		}
-		if _, exists := slices.BinarySearch(st.ckpts, c); exists {
+		_, exists := slices.BinarySearch(st.ckpts, c)
+		if !exists {
+			// A replacement of this commit at the same instant summarizes it as well.
+			// Leaving lastBytes as it was here is deliberate: the two checkpoints are at
+			// the same instant of the same prefix, so their sizes are nearly equal, and
+			// the case is rare.
+			exists = slices.ContainsFunc(back, func(m made) bool { return m.prefix == k && m.c == c })
+		}
+		if exists {
 			st.since, st.sinceBytes = 0, 0 // already summarized to here, and still true
 			continue
 		}
@@ -484,7 +538,7 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		}
 		done = append(done, made{k, c, len(val)})
 	}
-	if len(done) == 0 {
+	if len(done) == 0 && len(back) == 0 {
 		return
 	}
 	if err := e.applyCheckpoints(b); err != nil {
@@ -497,22 +551,129 @@ func (e *Engine) writeCheckpoints(touched map[string]struct{}) {
 		if st == nil {
 			continue
 		}
-		i, _ := slices.BinarySearch(st.ckpts, m.c)
-		st.ckpts = slices.Insert(st.ckpts, i, m.c)
+		e.insertCheckpoint(st, m.c)
 		st.since, st.sinceBytes, st.lastBytes = 0, 0, m.size
 	}
+	for _, m := range back {
+		if st := e.states[m.prefix]; st != nil {
+			e.insertCheckpoint(st, m.c)
+		}
+		e.tally(m.prefix, tallyReplaced, 1)
+	}
 	var bytes int64
-	for _, m := range done {
+	for _, m := range slices.Concat(done, back) {
 		bytes += int64(len(m.prefix) + suffixLen + m.size)
 	}
-	e.rec.Count("checkpoint.written", int64(len(done)))
+	if len(done) > 0 {
+		e.rec.Count("checkpoint.written", int64(len(done)))
+	}
+	if len(back) > 0 {
+		e.rec.Count("checkpoint.replaced", int64(len(back)))
+	}
 	e.rec.Count("checkpoint.bytes_written", bytes)
+}
+
+func (e *Engine) insertCheckpoint(st *prefixState, c int64) {
+	i, found := slices.BinarySearch(st.ckpts, c)
+	if !found {
+		st.ckpts = slices.Insert(st.ckpts, i, c)
+	}
+}
+
+// Which of the three counts of a prefix a tally adds to.
+const (
+	tallyInvalidated = iota // checkpoints a record deleted
+	tallyReplaced           // checkpoints put back
+	tallyCapped             // checkpoints not put back, for either cap
+)
+
+// tally adds n to one of a prefix's counts, if the engine keeps them (see
+// [Options].TallyPrefixes); it changes nothing that is stored.
+func (e *Engine) tally(prefix string, which int, n int64) {
+	if e.tallies == nil || n == 0 {
+		return
+	}
+	t := e.tallies[prefix]
+	if t == nil {
+		t = new([3]int64)
+		e.tallies[prefix] = t
+	}
+	t[which] += n
+}
+
+// replacement is a checkpoint to put back.
+type replacement struct {
+	prefix string
+	c      int64
+}
+
+// chooseReplacements picks, from the instants each prefix lost to this write, the
+// checkpoints to put back: prefixes in key order and, within one, the newest first.
+// An instant is dropped if no checkpoint can be written there (at or below the
+// horizon) or if the prefix already has one; of the rest at most Replace go back per
+// prefix and replaceBatchMax in all, and the others are counted, in the counter
+// "checkpoint.replace_capped" and in the tallies, and left to the policy, which
+// places the next one as it always does.
+//
+// A replacement is built over the data as it now is, so it covers the late record
+// and its W is at or above that record's Seq. A read pinned to a token below that W
+// cannot use it, and walks on to an older checkpoint, as it would have after the
+// deletion: this is accepted.
+func (e *Engine) chooseReplacements(keys []string, deleted map[string][]int64) []replacement {
+	if e.ckpt.Replace <= 0 || len(deleted) == 0 {
+		return nil
+	}
+	var chosen []replacement
+	var capped int64
+	for _, k := range keys {
+		st := e.states[k]
+		if st == nil || len(deleted[k]) == 0 {
+			continue
+		}
+		cs := slices.Clone(deleted[k])
+		slices.SortFunc(cs, func(a, b int64) int { return cmp.Compare(b, a) }) // newest first
+		cs = slices.Compact(cs)
+		var local []replacement
+		var localCapped int64
+		failed := false
+		for _, c := range cs {
+			if !e.placeable(c) {
+				continue
+			}
+			if err := e.know([]byte(k), st, c); err != nil {
+				e.rec.Count("checkpoint.errors", 1)
+				e.forget(k)
+				failed = true
+				break
+			}
+			if _, exists := slices.BinarySearch(st.ckpts, c); exists {
+				continue
+			}
+			if len(local) >= e.ckpt.Replace || len(chosen)+len(local) >= replaceBatchMax {
+				localCapped++
+				continue
+			}
+			local = append(local, replacement{k, c})
+		}
+		if failed {
+			continue
+		}
+		chosen = append(chosen, local...)
+		capped += localCapped
+		e.tally(k, tallyCapped, localCapped)
+	}
+	if capped > 0 {
+		e.rec.Count("checkpoint.replace_capped", capped)
+	}
+	return chosen
 }
 
 // invalidate deletes, in b, the checkpoints of the prefix that a record at ns
 // makes untrue: every one that covers an instant after it. It updates the list in
-// memory; a failed commit forgets the state, so the list is reread.
-func (e *Engine) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns int64) error {
+// memory; a failed commit forgets the state, so the list is reread. If deleted is
+// not nil the instants it deleted are added to deleted[prefix], for the write to
+// put some of them back.
+func (e *Engine) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns int64, deleted map[string][]int64) error {
 	if ns == math.MaxInt64 {
 		return nil // nothing is after it
 	}
@@ -523,12 +684,17 @@ func (e *Engine) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns 
 	if i == len(st.ckpts) {
 		return nil
 	}
-	for _, c := range st.ckpts[i:] {
+	gone := st.ckpts[i:]
+	for _, c := range gone {
 		if err := b.Delete(stampKey(prefix, c, kindCheckpoint), nil); err != nil {
 			return err
 		}
 	}
-	e.rec.Count("checkpoint.invalidated", int64(len(st.ckpts)-i))
+	e.rec.Count("checkpoint.invalidated", int64(len(gone)))
+	e.tally(string(prefix), tallyInvalidated, int64(len(gone)))
+	if deleted != nil {
+		deleted[string(prefix)] = append(deleted[string(prefix)], gone...)
+	}
 	st.ckpts = st.ckpts[:i]
 	return nil
 }

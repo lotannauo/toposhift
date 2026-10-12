@@ -64,6 +64,10 @@ func variants() map[string]variant {
 		"stress":  {pebblelog.CheckpointOptions{On: true, KMin: 1}, []int{0}, both, true},
 		"lag 1ns": {pebblelog.CheckpointOptions{On: true, KMin: 1, Lag: time.Nanosecond}, []int{5}, both, false},
 		"lag 2s":  {pebblelog.CheckpointOptions{On: true, KMin: 3, Alpha: 1, Lag: 2 * time.Second}, []int{0}, late, false},
+		// The checkpoints a late record deletes are put back: on the workloads whose
+		// records arrive late (5) and in a backlog (6), and at the shortest spacing.
+		"replace k8":     {pebblelog.CheckpointOptions{On: true, KMin: 8, Alpha: 1, Replace: 4}, []int{5, 6}, both, false},
+		"replace stress": {pebblelog.CheckpointOptions{On: true, KMin: 1, Replace: 4}, []int{0}, late, false},
 	}
 }
 

@@ -74,6 +74,10 @@ type Options struct {
 	// deadline), and for
 	// checkpoints "checkpoint.written", "checkpoint.bytes_written" (key and value
 	// bytes), "checkpoint.invalidated",
+	// "checkpoint.replaced" and "checkpoint.replace_capped" (the checkpoints a write
+	// put back after deleting them, and those it did not, for either cap; see
+	// [CheckpointOptions].Replace; the bytes of the first are in
+	// "checkpoint.bytes_written", and they are not in "checkpoint.written"),
 	// "checkpoint.errors", "checkpoint.loads" (prefixes whose state was read from
 	// the database: not those a retention worked out, nor the new ones a complete
 	// map knows to be empty), "checkpoint.lookups",
@@ -87,6 +91,10 @@ type Options struct {
 	// Checkpoints says when interleaved checkpoints are written; the zero value
 	// writes none, and the layout then answers every read by replaying.
 	Checkpoints CheckpointOptions
+	// TallyPrefixes keeps, in memory and per prefix, how many checkpoints a record
+	// deleted, and how many of those a write put back and did not (see
+	// [Engine.PrefixTallies]). It changes no stored byte.
+	TallyPrefixes bool
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes], and retainStopAfter
 	// makes a retention fail after that many commits of its work: both for tests.
@@ -100,6 +108,10 @@ type Options struct {
 	// landing.
 	beforeCheckpointApply func() error
 	beforeRecordApply     func() error
+	// seeDeleted is called by every write that stores records, just before its
+	// checkpoint commit, with the instants the write deleted by prefix: nil unless
+	// the policy puts checkpoints back. For tests.
+	seeDeleted func(deleted map[string][]int64)
 	// fullStateRead makes the writer read the whole of a prefix to learn its
 	// state, as it once did, and never trust the map to be complete: for tests
 	// that compare the two.
@@ -119,7 +131,10 @@ type Engine struct {
 	ckpt        CheckpointOptions
 
 	afterCheckpointApply, beforeCheckpointApply, beforeRecordApply func() error
+	seeDeleted                                                     func(deleted map[string][]int64)
 	fullStateRead                                                  bool
+	// tallies are the per-prefix counts of [Options].TallyPrefixes: nil when off.
+	tallies map[string]*[3]int64
 
 	// mu serializes Write and Retain, which the caller is already required to
 	// do; it keeps the horizon coherent if a caller forgets.
@@ -193,6 +208,9 @@ func Open(dir string, opts Options) (*Engine, error) {
 	if o := opts.Checkpoints; o.KMin < 0 || o.Alpha < 0 || o.Lag < 0 || math.IsNaN(o.Alpha) || math.IsInf(o.Alpha, 0) {
 		return nil, fmt.Errorf("pebblelog: checkpoint options %+v must be finite and not negative", o)
 	}
+	if o := opts.Checkpoints; o.Replace < 0 || (o.Replace > 0 && !o.On) {
+		return nil, fmt.Errorf("pebblelog: Replace is %d: it is not negative, and above zero needs the checkpoints On", o.Replace)
+	}
 	cfg := opts.Config
 	if cfg.Schema == 0 {
 		cfg.Schema = pebblekv.SchemaDefault
@@ -201,7 +219,10 @@ func Open(dir string, opts Options) (*Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter, ckpt: opts.Checkpoints, afterCheckpointApply: opts.afterCheckpointApply, beforeCheckpointApply: opts.beforeCheckpointApply, beforeRecordApply: opts.beforeRecordApply, fullStateRead: opts.fullStateRead, states: map[string]*prefixState{}}
+	e := &Engine{kv: kv, ids: pebblekv.Default, rec: opts.Recorder, retainBytes: opts.retainBatchBytes, stopAfter: opts.retainStopAfter, ckpt: opts.Checkpoints, afterCheckpointApply: opts.afterCheckpointApply, beforeCheckpointApply: opts.beforeCheckpointApply, beforeRecordApply: opts.beforeRecordApply, seeDeleted: opts.seeDeleted, fullStateRead: opts.fullStateRead, states: map[string]*prefixState{}}
+	if opts.TallyPrefixes {
+		e.tallies = map[string]*[3]int64{}
+	}
 	if e.rec == nil {
 		e.rec = engine.NopRecorder{}
 	}
@@ -309,6 +330,11 @@ func (e *Engine) Write(batch []engine.Record) error {
 	// untrue, so it is deleted in the same commit as the record. If anything fails
 	// from here the list in memory may be ahead of the database, and is dropped.
 	touched := map[string]struct{}{}
+	// What the write deletes is remembered only if some of it will be put back.
+	var deleted map[string][]int64
+	if e.ckpt.Replace > 0 {
+		deleted = map[string][]int64{}
+	}
 	fail := func(err error) error {
 		e.forgetAll()
 		return err
@@ -325,7 +351,7 @@ func (e *Engine) Write(batch []engine.Record) error {
 			if err != nil {
 				return fail(err)
 			}
-			if err := e.invalidate(b, p.prefix, st, p.ns); err != nil {
+			if err := e.invalidate(b, p.prefix, st, p.ns, deleted); err != nil {
 				return fail(err)
 			}
 			st.latest = max(st.latest, p.ns)
@@ -352,7 +378,10 @@ func (e *Engine) Write(batch []engine.Record) error {
 	e.rec.Count("write.records", int64(len(puts)))
 	// The second commit: the checkpoints this write made due. It finishes before
 	// Write returns, and its failure is counted, never returned.
-	e.writeCheckpoints(touched)
+	if e.seeDeleted != nil {
+		e.seeDeleted(deleted)
+	}
+	e.writeCheckpointsAfter(touched, deleted)
 	return nil
 }
 
