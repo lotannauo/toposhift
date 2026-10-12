@@ -217,6 +217,73 @@ run = [
   "zizmor --min-severity low .github/workflows",
 ]
 
+[tasks."check:collector"]
+description = "Validate the OpenTelemetry collector configuration with the collector itself, and check that a misspelt key is refused"
+# Pulls the image when it is absent (about 100 MB). Without Docker, or when the
+# pull fails, it skips locally and fails when CI is true. If the CI runner's
+# egress policy ever moves from audit to block, it must allow registry-1.docker.io,
+# auth.docker.io and production.cloudflare.docker.com.
+# OTELCOL_IMAGE is the collector image that deploy/otel-collector/toposhift.yaml is
+# validated with: the tag and the multi-arch index digest, bumped together.
+env = { OTELCOL_IMAGE = "otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6" }
+run = '''
+set -eu
+img="$OTELCOL_IMAGE"
+cfg="deploy/otel-collector/toposhift.yaml"
+gate="--feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification"
+ci=false
+if [ "${CI:-}" = true ]; then ci=true; fi
+
+# Docker, and the image (pulled only when absent).
+if ! err="$(docker info 2>&1 >/dev/null)"; then
+  if [ "$ci" = true ]; then echo "check:collector: Docker is not available: $err" >&2; exit 1; fi
+  echo "check:collector: skipped: Docker is not available ($err); the static CI shard runs it" >&2
+  exit 0
+fi
+if ! docker image inspect "$img" >/dev/null 2>&1; then
+  if ! err="$(docker pull "$img" 2>&1 >/dev/null)"; then
+    if [ "$ci" = true ]; then echo "check:collector: could not pull $img: $err" >&2; exit 1; fi
+    echo "check:collector: skipped: could not pull $img ($err)" >&2
+    exit 0
+  fi
+fi
+
+tmp="$(mktemp -d)"
+pos="check-collector-$$-pos"
+ctl="check-collector-$$-ctl"
+trap 'docker rm -f "$pos" "$ctl" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+validate() { # $1: a directory holding toposhift.yaml, mounted read-only; $2: the container's name
+  docker run --rm --name "$2" --pull never --network none \
+    -v "$1:/etc/otelcol:ro" \
+    "$img" validate --config /etc/otelcol/toposhift.yaml "$gate"
+}
+
+# Positive: the shipped file validates (set -e stops the task otherwise).
+mkdir "$tmp/ok"
+cp "$cfg" "$tmp/ok/toposhift.yaml"
+validate "$tmp/ok" "$pos"
+
+# Negative control: exactly one key misspelt.
+n="$(grep -c '^ *num_consumers:' "$cfg" || true)"
+if [ "$n" != 1 ]; then echo "check:collector: expected exactly one num_consumers: line in $cfg, found $n" >&2; exit 1; fi
+mkdir "$tmp/bad"
+sed 's/^\( *\)num_consumers:/\1num_consumer:/' "$cfg" > "$tmp/bad/toposhift.yaml"
+n="$( { diff "$cfg" "$tmp/bad/toposhift.yaml" || true; } | grep -c '^>' || true)"
+if [ "$n" != 1 ]; then echo "check:collector: the control changed $n lines, not 1" >&2; exit 1; fi
+rc=0
+out="$(validate "$tmp/bad" "$ctl" 2>&1)" || rc=$?
+if [ "$rc" = 0 ]; then echo "check:collector: the misspelt control validated: the check cannot fail" >&2; exit 1; fi
+if ! printf '%s\n' "$out" | grep -qw num_consumer; then
+  echo "check:collector: the control failed for another reason (exit $rc):" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+echo "check:collector: ok (the shipped config validates; the control is refused)"
+'''
+
 [tasks.spelling]
 description = "Check spelling in code and docs"
 run = "typos"
@@ -300,8 +367,8 @@ description = "Everything CI runs on a pull request"
 depends = ["ci:static", "ci:bench", "ci:race", "ci:benchrace"]
 
 [tasks."ci:static"]
-description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows and secrets"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets"]
+description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows, secrets and the collector configuration"
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets", "check:collector"]
 
 [tasks."ci:bench"]
 description = "CI shard: the bench module's full tests and its cgo-free build"
