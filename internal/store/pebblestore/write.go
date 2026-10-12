@@ -270,6 +270,9 @@ func (s *Store) commitRecords(b *pebble.Batch) error {
 			return err // tests: a commit that failed without landing
 		}
 	}
+	if s.beforeApply != nil {
+		s.beforeApply(b)
+	}
 	if err := s.kv.Apply(b, s.kv.WriteOptions()); err != nil {
 		return err
 	}

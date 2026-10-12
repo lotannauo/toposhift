@@ -213,6 +213,96 @@ type GateTrace struct {
 	Unpaced, Excluded        GateBatches
 	// PacedRestNs is the part of RestNs that falls after the pacing started.
 	PacedRestNs int64 `json:",omitempty"`
+	// Chunks is, for each of the samples in [gateChunkSamples], how its values spread
+	// over the chunks of all the passes of the build pooled, each pass's last chunk
+	// left out, which is as short as what was left: reported, not judged. (A pass has
+	// only tens of chunks, so a quantile of one pass would be little more than its
+	// largest value.) A build recorded before it has none.
+	Chunks map[string]GateSpread `json:",omitempty"`
+}
+
+// GateSpread is how the values of one sample spread: how many there were, the least
+// and the largest, exactly, and the 50th and 99th percentiles, each read as the upper
+// bound of its histogram bucket (exact below 8, and otherwise at most an eighth above
+// the value).
+type GateSpread struct {
+	Count, Min, P50, P99 int64
+	Max                  int64 `json:",omitempty"`
+}
+
+// gateChunkSamples are the samples a retention gives once for each chunk it commits,
+// in this order, whose spread a build keeps; "retain.chunks" is sampled once for each
+// pass that ends, after the samples of its last chunk.
+var gateChunkSamples = []string{"retain.chunk_open_ns", "retain.chunk_prefixes", "retain.chunk_hold_ns"}
+
+// chunkSpread gathers the samples of the chunks: those of a chunk are held until the
+// next chunk's first sample shows that it was not the last of its pass, and dropped
+// when the pass's "retain.chunks" shows that it was. A pass that a later retention
+// replaced in its rewriting ends with no "retain.chunks": its last chunk was cut by
+// nothing but the replacement, and is kept.
+type chunkSpread struct {
+	// seen says a sample of a chunk came, kept or not.
+	seen   bool
+	held   map[string]int64
+	hist   map[string]*Histogram
+	least  map[string]int64
+	counts map[string]int64
+}
+
+func (c *chunkSpread) sample(name string, v int64) {
+	c.seen = true
+	if name == gateChunkSamples[0] {
+		c.keep()
+	}
+	if c.held == nil {
+		c.held = map[string]int64{}
+	}
+	c.held[name] = v
+}
+
+// keep adds the chunk held to the spread.
+func (c *chunkSpread) keep() {
+	if len(c.held) == 0 {
+		return
+	}
+	if c.hist == nil {
+		c.hist, c.least, c.counts = map[string]*Histogram{}, map[string]int64{}, map[string]int64{}
+	}
+	for name, v := range c.held {
+		h := c.hist[name]
+		if h == nil {
+			h = &Histogram{}
+			c.hist[name] = h
+		}
+		h.Add(time.Duration(v))
+		if n := c.counts[name]; n == 0 || v < c.least[name] {
+			c.least[name] = v
+		}
+		c.counts[name]++
+	}
+	clear(c.held)
+}
+
+// passEnded drops the chunk held: it was the last of its pass.
+func (c *chunkSpread) passEnded() { clear(c.held) }
+
+// spread is the spread of each sample, with the chunk held counted (a build that ends
+// in a pass ends with a chunk that was not its last). A build whose store sampled
+// chunks, all of them the last of their pass, has each sample with a count of 0;
+// one whose store sampled none has nil.
+func (c *chunkSpread) spread() map[string]GateSpread {
+	c.keep()
+	if !c.seen {
+		return nil
+	}
+	out := map[string]GateSpread{}
+	for _, name := range gateChunkSamples {
+		out[name] = GateSpread{}
+	}
+	for name, h := range c.hist {
+		out[name] = GateSpread{Count: c.counts[name], Min: c.least[name], P50: h.Quantile(0.5), P99: h.Quantile(0.99), Max: h.MaxNs}
+	}
+	return out
 }
 
 // gateMaxima are the samples whose largest value a build keeps.
@@ -248,6 +338,12 @@ func (m *maxRecorder) Sample(name string, v int64) {
 		m.mu.Lock()
 		m.max[name] = max(m.max[name], v)
 		m.mu.Unlock()
+	}
+	switch {
+	case slices.Contains(gateChunkSamples, name):
+		m.gate.chunkSample(name, v)
+	case name == "retain.chunks":
+		m.gate.passEnded()
 	}
 	m.Recorder.Sample(name, v)
 }
@@ -286,6 +382,28 @@ type gateTracker struct {
 	// pendingHit is whether the last settle the store counted reached its deadline, until
 	// the observer is told that settle ended (see settleCounted).
 	pendingHit bool
+	// chunks gathers the samples of the chunks of the retentions.
+	chunks chunkSpread
+}
+
+// chunkSample is one sample of a chunk of a retention (see [gateChunkSamples]).
+func (g *gateTracker) chunkSample(name string, v int64) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.chunks.sample(name, v)
+}
+
+// passEnded is a retention's "retain.chunks": its pass has ended.
+func (g *gateTracker) passEnded() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.chunks.passEnded()
 }
 
 func newGateTracker(epoch time.Time) *gateTracker { return &gateTracker{epoch: epoch} }
@@ -592,7 +710,7 @@ func (g *gateTracker) trace(end time.Time, mode string, keep time.Duration, maxi
 		Mode: mode, Windows: slices.Clone(g.windows), Inside: g.inside, Settling: g.settling, Outside: g.outside,
 		WriteNs: g.off(end), RestNs: g.rest.Nanoseconds(), KeepNs: keep.Nanoseconds(), Maxima: maxima,
 		StreamEndNs: g.off(end), PaceStartNs: g.paceStartNs, Unpaced: g.unpaced, Excluded: g.excluded,
-		PacedRestNs: g.restPaced.Nanoseconds(),
+		PacedRestNs: g.restPaced.Nanoseconds(), Chunks: g.chunks.spread(),
 	}
 }
 
@@ -668,6 +786,16 @@ type StoreGateMetrics struct {
 	HeapLivePeak           int64
 	// TombstonesPeak is the most tombstones any line counted.
 	TombstonesPeak int64
+	// L0SublevelsPeak is the most sublevels of level 0 any line counted. WriteStalls
+	// is a lower bound of the write stalls of the whole build, summed over the
+	// openings of its database: a line counts them from the opening of the database,
+	// so a count lower than the line before's starts another opening, and the last
+	// count of each opening is added up. It is a lower bound because the stalls after
+	// an opening's last line are not counted, and an opening that no line sampled
+	// before it overtook the count of the one before is missed. WriteStallsRead says a line counted them (a
+	// build recorded before they were has none). Reported, not judged.
+	L0SublevelsPeak, WriteStalls int64
+	WriteStallsRead              bool
 }
 
 // LoadStoreGateBuild reads the build under dir.
@@ -693,8 +821,9 @@ func LoadStoreGateBuild(dir string) (*StoreGateBuild, error) {
 	return b, nil
 }
 
-// readStoreGateMetrics reads the peak live heap and the peak tombstones off a metrics
-// file; a file that is not there has none.
+// readStoreGateMetrics reads the peak live heap, the peak tombstones, the peak
+// sublevels of level 0 and the write stalls off a metrics file; a file that is not
+// there has none.
 func readStoreGateMetrics(path string) (StoreGateMetrics, error) {
 	var out StoreGateMetrics
 	f, err := os.Open(path)
@@ -707,6 +836,8 @@ func readStoreGateMetrics(path string) (StoreGateMetrics, error) {
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(nil, 1<<22)
+	// The write stalls of the openings before the current one, and of the current one.
+	var before, opening int64
 	for n := 1; sc.Scan(); n++ {
 		var l metricLine
 		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
@@ -718,7 +849,15 @@ func readStoreGateMetrics(path string) (StoreGateMetrics, error) {
 			out.HeapLivePeak = max(out.HeapLivePeak, l.Go.HeapLive)
 		}
 		out.TombstonesPeak = max(out.TombstonesPeak, l.Stats["tombstones"])
+		out.L0SublevelsPeak = max(out.L0SublevelsPeak, l.Stats["l0_sublevels"])
+		if n, ok := l.Stats["write_stalls"]; ok {
+			if n < opening {
+				before += opening // a new opening of the database
+			}
+			opening, out.WriteStallsRead = n, true
+		}
 	}
+	out.WriteStalls = before + opening
 	return out, sc.Err()
 }
 
@@ -1303,10 +1442,69 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 		b.label(), t.Mode, len(t.Windows), fmtDur(rewriteMax), fmtDur(settleMax), fmtDur(returnMax),
 		maxima("retain.max_prefix_records"), chunk, touch, loadText, settling,
 		b.Metrics.TombstonesPeak, m.StatsBuilt["tombstones"], m.StatsCompacted["tombstones"], describedOr(m, SyncKey, "false"))
+	info += chunkDetail(b)
 	if bg {
 		info += backgroundDetail(b, rate, fromDay)
 	}
 	return rows, info
+}
+
+// chunkDetail is what the report says of the chunks of a build's retentions and of
+// its database while it was written: the spread of each sample of a chunk over the
+// chunks of all its passes pooled, the last chunk of each pass left out; the least
+// prefixes a chunk rewrote, which is 1 if a pass collapsed to one prefix per chunk
+// even for a while; the flushes the passes started, put off and could not start; a
+// lower bound of the write stalls, summed over the openings of the database; and the
+// peak sublevels of level 0. All of it is of the whole build, not only of the part
+// the gate judges, and is reported and not judged.
+func chunkDetail(b *StoreGateBuild) string {
+	t := b.Manifest.Gate
+	var parts []string
+	for _, name := range []string{"retain.chunk_prefixes", "retain.chunk_open_ns", "retain.chunk_hold_ns"} {
+		sp, ok := t.Chunks[name]
+		if !ok {
+			parts = append(parts, name+" not recorded")
+			continue
+		}
+		if sp.Count == 0 {
+			parts = append(parts, name+" none (every chunk was the last of its pass)")
+			continue
+		}
+		show := func(v int64) string { return strconv.FormatInt(v, 10) }
+		if strings.HasSuffix(name, "_ns") {
+			show = fmtDur
+		}
+		parts = append(parts, fmt.Sprintf("%s min %s, p50 %s, p99 %s, max %s over %d", name, show(sp.Min), show(sp.P50), show(sp.P99), show(sp.Max), sp.Count))
+	}
+	collapse := "not recorded"
+	if sp, ok := t.Chunks["retain.chunk_prefixes"]; ok && sp.Count == 0 {
+		collapse = "none counted"
+	} else if ok {
+		collapse = strconv.FormatInt(sp.Min, 10)
+		if sp.Min <= 1 {
+			collapse += " (a chunk that was not its pass's last rewrote one prefix)"
+		}
+	}
+	// A store that samples its chunks counts each flush it starts, puts off or cannot
+	// start, so a count it does not report is none; an older one counted none of them.
+	flushes := "not recorded"
+	if t.Chunks != nil {
+		var fs []string
+		for _, name := range []string{"retain.flushes", "retain.flush_deferred", "retain.flush_errors"} {
+			fs = append(fs, fmt.Sprintf("%s %d", name, b.Manifest.Counters[name]))
+		}
+		flushes = strings.Join(fs, ", ")
+	}
+	stalls := "not recorded"
+	if b.Metrics.WriteStallsRead {
+		stalls = "at least " + strconv.FormatInt(b.Metrics.WriteStalls, 10)
+	}
+	l0 := "not recorded"
+	if b.Metrics.Lines > 0 {
+		l0 = strconv.FormatInt(b.Metrics.L0SublevelsPeak, 10)
+	}
+	return fmt.Sprintf("; the whole build, not only its judged part (reported, not judged): chunks of all passes pooled, each pass's last left out: %s; least prefixes in a chunk %s; flushes: %s; write stalls %s, summed over the openings of the database; level 0 sublevels: peak %s sampled",
+		strings.Join(parts, ", "), collapse, flushes, stalls, l0)
 }
 
 // backgroundDetail is what the report says of a build in the background besides its

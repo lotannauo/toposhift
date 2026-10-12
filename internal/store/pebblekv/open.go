@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble/v2"
@@ -50,6 +51,15 @@ type Tuning struct {
 	// CacheBytes is the block cache for blocks. A database that is written to gets
 	// [Tuning.MemTableReserve] more, which Pebble holds back for its memtables.
 	CacheBytes int64
+	// FlushDelayDeleteRange, if not zero, is how long after the first range deletion
+	// is applied to a memtable Pebble flushes that memtable, at the latest. Zero, the
+	// value of both tunings here, is off: a retention pass flushes its own range
+	// deletions once they reach a count (see pebblestore). A delay that is set
+	// rotates the memtable on Pebble's own timer, through the same wait on Pebble's
+	// write-stall conditions as any rotation, with Pebble's commit mutex held and
+	// without the check of level 0 a pass makes before it flushes: if level 0 is at
+	// its stop threshold, every commit then waits for compactions.
+	FlushDelayDeleteRange time.Duration
 }
 
 // TinyTuning makes everything small, to exercise flushes, compactions and block
@@ -70,7 +80,10 @@ func TinyTuning() Tuning {
 // keys, so the block size is a variable to measure and not a given), 64 MB tables
 // and a 256 MB level base (Pebble's defaults are 2 MB and 64 MB), a larger
 // memtable than its 4 MB, and a cache that holds a small working set. The numbers
-// are placeholders until the measurement stage chooses them.
+// are placeholders until the measurement stage chooses them. It is also
+// the tuning of the store that boots with no configuration (pebblestore's
+// DefaultOptions), and of a Config whose Tuning is zero, so these numbers are the
+// product's defaults too.
 func BenchTuning() Tuning {
 	return Tuning{
 		MemTableSize:          64 << 20,
@@ -180,6 +193,12 @@ type Config struct {
 	// A test may install one that drops the messages, records them, or panics on a
 	// fatal condition instead of ending the process.
 	Logger pebble.Logger
+	// EventListener, if not nil, is told of the database's events (flushes,
+	// compactions, write stalls and the rest), beside the listener of the KV itself,
+	// which counts write stalls (see [KV.WriteStalls]): for tests and measurements.
+	// Pebble calls some of its functions with its own mutex held, so they must not
+	// call back into the database.
+	EventListener *pebble.EventListener
 }
 
 // KV is an open database and the settings its layouts need next to it.
@@ -200,6 +219,8 @@ type KV struct {
 	opts      *pebble.Options
 	closeOnce sync.Once
 	closeErr  error
+	// stalls counts the times Pebble began to delay writes (see [KV.WriteStalls]).
+	stalls *atomic.Int64
 }
 
 // Close closes the database and releases the block cache.
@@ -210,6 +231,18 @@ func (k *KV) Close() error {
 	})
 	return k.closeErr
 }
+
+// L0Sublevels is how many sublevels level 0 has now, and how many make Pebble stop
+// writes (and a flush that rotates the memtable, which checks the same condition)
+// until compactions bring them down.
+func (k *KV) L0Sublevels() (n, stop int) {
+	return int(k.Metrics().Levels[0].Sublevels), k.opts.L0StopWritesThreshold
+}
+
+// WriteStalls is how many times since it was opened the database began to delay
+// writes, because its memtables were waiting to be flushed or level 0 held too many
+// tables.
+func (k *KV) WriteStalls() int64 { return k.stalls.Load() }
 
 // Dir is the directory the database lives in.
 func (k *KV) Dir() string { return k.dir }
@@ -265,6 +298,10 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 		cache.Unref()
 		return nil, err
 	}
+	stalls := new(atomic.Int64)
+	opts.AddEventListener(pebble.EventListener{
+		WriteStallBegin: func(pebble.WriteStallBeginInfo) { stalls.Add(1) },
+	})
 	db, err := pebble.Open(dir, opts)
 	if err != nil {
 		cache.Unref()
@@ -274,7 +311,7 @@ func Open(dir string, layout Layout, cfg Config) (*KV, error) {
 	if cfg.Sync {
 		wo = pebble.Sync
 	}
-	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, cache: cache, dir: dir}
+	kv := &KV{DB: db, cfg: cfg, wo: wo, cmp: layout.Comparer.Compare, cache: cache, dir: dir, stalls: stalls}
 	kv.recovered = db.Metrics().Total().TableBytesFlushed
 	full := opts.Clone() // Open filled in the defaults on a copy of its own
 	full.EnsureDefaults()
@@ -315,6 +352,7 @@ func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Optio
 		MemTableStopWritesThreshold: memTableStopWritesThreshold,
 		L0CompactionThreshold:       t.L0CompactionThreshold,
 		LBaseMaxBytes:               t.LBaseMaxBytes,
+		FlushDelayDeleteRange:       t.FlushDelayDeleteRange,
 		FS:                          cfg.FS,
 		KeySchema:                   chosen.Name,
 		KeySchemas:                  sstable.MakeKeySchemas(all...),
@@ -323,6 +361,13 @@ func buildOptions(layout Layout, cfg Config, cache *pebble.Cache) (*pebble.Optio
 	// future default cannot reshape the tables.
 	opts.Experimental.ValueSeparationPolicy = func() pebble.ValueSeparationPolicy {
 		return pebble.ValueSeparationPolicy{Enabled: false}
+	}
+	if cfg.EventListener != nil {
+		// A copy, with the functions left nil filled in as Pebble would, so that a
+		// background error is still logged once another listener is teed beside it.
+		l := *cfg.EventListener
+		l.EnsureDefaults(log)
+		opts.EventListener = &l
 	}
 	opts.DisableAutomaticCompactions = cfg.DisableAutoCompactions
 	opts.ReadOnly = cfg.ReadOnly

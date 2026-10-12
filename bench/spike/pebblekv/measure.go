@@ -69,6 +69,9 @@ type Snapshot struct {
 	// PendingStatsTables is the number of tables queued for their statistics to be
 	// read.
 	PendingStatsTables int64
+	// WriteStalls is how many times since the database was opened Pebble began to
+	// delay writes (see [rootkv.KV.WriteStalls]).
+	WriteStalls int64
 }
 
 // Snapshot reads the database's metrics.
@@ -91,6 +94,7 @@ func (k *KV) Snapshot() Snapshot {
 		CompactionsInProgress: m.Compact.NumInProgress, FlushesInProgress: m.Flush.NumInProgress,
 		MemtableCount:      m.MemTable.Count,
 		PendingStatsTables: m.Table.PendingStatsCollectionCount,
+		WriteStalls:        k.WriteStalls(),
 	}
 	s.L0Sublevels = m.Levels[0].Sublevels
 	for i := 0; i < len(m.Levels) && i < len(s.TablesPerLevel); i++ {
@@ -118,6 +122,7 @@ func (s Snapshot) Flat() map[string]int64 {
 		"compaction_debt": int64(s.CompactionDebt), "compactions_in_progress": s.CompactionsInProgress,
 		"flushes_in_progress": s.FlushesInProgress, "l0_sublevels": int64(s.L0Sublevels),
 		"memtable_count": s.MemtableCount, "pending_stats_tables": s.PendingStatsTables,
+		"write_stalls": s.WriteStalls,
 	}
 	for i := range s.TablesPerLevel {
 		out[fmt.Sprintf("tables_l%d", i)] = s.TablesPerLevel[i]

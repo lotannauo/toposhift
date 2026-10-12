@@ -761,3 +761,108 @@ func TestThePacersSleepIsNotInTheCommitTime(t *testing.T) {
 		t.Errorf("the longest write in the timings is %s: it holds the pacer's sleep of 60ms", got)
 	}
 }
+
+// The recorder of a build keeps the spread of each sample of a chunk over every chunk
+// but the last of each pass that ended ("retain.chunks" follows that chunk), and keeps
+// the last chunk of a pass that a later one replaced (no "retain.chunks" follows it)
+// and the chunk a build ends in.
+func TestTheChunksOfAPassAreSpreadWithoutItsLastChunk(t *testing.T) {
+	t.Parallel()
+	g := newGateTracker(time.Now())
+	m := newMaxRecorder(NewCapture())
+	m.gate = g
+	chunk := func(prefixes int64, open, hold time.Duration) {
+		m.Sample("retain.chunk_open_ns", int64(open))
+		m.Sample("retain.chunk_prefixes", prefixes)
+		m.Sample("retain.chunk_hold_ns", int64(hold))
+	}
+	// A pass of four chunks, the last short.
+	chunk(100, time.Millisecond, 20*time.Millisecond)
+	chunk(5, 2*time.Millisecond, 25*time.Millisecond)
+	chunk(100, 3*time.Millisecond, 22*time.Millisecond)
+	chunk(1, 0, time.Millisecond)
+	m.Sample("retain.max_prefix_records", 3)
+	m.Sample("retain.chunks", 4)
+	// A pass replaced after two chunks, then a pass the build ends in.
+	chunk(7, time.Millisecond, 21*time.Millisecond)
+	chunk(6, time.Millisecond, 21*time.Millisecond)
+	chunk(4, 4*time.Millisecond, 30*time.Millisecond)
+
+	sp := g.trace(time.Now(), "background", 0, m.maxima()).Chunks
+	want := map[string]GateSpread{
+		"retain.chunk_prefixes": {Count: 6, Min: 4, Max: 100},
+		"retain.chunk_open_ns":  {Count: 6, Min: int64(time.Millisecond), Max: int64(4 * time.Millisecond)},
+		"retain.chunk_hold_ns":  {Count: 6, Min: int64(20 * time.Millisecond), Max: int64(30 * time.Millisecond)},
+	}
+	for name, w := range want {
+		got, ok := sp[name]
+		if !ok {
+			t.Errorf("no spread of %s: %v", name, sp)
+			continue
+		}
+		if got.Count != w.Count || got.Min != w.Min || got.Max != w.Max {
+			t.Errorf("%s: %d chunks, least %d, largest %d; want %d, %d and %d (the chunks of all passes pooled)", name, got.Count, got.Min, got.Max, w.Count, w.Min, w.Max)
+		}
+		if got.P50 < got.Min || got.P99 < got.P50 || got.Max < got.Min {
+			t.Errorf("%s: least %d, p50 %d, p99 %d", name, got.Min, got.P50, got.P99)
+		}
+	}
+	// Prefixes 4 5 6 7 100 100: the median is 6 (exact below 8), the 99th is 100's bucket.
+	if p := sp["retain.chunk_prefixes"]; p.P50 != 6 || p.P99 < 100 || p.P99 > 113 {
+		t.Errorf("prefixes p50 %d, p99 %d; want 6 and 100 within an eighth", p.P50, p.P99)
+	}
+	if len(sp) != 3 {
+		t.Errorf("spreads of %d samples: %v", len(sp), sp)
+	}
+
+	// A build with no chunk has no spread, and one whose chunks were all the last of
+	// their pass has a spread of none.
+	empty := newGateTracker(time.Now())
+	if c := empty.trace(time.Now(), "sync", 0, nil).Chunks; c != nil {
+		t.Errorf("a build without chunks has %v", c)
+	}
+	lasts := newGateTracker(time.Now())
+	m = newMaxRecorder(NewCapture())
+	m.gate = lasts
+	m.Sample("retain.chunk_open_ns", 1)
+	m.Sample("retain.chunk_prefixes", 3)
+	m.Sample("retain.chunk_hold_ns", 2)
+	m.Sample("retain.chunks", 1)
+	if c := lasts.trace(time.Now(), "sync", 0, nil).Chunks; len(c) != 3 || c["retain.chunk_prefixes"].Count != 0 {
+		t.Errorf("a build whose only chunk was its pass's last has %v", c)
+	}
+}
+
+// The gate reads the peak sublevels of level 0 and the write stalls off the metrics
+// file, the stalls summed over the openings of the database, and says when a file
+// did not count the stalls.
+func TestTheGateReadsTheStallsAndTheSublevels(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "metrics.jsonl")
+	// Two openings of the database: 3 stalls in the first, then the count starts
+	// again and reaches 2.
+	lines := `{"elapsed_ms":1,"stats":{"l0_sublevels":2,"write_stalls":0,"tombstones":5}}
+{"elapsed_ms":2,"stats":{"l0_sublevels":7,"write_stalls":3}}
+{"elapsed_ms":3,"stats":{"l0_sublevels":1,"write_stalls":3}}
+{"elapsed_ms":4,"stats":{"l0_sublevels":1,"write_stalls":0}}
+{"elapsed_ms":5,"stats":{"l0_sublevels":3,"write_stalls":2}}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readStoreGateMetrics(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.L0SublevelsPeak != 7 || m.WriteStalls != 5 || !m.WriteStallsRead || m.TombstonesPeak != 5 {
+		t.Errorf("read %+v", m)
+	}
+	old := filepath.Join(dir, "old.jsonl")
+	if err := os.WriteFile(old, []byte(`{"elapsed_ms":1,"stats":{"l0_sublevels":2}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if m, err = readStoreGateMetrics(old); err != nil || m.WriteStallsRead || m.L0SublevelsPeak != 2 {
+		t.Errorf("a file without stalls read as %+v, %v", m, err)
+	}
+}

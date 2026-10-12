@@ -41,12 +41,22 @@ import (
 // the prefix is replayed, a baseline at the horizon holds every reference still
 // alive at it, and everything older is range-deleted, the previous baseline
 // included. The prefixes are taken in key order, in chunks. A chunk ends between
-// two prefixes, once its commit holds about 4 MiB or it has been running for 20 ms,
-// and is committed, not synced, together with the marker's new resume key, the
-// first key of the next prefix: so after any chunk every prefix before the resume
-// key is rewritten and none after it has been touched, and a crash that loses the
-// chunk loses its resume key with it. Each chunk reads through an iterator of its
-// own, opened when it begins, so that it sees what the chunks before it committed.
+// two prefixes, once its commit holds about 4 MiB or it has been running for 20 ms
+// (the opening of its iterator counted, but for no more than 10 ms), and is
+// committed, not synced,
+// together with the marker's new resume key, the first key of the next prefix: so
+// after any chunk every prefix before the resume key is rewritten and none after it
+// has been touched, and a crash that loses the chunk loses its resume key with it.
+// Each chunk reads through an iterator of its own, opened when it begins, so that
+// it sees what the chunks before it committed.
+// Opening it costs in proportion to the range deletions the memtables hold, one per
+// prefix rewritten, so a pass flushes once those reach a count, and waits for the
+// flush only if they reach twice the count before it has completed (see
+// flushBound). A synchronous Retain whose context is cancelled during that wait
+// returns the context's error, as it does at a commit; the retention Open finishes
+// has no context, and if a flush keeps failing (a persistent write error, which
+// Pebble retries for ever) it waits as long, as every write would at the next full
+// memtable.
 //
 // A store opened in [Background] mode does the first step under its lock, in
 // milliseconds, and then returns: the rewriting is done by the store's own
@@ -320,6 +330,9 @@ type retainPass struct {
 	scanned bool
 
 	visited, replayed, records, baselines, deletes, seeks, maxPrefixRecords int64
+	// counted is how many of deletes the store's count of unflushed range deletions
+	// already has (see flushBound).
+	counted int64
 }
 
 // newPass makes the pass the marker stands for, or refuses a marker that does not
@@ -348,6 +361,7 @@ func (s *Store) newPass(ctx context.Context, m retainMarker, derive bool, stopAf
 }
 
 func (p *retainPass) close() {
+	p.syncDeletes()
 	if !p.closed {
 		p.closed = true
 		_ = p.b.Close()
@@ -398,9 +412,27 @@ func (p *retainPass) report() {
 // retainBytes or it has run for the chunk time, and commits them with the
 // marker's next state. A chunk ends only between prefixes. It reads through an
 // iterator of its own, opened here.
+//
+// The chunk's time counts the opening and first positioning of its iterator, but
+// no more than half of it: opening an iterator costs time in proportion to the
+// range deletions the memtables hold, and if all of that counted against the chunk,
+// a pass that had written enough of them would rewrite one prefix per chunk. So a
+// chunk works for at least half the chunk time after the opening, and one whose
+// opening is cheap holds the lock for about the chunk time plus its commit. The
+// time the lock is held, which "retain.chunk_hold_ns" samples, counts the opening
+// in full. A synchronous
+// pass first bounds those deletions here (see [retainPass.boundFlushes]); in the
+// background the retainer does it between chunks, and starts or waits for a flush
+// without the lock (see [Store.flushStep]).
 func (p *retainPass) chunk() error {
 	s := p.s
-	begin := time.Now()
+	if !p.bg {
+		if err := p.boundFlushes(); err != nil {
+			return err
+		}
+	}
+	s.rec.Sample("retain.unflushed_range_deletes", s.fl.unflushed())
+	begin := s.chunkNow()
 	_, hi := dataBounds()
 	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: p.marker.resume, UpperBound: hi})
 	if err != nil {
@@ -408,9 +440,19 @@ func (p *retainPass) chunk() error {
 	}
 	closeIter := sync.OnceFunc(func() { _ = it.Close() })
 	defer closeIter()
+	ok := it.First()
+	if s.afterChunkOpen != nil {
+		s.afterChunkOpen()
+	}
+	positioned := s.chunkNow()
+	open := positioned.Sub(begin)
+	// The chunk's time runs from workStart: the opening is charged against it, up to
+	// half the chunk time.
+	workStart := positioned.Add(-min(open, s.chunkTime/2))
 	var lastPrefix []byte
+	var prefixes int64
 	exhausted := true
-	for ok := it.First(); ok; {
+	for ok {
 		key := it.Key()
 		if len(key) < prefixLen {
 			return fmt.Errorf("pebblestore: key %x is shorter than a prefix", key)
@@ -432,6 +474,7 @@ func (p *retainPass) chunk() error {
 		if res, err = p.rewritePrefix(it, prefix, p.b, p.derive); err != nil {
 			return err
 		}
+		prefixes++
 		if res.lost {
 			p.derive, p.next = false, nil
 		}
@@ -440,7 +483,7 @@ func (p *retainPass) chunk() error {
 		}
 		ok = res.ok
 		lastPrefix = prefix
-		if ok && (p.b.Len() >= s.retainBytes || time.Since(begin) >= s.chunkTime) {
+		if ok && (p.b.Len() >= s.retainBytes || s.chunkNow().Sub(workStart) >= s.chunkTime) {
 			exhausted = false
 			break
 		}
@@ -462,7 +505,7 @@ func (p *retainPass) chunk() error {
 		}
 	}
 	closeIter()
-	if err := p.commit(next, begin); err != nil {
+	if err := p.commit(next, begin, open, prefixes); err != nil {
 		return err
 	}
 	if p.bg {
@@ -494,8 +537,11 @@ func (p *retainPass) install() {
 
 // commit commits the batch with the marker next in it, not synced: the horizon is
 // already published and durable, and a later synced commit keeps this one ordered
-// behind, so a crash that loses it loses the marker's move with it.
-func (p *retainPass) commit(next retainMarker, begin time.Time) error {
+// behind, so a crash that loses it loses the marker's move with it. begin is when
+// the chunk began, before its iterator was opened, open how long the opening and
+// the first positioning took, and prefixes how many prefixes it rewrote: they are
+// sampled once the commit has landed, in that order and with the time held last.
+func (p *retainPass) commit(next retainMarker, begin time.Time, open time.Duration, prefixes int64) error {
 	s := p.s
 	raw, err := appendRetainMarker(nil, next)
 	if err != nil {
@@ -509,13 +555,20 @@ func (p *retainPass) commit(next retainMarker, begin time.Time) error {
 	if err := p.ctx.Err(); err != nil && !p.bg {
 		return contextError("Retain", err)
 	}
+	if s.beforeApply != nil {
+		s.beforeApply(p.b)
+	}
 	if err := s.kv.Apply(p.b, pebble.NoSync); err != nil {
 		return err
 	}
+	p.syncDeletes()
+	s.fl.heldOff = false // a flush put off or not started is tried again
 	p.marker = next
 	p.b.Reset()
 	p.chunks++
-	s.rec.Sample("retain.chunk_hold_ns", time.Since(begin).Nanoseconds())
+	s.rec.Sample("retain.chunk_open_ns", open.Nanoseconds())
+	s.rec.Sample("retain.chunk_prefixes", prefixes)
+	s.rec.Sample("retain.chunk_hold_ns", s.chunkNow().Sub(begin).Nanoseconds())
 	if s.afterRetainCommit != nil && !p.bg {
 		// A background chunk runs the hook after it has released the lock, so that a
 		// hook may write.
@@ -973,8 +1026,17 @@ const (
 // none for longer than the chunk, yielding between them so that a writer that
 // waits for the lock gets it; when the rewriting is over it settles the pass
 // without the lock (see [Store.settleBackground]). It exits when the store's
-// context is cancelled (at the next chunk boundary, or between two ranges of a
-// settle), or when a commit has failed and the store has latched the failure.
+// context is cancelled (at the next chunk boundary, between two ranges of a
+// settle, or in a wait for a flush), or when a commit has failed and the store has
+// latched the failure.
+//
+// Between two chunks it also keeps the range deletions the memtable holds under a
+// bound, without the lock (see [Store.flushStep]). A chunk holds the lock for the
+// opening of its iterator, whose cost grows with those deletions and which the
+// bound keeps from growing without end, plus the work, until the chunk time (20 ms) has passed with the opening
+// counted up to half of it, plus its commit: about the chunk time plus the commit
+// when the opening is cheap, and at most the opening plus half the chunk time plus
+// the commit when it is not.
 func (s *Store) retainer() {
 	defer func() {
 		s.mu.Lock()
@@ -992,11 +1054,19 @@ func (s *Store) retainer() {
 			return
 		case <-s.wake:
 		}
+		flushed := false // the last step was a flush's, and no chunk has been taken since
 		for {
-			if s.beforeRetainChunk != nil && s.pending() {
+			if s.beforeRetainChunk != nil && !flushed && s.pending() {
 				s.beforeRetainChunk() // the lock is free: a hook may write
 			}
 			step, landed, w := s.retainStep(&cur)
+			if flushed = w.flush != nil; flushed {
+				// Before the chunk, and without the lock: a flush to start, or one to wait for.
+				if s.flushStep(*w.flush) == stepExit {
+					return
+				}
+				continue
+			}
 			if w.rewriteEnded && s.observer != nil {
 				s.observer.RewriteEnded(w.gen, w.rewriteAt)
 			}
@@ -1025,12 +1095,15 @@ func (s *Store) pending() bool {
 }
 
 // retainWork is what a step of the retainer leaves for it to do once the lock is
-// released: tell the observer the rewriting is over, and settle the pass.
+// released: tell the observer the rewriting is over, and settle the pass; or, in a
+// step that took no chunk, start or wait for a flush before the chunk (see
+// [Store.flushStep]).
 type retainWork struct {
 	gen          uint64
 	rewriteEnded bool
 	rewriteAt    time.Time
 	settle       *settleJob
+	flush        *flushAction
 }
 
 // settleJob is a pass whose rewriting is over and the key ranges it settles.
@@ -1074,6 +1147,12 @@ func (s *Store) retainStep(cur **retainPass) (step retainerStep, landed bool, w 
 	// only settles, and releases its marker.
 	var err error
 	if p.marker.phase == phaseRewrite {
+		// The unflushed range deletions are bounded before the chunk, by the retainer
+		// without the lock: a flush is started, or waited for, off it.
+		if a := s.flushNeeds(p); !a.none() {
+			w.flush = &a
+			return stepMore, false, w
+		}
 		before := p.chunks
 		err = p.chunk()
 		landed = p.chunks > before
@@ -1293,4 +1372,263 @@ func (s *Store) touchPrefix(b *pebble.Batch, prefix []byte) error {
 	}
 	_, err = s.pass.rewritePrefix(it, prefix, b, false)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// The bound on unflushed range deletions.
+//
+// A pass writes one range deletion per prefix it rewrites, and so does a write that
+// rewrites a prefix the pass has not reached. Until the memtable that holds them is
+// flushed, the first iterator opened over it after a commit that added some
+// rebuilds the memtable's list of them, at a cost that grows with how many it
+// holds; a chunk opens one, as does a write that reads a prefix. The store therefore counts the range deletions retention has committed, and
+// a pass flushes once that count, since the last flush it knows has completed,
+// reaches retainFlushDels: without waiting, through Pebble's AsyncFlush, so that
+// the pass goes on while the flush runs. Only if the count reaches twice that
+// before the flush has completed does the pass wait for it. So at the start of
+// every chunk, after any wait, fewer than 2 × retainFlushDels of them are
+// unflushed (the count is an upper bound: Pebble's own flushes, of a full memtable,
+// only lower the true number). What opening an iterator costs grows with the range
+// deletions in the memtable: after a commit that added some, the first iterator
+// rebuilds the memtable's list of them.
+//
+// The flush is never Pebble's Flush, which waits on a channel with no way out: a
+// flush that keeps failing (a persistent write error) is retried by Pebble for
+// ever and its channel never closes. Every wait here is a select that a cancelled
+// context ends. And it is never started on a closed database, on which AsyncFlush
+// panics: the retainer starts it, outside the store's lock, and Close waits for the
+// retainer to exit before it closes the database; a synchronous pass starts it
+// under the lock, which Close takes before it closes the database.
+//
+// AsyncFlush holds Pebble's commit mutex while it rotates the memtable and its log
+// (a sync of the old log and the creation of a new one), and while it waits on
+// Pebble's own write-stall conditions: so while it runs every commit waits, and
+// the first writer to wait holds the store's lock. If level 0 had as many
+// sublevels as stop writes, that wait would last until compactions caught up, and
+// Close, which waits for the retainer, with it. So a flush is put off while level 0
+// has at least its stop threshold less retainFlushL0Margin sublevels: it is counted
+// as "retain.flush_deferred" and tried again after the next chunk. (The check is
+// made just before the flush and can be overtaken; it closes almost all of the
+// window.) Only that condition is checked. Pebble's other one, the memtables
+// waiting to be flushed reaching MemTableStopWritesThreshold times MemTableSize in
+// all, the pass cannot reach alone, since it starts a flush only once it has seen
+// the last one complete; but slow flushes under heavy writes, with Pebble's own
+// rotations, could reach it, and a flush started then waits with the commit mutex
+// held as above.
+//
+// A flush that cannot be started (AsyncFlush returns an error) is counted as
+// "retain.flush_errors" and is not an error of the pass: no commit's outcome is in
+// doubt, so the store goes on as it was, and the flush is tried again after the
+// next chunk. In this version of Pebble, AsyncFlush returns an error only for a
+// database opened read-only, which never runs a pass (a failure to rotate the log
+// panics inside Pebble); the path is kept so that an error a later version returns
+// is counted, not made a failure of the store.
+//
+// While flushes are put off or fail to start, the count is not bounded, and only
+// the chunk's clock, which leaves at least half the chunk time to work after the
+// opening, keeps the pass moving; iterators opened by writes pay for the same
+// deletions. The pass never waits for a flush it did not start.
+
+// defaultRetainFlushDels is the count of unflushed range deletions at which a pass
+// flushes. It must stay well below what a memtable holds before Pebble flushes it
+// on its own, and low enough that opening an iterator over twice as many is a small
+// part of a chunk's time. Provisional.
+const defaultRetainFlushDels = 32768
+
+// defaultRetainFlushL0Margin is how many sublevels below its stop threshold level 0
+// must be for a pass to start a flush (see above): with Pebble's default threshold
+// of 12, a flush is put off at 10 sublevels or more. Provisional.
+const defaultRetainFlushL0Margin = 2
+
+// flushBound is the store's count of the range deletions retention has committed,
+// and of the flush it started to bound them. It is guarded by the store's lock.
+type flushBound struct {
+	// dels is the range deletions retention has committed since the store was opened
+	// (those of a write that rewrote a prefix are counted when it is put in the
+	// batch, so one whose commit failed is counted too). flushed is what dels was
+	// when the last flush known to have completed was started: every range deletion
+	// committed before then has been flushed.
+	dels, flushed int64
+	// pending is the channel of the flush started and not yet seen to complete, nil if
+	// none, and at what dels was when it was started.
+	pending <-chan struct{}
+	at      int64
+	// heldOff says the last flush was put off or could not be started: none is
+	// tried again until a chunk has been committed.
+	heldOff bool
+}
+
+// unflushed is how many range deletions retention has committed since the start
+// of the last flush known to have completed: an upper bound of those the memtables
+// still hold.
+func (f *flushBound) unflushed() int64 { return f.dels - f.flushed }
+
+// syncDeletes adds the range deletions the pass has made since it last did to the
+// store's count. The caller holds the lock.
+func (p *retainPass) syncDeletes() {
+	p.s.fl.dels += p.deletes - p.counted
+	p.counted = p.deletes
+}
+
+// flushAction is what bounding the unflushed range deletions asks for before a
+// chunk: nothing, a flush to start (at is the count it covers), or a wait for the
+// flush that is running.
+type flushAction struct {
+	start bool
+	at    int64
+	wait  <-chan struct{}
+}
+
+func (a flushAction) none() bool { return !a.start && a.wait == nil }
+
+// flushNeeds says what is to be done, before the next chunk of p, to keep the
+// unflushed range deletions under the bound. The caller holds the lock.
+func (s *Store) flushNeeds(p *retainPass) flushAction {
+	p.syncDeletes()
+	f := &s.fl
+	if f.pending != nil {
+		select {
+		case <-f.pending:
+			f.flushed, f.pending = f.at, nil
+		default:
+		}
+	}
+	if s.retainFlushDels <= 0 {
+		return flushAction{}
+	}
+	switch u := f.unflushed(); {
+	case f.pending == nil && !f.heldOff && u >= s.retainFlushDels:
+		return flushAction{start: true, at: f.dels}
+	case f.pending != nil && u >= 2*s.retainFlushDels:
+		return flushAction{wait: f.pending}
+	}
+	return flushAction{}
+}
+
+// startFlush starts a flush of the memtable, which will cover the range deletions
+// counted up to at, and does not wait for it. A closed store starts none (see
+// above). The caller holds the lock in a synchronous pass, and in the retainer does
+// not.
+func (s *Store) startFlush() (<-chan struct{}, error) {
+	if s.closed.Load() {
+		return nil, closedError("Retain")
+	}
+	if s.flushHook != nil {
+		return s.flushHook(s.kv.AsyncFlush)
+	}
+	return s.kv.AsyncFlush()
+}
+
+// startFailed records a flush that could not be started (see above). The caller
+// holds the lock.
+func (s *Store) startFailed() {
+	s.fl.heldOff = true
+	s.rec.Count("retain.flush_errors", 1)
+}
+
+// flushDeferred records a flush put off because level 0 is near its stop threshold
+// (see above). The caller holds the lock.
+func (s *Store) flushDeferred() {
+	s.fl.heldOff = true
+	s.rec.Count("retain.flush_deferred", 1)
+}
+
+// nearStall says level 0 has so many sublevels that a flush started now could wait
+// for compactions with Pebble's commit mutex held (see above). It reads Pebble's
+// metrics, and so does not need the store's lock.
+func (s *Store) nearStall() bool {
+	if s.retainFlushL0Margin < 0 {
+		return false
+	}
+	n, stop := s.l0Sublevels()
+	return n >= stop-s.retainFlushL0Margin
+}
+
+// started records a flush that startFlush started. The caller holds the lock.
+func (s *Store) started(ch <-chan struct{}, at int64) {
+	s.fl.pending, s.fl.at = ch, at
+	if ch == nil {
+		s.fl.flushed, s.fl.pending = at, nil // nothing to wait for
+	}
+	s.rec.Count("retain.flushes", 1)
+}
+
+// boundFlushes keeps the unflushed range deletions under the bound before a chunk of
+// a synchronous pass, with the lock held: it starts a flush, and waits for one only
+// at twice the count. The wait ends with the pass's context: a Retain whose context
+// is cancelled returns its error, as it does at a commit. The pass Open resumes has
+// no context to cancel, and so waits as long as the flush takes; a flush that keeps
+// failing makes every write wait as long, at the next full memtable.
+func (p *retainPass) boundFlushes() error {
+	s := p.s
+	for {
+		a := s.flushNeeds(p)
+		switch {
+		case a.none():
+			return nil
+		case a.start:
+			if s.nearStall() {
+				s.flushDeferred()
+				continue
+			}
+			ch, err := s.startFlush()
+			if err != nil {
+				if s.closed.Load() {
+					return err
+				}
+				s.startFailed()
+				continue
+			}
+			s.started(ch, a.at)
+		default:
+			if s.beforeFlushWait != nil {
+				s.beforeFlushWait()
+			}
+			select {
+			case <-a.wait:
+			case <-p.ctx.Done():
+				return contextError("Retain", p.ctx.Err())
+			}
+		}
+	}
+}
+
+// flushStep does, on the retainer's goroutine and without the lock, what bounding
+// the unflushed range deletions asked of a step (see [Store.retainStep]): it starts
+// a flush and records it, or waits for the one that is running. It returns stepExit
+// when the store is closing; a flush put off or that could not be started is
+// counted, and the retainer goes on to the chunk.
+func (s *Store) flushStep(a flushAction) retainerStep {
+	if s.ctx.Err() != nil {
+		return stepExit
+	}
+	if a.wait != nil {
+		if s.beforeFlushWait != nil {
+			s.beforeFlushWait()
+		}
+		select {
+		case <-a.wait:
+			return stepMore
+		case <-s.ctx.Done():
+			return stepExit
+		}
+	}
+	if s.nearStall() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.flushDeferred()
+		return stepMore
+	}
+	ch, err := s.startFlush()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil {
+		if s.closed.Load() {
+			return stepExit
+		}
+		s.startFailed()
+		return stepMore
+	}
+	s.started(ch, a.at)
+	return stepMore
 }

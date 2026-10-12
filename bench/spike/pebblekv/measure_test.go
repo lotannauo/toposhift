@@ -302,15 +302,15 @@ func TestSnapshotMovesWithTheDatabase(t *testing.T) {
 }
 
 // Flat names what a sampler of a build's progress reads: the compaction debt, the
-// jobs running, the sublevels of level 0, the memtables and the tables waiting for
-// their statistics.
+// jobs running, the sublevels of level 0, the memtables, the tables waiting for
+// their statistics and the write stalls so far.
 func TestFlatHasTheCountersASamplerReads(t *testing.T) {
 	t.Parallel()
 	kv := bytewise(t, vfs.NewMem(), "db", pebblekv.Config{DisableAutoCompactions: true})
 	t.Cleanup(func() { _ = kv.Close() })
 	fill(t, kv, 150, 100)
 	flat := kv.Snapshot().Flat()
-	for _, k := range []string{"compaction_debt", "compactions_in_progress", "flushes_in_progress", "l0_sublevels", "memtable_count", "pending_stats_tables"} {
+	for _, k := range []string{"compaction_debt", "compactions_in_progress", "flushes_in_progress", "l0_sublevels", "memtable_count", "pending_stats_tables", "write_stalls"} {
 		if _, ok := flat[k]; !ok {
 			t.Errorf("Flat has no %q: %v", k, flat)
 		}
