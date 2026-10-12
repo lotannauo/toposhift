@@ -115,6 +115,12 @@
 // skew, any return to an older boot after a newer one appeared collides,
 // except at the identical instant.
 //
+// Boots and collisions are a fold of sightings (a boot ID and an instant) taken
+// in that order. [Sightings] lists them and a [BootTracker] folds them, and Fold
+// is the two together; a store that discards the assertions before some instant
+// keeps the tracker's state at that instant and the sightings after it, which
+// is all the rest of the fold needs.
+//
 // This is a heuristic with two known limits, pinned by tests. It misses
 // clones that report the same boot ID: a restore from a snapshot is not a
 // boot, so clones restored from one snapshot, and containers reading the host

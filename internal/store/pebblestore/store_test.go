@@ -474,7 +474,6 @@ func TestRecorderSeesWritesReadsAndRetention(t *testing.T) {
 	}
 	for name, want := range map[string]int64{
 		"retain.prefixes_replayed": 2, "retain.records_replayed": 4, "retain.baselines_written": 2, "retain.range_deletes": 2,
-		"retain.prefixes_kept_for_boots": 0,
 	} {
 		if got := rec.counters[name]; got != want {
 			t.Errorf("%s = %d, want %d", name, got, want)

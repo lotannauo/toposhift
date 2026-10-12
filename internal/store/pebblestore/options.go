@@ -45,7 +45,7 @@ import (
 //     [pebblekv.RecordIter]); those are in one unit for every layout, which
 //     "read.records_stepped" is not.
 //   - retention: "retain.prefixes_visited", "retain.prefixes_replayed",
-//     "retain.prefixes_kept_for_boots", "retain.records_replayed",
+//     "retain.records_replayed",
 //     "retain.baselines_written", "retain.range_deletes", "retain.seeks",
 //     "retain.state_keys" (the keys a retention reads to work out the writer's
 //     state, when it does; see [Store.Retain]) and, as samples for each retention
@@ -207,6 +207,10 @@ type Options struct {
 	// checkValue replaces the check of the value of each record, for tests.
 	checkValue                            func(pebblekv.Value) error
 	beforeHorizonApply, afterHorizonApply func() error
+	// beforeTagApply returns an error in place of the commit that rewrites the tag
+	// of a database of stamp format 1 (a commit that failed without landing): for
+	// tests.
+	beforeTagApply func() error
 	// beforeCheckpointApply returns an error in place of a checkpoint commit (a
 	// commit that failed without landing), and afterCheckpointApply runs after one
 	// has landed; an error it returns stands for a commit that failed but is

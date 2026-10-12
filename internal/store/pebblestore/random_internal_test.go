@@ -175,9 +175,8 @@ func quarantined(ok bool, err error) string {
 }
 
 // TestRandomBootHistories is TestRandomCheckpointHistories for a store with a boot
-// key, which keeps the prefix of a host whole when a retention would discard a
-// boot, and so is the one place a retention works the writer's state out of a prefix
-// it does not rewrite. Hosts reboot (and sometimes a clone reports an old boot),
+// key, whose retentions write the baselines of hosts with boots with a boot state,
+// and work the writer's state out of those prefixes as of any other. Hosts reboot (and sometimes a clone reports an old boot),
 // checkpoints are written for their own prefixes, by the policy and the hook, the
 // horizon moves in random pieces, the store is reopened, and after every step the
 // store answers as the reference does, quarantines included, and what it remembers
@@ -189,7 +188,7 @@ func TestRandomBootHistories(t *testing.T) {
 	t.Parallel()
 	// What the histories exercised, summed over the seeds.
 	var mu sync.Mutex
-	var kept, workedOut, quarantines, keptAndComplete int64
+	var withBoots, workedOut, quarantines, bootsAndComplete int64
 	t.Run("seeds", func(t *testing.T) {
 		seeds := int64(16)
 		if raceEnabled {
@@ -227,7 +226,7 @@ func TestRandomBootHistories(t *testing.T) {
 				var seq uint64
 				horizon := 0
 				var log []string
-				var seen, completeAndKept, keptBefore int64
+				var seen, completeWithBoots int64
 				for step := range 50 {
 					switch op := rng.Intn(10); {
 					case op < 5:
@@ -292,11 +291,13 @@ func TestRandomBootHistories(t *testing.T) {
 								if err != nil {
 									t.Fatalf("%v\n%v", err, log)
 								}
-								if n := rec.counters["retain.prefixes_kept_for_boots"]; n > keptBefore {
-									completeAndKept++
+								for _, b := range baselines(t, s) {
+									if b.format == stampFormatBoots {
+										completeWithBoots++
+										break
+									}
 								}
 							}
-							keptBefore = rec.counters["retain.prefixes_kept_for_boots"]
 						}
 					default:
 						if err := s.Close(); err != nil {
@@ -337,17 +338,21 @@ func TestRandomBootHistories(t *testing.T) {
 				}
 				mu.Lock()
 				defer mu.Unlock()
-				kept += rec.counters["retain.prefixes_kept_for_boots"]
+				for _, b := range baselines(t, s) {
+					if b.format == stampFormatBoots {
+						withBoots++
+					}
+				}
 				workedOut += rec.counters["retain.state_keys"]
 				quarantines += seen
-				keptAndComplete += completeAndKept
+				bootsAndComplete += completeWithBoots
 			})
 		}
 	})
-	if kept == 0 || workedOut == 0 || quarantines == 0 || keptAndComplete == 0 {
-		t.Fatalf("the histories kept %d prefixes whole for boots, read %d keys to work states out, saw %d quarantines and worked a state out in a retention that kept a prefix whole %d times: they do not exercise the rule", kept, workedOut, quarantines, keptAndComplete)
+	if withBoots == 0 || workedOut == 0 || quarantines == 0 || bootsAndComplete == 0 {
+		t.Fatalf("the histories ended with %d baselines holding boots, read %d keys to work states out, saw %d quarantines and checked the worked-out states after a retention that left a baseline with boots %d times: they do not exercise the rule", withBoots, workedOut, quarantines, bootsAndComplete)
 	}
-	t.Logf("%d prefixes kept whole, %d keys read to work states out, %d quarantines seen, %d retentions that kept a prefix whole and worked states out", kept, workedOut, quarantines, keptAndComplete)
+	t.Logf("%d baselines holding boots, %d keys read to work states out, %d quarantines seen, %d retentions that left a baseline with boots and whose worked-out states were checked", withBoots, workedOut, quarantines, bootsAndComplete)
 }
 
 // memstoreWithPolicy is the reference store with a lifecycle policy.
