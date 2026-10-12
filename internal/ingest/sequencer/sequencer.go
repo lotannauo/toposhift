@@ -80,6 +80,9 @@ type Config struct {
 	// Logger receives the notes, refusals, failures and resets; slog.Default when
 	// nil.
 	Logger *slog.Logger
+	// Retain configures the retention check; nil never retains. See "Retention"
+	// in the package documentation.
+	Retain *RetainConfig
 }
 
 // Sequencer takes the requests of the receiver, translates and coalesces their
@@ -107,7 +110,8 @@ type Sequencer struct {
 	co       *coalesce.Coalescer
 	det      *detector.Detector
 	horizons [layers]time.Time
-	last     time.Time // the latest ingest instant used
+	last     time.Time  // the latest ingest instant used
+	ret      *retention // nil: never retains
 	hooks    hooks
 }
 
@@ -122,6 +126,15 @@ type hooks struct {
 	beforeTranslate func(cluster string, lr capture.LogRecord)
 	// afterTick is called when a flush tick has been handled.
 	afterTick func()
+	// afterRetainCheck is called when a retention check has been handled, and
+	// afterWaiter when the waiter's report has.
+	afterRetainCheck func()
+	afterWaiter      func()
+	// betweenPendingAndWaiter is called after a pass is marked pending and before
+	// its waiter starts.
+	betweenPendingAndWaiter func()
+	// waiterExited is called by the waiter's goroutine as it exits.
+	waiterExited func()
 }
 
 // The states of a request's claim.
@@ -220,6 +233,13 @@ func New(c Config) (*Sequencer, error) {
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
 		clusters: make(map[string]*cluster),
+	}
+	if c.Retain != nil {
+		r, err := newRetention(*c.Retain)
+		if err != nil {
+			return nil, err
+		}
+		s.ret = r
 	}
 	// The translators are made on first use; one pair is made here only so that a
 	// configuration they refuse is refused now.
@@ -347,6 +367,18 @@ func (s *Sequencer) Run(ctx context.Context) error {
 	defer close(s.done)
 
 	tick := s.cfg.Tick(coalesce.FlushPeriod)
+	// The retention check's tick and the waiter's reports; nil channels, never
+	// ready, when the sequencer does not retain.
+	var retainTick <-chan time.Time
+	var waits <-chan waitResult
+	if s.ret != nil {
+		var end func()
+		retainTick, end = s.startRetention(ctx)
+		waits = s.ret.results
+		// Run returns only once the waiter has: no call of the store is in flight
+		// when the caller closes it. The report it may still send is not read.
+		defer end()
+	}
 	for {
 		// A stop goes first: from then on finish merges what is queued, so the
 		// end does not depend on which ready case a select picks.
@@ -356,7 +388,7 @@ func (s *Sequencer) Run(ctx context.Context) error {
 		default:
 		}
 		if s.carry != nil {
-			// A request dequeued earlier waits; the tick and a stop are not
+			// A request dequeued earlier waits; the ticks and a stop are not
 			// starved by a backlog of large requests.
 			select {
 			case <-ctx.Done():
@@ -366,6 +398,10 @@ func (s *Sequencer) Run(ctx context.Context) error {
 				return s.finish(ctx)
 			case <-tick:
 				s.tick(ctx)
+			case <-retainTick:
+				s.retainCheck(ctx)
+			case res := <-waits:
+				s.waited(res)
 			default:
 			}
 			s.group(ctx, nil)
@@ -379,6 +415,10 @@ func (s *Sequencer) Run(ctx context.Context) error {
 			return s.finish(ctx)
 		case <-tick:
 			s.tick(ctx)
+		case <-retainTick:
+			s.retainCheck(ctx)
+		case res := <-waits:
+			s.waited(res)
 		case r := <-s.queue:
 			s.group(ctx, r)
 		}

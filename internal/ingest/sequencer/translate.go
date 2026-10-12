@@ -1,6 +1,7 @@
 package sequencer
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -86,6 +87,9 @@ type work struct {
 	out         [][]store.Record
 	rejected    int64
 	firstReject string
+	// refusedClock is the newest event time stamped by another machine's clock
+	// among the records refused as before a horizon; zero for none.
+	refusedClock time.Time
 	// notes and skips count what the translators said, by producer and reason.
 	notes, skips map[[3]string]int
 }
@@ -301,6 +305,11 @@ func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
 	for slot, recs := range w.out {
 		for _, rec := range recs {
 			if err := s.check(rec); err != nil {
+				if errors.Is(err, store.ErrBeforeHorizon) && qualifies(rec.EventTimeBasis) && rec.EventTime.After(w.refusedClock) {
+					// A refusal says what the producer's clock reads as much as a
+					// commit does. See "Retention" in the package documentation.
+					w.refusedClock = rec.EventTime
+				}
 				w.reject(slot, err)
 				break
 			}
