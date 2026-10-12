@@ -705,8 +705,8 @@ func zeros(n int) []int { return make([]int, n) }
 
 // The state a write leaves in the writer's memory of a prefix it has rewritten
 // first is the state the synchronous store has after the same writes: in a database
-// without a checkpoint, with a horizon after the range, with a prefix kept whole for
-// its boots, with a prefix that holds nothing before the horizon, and with a
+// without a checkpoint, with a horizon after the range, with a prefix whose baseline
+// holds its boots, with a prefix that holds nothing before the horizon, and with a
 // checkpoint exactly at the horizon. runAsync compares the maps of the two stores
 // for every prefix a write rewrote, checks the whole of the data against the
 // synchronous store's, and checks the memory against a whole read.
@@ -757,15 +757,21 @@ func TestAPrefixARewritesFirstIsRememberedAsTheSynchronousStoreRemembersIt(t *te
 		}
 	})
 
-	t.Run("a prefix kept whole for its boots", func(t *testing.T) {
+	t.Run("a prefix with boots", func(t *testing.T) {
 		t.Parallel()
 		w := newBootWorld()
 		res := runAsync(t, w, asyncConfig{
 			ck: every, slots: zeros(len(w.later)), noMidReads: noMidReads,
 			tweak: func(o *Options) { o.Policy = storetest.QuarantinePolicy() }, ref: memstore.Options{Policy: storetest.QuarantinePolicy()},
 		})
-		if got := res.rec.counters["retain.prefixes_kept_for_boots"]; got == 0 {
-			t.Error("no prefix was kept whole for its boots")
+		two := 0
+		for _, b := range baselines(t, res.bg) {
+			if b.format == stampFormatBoots {
+				two++
+			}
+		}
+		if two == 0 {
+			t.Error("no baseline holds a boot state")
 		}
 		if res.before == 0 {
 			t.Error("no write touched a prefix")
@@ -838,7 +844,7 @@ func (w *asyncWorld) fresh(i int) identity.Fingerprint {
 
 // newBootWorld is hosts that reboot, whose records carry boot ids, and a few edges
 // so that the database holds checkpoints. The hosts are written before the
-// retention, which keeps their prefixes whole, and after it.
+// retention, whose baselines keep their boots, and after it.
 func newBootWorld() *asyncWorld {
 	w := &asyncWorld{base: t0}
 	w.h = w.at(100)

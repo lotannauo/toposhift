@@ -15,6 +15,7 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/pebblekv"
 )
@@ -73,14 +74,15 @@ import (
 // again. Close during the settle stops it between two ranges and leaves the marker
 // in its settling phase, so that the next Open settles again.
 //
-// A prefix with a boot in a record it would discard is kept whole when the store's
-// policy names a boot key (see the package comment). A Retain that does not move
-// any layer's horizon changes nothing and does not raise LastSeq. A Retain moves
-// the horizon of each layer that is not kept to the horizon less the layer's
-// offset, and only where that is later than the layer's own: the others keep
-// theirs, and their data is left alone. It holds the store's lock for as long as
-// it runs, settling included, so Close must not be called meanwhile; the lock is
-// not released between chunks.
+// When the store's policy names a boot key, the baseline of an entity prefix with
+// boots also holds the boot fold's state at the horizon (see the package comment),
+// so that a later collision is judged against the boots it discards. A Retain
+// that does not move any layer's horizon changes nothing and does not raise
+// LastSeq. A Retain moves the horizon of each layer that is not kept to the
+// horizon less the layer's offset, and only where that is later than the layer's
+// own: the others keep theirs, and their data is left alone. It holds the store's
+// lock for as long as it runs, settling included, so Close must not be called
+// meanwhile; the lock is not released between chunks.
 //
 // What the writer remembers of each prefix (see checkpoint.go) is out of date once
 // a retention begins to rewrite, so it is not used from then on. Where the
@@ -317,7 +319,7 @@ type retainPass struct {
 	touched map[string]struct{}
 	scanned bool
 
-	visited, replayed, records, baselines, deletes, seeks, kept, maxPrefixRecords int64
+	visited, replayed, records, baselines, deletes, seeks, maxPrefixRecords int64
 }
 
 // newPass makes the pass the marker stands for, or refuses a marker that does not
@@ -383,7 +385,6 @@ func (p *retainPass) report() {
 	}
 	s.rec.Count("retain.prefixes_visited", p.visited)
 	s.rec.Count("retain.prefixes_replayed", p.replayed)
-	s.rec.Count("retain.prefixes_kept_for_boots", p.kept)
 	s.rec.Count("retain.records_replayed", p.records)
 	s.rec.Count("retain.baselines_written", p.baselines)
 	s.rec.Count("retain.range_deletes", p.deletes)
@@ -592,7 +593,6 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte, b *pebble
 	var prefixRecords int64
 	decided := map[string]struct{}{}
 	var entries []entry
-	bootSeen := false
 	consider := func(ref []byte, ns int64, v pebblekv.Value) {
 		if _, done := decided[string(ref)]; done {
 			return
@@ -602,6 +602,11 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte, b *pebble
 			entries = append(entries, entryOf(ref, ns, v))
 		}
 	}
+	// Under a boot key, an entity's records that go and the previous baseline's boot
+	// state are what the new baseline's boot state is folded from (see bootsAt).
+	boots := p.boots && dir == dirEntity
+	var discarded []lifecycle.Assertion
+	var prev *bootState
 	for ; ok && hasPrefix(it.Key(), prefix); ok = it.Next() {
 		_, ns, seq, kind, err := parseKey(it.Key())
 		if err != nil {
@@ -618,7 +623,9 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte, b *pebble
 			if v.Seq != seq {
 				return res, fmt.Errorf("pebblestore: a record's key has seq %d and its value %d", seq, v.Seq)
 			}
-			bootSeen = bootSeen || v.Boot != ""
+			if boots {
+				discarded = append(discarded, bootAssertionOf(dir, ref, ns, v, s.policy.BootKey))
+			}
 			consider(ref, ns, v)
 		case kindBaseline:
 			st, err := decodeStamp(it.Value())
@@ -631,66 +638,77 @@ func (p *retainPass) rewritePrefix(it *pebble.Iterator, prefix []byte, b *pebble
 			for _, en := range st.entries {
 				consider(en.ref, en.eventNs, en.value)
 			}
+			prev = st.boots
 		}
 	}
 	if err := it.Error(); err != nil {
 		return res, err
 	}
 	p.maxPrefixRecords = max(p.maxPrefixRecords, prefixRecords)
-	if p.boots && dir == dirEntity && bootSeen {
-		// A later record of this entity may collide with a boot in what would
-		// be discarded, and the baseline keeps no boot history: the prefix
-		// stays whole, which the contract allows.
-		p.kept++
-		// Nothing in it changes, so what the writer would find is what a read of
-		// it finds now. Neither of the states worked out from the keys at or after
-		// the horizon is that: the checkpoint at the horizon stays, and older
-		// checkpoints and records may stay below it.
-		if derive {
-			read, n, unreadable, rerr := s.readPrefixState(s.kv, prefix)
-			if rerr != nil {
-				return res, rerr
-			}
-			p.stateKeys += n
-			if unreadable != nil {
-				res.lost = true // a key that cannot be read: learn nothing here
-			} else {
-				res.state = &read
-			}
+	var bs *bootState
+	if boots {
+		if bs, err = p.bootsAt(prev, discarded, horizon); err != nil {
+			return res, fmt.Errorf("pebblestore: the boots of prefix %x at the horizon: %w", prefix, err)
 		}
-	} else {
-		if derive {
-			res.state = &dropped
-		}
-		// Everything older than the horizon goes, the previous baseline
-		// included; what is still alive at the horizon is one new baseline, in
-		// the same commit and after the delete.
-		if err := b.DeleteRange(seekKey(prefix, lp.oldMax), prefixSucc(prefix), nil); err != nil {
+	}
+	if derive {
+		res.state = &dropped
+	}
+	// Everything older than the horizon goes, the previous baseline included; what
+	// is still alive at the horizon, and the boot fold's state at it if the prefix
+	// has boots, is one new baseline, in the same commit and after the delete.
+	if err := b.DeleteRange(seekKey(prefix, lp.oldMax), prefixSucc(prefix), nil); err != nil {
+		return res, err
+	}
+	p.deletes++
+	if s.anyCkpt && lp.where == pebblekv.Inside {
+		// A checkpoint exactly at the horizon would sort before the baseline. The
+		// writer never writes one at or below the horizon, and the ones in the
+		// prefixes this retention rewrites go.
+		if err := b.Delete(stampKey(prefix, hNs, kindCheckpoint), nil); err != nil {
 			return res, err
 		}
-		p.deletes++
-		if s.anyCkpt && lp.where == pebblekv.Inside {
-			// A checkpoint exactly at the horizon would sort before the
-			// baseline. The writer never writes one at or below the horizon,
-			// and the ones in the prefixes this retention rewrites go.
-			if err := b.Delete(stampKey(prefix, hNs, kindCheckpoint), nil); err != nil {
-				return res, err
-			}
+	}
+	if len(entries) > 0 || bs != nil {
+		val, err := appendStamp(nil, stamp{kind: kindBaseline, foldVersion: foldVersion, through: lp.last, w: lp.last, horizon: horizon, entries: entries, boots: bs})
+		if err != nil {
+			return res, err
 		}
-		if len(entries) > 0 {
-			val, err := appendStamp(nil, stamp{kind: kindBaseline, foldVersion: foldVersion, through: lp.last, w: lp.last, horizon: horizon, entries: entries})
-			if err != nil {
-				return res, err
-			}
-			if err := b.Set(stampKey(prefix, lp.baseNs, kindBaseline), val, nil); err != nil {
-				return res, err
-			}
-			p.baselines++
+		if err := b.Set(stampKey(prefix, lp.baseNs, kindBaseline), val, nil); err != nil {
+			return res, err
 		}
+		p.baselines++
 	}
 	p.seeks++
 	res.ok = it.SeekGE(prefixSucc(prefix))
 	return res, nil
+}
+
+// bootsAt is the boot fold's state at horizon of an entity prefix whose records
+// before it go: prev, the previous baseline's (nil if it has none), and then the
+// sightings of the records that go and those prev carries, in order. The sightings
+// of the records are the fold's own (lifecycle.Sightings: per producer, the record
+// with the highest Seq at each event time, and its last instant if it is a run),
+// so every record that goes is passed, whether or not it is the newest of its
+// reference. Those before the horizon are folded, and those at or after it are
+// carried. It is nil, and the baseline is of format 1, if there is no boot.
+func (p *retainPass) bootsAt(prev *bootState, discarded []lifecycle.Assertion, horizon time.Time) (*bootState, error) {
+	sightings, err := lifecycle.Sightings(discarded, p.s.policy)
+	if err != nil {
+		return nil, err
+	}
+	tr, carried, err := foldBoots(p.s.policy, prev, sightings, &horizon)
+	if err != nil {
+		return nil, err
+	}
+	bs := &bootState{boots: tr.Boots(), collision: tr.Collision(), carried: carried}
+	if len(bs.boots) == 0 {
+		if len(carried) > 0 {
+			return nil, fmt.Errorf("%d sightings carried past the horizon and no boot before it", len(carried))
+		}
+		return nil, nil
+	}
+	return bs, nil
 }
 
 // releaseMarker deletes the marker, if it is generation gen's: a retention that

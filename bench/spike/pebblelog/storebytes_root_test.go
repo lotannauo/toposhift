@@ -173,14 +173,13 @@ func openRootStoreBytes(settle bool, m rootMode, names *countNames) storeBytesOp
 }
 
 // rootOnlyCounts are the counts only the promoted store reports: the retention it
-// does not settle in the spike's run, the boots it keeps prefixes whole for, the
-// cost it measures of checkpoints and of a Write's iterators, the reads it makes
-// before the first scan of the stored prefixes has installed a filter, and its
-// writer map (every count named with rootOnlyPrefix). Every other count the spike
-// reports is reported by the promoted store with the same value, but for
-// mayDifferCounts.
+// does not settle in the spike's run, the cost it measures of checkpoints and of a
+// Write's iterators, the reads it makes before the first scan of the stored
+// prefixes has installed a filter, and its writer map (every count named with
+// rootOnlyPrefix). Every other count the spike reports is reported by the promoted
+// store with the same value, but for mayDifferCounts.
 var rootOnlyCounts = []string{
-	"retain.prefixes_kept_for_boots", "retain.flush_ns", "retain.settle_ns", "retain.settle_deadline_hits",
+	"retain.flush_ns", "retain.settle_ns", "retain.settle_deadline_hits",
 	"checkpoint.build_ns", "write.iterators", "checkpoint.loads_cold",
 }
 

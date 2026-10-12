@@ -1,0 +1,48 @@
+{
+  "about": "Golden vectors of the meta value at the key 'skew': the skew of the lifecycle policy the database was created with, in nanoseconds, 8 bytes big endian. The expectations were computed independently of the code. The key is written only for a skew that is not zero; absent means zero. 'refused' are values a store must refuse at Open.",
+  "key": "00736b6577",
+  "vectors": [
+    {
+      "name": "three nanoseconds",
+      "skewNs": 3,
+      "encoded": "0000000000000003"
+    },
+    {
+      "name": "one second",
+      "skewNs": 1000000000,
+      "encoded": "000000003b9aca00"
+    },
+    {
+      "name": "one minute",
+      "skewNs": 60000000000,
+      "encoded": "0000000df8475800"
+    },
+    {
+      "name": "the longest duration",
+      "skewNs": 9223372036854775807,
+      "encoded": "7fffffffffffffff"
+    }
+  ],
+  "refused": [
+    {
+      "name": "zero, which is never written",
+      "encoded": "0000000000000000"
+    },
+    {
+      "name": "seven bytes",
+      "encoded": "00000000000003"
+    },
+    {
+      "name": "nine bytes",
+      "encoded": "000000000000000300"
+    },
+    {
+      "name": "empty",
+      "encoded": ""
+    },
+    {
+      "name": "more than the longest duration",
+      "encoded": "8000000000000000"
+    }
+  ]
+}

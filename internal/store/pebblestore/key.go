@@ -55,6 +55,12 @@ const (
 	metaCheckpoints = "checkpoints"
 	// metaBootKey is the boot key the database's lifecycle policy was created with.
 	metaBootKey = "bootKey"
+	// metaSkew is the skew the database's lifecycle policy was created with, in
+	// nanoseconds, 8 bytes big endian. It is written only when the skew is not zero:
+	// absent means zero, which is what every database created before the key has.
+	// A baseline's boot state is folded under it, so it is fixed for the life of
+	// the database.
+	metaSkew = "skew"
 	// metaPebble is the Pebble version and format major version the database was
 	// created with.
 	metaPebble = "pebble"

@@ -1,0 +1,200 @@
+{
+  "about": "Golden vectors of a baseline's value of stamp format 2, and of format 1 for comparison. The expectations were computed independently of the code. Format 1: the format byte, the kind (2, a baseline), the fold version as a uvarint, B and W as 8 bytes big endian, the horizon as a uvarint length and its binary form, then the entries as a uvarint count and each its reference, event time and value (uvarint lengths and nanoseconds). Format 2 is format 1 with the leading byte 2, followed by the boot state: a uvarint count of boots and each its ID (uvarint length, bytes), first and last sighting (uvarint nanoseconds), in order of first appearance; a byte 0 for no collision or 1 and the collision (stale ID, observed at, newer ID, newer first seen); a uvarint count of carried sightings and each its instant and ID, sorted by instant and then ID, without repeats. Only a baseline with at least one boot has format 2. The entry is the record value of the format 1 golden vector 'a baseline whose entry keeps its boot and its basis'. 'refused' are values a reader must refuse.",
+  "vectors": [
+    {
+      "name": "a baseline of format 1, with no boot state",
+      "horizon": "2023-11-14T22:13:20Z",
+      "through": 9,
+      "w": 9,
+      "entries": [
+        {
+          "ref": "6b7562656c6574",
+          "eventNs": 1699999990000000000,
+          "seq": 3,
+          "boot": "boot-a",
+          "basis": 2,
+          "value": "0129030006626f6f742d61"
+        }
+      ],
+      "boots": [],
+      "collision": null,
+      "carried": [],
+      "encoded": "010201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d61"
+    },
+    {
+      "name": "a baseline with an entry and two boots",
+      "horizon": "2023-11-14T22:13:20Z",
+      "through": 9,
+      "w": 9,
+      "entries": [
+        {
+          "ref": "6b7562656c6574",
+          "eventNs": 1699999990000000000,
+          "seq": 3,
+          "boot": "boot-a",
+          "basis": 2,
+          "value": "0129030006626f6f742d61"
+        }
+      ],
+      "boots": [
+        {
+          "id": "boot-a",
+          "first": 1699999990000000000,
+          "last": 1699999995000000000
+        },
+        {
+          "id": "boot-b",
+          "first": 1699999996000000000,
+          "last": 1699999998000000000
+        }
+      ],
+      "collision": null,
+      "carried": [],
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb170000"
+    },
+    {
+      "name": "a baseline with no entry and a collision",
+      "horizon": "2023-11-14T22:13:20Z",
+      "through": 9,
+      "w": 9,
+      "entries": [],
+      "boots": [
+        {
+          "id": "boot-a",
+          "first": 1699999990000000000,
+          "last": 1699999995000000000
+        },
+        {
+          "id": "boot-b",
+          "first": 1699999996000000000,
+          "last": 1699999998000000000
+        }
+      ],
+      "collision": {
+        "stale": "boot-a",
+        "observed": 1699999999000000000,
+        "newer": "boot-b",
+        "newerFirst": 1699999996000000000
+      },
+      "carried": [],
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff000206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb170106626f6f742d6180ecbcd4df9fe7cb1706626f6f742d6280b0fbbdd49fe7cb1700"
+    },
+    {
+      "name": "a baseline with carried sightings, given out of order and repeated",
+      "horizon": "2023-11-14T22:13:20Z",
+      "through": 9,
+      "w": 9,
+      "entries": [
+        {
+          "ref": "6b7562656c6574",
+          "eventNs": 1699999990000000000,
+          "seq": 3,
+          "boot": "boot-a",
+          "basis": 2,
+          "value": "0129030006626f6f742d61"
+        }
+      ],
+      "boots": [
+        {
+          "id": "boot-a",
+          "first": 1699999990000000000,
+          "last": 1699999995000000000
+        }
+      ],
+      "collision": null,
+      "carried": [
+        {
+          "at": 1700000005000000000,
+          "id": "boot-b"
+        },
+        {
+          "at": 1700000000000000000,
+          "id": "boot-a"
+        },
+        {
+          "at": 1700000005000000000,
+          "id": "boot-a"
+        },
+        {
+          "at": 1700000000000000000,
+          "id": "boot-a"
+        }
+      ],
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1700038080a8b1e39fe7cb1706626f6f742d6180e4bf81f69fe7cb1706626f6f742d6180e4bf81f69fe7cb1706626f6f742d62"
+    }
+  ],
+  "refused": [
+    {
+      "name": "a leading byte 3",
+      "encoded": "030201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb170000"
+    },
+    {
+      "name": "a leading byte 0",
+      "encoded": "000201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb170000"
+    },
+    {
+      "name": "format 2 on a checkpoint",
+      "encoded": "020101000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb170000"
+    },
+    {
+      "name": "format 2 with no boot",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d61000000"
+    },
+    {
+      "name": "a boot last seen at the horizon",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb178080a8b1e39fe7cb170000"
+    },
+    {
+      "name": "a boot with no ID",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d61010080ecbcd4df9fe7cb1780ecbcd4df9fe7cb170000"
+    },
+    {
+      "name": "a boot twice",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180d8d1f7db9fe7cb1780d8d1f7db9fe7cb1706626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb170000"
+    },
+    {
+      "name": "a collision flag of 2",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb170200"
+    },
+    {
+      "name": "a collision with a boot it does not list",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb170106626f6f742d6180ecbcd4df9fe7cb1706626f6f742d7a80d8d1f7db9fe7cb1700"
+    },
+    {
+      "name": "a carried sighting before the horizon",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb170001ffffa7b1e39fe7cb1706626f6f742d61"
+    },
+    {
+      "name": "carried sightings out of order",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb1700028180a8b1e39fe7cb1706626f6f742d618080a8b1e39fe7cb1706626f6f742d61"
+    },
+    {
+      "name": "a carried sighting twice",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780ecbcd4df9fe7cb1700028080a8b1e39fe7cb1706626f6f742d618080a8b1e39fe7cb1706626f6f742d61"
+    },
+    {
+      "name": "a collision at the horizon",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180c4e69ad89fe7cb1780c4e69ad89fe7cb1706626f6f742d6280d8d1f7db9fe7cb1780d8d1f7db9fe7cb170106626f6f742d618080a8b1e39fe7cb1706626f6f742d6280d8d1f7db9fe7cb1700"
+    },
+    {
+      "name": "boots out of the order of first appearance",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6280d8d1f7db9fe7cb1780d8d1f7db9fe7cb1706626f6f742d6180c4e69ad89fe7cb1780c4e69ad89fe7cb170000"
+    },
+    {
+      "name": "a boot last seen before it was first seen",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610106626f6f742d6180ecbcd4df9fe7cb1780d8d1f7db9fe7cb170000"
+    },
+    {
+      "name": "a collision not after the newer boot first appeared",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180c4e69ad89fe7cb1780c4e69ad89fe7cb1706626f6f742d6280d8d1f7db9fe7cb1780d8d1f7db9fe7cb170106626f6f742d6180d8d1f7db9fe7cb1706626f6f742d6280d8d1f7db9fe7cb1700"
+    },
+    {
+      "name": "a trailing byte",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb17000000"
+    },
+    {
+      "name": "a state cut short",
+      "encoded": "020201000000000000000900000000000000090f010000000edce5e80000000000ffff01076b7562656c657480b8f890be9fe7cb170b0129030006626f6f742d610206626f6f742d6180b8f890be9fe7cb17809c90e1d09fe7cb1706626f6f742d6280b0fbbdd49fe7cb1780d8d1f7db9fe7cb"
+    }
+  ]
+}

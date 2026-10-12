@@ -3,9 +3,11 @@ package pebblestore
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -22,8 +24,18 @@ import (
 
 // formatTag identifies the layout and its encodings in a database's meta: the key
 // layout, the record value, the stamp and the meta keys, each by version. A
-// database written under another tag is refused, whatever its other contents.
-const formatTag = "toposhift/store/log;key=1;record=1;stamp=1;meta=1"
+// database written under another tag is refused, whatever its other contents,
+// but for formatTagStamp1.
+const formatTag = "toposhift/store/log;key=1;record=1;stamp=2;meta=1"
+
+// formatTagStamp1 is the tag of a database written before stamps of format 2
+// (baselines with a boot state). Such a database holds only stamps of format 1,
+// which this store reads, and, under a boot key, may hold host prefixes that
+// retentions kept whole, which a read folds whole and the next retention rewrites.
+// It is accepted, and an Open that can write rewrites its tag to formatTag before
+// anything else is written, so that a binary that knows only format 1 refuses it
+// from then on; one opened read-only leaves it as it is.
+const formatTagStamp1 = "toposhift/store/log;key=1;record=1;stamp=1;meta=1"
 
 // layers is how many layers there are, and so how many horizons a store keeps.
 const layers = 4
@@ -81,6 +93,8 @@ type Store struct {
 
 	beforeRecordApply, afterRecordApply, rereadFails func() error
 	beforeHorizonApply, afterHorizonApply            func() error
+	// beforeTagApply is the test hook of the same name in Options.
+	beforeTagApply func() error
 	// beforeCheckpointApply and afterCheckpointApply are the hooks of the checkpoint
 	// commit (see [Options]).
 	beforeCheckpointApply, afterCheckpointApply func() error
@@ -96,6 +110,9 @@ type Store struct {
 	// reads the clock; with none it never does.
 	timed bool
 	clock func() time.Time
+	// stamp1 says the database's format tag is formatTagStamp1, which an Open that
+	// can write rewrites before anything else.
+	stamp1 bool
 
 	// mu serializes Write and Retain, which the caller is already required to do;
 	// it keeps the horizon coherent if a caller forgets. It also guards the fields
@@ -196,9 +213,9 @@ type retainPhases struct {
 // its last sequence number and its retention horizons. A database is refused (with
 // an error wrapping [store.ErrInvalid]) if it was written in another format, by
 // another Pebble version or at another format major version (there is no option to
-// upgrade yet), or created with another lifecycle boot key; or if it holds data
-// keys and no format; or if it holds the marker of a retention that did not finish
-// and the marker disagrees with the horizons stored beside it. A database that
+// upgrade yet), or created with another lifecycle boot key or skew; or if it holds
+// data keys and no format; or if it holds the marker of a retention that did not
+// finish and the marker disagrees with the horizons stored beside it. A database that
 // holds such a marker has the retention finished, in the caller's goroutine, before
 // Open returns (see [Store.Retain]). That work can fail, for instance on a key in
 // the range that cannot be parsed, and then Open fails with it, loudly: the store
@@ -251,7 +268,7 @@ func Open(dir string, o Options) (*Store, error) {
 		retainBytes: o.retainBatchBytes, chunkTime: o.retainChunkTime, stopAfter: o.retainStopAfter,
 		resumeStopAfter: o.resumeStopAfter, afterRetainCommit: o.afterRetainCommit,
 		beforeRecordApply: o.beforeRecordApply, afterRecordApply: o.afterRecordApply, rereadFails: o.rereadFails,
-		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply,
+		beforeHorizonApply: o.beforeHorizonApply, afterHorizonApply: o.afterHorizonApply, beforeTagApply: o.beforeTagApply,
 		beforeCheckpointApply: o.beforeCheckpointApply, afterCheckpointApply: o.afterCheckpointApply,
 		ckpt: ckpt, fullStateRead: o.fullStateRead,
 		offsets: o.Offsets, keep: o.Keep,
@@ -299,6 +316,15 @@ func Open(dir string, o Options) (*Store, error) {
 		_ = kv.Close()
 		return nil, err
 	}
+	if s.stamp1 && !kv.Config().ReadOnly {
+		// Before anything else is written: a retention finished below may write a
+		// stamp of format 2.
+		if err := s.upgradeFormatTag(); err != nil {
+			s.abandon()
+			_ = kv.Close()
+			return nil, err
+		}
+	}
 	if unfinished != nil && !kv.Config().ReadOnly {
 		// A retention of an earlier process did not finish: its horizons are
 		// published and its marker says how far it got. It is finished here, before
@@ -335,6 +361,49 @@ func Open(dir string, o Options) (*Store, error) {
 		s.startRetainer()
 	}
 	return s, nil
+}
+
+// encodeSkew is the value of the skew meta key: the skew in nanoseconds, 8 bytes
+// big endian. It is written only for a skew that is not zero.
+func encodeSkew(d time.Duration) []byte {
+	return binary.BigEndian.AppendUint64(nil, uint64(d))
+}
+
+// decodeSkew reads the skew meta key: zero if it is absent (nil), and an error if
+// it is not a positive number of nanoseconds in 8 bytes (zero is never written),
+// an empty value included.
+func decodeSkew(raw []byte) (time.Duration, error) {
+	if raw == nil {
+		return 0, nil
+	}
+	if len(raw) != 8 {
+		return 0, fmt.Errorf("the skew key holds %d bytes, not 8", len(raw))
+	}
+	n := binary.BigEndian.Uint64(raw)
+	if n == 0 || n > math.MaxInt64 {
+		return 0, fmt.Errorf("the skew key holds %d nanoseconds, which no store writes", n)
+	}
+	return time.Duration(n), nil
+}
+
+// upgradeFormatTag rewrites the tag of a database written before stamps of format
+// 2 (see formatTagStamp1), synced, in a commit of its own.
+func (s *Store) upgradeFormatTag() error {
+	b := s.kv.NewBatch()
+	defer func() { _ = b.Close() }()
+	if err := b.Set(metaKey(pebblekv.MetaFormat), []byte(formatTag), nil); err != nil {
+		return err
+	}
+	if s.beforeTagApply != nil {
+		if err := s.beforeTagApply(); err != nil {
+			return err // tests: a commit that failed without landing
+		}
+	}
+	if err := s.kv.Apply(b, pebble.Sync); err != nil {
+		return err
+	}
+	s.stamp1 = false
+	return nil
 }
 
 // abandon releases what a store that failed to open holds besides the database.
@@ -385,12 +454,18 @@ func (s *Store) load() (_ *retainMarker, empty bool, err error) {
 				return nil, false, err
 			}
 		}
+		if s.policy.Skew != 0 {
+			if err := b.Set(metaKey(metaSkew), encodeSkew(s.policy.Skew), nil); err != nil {
+				return nil, false, err
+			}
+		}
 		if err := s.kv.Apply(b, pebble.Sync); err != nil {
 			return nil, false, err
 		}
-	case string(format) != formatTag:
+	case string(format) != formatTag && string(format) != formatTagStamp1:
 		return nil, false, fmt.Errorf("pebblestore: Open: the database holds format %q, this is %q: %w", format, formatTag, store.ErrInvalid)
 	default:
+		s.stamp1 = string(format) == formatTagStamp1
 		// There is no option to upgrade a database to another Pebble yet, so a
 		// database made by another version, or at another format major version,
 		// is refused.
@@ -410,6 +485,27 @@ func (s *Store) load() (_ *retainMarker, empty bool, err error) {
 	}
 	if string(bootKey) != string(s.policy.BootKey) {
 		return nil, false, fmt.Errorf("pebblestore: Open: the database was created with boot key %q, not %q: %w", bootKey, s.policy.BootKey, store.ErrInvalid)
+	}
+	// So is an absent skew zero's. The boot states of the baselines were folded
+	// under the stored one, and a fold under another would not be the fold of the
+	// whole history.
+	// GetMeta does not tell an empty value from an absent one, so the key is read
+	// directly: a skew key that holds nothing is refused, never taken for zero.
+	var rawSkew []byte
+	switch v, closer, err := s.kv.Get(metaKey(metaSkew)); {
+	case errors.Is(err, pebble.ErrNotFound):
+	case err != nil:
+		return nil, false, err
+	default:
+		rawSkew = append([]byte{}, v...) // not nil, even when empty
+		_ = closer.Close()
+	}
+	skew, err := decodeSkew(rawSkew)
+	if err != nil {
+		return nil, false, fmt.Errorf("pebblestore: Open: %w: %w", err, store.ErrInvalid)
+	}
+	if skew != s.policy.Skew {
+		return nil, false, fmt.Errorf("pebblestore: Open: the database was created with a boot skew of %s, not %s: %w", skew, s.policy.Skew, store.ErrInvalid)
 	}
 	raw, err := s.kv.GetMeta(metaKey(pebblekv.MetaLastSeq))
 	if err != nil {

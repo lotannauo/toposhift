@@ -93,13 +93,10 @@ func TestCheckpointCommitsAreNeverSynced(t *testing.T) {
 	}
 }
 
-// A retention that keeps a prefix whole because of a boot in what it would have
-// discarded leaves its checkpoints, the one at the horizon included, and what the
-// writer remembers of it afterwards is what reading the whole prefix finds. The
-// states worked out from the keys at or after the horizon are not that: the
-// checkpoint at the horizon is deleted in the one and absent from the other, and
-// older keys that stay may hold more.
-func TestAPrefixKeptWholeForBootsHasItsOwnStateWorkedOut(t *testing.T) {
+// A retention rewrites the prefix of a host with boots as it rewrites any other:
+// its checkpoints at and before the horizon go, and what the writer remembers of it
+// afterwards, worked out by the retention, is what reading the whole prefix finds.
+func TestAPrefixWithBootsIsRewrittenAndItsStateWorkedOut(t *testing.T) {
 	t.Parallel()
 	h := t0.Add(10 * time.Minute)
 	host := hostObservation(0, t0, "").Subject.A
@@ -121,19 +118,19 @@ func TestAPrefixKeptWholeForBootsHasItsOwnStateWorkedOut(t *testing.T) {
 		return pr
 	}
 	p.retain(h)
-	if rec.counters["retain.prefixes_kept_for_boots"] != 1 || rec.counters["retain.range_deletes"] != 0 {
-		t.Fatalf("the retention did not keep the prefix whole: %v", rec.counters)
+	if rec.counters["retain.range_deletes"] != 1 || rec.counters["retain.baselines_written"] != 1 || rec.counters["retain.state_keys"] == 0 {
+		t.Fatalf("the retention did not rewrite the prefix and work its state out: %v", rec.counters)
 	}
-	if got := checkpointsOnDisk(t, p.s)[string(entityPrefix())]; !slices.Equal(got, []int64{t0.Add(5 * time.Minute).UnixNano(), h.UnixNano()}) {
-		t.Fatalf("the checkpoints on disk after the retention = %v: a prefix kept whole keeps them all", got)
+	if got := checkpointsOnDisk(t, p.s)[string(entityPrefix())]; len(got) != 0 {
+		t.Fatalf("the checkpoints on disk after the retention = %v: those at and before the horizon go", got)
 	}
 	waitScanned(t, p.s)
 	if !completeOf(p.s) {
 		t.Fatal("the map is not complete after the scan that follows a retention")
 	}
 	requireWholeReads(t, p.s)
-	if st := p.s.states.peek(string(entityPrefix())); st == nil || !slices.Equal(st.ckpts, []int64{t0.Add(5 * time.Minute).UnixNano(), h.UnixNano()}) {
-		t.Fatalf("the writer remembers %+v of the prefix; it holds both checkpoints", st)
+	if st := p.s.states.peek(string(entityPrefix())); st == nil || len(st.ckpts) != 0 {
+		t.Fatalf("the writer remembers %+v of the prefix; it holds no checkpoint", st)
 	}
 	// A later record, and one at the horizon's own instant, delete only what they
 	// make untrue; the answers are the reference's.

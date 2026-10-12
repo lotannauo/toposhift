@@ -20,7 +20,10 @@
 //
 // The stored format is frozen: the key, the record value, the stamp and the meta
 // are the ones named by the format tag, and the golden vectors in the tests are
-// what changing any of them has to answer to.
+// what changing any of them has to answer to. The tag names stamp format 2, which
+// added the baselines that carry a boot state (see Quarantine below); a database
+// whose tag names format 1 holds none, is read as it is, and has its tag rewritten
+// by the first Open that can write, before anything else is written.
 //
 // # How a read works
 //
@@ -143,14 +146,44 @@
 //
 // A store opened with a policy that names a boot key reports two live boots of
 // one host as a [store.QuarantineError], decided by folding everything the scope
-// sees of the entity. Two interim rules make that correct and simple:
-//   - Alive reads the whole history of the entity (its records and the baseline's
-//     entries) and folds it, where without a boot key it stops at the first live
-//     reference. Its cost grows with the entity's history.
-//   - Retain does not shorten the prefix of an entity if a record it would discard
-//     carries a boot (counted as "retain.prefixes_kept_for_boots"): the baseline
-//     keeps no boot history, so the records stay, and every later collision is
-//     judged against them. The history of a host with boots is never reclaimed.
+// sees of the entity, so that the answer is the fold of its whole history:
+//   - Alive reads the whole prefix of the entity and folds it, where without a
+//     boot key it stops at the first live reference: the records the token sees,
+//     and the retention baseline, whose entries hold the references alive at the
+//     horizon and whose boot state stands for the boots of the records before it.
+//     Its cost grows with the history the prefix keeps, which retention bounds.
+//   - Retain rewrites the prefix of an entity with boots as it rewrites any other,
+//     and its baseline also holds the boot fold's state at the horizon, which
+//     makes it a stamp of format 2 (see stamp.go): the boots seen before the
+//     horizon, each with its first and last sighting, in order of first
+//     appearance; the first collision, if there was one; and the sightings at or
+//     after the horizon of the records it discards, which are the last instants of
+//     runs that began before it. The sightings are the fold's own
+//     ([lifecycle.Sightings]): per producer, the record with the highest Seq at
+//     each instant, so every record that goes counts, not only the newest of its
+//     reference. A baseline of a prefix with no boot is of format 1, byte for byte
+//     what it was before format 2.
+//
+// A read seeds a [lifecycle.BootTracker] with the state and has it take the
+// carried sightings and those of the records that stay, in order, which is the
+// fold of the whole history from the horizon on. The Skew of the policy is applied
+// as the state is folded, so it is stored when the database is created (the meta
+// key "skew", absent for zero, as every database before the key has) and a store
+// opened with another Skew is refused, as one opened with another boot key is.
+//
+// A summary of an entity's boots that a read could stop at (a key of kind 3) is
+// deferred: Alive under a boot key folds the whole of the prefix that retention
+// leaves. It is a cost, not a matter of correctness, and is revisited if hosts with
+// many reboots make that fold too slow: known issue K5, which holds the tests that
+// decide it (a bench of hosts with 1 to 1,000 reboots over 30 days read at several
+// instants, against the read budget of their class, and the p99 of Alive on the
+// worst host prefix against the query latency target).
+//
+// The boot list in a baseline is never shortened: a stale boot is judged against
+// the boot that first appeared right after it, so every boot must stay, and the
+// list grows by one entry per reboot for the life of the host. An entry is the
+// boot ID with a length byte and two instants of 9 bytes: about 55 bytes for a
+// 36-byte boot ID, the form of /proc/sys/kernel/random/boot_id.
 //
 // Because Alive folds the whole prefix, no read would use a checkpoint of an
 // entity's own prefix, so under a boot key the checkpoint policy places none there.
@@ -175,6 +208,6 @@
 //
 // # Not here yet
 //
-// A boot history kept in baselines is a later change. The product's default offsets are not set
-// here either: [DefaultOptions] has every offset zero and no layer kept.
+// The product's default offsets are not set here: [DefaultOptions] has every offset
+// zero and no layer kept.
 package pebblestore
