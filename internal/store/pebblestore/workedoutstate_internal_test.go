@@ -304,7 +304,11 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 	t.Parallel()
 	t.Run("past the end of time", func(t *testing.T) {
 		t.Parallel()
-		p := newPair(t, Options{Checkpoints: policy(stress(0))})
+		// The retention starts a scan of the stored prefixes as it ends, which makes the
+		// map complete again; it is held while the map is looked at.
+		pause := newScanPause()
+		p := newPair(t, Options{Checkpoints: policy(stress(0)), scanHook: pause.hook})
+		t.Cleanup(pause.resume)
 		p.write(edgeRecord(1, "p", sec(1), lifecycle.Observe, 0), edgeRecord(2, "q", store.MaxEventTime, lifecycle.Observe, 0))
 		if p.s.states.len() == 0 || !completeOf(p.s) {
 			t.Fatal("the writes left nothing remembered")
@@ -317,10 +321,15 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		if !p.s.anyCkpt {
 			t.Fatal("the hook wrote no checkpoint")
 		}
+		pause.arm(scanStarting, 0)
 		p.retain(store.MaxEventTime.Add(time.Hour))
 		if p.s.states.len() != 0 || completeOf(p.s) {
 			t.Fatalf("after a retention past the end of time, %d prefixes are remembered (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
+		if _, ok := pause.await(t, p.s); !ok {
+			t.Error("the scan that follows the retention was not held")
+		}
+		pause.resume()
 	})
 	t.Run("the policy is off", func(t *testing.T) {
 		t.Parallel()
@@ -341,11 +350,17 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 			t.Fatal(err)
 		}
 		rec := &countRecorder{}
-		e, err = Open("db", Options{Config: cfg, Recorder: rec, Checkpoints: off()})
+		pause := newScanPause()
+		e, err = Open("db", Options{Config: cfg, Recorder: rec, Checkpoints: off(), scanHook: pause.hook})
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer func() { _ = e.Close() }()
+		defer pause.resume()
+		// The scan that Open starts ends before the retention, so that the one held is the
+		// scan that follows the retention, which makes the map complete again.
+		waitScanned(t, e)
+		pause.arm(scanStarting, 0)
 		if err := e.Retain(bg, sec(10)); err != nil {
 			t.Fatal(err)
 		}
@@ -353,6 +368,10 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 		if e.states.len() != 0 || completeOf(e) {
 			t.Fatalf("a retention with the policy off left %d prefixes remembered (complete %v)", e.states.len(), completeOf(e))
 		}
+		if _, ok := pause.await(t, e); !ok {
+			t.Error("the scan that follows the retention was not held")
+		}
+		pause.resume()
 		if _, ok := rec.counts()["retain.state_keys"]; ok {
 			t.Fatal("a retention that works nothing out counted keys read for it")
 		}
@@ -390,12 +409,19 @@ func TestARetentionThatCannotWorkTheStateOutLeavesTheMapEmptyAndIncomplete(t *te
 	})
 	t.Run("no checkpoint was ever written", func(t *testing.T) {
 		t.Parallel()
-		p := newPair(t, Options{Checkpoints: policy(CheckpointOptions{On: true, KMin: 1000})})
+		pause := newScanPause()
+		p := newPair(t, Options{Checkpoints: policy(CheckpointOptions{On: true, KMin: 1000}), scanHook: pause.hook})
+		t.Cleanup(pause.resume)
 		p.write(edgeRecord(1, "p", sec(1), lifecycle.Observe, 0), edgeRecord(2, "p", sec(20), lifecycle.Observe, 0))
+		pause.arm(scanStarting, 0)
 		p.retain(sec(10))
 		if p.s.states.len() != 0 || completeOf(p.s) {
 			t.Fatalf("a retention in a database with no checkpoint left %d prefixes remembered (complete %v)", p.s.states.len(), completeOf(p.s))
 		}
+		if _, ok := pause.await(t, p.s); !ok {
+			t.Error("the scan that follows the retention was not held")
+		}
+		pause.resume()
 		p.write(edgeRecord(3, "p", sec(30), lifecycle.Observe, 0))
 		p.same([]identity.Fingerprint{podFP, nodeFP}, []time.Time{sec(10), sec(25), sec(40)}, []uint64{2, 3, store.Latest})
 	})
