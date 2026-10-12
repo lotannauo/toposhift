@@ -81,3 +81,5 @@ otelcol-contrib validate --config toposhift.yaml \
 ```
 
 An unknown key fails validation. An unedited placeholder does not.
+
+CI runs this check with `mise run check:collector`, in the static shard: it validates `toposhift.yaml` in the collector image pinned by tag and digest in `mise.toml` (`OTELCOL_IMAGE`; change the tag and the digest together when the collector is bumped), then confirms that a copy with one misspelt key is refused. The validation runs with `--network none`; the first local run pulls the image, about 100 MB. Without Docker the task is skipped locally and fails when `CI=true`. If the runner's egress policy ever blocks instead of auditing, it must allow `registry-1.docker.io`, `auth.docker.io` and `production.cloudflare.docker.com`.
