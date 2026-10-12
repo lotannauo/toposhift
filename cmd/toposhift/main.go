@@ -152,8 +152,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		Pattern: "GET /status",
 		Handler: status,
 	}}
-	signalled := make(chan time.Time, 1)
-	context.AfterFunc(ctx, func() { signalled <- time.Now() })
+	logStop := watchStop(ctx, nil)
 	stopped := make(chan struct{})
 	var srvErr error
 	go func() {
@@ -170,17 +169,39 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	// runs, so the requests in flight are answered; then ingest stops, and the
 	// store and the directory close.
 	<-stopped
-	select {
-	case at := <-signalled:
-		log.Info("server stopped", "took", time.Since(at))
-	default:
-	}
+	logStop(log)
 	in.stop(log)
 	if srvErr != nil {
 		log.Error("server failed", "err", srvErr)
 		return 1
 	}
 	return 0
+}
+
+// watchStop notes when ctx is done and returns the function that logs how long
+// the server took to stop after that. beforeSend, when not nil, runs in the
+// callback after the time is noted and before it is passed on; tests use it to
+// make the callback slow.
+func watchStop(ctx context.Context, beforeSend func()) (logStop func(*slog.Logger)) {
+	signalled := make(chan time.Time, 1)
+	context.AfterFunc(ctx, func() {
+		at := time.Now()
+		if beforeSend != nil {
+			beforeSend()
+		}
+		signalled <- at
+	})
+	return func(log *slog.Logger) {
+		// With ctx live, the server returned on its own, as one that failed at
+		// startup does: no signal came, and none is waited for. With ctx done,
+		// the callback runs exactly once, on a goroutine that may not have run
+		// yet, and sends into a channel with room for it, so this receive ends.
+		if ctx.Err() == nil {
+			return
+		}
+		at := <-signalled
+		log.Info("server stopped", "took", time.Since(at))
+	}
 }
 
 func usage(w io.Writer) {
