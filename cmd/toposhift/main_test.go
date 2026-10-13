@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 func noEnv(string) string { return "" }
@@ -72,5 +74,49 @@ func TestServeListenPrecedence(t *testing.T) {
 				t.Errorf("stderr = %q, want substring %q", stderr.String(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// A server that stops on a signal is timed in the log even when the goroutine
+// that notes the signal runs late: here the callback is held for 50 ms.
+func TestWatchStopLogsWhenTheSignalIsNotedLate(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	entered, release := make(chan struct{}), make(chan struct{})
+	logStop := watchStop(ctx, func() {
+		close(entered)
+		<-release
+	})
+	cancel()
+	<-entered
+	// The callback is held for 50 ms after the context is done, so logStop is
+	// almost always called while it is still held; either way the line must
+	// be logged.
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	var out bytes.Buffer
+	logStop(slog.New(slog.NewTextHandler(&out, nil)))
+	if !strings.Contains(out.String(), "server stopped") {
+		t.Errorf("the log does not time the stop:\n%s", &out)
+	}
+}
+
+// A server that returns while ctx is live, as one that failed at startup does,
+// logs nothing and does not wait for a signal that never comes.
+func TestWatchStopDoesNotWaitWhenNothingSignalled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	logStop := watchStop(ctx, nil)
+	var out bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		logStop(slog.New(slog.NewTextHandler(&out, nil)))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("logStop waits for a signal that never comes")
+	}
+	if out.Len() != 0 {
+		t.Errorf("the log has %q, want nothing", &out)
 	}
 }
