@@ -661,6 +661,15 @@ func (j *judge) buildsWhy(builds []*tbuild) (binary, settings string) {
 			return "", fmt.Sprintf("%s was paced: a paced build is judged by the store gate only, its timing is not the spike's stream", b.label())
 		}
 	}
+	// A retention flush threshold is a setting of the store gate's measurements: a build
+	// that recorded one other than this binary's default is not the store the timing
+	// gates judge (one that recorded none was built before it was recorded).
+	def := strconv.Itoa(RetainFlushDelsOf(0))
+	for _, b := range builds {
+		if v, ok := b.Manifest.Describe[RetainFlushDelsKey]; ok && v != def {
+			return "", fmt.Sprintf("%s was built with a retention flush threshold of %s range deletions, not this binary's default of %s: a build at another threshold is a measurement of the store gate, and its timing is not the spike's", b.label(), v, def)
+		}
+	}
 	for _, b := range builds {
 		if describedOr(b.Manifest, SyncKey, "false") != "false" {
 			return "", "these builds synced every commit: G2, G3 and G4 are judged on builds that do not, and a synced build is a separate measurement"

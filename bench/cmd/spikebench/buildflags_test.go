@@ -397,6 +397,9 @@ func exitCode(err error) int {
 	return 1
 }
 
+// gateCommit is the commit the builds of the store gate's tests are of.
+const gateCommit = "0123456789abcdef0123456789abcdef01234567"
+
 // writeGateBuild writes the manifest of a build of the root store, with the metrics
 // file if peak is above 0, and returns its directory.
 func writeGateBuild(t *testing.T, root, cand string, gate *runner.GateTrace, peak int64) string {
@@ -414,7 +417,7 @@ func writeGateBuildIn(t *testing.T, root, name, cand string, gate *runner.GateTr
 		t.Fatal(err)
 	}
 	m := runner.Manifest{
-		Candidate: cand, Layout: "L", PlanDigest: "p", Gate: gate,
+		Candidate: cand, Layout: "L", PlanDigest: "p", Gate: gate, Build: runner.BuildInfo{Revision: gateCommit},
 		Describe: map[string]string{runner.RetentionModeKey: gate.Mode, runner.GoGCKey: "100"},
 	}
 	if gate.Mode == "background" {
@@ -491,7 +494,7 @@ func TestStoreGateExitsByWhatWasJudged(t *testing.T) {
 	}
 	run := func(dirs ...string) (int, string) {
 		out.Reset()
-		err := runStoreGate(dirs, &out, &errOut)
+		err := runStoreGate(append([]string{"-commit", gateCommit}, dirs...), &out, &errOut)
 		return exitCode(err), out.String()
 	}
 
@@ -574,7 +577,7 @@ func TestStoreGateRefusesRepetitionsMadeUnderDifferentSettings(t *testing.T) {
 	root := t.TempDir()
 	writeGateBuildIn(t, root, "rep1", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
 	writeGateBuildIn(t, root, "rep2", "Lroot/k64a2l1ns", trace("background"), 1<<30)
-	err := runStoreGate([]string{root}, &out, &errOut)
+	err := runStoreGate([]string{"-commit", gateCommit, root}, &out, &errOut)
 	if exitCode(err) != 3 {
 		t.Fatalf("status %d (%v), want 3", exitCode(err), err)
 	}
@@ -592,7 +595,7 @@ func TestStoreGateRefusesRepetitionsMadeUnderDifferentSettings(t *testing.T) {
 	writeGateBuild(t, root, "Lroot/off", trace("sync"), 1<<30)
 	writeGateBuild(t, root, "Lroot/k64a2l1ns", trace("background"), 1<<30)
 	out.Reset()
-	if err := runStoreGate([]string{root}, &out, &errOut); exitCode(err) == 3 {
+	if err := runStoreGate([]string{"-commit", gateCommit, root}, &out, &errOut); exitCode(err) == 3 {
 		t.Errorf("a baseline of another mode was refused: %v", err)
 	}
 
@@ -600,7 +603,7 @@ func TestStoreGateRefusesRepetitionsMadeUnderDifferentSettings(t *testing.T) {
 	writeGateBuildIn(t, root, "rep1", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
 	writeGateBuildIn(t, root, "rep2", "Lroot/k64a2l1ns", trace("sync"), 1<<30)
 	out.Reset()
-	if err := runStoreGate([]string{root}, &out, &errOut); exitCode(err) == 3 {
+	if err := runStoreGate([]string{"-commit", gateCommit, root}, &out, &errOut); exitCode(err) == 3 {
 		t.Errorf("repetitions of one mode: status %d (%v)\n%s", exitCode(err), err, out.String())
 	}
 }
@@ -638,7 +641,7 @@ func TestStoreGateExitsTwoWhenOnlyQ1IsWithheldByItsControl(t *testing.T) {
 		writeGateBuild(t, root, "Lroot/off", build(40*ms, 10*ms), 1<<30)
 		writeGateBuild(t, root, "Lroot/k64a2l1ns", build(c.inside, c.control), 1<<30)
 		var out, errOut strings.Builder
-		err := runStoreGate([]string{root}, &out, &errOut)
+		err := runStoreGate([]string{"-commit", gateCommit, root}, &out, &errOut)
 		if exitCode(err) != c.code {
 			t.Errorf("%s: status %d (%v), want %d\n%s", c.name, exitCode(err), err, c.code, out.String())
 		}

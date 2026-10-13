@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -319,9 +320,12 @@ func TestATinyRunAgreesWithTheSpike(t *testing.T) {
 			wantDescribe := maps.Clone(spike.m.Describe)
 			wantDescribe["store"] = "root"
 			// The keys a build through the root store has besides the spike engine's (go_gc is
-			// in both): how its retention runs, and the rate it was paced at (0: not paced).
+			// in both): how its retention runs, the rate it was paced at (0: not paced), and
+			// the retention flush threshold its store used (the default's number when none
+			// was given).
 			wantDescribe[runner.RetentionModeKey] = "sync"
 			wantDescribe[runner.PaceKey] = "0"
+			wantDescribe[runner.RetainFlushDelsKey] = strconv.Itoa(pebblestore.DefaultRetainFlushDels)
 			for k, v := range wantDescribe {
 				if k != "pebble_options" && root.m.Describe[k] != v {
 					t.Errorf("Describe[%s] = %q, want %q", k, root.m.Describe[k], v)

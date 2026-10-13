@@ -603,7 +603,7 @@ func TestRepetitionsAreJudgedByTheWorstOfThem(t *testing.T) {
 	rep := func(n int, longest time.Duration) *runner.StoreGateBuild {
 		return synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) {
 			b.Dir += "/rep" + string(rune('0'+n))
-			b.Job = &runner.Job{Rep: n}
+			b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: n}
 		}, trace(func(g *runner.GateTrace) { g.Inside.Commit = histOf(longest) }))
 	}
 	r := find(t, runner.JudgeStoreGate([]*runner.StoreGateBuild{rep(1, 10*time.Millisecond), rep(2, 300*time.Millisecond), rep(3, 20*time.Millisecond)}), "Lroot/k64a2l1ns", "Q1")
@@ -612,13 +612,19 @@ func TestRepetitionsAreJudgedByTheWorstOfThem(t *testing.T) {
 	}
 	// each repetition is compared with the baseline of its own repetition
 	offs := []*runner.StoreGateBuild{
-		synth("Lroot/off", func(b *runner.StoreGateBuild) { b.Job = &runner.Job{Rep: 1} }),
-		synth("Lroot/off", func(b *runner.StoreGateBuild) { b.Job = &runner.Job{Rep: 2}; b.Metrics.HeapLivePeak = 4 * gib }),
+		synth("Lroot/off", func(b *runner.StoreGateBuild) { b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: 1} }),
+		synth("Lroot/off", func(b *runner.StoreGateBuild) {
+			b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: 2}
+			b.Metrics.HeapLivePeak = 4 * gib
+		}),
 	}
 	cands := []*runner.StoreGateBuild{
-		synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) { b.Job = &runner.Job{Rep: 1}; b.Dir += "/1" }),
 		synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) {
-			b.Job = &runner.Job{Rep: 2}
+			b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: 1}
+			b.Dir += "/1"
+		}),
+		synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) {
+			b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: 2}
 			b.Dir += "/2"
 			b.Metrics.HeapLivePeak = 4*gib + 512_000_000
 		}),
@@ -643,7 +649,7 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 
 	text := runner.StoreGateRulesText()
 	for _, want := range []string{
-		"store gate rules 2\n",
+		"store gate rules 3\n",
 		"at most 250ms",
 		"A build over that limit is over it only if its control is at most 150ms; with a control above 150ms, or no batch outside every window and every settle, Q1 is not judged for the build, with the control in the reason,",
 		"A control never prevents a pass.",
@@ -651,7 +657,7 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 		"with 30 days kept, the longest rewrite (from the publication to the end of the rewrite) is at most 2h0m0s, at a load outside windows of at least 3000 records/s",
 		"are at least 3000 records/s",
 		"plus 512 MB",
-		"the same GOGC, GOMEMLIMIT and metrics interval, and with the same retention mode, sync setting, pacing rate and pacing start",
+		"the same GOGC, GOMEMLIMIT and metrics interval, and with the same retention mode, sync setting, pacing rate, pacing start and retention-flush threshold",
 		// version 2: the cadence, the pacing, and what is judged of a build in the background
 		"Q3 assumes the product calls Retain at most once a day per store, each call moving every layer that is due; its bound is one twelfth of that interval. A shorter product cadence needs a new rule.",
 		"`-pace R`: records are due on a fixed wall-clock schedule of R per second from the moment pacing starts; when the writer is behind it writes without sleeping until it is back on schedule, and never runs ahead of it. A build of window W is unpaced for its first D = 2W + 1.5 − ⌈W/2⌉ stream days and paced for the rest (7 days: D = 11.5; 30 days: D = 46.5); any other D is refused. A build whose retention is synchronous is not paced.",
@@ -661,7 +667,7 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 		"Q3's load is taken over the paced writing time, from D to the end of the stream.",
 		"Q3 fails if any rewrite time or any lower bound exceeds its limit, at Q3's load. Otherwise, if any judged pass has only a lower bound, Q3 is not judged. Otherwise it passes.",
 		"A window's time for Q4 ends at the end of the stream.",
-		"Q5 compares builds with the same retention mode, sync setting, pacing rate and pacing start.",
+		"Q5 compares builds with the same retention mode, sync setting, pacing rate, pacing start and retention-flush threshold.",
 		"A build whose retention is synchronous is judged as in version 1.",
 		"MB and GB are 10^6 and 10^9 bytes",
 		"lower bound of its bucket",
@@ -675,10 +681,10 @@ func TestTheRulesTextAndItsDigestArePinned(t *testing.T) {
 			t.Errorf("the rules text lacks %q:\n%s", want, text)
 		}
 	}
-	if runner.StoreGateRulesVersion != 2 {
-		t.Errorf("the rules version is %d: version 2 is the rules for a build in the background, settled before any was judged", runner.StoreGateRulesVersion)
+	if runner.StoreGateRulesVersion != 3 {
+		t.Errorf("the rules version is %d: version 3 adds the retention-flush threshold to Q5's match, registered before any background build was judged on CI", runner.StoreGateRulesVersion)
 	}
-	const pinned = "ae7bddce4f083432efc77c3f572a39d15a9a3bde50f9620c382a30f67a1bd062"
+	const pinned = "667f1857c82875128eb7524618e41003fa679b02fa3d202111db076130b1761f"
 	if got := runner.StoreGateRulesDigest(); got != pinned {
 		t.Errorf("the digest of the rules text is %s, pinned %s: a limit or a word of the rules changed, which is a decision and not a fix of a test\n%s", got, pinned, text)
 	}
@@ -712,6 +718,33 @@ func TestTheLogOfVersionTwoIsInTheSource(t *testing.T) {
 	}
 	if !strings.Contains(runner.StoreGateQ3Note, "At 4,500 records/s a stream day lasts minutes of wall time, so in the Background arm Q3 can fail only if no retention follows a publication for its whole limit, that is, if the writer stalls for about that long; otherwise it passes or is not judged. A rewrite that outlasts its stream day is caught by the reopen check before dispatch.") {
 		t.Errorf("the Q3 note: %s", runner.StoreGateQ3Note)
+	}
+}
+
+// The log line of version 3 stands above the version in the source, word for word.
+func TestTheLogOfVersionThreeIsInTheSource(t *testing.T) {
+	t.Parallel()
+	const log = "Log (2026-10-13, version 3, before any background build was judged on CI): Q5 and the repetitions of a verdict also match the retention-flush threshold (retain_flush_dels), which a build through the root store records in its manifest; a manifest without it is not recorded, never read as the default. The thresholds 32,768, 24,576 and 16,384 are registered as three distinct configurations, each a 7-day background dispatch of its own from one frozen commit; a dispatch of one rung is not a redispatch of another with a changed configuration. Incomplete builds: A build is complete when it has written its gate trace. A build that stops before that because the build or the store failed (an error returned, a crash, the process killed for memory, a full disk) has failed, and its arm fails. A build that stops before that for another reason (its build step or job reached its time limit, it was cancelled, or its runner was lost with no sign in its logs of memory or disk exhaustion) is incomplete and is not judged; the report lists it with the reason and the evidence. A cancellation counts as incomplete only if its reason is recorded when it is made (for a cancellation the owner did not make, when it is found) and is not drawn from the build's own output; otherwise the arm is not judged and is not redispatched under this rules version. A complete build with a row the report marks over its limit fails its arm, whatever the arm's other builds did. Otherwise an arm with any incomplete pre-registered build is not judged. An arm that is not judged has not passed, and the pre-registered fallback applies: the release ships with retention off by default. The only exception is one redispatch of the whole arm (every build, baselines included, on every architecture), under the same rules version and the same configuration (the same commit, workflow inputs and plans; the runner image is recorded), that is complete and passes. Its verdict replaces the first dispatch's; the first dispatch's complete builds are reported beside it and are not pooled with it. Re-running some of an arm's jobs, in the same workflow run or another, is not a redispatch and is not allowed. Each incomplete build and each redispatch is recorded, with its reason, in the gate's log before the next dispatch. No build or arm is redispatched with a changed configuration under the same rules version. A changed configuration needs a new rules version, whose log lists every earlier dispatch of the arm with its verdict or why it was incomplete; the fallback holds for any release made before an arm under the new version passes. An arm that finished with a criterion not judged has not passed; it may use the same single whole-arm redispatch as an incomplete build, one in total whatever the reason. A reopen on (a) alone leads to one measured change of the settle deadline under a new rules version, logged, and another quiet run; a reopen on (b) or (c) means the fallback holds for this release, and any change goes into a new, logged rules version followed by another quiet run. The retention-chunk criteria, the threshold ladder, the reopen thresholds and the 30-day dispatch condition were written after the void local 30-day reopen build of 2026-10-11/12 and after local observations of the retention's chunks, whose values were seen and are not published. The 25% settle-share criterion is withdrawn because it could not trip at a 2-minute settle deadline. The chunk criteria's bounds come from the chunk clock's caps (chunkTime/2, 1.5 × chunkTime); the local data informed only the rung values. FlushDelayDeleteRange is 0. No threshold was set from a CI measurement. Under version 2 no background arm was dispatched on CI, and the one local 30-day reopen build was void (machine loaded) and was not read."
+	raw, err := os.ReadFile("storegate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var words []string
+	collecting := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "// Log (2026-10-13, version 3"):
+			collecting = true
+		case collecting && !strings.HasPrefix(line, "//"):
+			collecting = false
+		}
+		if collecting {
+			words = append(words, strings.Fields(strings.TrimPrefix(line, "//"))...)
+		}
+	}
+	if got := strings.Join(words, " "); got != log {
+		t.Errorf("the log line above StoreGateRulesVersion is\n%s\nwant\n%s", got, log)
 	}
 }
 
@@ -1168,7 +1201,7 @@ func TestQ5NeedsABaselineOfTheSameSettings(t *testing.T) {
 		for rep := 1; rep <= 3; rep++ {
 			out = append(out, synth(cand, append([]func(*runner.StoreGateBuild){func(b *runner.StoreGateBuild) {
 				b.Dir = fmt.Sprintf("/builds/%s_%d", strings.ReplaceAll(cand, "/", "_"), rep)
-				b.Job = &runner.Job{Rep: rep}
+				b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: rep}
 			}}, mods...)...))
 		}
 		return out
@@ -1189,6 +1222,9 @@ func TestQ5NeedsABaselineOfTheSameSettings(t *testing.T) {
 		}},
 		{runner.SyncKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.SyncKey] = "true" }},
 		{runner.PaceKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PaceKey] = "4000" }},
+		// The candidate's builds do not record a threshold: a baseline that does is not
+		// taken for a build at the default.
+		{runner.RetainFlushDelsKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.RetainFlushDelsKey] = "32768" }},
 		// A pacing start that differs from the rule's is a refusal of the build itself, so
 		// that the baseline cannot be used; the comparison of the start is a unit test.
 		{runner.PaceFromDayKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PaceFromDayKey] = "12" }},
@@ -1740,7 +1776,10 @@ func TestARowJudgedOnSomeRepetitionsIsMarkedPartial(t *testing.T) {
 	t.Parallel()
 
 	one := func(n int, mod func(*runner.GateTrace)) *runner.StoreGateBuild {
-		return synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) { b.Dir += "/" + string(rune('0'+n)); b.Job = &runner.Job{Rep: n} }, trace(mod))
+		return synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) {
+			b.Dir += "/" + string(rune('0'+n))
+			b.Job = &runner.Job{RunID: "1", RunAttempt: "1", Rep: n}
+		}, trace(mod))
 	}
 	rep := runner.JudgeStoreGate([]*runner.StoreGateBuild{
 		one(1, func(*runner.GateTrace) {}), one(2, func(g *runner.GateTrace) { g.Windows = nil }), one(3, func(*runner.GateTrace) {}),

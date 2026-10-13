@@ -29,6 +29,7 @@ type metricsLine struct {
 	Retentions *int64           `json:"retentions"`
 	Stats      map[string]int64 `json:"stats"`
 	Go         map[string]int64 `json:"go"`
+	Judged     *bool            `json:"judged"`
 }
 
 func readMetrics(t *testing.T, path string) []metricsLine {

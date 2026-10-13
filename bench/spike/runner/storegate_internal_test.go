@@ -651,14 +651,17 @@ func TestQ5ComparesTheModeTheSyncAndThePacing(t *testing.T) {
 // ---------------------------------------------------------------------------
 // The pacing in the build.
 
-// stubEngine is the part of an engine the sink of a build writes to.
+// stubEngine is the part of an engine the sink of a build writes to, with a count of
+// write stalls a test sets.
 type stubEngine struct {
 	measurable
-	last uint64
+	last   uint64
+	stalls int64
 }
 
 func (e *stubEngine) Write(b []engine.Record) error { e.last = b[len(b)-1].Seq; return nil }
 func (e *stubEngine) LastSeq() uint64               { return e.last }
+func (e *stubEngine) WriteStalls() int64            { return e.stalls }
 
 // day is a batch of one record at the stream day given, from epoch.
 func recordAtDay(seq uint64, days float64) engine.Record {

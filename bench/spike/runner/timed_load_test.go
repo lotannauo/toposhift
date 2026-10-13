@@ -101,6 +101,8 @@ func TestLoadRefusesWhatItCannotAttributeToAJob(t *testing.T) {
 		{"missing cpu_model", nil, drop("cpu_model"), []string{"job.json", "cpu_model"}},
 		{"missing binary_sha256", nil, drop("binary_sha256"), []string{"job.json", "binary_sha256"}},
 		{"missing sync", nil, drop("sync"), []string{"job.json", "sync"}},
+		{"expected_sha of another commit", nil, job("expected_sha", strings.Repeat("c", 40)), []string{"job.json", "expected_sha", "not the job's commit"}},
+		{"no expected_sha, a job file before it was recorded", nil, drop("expected_sha"), nil},
 		{"no batch timings", nil, func(t *testing.T, dir string) {
 			editJSON(t, filepath.Join(dir, runner.ManifestFile), func(m map[string]any) {
 				m["Timing"].(map[string]any)["Writes"].(map[string]any)["Count"] = 0

@@ -18,6 +18,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // Manifest says what a built database is: which candidate, built from which plan,
@@ -98,6 +99,13 @@ const (
 	// was not paced.
 	PaceKey        = "pace_records_per_second"
 	PaceFromDayKey = "pace_from_day"
+	// RetainFlushDelsKey is the key of a manifest's Describe that gives the count of
+	// unflushed range deletions at which the root store's retention flushed, as the
+	// number the store used (the default's number for a build that did not set it). Only
+	// a candidate built through the root store has it; such a manifest without it is of
+	// a build before it was recorded, whose threshold is not recorded, and is never read
+	// as the default.
+	RetainFlushDelsKey = "retain_flush_dels"
 	// MetricsKey is the key of a manifest's Describe that gives the interval at which
 	// the build sampled its metrics, as a duration ("0s" for none).
 	MetricsKey = "metrics_every"
@@ -201,6 +209,13 @@ type lastRetainer interface {
 	LastRetain() (work, flush, settle time.Duration, deadlineHit bool)
 }
 
+// stallCounter is what an engine through the root store offers: the count of the times
+// its database began to delay writes since it was opened, read without taking the
+// database's statistics.
+type stallCounter interface {
+	WriteStalls() int64
+}
+
 // retainWaiter is what an engine that retains beside the writer offers: a wait for
 // the retention in the background to end, its settle included.
 type retainWaiter interface {
@@ -213,6 +228,14 @@ func (s buildSink) Write(batch []engine.Record) error {
 	if ps := s.pace; ps != nil {
 		if !ps.on && ps.streamDay(batch) >= ps.fromDay {
 			ps.on = true
+			// The judged part starts here: its stalls are counted from the database's count
+			// now, and its metrics lines are marked from now on.
+			if s.gate != nil {
+				if sc, ok := s.e.(stallCounter); ok {
+					s.gate.stallsAtPacing(sc.WriteStalls())
+				}
+				s.prog.setJudged(true)
+			}
 		}
 		if ps.on {
 			ps.pacer.wait(len(batch))
@@ -355,6 +378,40 @@ type BuildOptions struct {
 	// recorded in the manifest (Describe, keys pace_records_per_second and
 	// pace_from_day), and builds paced differently are not compared.
 	Pace int
+	// RetainFlushDels, if above 0, is the count of unflushed range deletions at which the
+	// root store's retention flushes ([pebblestore.Options.RetainFlushDels]), for a
+	// measurement that compares thresholds; 0 is the store's default. Only a build through
+	// the root store in the background mode takes a value above 0, and none takes a
+	// negative one. The threshold the store used is recorded in the manifest of every
+	// build through the root store (Describe, key retain_flush_dels), and builds with
+	// different thresholds are never compared or pooled.
+	RetainFlushDels int
+}
+
+// RetainFlushDelsOf is the threshold a build through the root store runs with when it
+// is given n: n itself, or the store's default for 0.
+func RetainFlushDelsOf(n int) int {
+	if n == 0 {
+		return pebblestore.DefaultRetainFlushDels
+	}
+	return n
+}
+
+// checkRetainFlushDels refuses a threshold the build cannot take: a negative one, and
+// one above 0 for a candidate that is not built through the root store or a build whose
+// retention is synchronous.
+func checkRetainFlushDels(v candidates.Variant, opts BuildOptions) error {
+	switch n := opts.RetainFlushDels; {
+	case n < 0:
+		return fmt.Errorf("runner: retention flush threshold %d: a count of range deletions, or 0 for the store's default", n)
+	case n == 0:
+		return nil
+	case !v.Root():
+		return fmt.Errorf("runner: %s is not built through the root store: only a build in the background mode of the root store takes a retention flush threshold", v.Name)
+	case opts.RetentionMode != candidates.RetentionBackground:
+		return fmt.Errorf("runner: retention flush threshold %d with the retention mode %q: only a build in the background mode takes one", n, opts.RetentionMode)
+	}
+	return nil
 }
 
 // Build is [BuildWith] with the options of a build by this binary: it rests after
@@ -373,6 +430,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	paceFrom, err := checkPace(plan, v, opts)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkRetainFlushDels(v, opts); err != nil {
 		return nil, err
 	}
 	if err := CheckOutside(dir); err != nil {
@@ -407,7 +467,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	background := v.Root() && opts.RetentionMode == candidates.RetentionBackground
 	// An untimed build keeps the per-prefix tallies of layout L: it changes no stored
 	// byte, and a build whose time may be a result does not carry its cost.
-	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, TallyPrefixes: g.Untimed}
+	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, RetainFlushDels: opts.RetainFlushDels, TallyPrefixes: g.Untimed}
 	if background {
 		co.RetainObserver = gateObserver{gate}
 	}
@@ -450,11 +510,27 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background}
 	if opts.Pace > 0 {
 		sink.pace = &paceState{pacer: newPacer(opts.Pace), fromDay: paceFrom, streamAt: plan.Stream.Start}
+	} else if gate != nil {
+		// A build that is not paced is judged on its whole stream.
+		gate.startJudged()
+		prog.setJudged(true)
 	}
 	info, err := Drive(ctx, plan.Spec, sink)
 	streamEnd := time.Now() // the end of the stream for the gate, whatever the pass of a background store still has to do
 	if err != nil {
 		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+	}
+	if gate != nil {
+		// The judged part ends with the stream: its stalls are counted to here, from a
+		// counter the engine keeps (the statistics of the database are read only once the
+		// pass is over).
+		var stalls int64
+		sc, ok := opened.(stallCounter)
+		if ok {
+			stalls = sc.WriteStalls()
+		}
+		gate.endStream(stalls, ok)
+		prog.setJudged(false)
 	}
 	if sink.pace != nil && !sink.pace.on {
 		return nil, fmt.Errorf("runner: %s: the stream ended before stream day %v, which the writer was to be paced from", v.Name, paceFrom)
@@ -533,6 +609,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	if mode != "" {
 		m.Describe[RetentionModeKey] = mode
+		m.Describe[RetainFlushDelsKey] = strconv.Itoa(RetainFlushDelsOf(opts.RetainFlushDels))
 		m.Describe[PaceKey] = strconv.Itoa(opts.Pace)
 		if opts.Pace > 0 {
 			m.Describe[PaceFromDayKey] = strconv.FormatFloat(paceFrom, 'f', -1, 64)

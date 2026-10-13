@@ -35,17 +35,29 @@ type Job struct {
 	// GoMemLimit is the Go memory limit the job ran under, as the workflow's input gave
 	// it (a whole number of MiB or GiB such as 11GiB). Empty, or missing from a job
 	// file made before the limit was recorded, means none.
-	GoMemLimit   string `json:"go_mem_limit"`
-	CPUModel     string `json:"cpu_model"`
-	NProc        int    `json:"nproc"`
-	MemTotalKB   int64  `json:"mem_total_kb"`
-	ImageOS      string `json:"image_os"`
-	ImageVersion string `json:"image_version"`
-	RunnerName   string `json:"runner_name"`
-	Kernel       string `json:"kernel"`
-	RunID        string `json:"run_id"`
-	RunAttempt   string `json:"run_attempt"`
-	BinarySHA256 string `json:"binary_sha256"`
+	GoMemLimit string `json:"go_mem_limit"`
+	// RetentionMode, Pace and RetainFlushDels are the dispatch's retention mode ("sync"
+	// or "background"), the pace derived from it (4500 for background, 0 for sync), and
+	// its retention flush threshold as the input gave it ("default" or a count); the
+	// manifest records what the build did with them. Ref is the ref the run was
+	// dispatched from, and ExpectedSHA the commit every job of the run checked it was
+	// at: the dispatch's expected_sha input, or the run's own commit when that was left
+	// empty. All are empty, or 0, in a job file made before they were recorded.
+	RetentionMode   string `json:"retention_mode"`
+	Pace            int    `json:"pace"`
+	RetainFlushDels string `json:"retain_flush_dels"`
+	Ref             string `json:"ref"`
+	ExpectedSHA     string `json:"expected_sha"`
+	CPUModel        string `json:"cpu_model"`
+	NProc           int    `json:"nproc"`
+	MemTotalKB      int64  `json:"mem_total_kb"`
+	ImageOS         string `json:"image_os"`
+	ImageVersion    string `json:"image_version"`
+	RunnerName      string `json:"runner_name"`
+	Kernel          string `json:"kernel"`
+	RunID           string `json:"run_id"`
+	RunAttempt      string `json:"run_attempt"`
+	BinarySHA256    string `json:"binary_sha256"`
 }
 
 // TimedBuild is one artifact of the bench workflow: a timed build's manifest and its job.
@@ -260,6 +272,10 @@ func checkJob(j Job, m *Manifest, jobPath, manifestPath string) error {
 	}
 	if j.SHA != m.Build.Revision {
 		return bad("sha", j.SHA, fmt.Sprintf("not the revision the manifest says it was built from (%q in %s)", m.Build.Revision, manifestPath))
+	}
+	// A job file made before the commit was checked has none.
+	if j.ExpectedSHA != "" && j.ExpectedSHA != j.SHA {
+		return bad("expected_sha", j.ExpectedSHA, fmt.Sprintf("not the job's commit (%q)", j.SHA))
 	}
 	if !hex64.MatchString(j.BinarySHA256) {
 		return bad("binary_sha256", j.BinarySHA256, "not 64 lowercase hexadecimal digits")

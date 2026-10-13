@@ -58,6 +58,20 @@ on:
         description: How many build jobs may run at once (1 to 20). The free plan runs 20 jobs at once across the account; the default leaves 9 for pull-request CI.
         type: string
         default: "11"
+      retention_mode:
+        description: "How the root store's retention runs in the Lroot builds. background is an arm of the store gate: one window of 7 or 30 days, Lroot candidates only, sync true, metrics sampled, expected_sha named, and the builds paced at 4500 records/s."
+        type: choice
+        options: [sync, background]
+        default: sync
+      retain_flush_dels:
+        description: The retention flush threshold of the Lroot builds, a rung of the registered ladder, or the store's default. A rung needs retention_mode background.
+        type: choice
+        options: [default, "32768", "24576", "16384"]
+        default: default
+      expected_sha:
+        description: The 40-hexadecimal-digit commit the dispatch must run (the tag's or main's). Required for background; when left empty for sync, the run's own commit.
+        type: string
+        default: ""
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -102,6 +116,10 @@ jobs:
       metrics_every: ${{ steps.matrix.outputs.metrics_every }}
       go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
+      retention_mode: ${{ steps.matrix.outputs.retention_mode }}
+      pace: ${{ steps.matrix.outputs.pace }}
+      retain_flush_dels: ${{ steps.matrix.outputs.retain_flush_dels }}
+      expected_sha: ${{ steps.matrix.outputs.expected_sha }}
       plans_key: ${{ steps.matrix.outputs.plans_key }}
     steps:
       - name: Harden runner
@@ -109,10 +127,35 @@ jobs:
         with:
           egress-policy: audit
 
+      # The whole history, so that the check can see that a tag's commit is on main.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The setup runs the checks of the commit it gates, as the plans and the builds
+      # check theirs.
+      - name: Check the commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          [ "$(git rev-parse HEAD)" = "$SHA" ] || { echo "::error::the checkout is not the run's commit" >&2; exit 1; }
+
+      # The checks are in a tracked script, which a test runs on every pull request
+      # with each input it must refuse. Timed runs come from main, or from a tag
+      # gate-freeze-YYYYMMDD on main that freezes one commit for a series of
+      # dispatches; the tag carries this file too. Every job checks that it runs the
+      # commit the dispatch names. The ref check is a convention, not enforcement: a
+      # dispatch with --ref <branch> runs that branch's copy of this file, which can
+      # skip it. The enforcement is offline: spikebench storegate -commit refuses a
+      # manifest whose revision is not the frozen commit, and the timing judge, given
+      # -git, refuses one whose revision is not an ancestor of main.
       - name: Check the inputs and plan the jobs
         id: matrix
         env:
           REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           FAMILY: ${{ inputs.family }}
@@ -125,155 +168,10 @@ jobs:
           METRICS_EVERY: ${{ inputs.metrics_every }}
           GO_MEM_LIMIT: ${{ inputs.go_mem_limit }}
           MAX_PARALLEL: ${{ inputs.max_parallel }}
-        run: |
-          set -euo pipefail
-
-          # The messages never repeat an input: its text is not trusted, and a
-          # line that starts with "::" is a command to the runner.
-          fail() {
-            echo "::error::$1" >&2
-            exit 1
-          }
-
-          # This is a convention, not enforcement: a dispatch with ref=<branch>
-          # runs that branch's copy of this file, which could drop the check. The
-          # offline judge must therefore refuse any manifest whose revision is not
-          # an ancestor of origin/main.
-          [ "$REF" = refs/heads/main ] ||
-            fail "timed runs are dispatched from main, so every number comes from a merged commit"
-
-          # The scenario flags of each family are fixed here and never taken from
-          # free text: the plans job splits them into words.
-          case "$FAMILY" in
-            rmae) family_flags="-run-max-age 30m" ;;
-            ph5m-rmae) family_flags="-pod-heartbeat 5m -run-max-age 10m" ;;
-            *) fail "family: not one of rmae, ph5m-rmae" ;;
-          esac
-
-          case "$ARCHES" in
-            both) oses=(ubuntu-24.04 ubuntu-24.04-arm) ;;
-            x64) oses=(ubuntu-24.04) ;;
-            arm64) oses=(ubuntu-24.04-arm) ;;
-            *) fail "arches: not one of both, x64, arm64" ;;
-          esac
-
-          case "$SYNC" in
-            true | false) ;;
-            *) fail "sync: not true or false" ;;
-          esac
-
-          # A Go duration: one or more numbers, each with a unit.
-          metrics_every="${METRICS_EVERY//[[:space:]]/}"
-          if [ -n "$metrics_every" ]; then
-            re='^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$'
-            [[ $metrics_every =~ $re ]] ||
-              fail "metrics_every: empty or a Go duration such as 30s"
-          fi
-
-          # A whole number of MiB or GiB, the form the judge parses back.
-          go_mem_limit="${GO_MEM_LIMIT//[[:space:]]/}"
-          if [ -n "$go_mem_limit" ]; then
-            re='^[1-9][0-9]{0,5}(MiB|GiB)$'
-            [[ $go_mem_limit =~ $re ]] ||
-              fail "go_mem_limit: empty or a whole number of MiB or GiB such as 11GiB"
-          fi
-
-          re='^[1-9][0-9]?$'
-          [[ $PINS_WINDOW =~ $re ]] && [ "$PINS_WINDOW" -le 60 ] ||
-            fail "pins_window: an integer from 1 to 60"
-
-          re='^([1-9]|10)$'
-          [[ $REPS =~ $re ]] ||
-            fail "reps: an integer from 1 to 10"
-
-          re='^([1-9]|1[0-9]|20)$'
-          [[ $MAX_PARALLEL =~ $re ]] ||
-            fail "max_parallel: an integer from 1 to 20"
-
-          windows="${WINDOWS//[[:space:]]/}"
-          re='^[0-9]+(,[0-9]+)*$'
-          [[ $windows =~ $re ]] ||
-            fail "windows: a comma list of integers"
-          IFS=, read -ra wins <<<"$windows"
-          [ "${#wins[@]}" -le 4 ] ||
-            fail "windows: at most 4 windows in one dispatch"
-          re='^[1-9][0-9]?$'
-          previous=0
-          for w in "${wins[@]}"; do
-            [[ $w =~ $re ]] && [ "$w" -le 31 ] ||
-              fail "windows: every window is an integer from 1 to 31 days"
-            [ "$w" -gt "$previous" ] ||
-              fail "windows: the windows must be increasing"
-            previous="$w"
-          done
-          if [ "$PINS_WINDOW" -gt "${wins[0]}" ]; then
-            echo "::warning::pins_window is longer than the shortest window"
-          fi
-
-          candidates="${CANDIDATES//[[:space:]]/}"
-          re='^[^,]+(,[^,]+)*$'
-          [[ $candidates =~ $re ]] ||
-            fail "candidates: a comma list of names"
-          IFS=, read -ra cands <<<"$candidates"
-          re='^[A-Za-z0-9][A-Za-z0-9/+._-]*$'
-          seen=" "
-          for c in "${cands[@]}"; do
-            [[ $c =~ $re ]] ||
-              fail "candidates: every name must match ^[A-Za-z0-9][A-Za-z0-9/+._-]*\$"
-            # The slug names an artifact and the candidate's directory, so two
-            # names with one slug would write over each other.
-            case "$seen" in
-              *" ${c//\//_} "*) fail "candidates: two names give the same directory" ;;
-            esac
-            seen="$seen${c//\//_} "
-          done
-
-          jobs=$((${#oses[@]} * ${#wins[@]} * ${#cands[@]} * REPS))
-          [ "$jobs" -le 256 ] ||
-            fail "the matrix has $jobs jobs and a matrix may have at most 256"
-
-          tsv="$RUNNER_TEMP/matrix.tsv"
-          : >"$tsv"
-          for os in "${oses[@]}"; do
-            for w in "${wins[@]}"; do
-              for c in "${cands[@]}"; do
-                for ((rep = 1; rep <= REPS; rep++)); do
-                  printf '%s\t%s\t%s\t%s\t%s\n' "$os" "$w" "$c" "${c//\//_}" "$rep" >>"$tsv"
-                done
-              done
-            done
-          done
-          # Compact, on one line: fromJSON reads it from a job output.
-          matrix="$(jq -Rsc '{include: [split("\n")[] | select(length > 0) | split("\t") | {os: .[0], window: (.[1] | tonumber), candidate: .[2], slug: .[3], rep: (.[4] | tonumber)}]}' "$tsv")"
-
-          {
-            echo "matrix=$matrix"
-            echo "family=$FAMILY"
-            echo "family_flags=$family_flags"
-            echo "windows=$windows"
-            echo "pins_window=$PINS_WINDOW"
-            echo "sync=$SYNC"
-            echo "metrics_every=$metrics_every"
-            echo "go_mem_limit=$go_mem_limit"
-            echo "max_parallel=$MAX_PARALLEL"
-            echo "plans_key=bench-plans-${RUN_ID}-${RUN_ATTEMPT}"
-          } >>"$GITHUB_OUTPUT"
-
-          {
-            echo "### Planned jobs: $jobs"
-            echo
-            echo "- family: \`$FAMILY\` (scenario flags \`$family_flags\`)"
-            echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
-            echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
-            echo "- Go memory limit: \`${go_mem_limit:-none}\`"
-            echo "- at most \`$MAX_PARALLEL\` build jobs at once"
-            echo
-            echo "| runner | window (days) | candidate | repetition |"
-            echo "|---|---|---|---|"
-            while IFS=$'\t' read -r os w c _ rep; do
-              echo "| $os | $w | \`$c\` | $rep |"
-            done <"$tsv"
-          } >>"$GITHUB_STEP_SUMMARY"
+          RETENTION_MODE: ${{ inputs.retention_mode }}
+          RETAIN_FLUSH_DELS: ${{ inputs.retain_flush_dels }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: bash bench/scripts/gate-dispatch-check.sh
 
   # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
   # but the file is about 350 KB, so it is made here, where the memory is, and the
@@ -299,6 +197,16 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
+
+      - name: Check the commit
+        env:
+          EXPECTED_SHA: ${{ needs.setup.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "::error::the checkout is not the commit the dispatch expects" >&2
+            exit 1
+          fi
 
       - name: Install pinned Go
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
@@ -450,6 +358,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Check the commit
+        env:
+          EXPECTED_SHA: ${{ needs.setup.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "::error::the checkout is not the commit the dispatch expects" >&2
+            exit 1
+          fi
+
       - name: Install pinned Go
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
@@ -537,15 +455,26 @@ jobs:
           SYNC: ${{ needs.setup.outputs.sync }}
           METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
           GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
+          PACE: ${{ needs.setup.outputs.pace }}
+          RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
-          extra=()
+          extra=(-retention-mode "$RETENTION_MODE")
           if [ "$SYNC" = true ]; then
             extra+=(-sync)
           fi
           if [ -n "$METRICS_EVERY" ]; then
             extra+=(-metrics-every "$METRICS_EVERY")
+          fi
+          # The pace follows from the retention mode (0 for sync), and the threshold
+          # is passed only when the dispatch named a rung.
+          if [ "$PACE" != 0 ]; then
+            extra+=(-pace "$PACE")
+          fi
+          if [ "$RETAIN_FLUSH_DELS" != default ]; then
+            extra+=(-retain-flush-dels "$RETAIN_FLUSH_DELS")
           fi
           # Explicit, so that an empty input leaves the variable unset.
           if [ -n "$GO_MEM_LIMIT" ]; then
@@ -563,6 +492,11 @@ jobs:
           SYNC: ${{ needs.setup.outputs.sync }}
           METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
           GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
+          PACE: ${{ needs.setup.outputs.pace }}
+          RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
+          REF: ${{ github.ref }}
+          EXPECTED_SHA: ${{ needs.setup.outputs.expected_sha }}
           OS: ${{ matrix.os }}
           WINDOW: ${{ matrix.window }}
           CANDIDATE: ${{ matrix.candidate }}
@@ -612,12 +546,14 @@ jobs:
             --argjson rep "$REP" --argjson pins_window "$PINS_WINDOW" \
             --arg sync "$SYNC" --arg metrics_every "$METRICS_EVERY" \
             --arg go_mem_limit "$GO_MEM_LIMIT" \
+            --arg retention_mode "$RETENTION_MODE" --argjson pace "$PACE" \
+            --arg retain_flush_dels "$RETAIN_FLUSH_DELS" --arg ref "$REF" --arg expected_sha "$EXPECTED_SHA" \
             --arg cpu_model "$cpu" --argjson nproc "$cpus" --argjson mem_total_kb "$mem_kb" \
             --arg image_os "$image_os" --arg image_version "$image_version" \
             --arg runner_name "$runner_name" --arg kernel "$kernel" \
             --arg run_id "$RUN_ID" --arg run_attempt "$RUN_ATTEMPT" \
             --arg binary_sha256 "$binary_sha256" \
-            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
+            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, retention_mode: $retention_mode, pace: $pace, retain_flush_dels: $retain_flush_dels, ref: $ref, expected_sha: $expected_sha, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
             >"$OUT/job.json"
 
           cp -r "$LOGS" "$OUT/logs"
@@ -645,6 +581,7 @@ jobs:
             echo "- most disk used, sampled each minute (root, mnt and the work directory's filesystem): ${disk:-unknown}"
             echo "- hardware: $cpu, $cpus CPUs, $((mem_kb / 1024)) MiB memory, kernel $kernel"
             echo "- runner: $runner_name, image $image_os $image_version, run $RUN_ID attempt $RUN_ATTEMPT"
+            echo "- retention mode: $RETENTION_MODE, pace $PACE, retention flush threshold $RETAIN_FLUSH_DELS"
             echo "- binary sha256: \`$binary_sha256\`"
           } >>"$GITHUB_STEP_SUMMARY"
 
@@ -660,9 +597,11 @@ jobs:
           retention-days: 90
 
   # On a pull request that touches this workflow or the program, the whole chain
-  # at the tiny preset: pins, plan, two candidates built, read and reported. Every
-  # step is timed (no -untimed), so the guards of a timed build run exactly as they
-  # do in a dispatch. It uploads nothing.
+  # at the tiny preset: pins, plan, two candidates built, read and reported, and a
+  # paced background build of the root store at a threshold, judged by the store
+  # gate, with the refusals a dispatch of the gate relies on. Every step is timed
+  # (no -untimed), so the guards of a timed build run exactly as they do in a
+  # dispatch. It uploads nothing.
   dry-run:
     name: bench dry run
     if: github.event_name == 'pull_request'
@@ -732,3 +671,65 @@ jobs:
         run: |
           set -euo pipefail
           "$RUNNER_TEMP/spikebench" report -out "$RUNNER_TEMP/dry/R1"
+
+      # The store gate's dispatch at the tiny preset, before any real one: a build of
+      # the root store in the background, paced from the day the rules give for its
+      # window of one day (2.5) at a rung of the threshold ladder, then the refusals a
+      # dispatch relies on. Each build has its own directory, with the plan above.
+      - name: Build a paced background candidate at a threshold
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry"
+          mkdir -p "$D/bg" "$D/bg2"
+          cp "$D/R1/plan.json" "$D/bg/plan.json"
+          cp "$D/R1/plan.json" "$D/bg2/plan.json"
+          "$RUNNER_TEMP/spikebench" build -out "$D/bg" -candidate Lroot/k64a2l1ns -sync -metrics-every 1s \
+            -retention-mode background -pace 4500 -retain-flush-dels 16384
+          if ! jq -e '.Describe.retain_flush_dels == "16384"' "$D/bg/Lroot_k64a2l1ns/manifest.json" >/dev/null; then
+            echo "::error::the manifest does not record the threshold 16384" >&2
+            exit 1
+          fi
+
+      - name: Refuse a threshold with a synchronous retention
+        run: |
+          set -uo pipefail
+          D="$RUNNER_TEMP/dry"
+          code=0
+          "$RUNNER_TEMP/spikebench" build -out "$D/bg2" -candidate Lroot/k64a2l1ns -retention-mode sync -retain-flush-dels 16384 || code=$?
+          if [ "$code" != 1 ]; then
+            echo "::error::the refused build exited with $code, want 1" >&2
+            exit 1
+          fi
+          if [ -e "$D/bg2/Lroot_k64a2l1ns" ]; then
+            echo "::error::the refused build made its directory" >&2
+            exit 1
+          fi
+
+      - name: Build the same candidate at another threshold
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/spikebench" build -out "$RUNNER_TEMP/dry/bg2" -candidate Lroot/k64a2l1ns -sync -metrics-every 1s \
+            -retention-mode background -pace 4500 -retain-flush-dels 24576
+
+      # A refused set ends storegate with 3 before it prints a verdict, so the paced
+      # build is judged alone first, then with the other threshold.
+      - name: Judge the paced build, and refuse a set of two thresholds
+        run: |
+          set -uo pipefail
+          D="$RUNNER_TEMP/dry"
+          commit="$(git rev-parse HEAD)"
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+          code=0
+          "$RUNNER_TEMP/spikebench" storegate -commit "$commit" "$D/bg" >"$D/gate.txt" 2>&1 || code=$?
+          cat "$D/gate.txt"
+          [ "$code" != 3 ] || fail "storegate could not judge the paced build (status 3)"
+          grep -q "the judged part" "$D/gate.txt" || fail "the report lacks the judged part"
+          grep -q "retain_flush_dels 16384" "$D/gate.txt" || fail "the report lacks the threshold"
+          code=0
+          "$RUNNER_TEMP/spikebench" storegate -commit "$commit" "$D/bg" "$D/bg2" >"$D/pool.txt" 2>&1 || code=$?
+          cat "$D/pool.txt"
+          [ "$code" = 3 ] || fail "a set of two thresholds ended with status $code, want 3"
+          grep -q "different retain_flush_dels" "$D/pool.txt" || fail "the refusal does not name the threshold"
