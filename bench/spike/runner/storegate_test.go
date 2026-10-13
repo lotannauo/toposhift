@@ -1669,6 +1669,13 @@ func TestAPacedBackgroundBuildRecordsItsPacingAndItsWindows(t *testing.T) {
 	if m.Describe[runner.PaceKey] != "200000" || m.Describe[runner.PaceFromDayKey] != "2.5" {
 		t.Errorf("described as paced at %q from day %q, want 200000 from 2.5", m.Describe[runner.PaceKey], m.Describe[runner.PaceFromDayKey])
 	}
+	// Without the option, nothing of the profiles is written or described.
+	if _, err := os.Stat(filepath.Join(dir, runner.ProfilesDir)); !os.IsNotExist(err) {
+		t.Errorf("a build without profiles has %s: %v", runner.ProfilesDir, err)
+	}
+	if v, ok := m.Describe[runner.ProfileWindowsKey]; ok {
+		t.Errorf("a build without profiles is described with %s %q", runner.ProfileWindowsKey, v)
+	}
 	if g.Unpaced.Batches == 0 {
 		t.Error("no batch was written before the pacing began")
 	}

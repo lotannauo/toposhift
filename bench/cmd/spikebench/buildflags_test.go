@@ -653,3 +653,33 @@ func TestStoreGateExitsTwoWhenOnlyQ1IsWithheldByItsControl(t *testing.T) {
 		}
 	}
 }
+
+// -profile-windows is off by default and leaves what is passed on to a build step and
+// the build options as they were; on, it needs -retention-mode background, and is passed
+// on to the build steps and to the build.
+func TestProfileWindowsFlag(t *testing.T) {
+	t.Parallel()
+
+	off := parseBuild(t, false, "-retention-mode=background")
+	if off.profileWindows || off.options().ProfileWindows || slices.Contains(off.args(), "-profile-windows") {
+		t.Errorf("off by default: %+v, passed on as %v", off, off.args())
+	}
+	on := parseBuild(t, false, "-retention-mode=background", "-profile-windows")
+	if !on.profileWindows || !on.options().ProfileWindows || !slices.Contains(on.args(), "-profile-windows") {
+		t.Errorf("on: %+v, passed on as %v", on, on.args())
+	}
+	if again := parseBuild(t, true, on.args()...); again != on {
+		t.Errorf("passed on as %v, a step makes %+v, want %+v", on.args(), again, on)
+	}
+	for _, args := range [][]string{{"-profile-windows"}, {"-profile-windows", "-retention-mode=sync"}} {
+		fs := flag.NewFlagSet("t", flag.ContinueOnError)
+		var b buildFlags
+		b.flags(fs)
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.resolve(fs, false); err == nil || !strings.Contains(err.Error(), "-profile-windows needs -retention-mode background") {
+			t.Errorf("%v: %v", args, err)
+		}
+	}
+}

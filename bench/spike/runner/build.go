@@ -172,6 +172,8 @@ type buildSink struct {
 	// now reads the clock that times each batch; nil for [time.Now]. A test sets it to
 	// move the clock by exactly what the engine and the pacer's sleep take.
 	now func() time.Time
+	// prof writes the profiles of the windows; nil for a build without them.
+	prof *windowProfiler
 }
 
 // clock is the time now on the clock that times a batch.
@@ -245,6 +247,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 	start := s.clock()
 	if s.pace != nil && s.pace.on {
 		s.gate.startPacing(start)
+		s.prof.startPacing(start)
 	}
 	err := s.e.Write(batch)
 	d := s.clock().Sub(start)
@@ -262,6 +265,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 		return err
 	}
 	s.gate.batch(start, d, len(batch))
+	s.prof.batch(d)
 	s.prog.batch()
 	if got, want := s.e.LastSeq(), batch[len(batch)-1].Seq; got != want {
 		return fmt.Errorf("LastSeq is %d after a batch ending at %d", got, want)
@@ -272,6 +276,7 @@ func (s buildSink) Write(batch []engine.Record) error {
 func (s buildSink) Retain(h time.Time) error {
 	s.prog.setPhase(phaseRetain)
 	windows := s.gate.count()
+	s.prof.retaining(len(s.t.Retains))
 	start := time.Now()
 	err := s.e.Retain(h)
 	returned := time.Now()
@@ -386,6 +391,18 @@ type BuildOptions struct {
 	// build through the root store (Describe, key retain_flush_dels), and builds with
 	// different thresholds are never compared or pooled.
 	RetainFlushDels int
+	// ProfileWindows makes a build in the background mode of the root store write, under
+	// [ProfilesDir] in the candidate's directory, a CPU profile and a mutex profile of each
+	// retention pass from its publication to the end of its rewrite, and a separate CPU
+	// profile of the first 2 s after the publication, with an index of what
+	// was written for each pass and why a pass that overlapped the window before it has
+	// none (see [ProfilesDir] for the files). It is for finding where the writer's time
+	// goes in a window. It sets the process's mutex profile fraction for the whole build,
+	// and the profiles take CPU of their own, so the build is a diagnostic and not a
+	// measurement: it is recorded in the manifest (Describe, key profile_windows). Off, the
+	// build starts no profile, sets no fraction, writes no file under [ProfilesDir] and
+	// records nothing of it.
+	ProfileWindows bool
 }
 
 // RetainFlushDelsOf is the threshold a build through the root store runs with when it
@@ -435,6 +452,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if err := checkRetainFlushDels(v, opts); err != nil {
 		return nil, err
 	}
+	if err := checkProfileWindows(v, opts); err != nil {
+		return nil, err
+	}
 	if err := CheckOutside(dir); err != nil {
 		return nil, err
 	}
@@ -468,8 +488,18 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	// An untimed build keeps the per-prefix tallies of layout L: it changes no stored
 	// byte, and a build whose time may be a result does not carry its cost.
 	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, RetainFlushDels: opts.RetainFlushDels, TallyPrefixes: g.Untimed}
+	var prof *windowProfiler // nil for a build that does not profile its windows
 	if background {
 		co.RetainObserver = gateObserver{gate}
+		if opts.ProfileWindows {
+			if prof, err = newWindowProfiler(dir, gate.epoch, opts.Pace > 0); err != nil {
+				return nil, fmt.Errorf("runner: %s: profiles: %w", v.Name, err)
+			}
+			// Registered before the engine's close, so it runs after it: the store tells
+			// nothing more once it is closed.
+			defer func() { _ = prof.close() }()
+			co.RetainObserver = profileObserver{gateObserver{gate}, prof}
+		}
 	}
 	opened, err := v.Open(filepath.Join(dir, DBDir), co)
 	if err != nil {
@@ -507,7 +537,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 			return nil, fmt.Errorf("runner: %s retains in the background and cannot be waited for", v.Name)
 		}
 	}
-	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background}
+	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background, prof: prof}
 	if opts.Pace > 0 {
 		sink.pace = &paceState{pacer: newPacer(opts.Pace), fromDay: paceFrom, streamAt: plan.Stream.Start}
 	} else if gate != nil {
@@ -541,6 +571,10 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		prog.setPhase(phaseRetain)
 		if err := opened.(retainWaiter).WaitRetained(ctx); err != nil {
 			return nil, fmt.Errorf("runner: %s: waiting for the retention in the background: %w", v.Name, err)
+		}
+		// The last pass is over: no window is profiled from here on.
+		if err := prof.close(); err != nil {
+			return nil, fmt.Errorf("runner: %s: profiles: %w", v.Name, err)
 		}
 	}
 	mode := ""
@@ -614,6 +648,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		if opts.Pace > 0 {
 			m.Describe[PaceFromDayKey] = strconv.FormatFloat(paceFrom, 'f', -1, 64)
 		}
+	}
+	if opts.ProfileWindows {
+		m.Describe[ProfileWindowsKey] = "true"
 	}
 	parts, err := e.Breakdown()
 	if err != nil {
