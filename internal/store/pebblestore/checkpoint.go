@@ -90,9 +90,10 @@ type CheckpointOptions struct {
 
 // DefaultCheckpoints is the policy a store has when [Options.Checkpoints] is nil: on,
 // 64 records between checkpoints (or Alpha 2 times the last one's worth, if more),
-// and a lag of one nanosecond.
+// and a lag of five minutes, so a record that arrives less than five minutes behind
+// the newest in its prefix deletes no checkpoint.
 func DefaultCheckpoints() CheckpointOptions {
-	return CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: time.Nanosecond}
+	return CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: 5 * time.Minute}
 }
 
 // validate refuses a policy with a negative or non-finite number.

@@ -238,11 +238,13 @@ func TestAVariantIsWhatItsNameSays(t *testing.T) {
 		"L/k64a4l1ns":      {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1ns"},
 		"L/k128a0.5l1ns":   {"layout": "L", "checkpoints": "kmin=128 alpha=0.5 lag=1ns"},
 		"L/k64a4l1h30m":    {"layout": "L", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
+		"L/k64a2l5m":       {"layout": "L", "checkpoints": "kmin=64 alpha=2 lag=5m0s"},
 		// Said only when above zero, so that no earlier description changes.
 		"L/k64a2l1nsr4": {"layout": "L", "checkpoints": "kmin=64 alpha=2 lag=1ns replace=4"},
 		// The root store's variants say so, and the others do not.
 		"Lroot/off":         {"layout": "L", "store": "root", "checkpoints": "off", "collectors_in_tables": "obsolete-key"},
 		"Lroot/k64a2l1ns":   {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=2 lag=1ns"},
+		"Lroot/k64a2l5m":    {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=2 lag=5m0s"},
 		"Lroot/k64a4":       {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=4 lag=0s"},
 		"Lroot/k64a4l1h30m": {"layout": "L", "store": "root", "checkpoints": "kmin=64 alpha=4 lag=1h30m0s"},
 	}

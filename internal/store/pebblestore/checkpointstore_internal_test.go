@@ -17,11 +17,11 @@ import (
 	"github.com/lotannauo/toposhift/internal/store/storetest"
 )
 
-// A nil policy is the default (on, 64, 2, one nanosecond); the way to write none is
+// A nil policy is the default (on, 64, 2, five minutes); the way to write none is
 // an explicit policy with nothing on; and DefaultOptions carries the default.
 func TestTheCheckpointPolicyDefaultsAndItsExplicitOff(t *testing.T) {
 	t.Parallel()
-	want := CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: time.Nanosecond}
+	want := CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: 5 * time.Minute}
 	if got := DefaultCheckpoints(); got != want {
 		t.Errorf("DefaultCheckpoints = %+v, want %+v", got, want)
 	}

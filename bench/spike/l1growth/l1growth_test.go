@@ -597,13 +597,20 @@ func (s *l1gStore) measure(p l1gPause) error {
 	day.keptBoots = s.rec.count("retain.prefixes_kept_for_boots")
 	s.days = append(s.days, day)
 
-	// Guards on the reads themselves: the check must see the iterator's steps on every
-	// read, or it counts nothing.
+	// Guard on the reads themselves: the check must see the iterator's steps, or it
+	// counts nothing. It cannot ask for a step on every read: a read whose seek lands
+	// on a checkpoint, the newest key at or before its instant (possible once the
+	// policy lags the newest record), decodes the checkpoint and takes no step. So
+	// some read of the day must have reported steps.
+	stepped := false
 	for _, r := range day.reads {
-		if r.steps <= 0 {
-			t.Errorf("%s store, day %s: the read of %s at age %s, hour %d, reported no internal steps: the work is not being counted", s.name, p.label, run.prefixes.name(r.kind, r.prefix), l1gAges[r.age].label, r.hour)
+		if r.steps > 0 {
+			stepped = true
 			break
 		}
+	}
+	if !stepped {
+		t.Errorf("%s store, day %s: no read reported internal steps: the work is not being counted", s.name, p.label)
 	}
 	return nil
 }
