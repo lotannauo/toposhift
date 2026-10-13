@@ -98,7 +98,12 @@
 // The first record of a UID takes the creation timestamp of its description
 // (basis object field) if it lies between [store.MinEventTime] and the instant
 // plus [MaxClockAhead], and otherwise the instant; a creation timestamp that is
-// there and unusable is counted with [SkipImplausibleTime]. Every other record
+// there and unusable is counted with [SkipImplausibleTime]. Such a first record,
+// timed before its instant and so carrying a Through, is marked in
+// [Result.Backdated] (with the part_of edge of a first container), as is a
+// scheduled_on edge that waited for its node and is asserted through its pod's
+// latest instant: ingest resumes each from the producer's last stored assertion
+// of the subject (see "State"). Every other record
 // takes the instant, because a description carries no time of what changed. An
 // event time is never earlier than the previous record's of the same UID: an
 // earlier one is raised to it, with its basis, and counted with
@@ -175,8 +180,23 @@
 //
 // The state is in memory and is lost with the process: after a restart every UID
 // is new to the translator, and the first record of each is timed at its creation
-// again. That is harmless, because the producer and the content are the same and
-// the later sequence number wins. The translator remembers every UID it has seen
+// again, which would be late on every prefix it touches. Those records are marked,
+// and ingest resumes them from the store (see package resume): an unchanged
+// description is raised to the producer's last stored assertion of the subject, a
+// changed one takes the record's instant. [Translator.Resumed] then raises, and
+// never lowers, the state that times the subject's later records. [Comparable] is
+// what a description is compared on: the allow-listed keys of the payload, listed
+// under "Description" above (a node: k8s.node.name, node.creation_timestamp and
+// the five k8s.node.condition_* keys; a pod: k8s.pod.name, k8s.namespace.name,
+// k8s.node.name, k8s.pod.phase, k8s.pod.status_reason, the workload, deployment,
+// replicaset and statefulset names and pod.creation_timestamp; a container:
+// k8s.container.name, k8s.pod.name, k8s.namespace.name, k8s.node.name, the image
+// name and tag, container.status, container.status.reason and
+// container.creation_timestamp), which the receiver reports alike for an
+// unchanged object; and of a scheduled_on edge only its node_name, not its
+// resolution, which this translator derives from its own node index. A pending
+// edge is lost with the state, and is asserted again when its pod is next seen
+// once its node is known. The translator remembers every UID it has seen
 // deleted, so that a stale state cannot bring one back; a long-lived process
 // holds those UIDs, and the names of at most 4096 dropped description keys.
 //
@@ -195,6 +215,7 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -328,6 +349,13 @@ type Result struct {
 	Notes []Note
 	// Namespaces are the sightings of the kube-system namespace in this record.
 	Namespaces []NamespaceSighting
+	// Backdated marks the records this call backdated, which [resume.Apply] times
+	// from the store: the first record of a node, a pod or a container and of a
+	// container's part_of edge, and every scheduled_on edge begun at a time before
+	// the instant it is asserted through (one that waited for its node). Only an
+	// Observe that carries a Through is marked. The handles are for
+	// [Translator.Resumed].
+	Backdated []resume.Mark
 }
 
 // Skip is a count of things set aside for one reason.
@@ -493,9 +521,21 @@ type batch struct {
 	skips map[string]int
 	notes map[[2]string]int
 	sight []NamespaceSighting
+	marks []resume.Mark
 	// instant and basis are the instant of the record being translated.
 	instant time.Time
 	basis   store.EventTimeBasis
+}
+
+// mark marks the record just written as backdated, with the handle h, if it is an
+// Observe with a Through. Its Through is the record's instant (or its pod's latest,
+// on the same clock), so it takes the instant's basis when re-timed to it.
+func (b *batch) mark(h *handle) {
+	i := len(b.recs) - 1
+	if i < 0 || b.recs[i].Kind != lifecycle.Observe || !b.recs[i].Through.After(b.recs[i].EventTime) {
+		return
+	}
+	b.marks = append(b.marks, resume.Mark{Index: i, Handle: h, ObservedBasis: b.basis})
 }
 
 func (b *batch) skip(reason string) {
@@ -513,7 +553,7 @@ func (b *batch) note(reason, detail string) {
 }
 
 func (b *batch) result() Result {
-	r := Result{Records: b.recs, Pending: b.pend, Namespaces: b.sight}
+	r := Result{Records: b.recs, Pending: b.pend, Namespaces: b.sight, Backdated: b.marks}
 	for _, reason := range slices.Sorted(maps.Keys(b.skips)) {
 		r.Skipped = append(r.Skipped, Skip{Reason: reason, Count: b.skips[reason]})
 	}

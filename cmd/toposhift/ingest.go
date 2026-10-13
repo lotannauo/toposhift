@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/datadir"
 	"github.com/lotannauo/toposhift/internal/ingest/clustername"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
@@ -39,13 +41,27 @@ const ingestStarting = "ingest is starting: the store is opening; send the reque
 var sequencerStopTimeout = 5 * time.Second
 
 // The seams of the boot, for tests: how the store is opened, what the sequencer
-// writes through, and a hook called with the open store once the cluster name is
-// recorded and before the receiver is switched to the sequencer.
+// writes through, how it opens the lookup of its resume step, and a hook called
+// with the open store once the cluster name is recorded and before the receiver is
+// switched to the sequencer.
 var (
 	openStore    = pebblestore.Open
 	writerFor    = func(st *pebblestore.Store) sequencer.Writer { return st }
+	lookupFor    = storeLookup
 	beforeSwitch func(*pebblestore.Store)
 )
+
+// storeLookup is the opener of the store's own lookup, for the sequencer's resume
+// step.
+func storeLookup(st *pebblestore.Store) func() (resume.Lookup, error) {
+	return func() (resume.Lookup, error) {
+		lk, err := st.NewLookup()
+		if err != nil {
+			return nil, err
+		}
+		return lk, nil
+	}
+}
 
 // ingestConfig is what serve was told about ingest.
 type ingestConfig struct {
@@ -210,10 +226,34 @@ func serveRetainConfig(st *pebblestore.Store, o pebblestore.Options, rl *retainL
 }
 
 // statusRoute answers GET /status with the retention check's last snapshot,
-// which the sequencer published: the handler never calls the store.
+// which the sequencer published, and the resume step's counts: the handler never
+// calls the store.
 type statusRoute struct {
 	retain bool
 	seq    atomic.Pointer[sequencer.Sequencer]
+}
+
+// resumeStatus is the resume step's status: on with its counters, disabled when
+// the sequencer was given no lookup, or off while ingest is not running.
+type resumeStatus struct {
+	Mode     string           `json:"mode"`
+	Counters map[string]int64 `json:"counters,omitempty"`
+}
+
+// resumeOf is the resume status of the sequencer, nil when ingest is not running.
+func resumeOf(seq *sequencer.Sequencer) resumeStatus {
+	if seq == nil {
+		return resumeStatus{Mode: "off"}
+	}
+	st, on := seq.ResumeStats()
+	if !on {
+		return resumeStatus{Mode: "disabled"}
+	}
+	out := resumeStatus{Mode: "on", Counters: map[string]int64{}}
+	for k, v := range st.Counters() {
+		out.Counters["sequencer.resume_"+strings.ReplaceAll(k, ".", "_")] = v
+	}
+	return out
 }
 
 // retentionOff is the retention status of serve --retain off.
@@ -266,7 +306,7 @@ func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		body = on
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body})
+	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(s.seq.Load())})
 }
 
 // ingest is what boot opened for ingest: the store, and the sequencer with its
@@ -343,6 +383,10 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		rl.st = st
 		retain = serveRetainConfig(st, opts, rl)
 	}
+	lookup := lookupFor(st)
+	if lookup == nil {
+		log.Error("resume is disabled: the sequencer has no lookup of the store; after a restart every live object is asserted again from its creation")
+	}
 	seq, err := sequencer.New(sequencer.Config{
 		Store:          writerFor(st),
 		ClusterName:    ic.clusterName,
@@ -350,6 +394,7 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		PullInterval:   ic.pullInterval,
 		Logger:         log,
 		Retain:         retain,
+		Lookup:         lookup,
 	})
 	if err != nil {
 		log.Error("ingest is off: the sequencer could not be made", "err", err)
@@ -475,4 +520,14 @@ Retention
   GET /status answers the retention's state as JSON: its mode, each layer's
   horizon, the clock agreement, the pass pending, the last settle, and why
   retention stopped, if it did.
+
+Resume
+
+  After a restart, a reset or a long silence, ingest times each object it sees
+  again from the store's last record of it, so that history is not rewritten
+  from the object's creation. GET /status also answers "resume": its mode (on,
+  or disabled, which the log reports as an error) and its counters: records
+  new, raised to the stored record, changed (timed when observed), dropped
+  after a stored delete, unknown (by reason: walk bound, baseline only, below
+  the horizon, read error), and later records raised with them.
 `

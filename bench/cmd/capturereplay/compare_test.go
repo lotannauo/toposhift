@@ -24,7 +24,7 @@ func fpOf(t *testing.T, r *identity.Resolver, typ catalog.EntityType, key catalo
 func TestGhostsCountsLostDeletesAndLifetimes(t *testing.T) {
 	pods, wl := loadPods(t), loadWorkload(t)
 	mem, other := twoMemStores(t)
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestCadenceTakesIntervalsWithinRuns(t *testing.T) {
 
 func TestContainerChecksCompareContainersOfSharedPods(t *testing.T) {
 	mem, other := twoMemStores(t)
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestDiffPassesCountsDifferingPairs(t *testing.T) {
 func passForTest(t *testing.T) *pass {
 	t.Helper()
 	mem, other := twoMemStores(t)
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}

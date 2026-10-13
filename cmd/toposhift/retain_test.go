@@ -312,7 +312,9 @@ func TestServeRetainOffRetainsNothing(t *testing.T) {
 	waitIngestOn(t, s.base)
 	postOK(t, s.base, podBody("pod-1", time.Now()))
 	time.Sleep(200 * time.Millisecond)
-	if code, body := getBody(t, s.base+"/status"); code != http.StatusOK || strings.TrimSpace(body) != `{"retention":{"mode":"off"}}` {
+	code, body := getBody(t, s.base+"/status")
+	var st map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &st); code != http.StatusOK || err != nil || string(st["retention"]) != `{"mode":"off"}` {
 		t.Errorf("GET /status = %d %q", code, body)
 	}
 	stopOK(t, s)

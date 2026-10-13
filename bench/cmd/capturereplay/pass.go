@@ -11,14 +11,15 @@ import (
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
 // The pipeline of one pass: each log record goes to one of two translators, their
-// records go through one coalescer, and what is left is written, a batch for each line of
-// the capture, to a store of each kind.
+// records go through the production resume step and then one coalescer, and what is left
+// is written, a batch for each line of the capture, to a store of each kind.
 
 const (
 	producerObjects lifecycle.Producer = "k8sobjects/k3scap"
@@ -100,6 +101,8 @@ type passRun struct {
 	// run, by source and kind.
 	Subjects [numSources][numSubjects]map[identity.Fingerprint]struct{}
 	Batches  int
+	// Resume is what the resume step decided in this run.
+	Resume resume.Stats
 	// Deadlines are, at the end of the run, the latest instant at which the store has a
 	// pod alive on the strength of what was written for it: the last recorded refresh
 	// plus its TTL, over the records the coalescer left. A pod nothing was written for
@@ -155,7 +158,11 @@ type pass struct {
 	cfg      coalesce.Config
 
 	mem, peb store.Store
-	seq      uint64
+	// lookup opens the resume step's lookup on peb, once per batch, and rec is what peb
+	// counted, if it counts.
+	lookup func() (resume.Lookup, error)
+	rec    *storeCounts
+	seq    uint64
 
 	// flushTimes are the times the coalescer is flushed at, in order, on the capture's
 	// clock; nextFlush is how many of them have been used.
@@ -185,10 +192,11 @@ type pass struct {
 	Lapsed  violation // an Observe that lapses before its observed time plus its TTL
 }
 
-// newPass makes a pass over the two stores, which it does not own.
-func newPass(name string, restart bool, mem, peb store.Store) (*pass, error) {
+// newPass makes a pass over the two stores, which it does not own; lookup opens the
+// lookup of the resume step, on peb.
+func newPass(name string, restart bool, mem, peb store.Store, lookup func() (resume.Lookup, error)) (*pass, error) {
 	p := &pass{
-		Name: name, Restart: restart, mem: mem, peb: peb, cfg: coalesceConfig(),
+		Name: name, Restart: restart, mem: mem, peb: peb, lookup: lookup, cfg: coalesceConfig(),
 		resolver:    identity.NewResolver(catalog.Default()),
 		deletes:     map[identity.Fingerprint]*deleteInfo{},
 		lastAssert:  map[identity.Fingerprint]time.Time{},
@@ -283,14 +291,23 @@ func endOf(r store.Record) time.Time {
 	return r.EventTime
 }
 
+// translated is what one record of a batch gave its translator: the store records,
+// and those of them the translator marked backdated.
+type translated struct {
+	it    item
+	src   source
+	recs  []store.Record
+	marks []resume.Mark
+}
+
 // translate takes one record through its translator.
-func (p *pass) translate(it item) (recs []store.Record, src source, err error) {
-	src = dispatch(it.rec)
+func (p *pass) translate(it item) (translated, error) {
+	src := dispatch(it.rec)
 	pr := p.cur
 	if src == srcCluster {
 		res, err := p.cluster.Translate(it.res, it.rec, time.Time{})
 		if err != nil {
-			return nil, src, err
+			return translated{src: src}, err
 		}
 		for _, s := range res.Skipped {
 			pr.Skips[src][s.Reason] += s.Count
@@ -298,11 +315,11 @@ func (p *pass) translate(it item) (recs []store.Record, src source, err error) {
 		for _, n := range res.Notes {
 			pr.Notes[src][n.Reason] += n.Count
 		}
-		return res.Records, src, nil
+		return translated{it: it, src: src, recs: res.Records, marks: res.Backdated}, nil
 	}
 	res, err := p.objects.Translate(it.res, it.rec)
 	if err != nil {
-		return nil, src, err
+		return translated{src: src}, err
 	}
 	for _, s := range res.Skipped {
 		pr.Skips[src][s.Reason] += s.Count
@@ -310,7 +327,72 @@ func (p *pass) translate(it item) (recs []store.Record, src source, err error) {
 	for _, n := range res.Notes {
 		pr.Notes[src][n.Reason] += n.Count
 	}
-	return res.Records, src, nil
+	return translated{it: it, src: src, recs: res.Records, marks: res.Backdated}, nil
+}
+
+// resume takes each translator's records of a batch through the production resume step,
+// as the sequencer does for a request: one lookup for the batch, opened after the last
+// write, and one call per translator, with its records in the order they were translated.
+// The records each call keeps go back to the record that gave them.
+func (p *pass) resume(ctx context.Context, ts []translated) (err error) {
+	if p.lookup == nil {
+		return nil
+	}
+	lk, err := p.lookup()
+	if err != nil {
+		return fmt.Errorf("resume: opening the lookup: %w", err)
+	}
+	defer func() {
+		if cerr := lk.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("resume: closing the lookup: %w", cerr)
+		}
+	}()
+	horizon := func(l catalog.Layer) time.Time { return p.peb.LayerHorizon(l).Time }
+	for src := range numSources {
+		var res resume.Result
+		var idx []int
+		for i := range ts {
+			if ts[i].src != src {
+				continue
+			}
+			base := len(res.Records)
+			res.Records = append(res.Records, ts[i].recs...)
+			for _, m := range ts[i].marks {
+				m.Index += base
+				res.Marks = append(res.Marks, m)
+			}
+			idx = append(idx, i)
+		}
+		if len(res.Marks) == 0 {
+			continue
+		}
+		var tr resume.Resumer = p.objects
+		described := k8sobjects.Comparable
+		if src == srcCluster {
+			tr, described = p.cluster, k8scluster.Comparable
+		}
+		st, err := resume.Apply(ctx, lk, horizon, &res, tr, described)
+		if err != nil {
+			return err
+		}
+		p.cur.Resume.Add(st)
+		dropped := res.Dropped
+		pos, k := 0, 0
+		for _, i := range idx {
+			var kept []store.Record
+			for range ts[i].recs {
+				if len(dropped) > 0 && dropped[0] == pos {
+					dropped = dropped[1:]
+				} else {
+					kept = append(kept, res.Records[k])
+					k++
+				}
+				pos++
+			}
+			ts[i].recs = kept
+		}
+	}
+	return nil
 }
 
 // observeRecords takes note of what a translator wrote for a record.
@@ -386,8 +468,8 @@ func (p *pass) observeRecords(src source, st time.Time, recs []store.Record) {
 	}
 }
 
-// feed takes the records of one line: translates them, coalesces what they made, and
-// writes the batch to both stores.
+// feed takes the records of one line: translates them, resumes what the translators
+// backdated, coalesces what they made, and writes the batch to both stores.
 func (p *pass) feed(ctx context.Context, b batch) error {
 	pr := p.cur
 	pr.Batches++
@@ -396,18 +478,25 @@ func (p *pass) feed(ctx context.Context, b batch) error {
 			return err
 		}
 	}
-	var out []store.Record
+	var ts []translated
 	for _, it := range b.Items {
-		recs, src, err := p.translate(it)
+		tr, err := p.translate(it)
 		if err != nil {
-			pr.Errors[src]++
+			pr.Errors[tr.src]++
 			if len(pr.ErrExamples) < maxExamples {
-				pr.ErrExamples = append(pr.ErrExamples, fmt.Sprintf("line %d: %s: %v", p.lineNumber(b), src, err))
+				pr.ErrExamples = append(pr.ErrExamples, fmt.Sprintf("line %d: %s: %v", p.lineNumber(b), tr.src, err))
 			}
 			continue
 		}
-		p.observeRecords(src, srcTime(src, it.rec), recs)
-		for _, r := range recs {
+		ts = append(ts, tr)
+	}
+	if err := p.resume(ctx, ts); err != nil {
+		return fmt.Errorf("batch of line %d of run %d: %w", p.lineNumber(b), pr.N, err)
+	}
+	var out []store.Record
+	for _, tr := range ts {
+		p.observeRecords(tr.src, srcTime(tr.src, tr.it.rec), tr.recs)
+		for _, r := range tr.recs {
 			out = p.co.Add(r, out)
 		}
 	}

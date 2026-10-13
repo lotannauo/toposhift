@@ -55,6 +55,9 @@ func (t *Translator) node(b *batch, ev entityEvent, id string, fp identity.Finge
 	asserted := at
 	if changed || t.ttl() > 0 {
 		t.observeEntity(b, fp, at, basis, d.payload, b.instant)
+		if first {
+			b.mark(&handle{node: st})
+		}
 		if at.After(st.last) {
 			st.last, st.lastBasis = at, basis
 		}
@@ -181,6 +184,9 @@ func (t *Translator) pod(b *batch, ev entityEvent, id string, fp identity.Finger
 
 	if changed || t.ttl() > 0 {
 		t.observeEntity(b, fp, at, basis, d.payload, b.instant)
+		if first {
+			b.mark(&handle{pod: st})
+		}
 		if at.After(st.last) {
 			st.last, st.lastBasis = at, basis
 		}
@@ -251,6 +257,7 @@ func (t *Translator) reconcileEdge(b *batch, st *podState, uid, name string, at 
 func (t *Translator) beginEdge(b *batch, st *podState, sp *nodeSpan, name string, at time.Time, basis store.EventTimeBasis, through time.Time) {
 	payload := edgePayload(name, sp)
 	t.observeEdge(b, st.fp, sp.fp, catalog.ScheduledOn, at, basis, payload, through)
+	b.mark(&handle{pod: st, peer: sp.fp})
 	st.edge.node, st.edge.payload = sp.fp, payload
 	st.edge.since, st.edge.sinceBasis = at, basis
 }
@@ -331,6 +338,9 @@ func (t *Translator) container(b *batch, ev entityEvent, id string, fp identity.
 
 	if changed || t.ttl() > 0 {
 		t.observeEntity(b, fp, at, basis, d.payload, b.instant)
+		if first {
+			b.mark(&handle{ctr: st})
+		}
 		if at.After(st.last) {
 			st.last, st.lastBasis = at, basis
 		}
@@ -359,6 +369,7 @@ func (t *Translator) container(b *batch, ev entityEvent, id string, fp identity.
 	st.podUID, st.podFP = podUID, podFP
 	st.since, st.sinceBasis = at, basis
 	t.observeEdge(b, fp, podFP, catalog.PartOf, at, basis, []byte("{}"), b.instant)
+	b.mark(&handle{ctr: st, peer: podFP})
 	if t.podCtrs[podUID] == nil {
 		t.podCtrs[podUID] = make(map[string]struct{})
 	}

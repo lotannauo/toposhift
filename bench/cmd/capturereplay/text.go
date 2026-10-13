@@ -24,6 +24,19 @@ func counts(m map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
+func counts64(m map[string]int64) string {
+	var parts []string
+	for _, k := range sortedKeys(m) {
+		if m[k] != 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", k, m[k]))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ", ")
+}
+
 func ts(t interface{ Format(string) string }) string { return t.Format("15:04:05") }
 
 // writeText prints the report.
@@ -147,6 +160,16 @@ func writePass(w io.Writer, r *Report, p *passReport) {
 	}
 	for _, s := range p.Subjects {
 		fmt.Fprintf(w, "  all runs, %s subjects: both %d, only objects %d, only cluster %d\n", s.Kind, s.Both, s.OnlyObjects, s.OnlyCluster)
+	}
+	fmt.Fprintf(w, "resume, all runs: %s\n", counts64(p.Resume))
+	for _, x := range p.Runs {
+		fmt.Fprintf(w, "  run %d resume: %s\n", x.N, counts64(x.Resume))
+	}
+	st := p.Store
+	fmt.Fprintf(w, "pebble store: checkpoints written %d, invalidated %d (%s); lookups %d, keys walked at most %d, exhausted %d\n",
+		st.CheckpointsWritten, st.CheckpointsInvalid, st.CheckpointPolicy, st.LookupIterators, st.LookupKeysWalkedMax, st.LookupExhausted)
+	if st.ResumeFirstReadError != "" {
+		fmt.Fprintf(w, "  resume: the first read error: %s\n", st.ResumeFirstReadError)
 	}
 
 	heading(w, "3. pods against the truth, pass %s", p.Name)
