@@ -733,32 +733,58 @@ func TestTheStreamDayOfABatchIsThatOfItsLastRecord(t *testing.T) {
 	}
 }
 
-// The wait for the schedule is not in the time of the batch: with a sleep of 60 ms for
-// each batch that the engine writes at once, the commit the gate and the timings record
-// is the engine's.
+// timedEngine is an engine whose every write takes a fixed time on a fake clock.
+type timedEngine struct {
+	stubEngine
+	clock *fakeClock
+	took  time.Duration
+}
+
+func (e *timedEngine) Write(b []engine.Record) error {
+	e.clock.t = e.clock.t.Add(e.took)
+	return e.stubEngine.Write(b)
+}
+
+// The wait for the schedule is not in the time of the batch: with a sleep much longer
+// than the engine's write before each batch, the commit the gate and the timings record
+// is the engine's write and nothing more. The sink, the engine and the pacer share one
+// clock that moves only by what each of them takes, so the times are exact.
 func TestThePacersSleepIsNotInTheCommitTime(t *testing.T) {
 	t.Parallel()
 
+	const took = 2 * time.Millisecond
 	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	p := testPacer(100, clock)
-	p.sleep = func(time.Duration) { time.Sleep(60 * time.Millisecond) }
-	g := newGateTracker(time.Now())
+	p := testPacer(10, clock) // a batch of one record is due every 100 ms
+	// The epoch is before the first batch: a pacing that starts at the epoch itself is
+	// not told apart from one that has not started.
+	g := newGateTracker(clock.t.Add(-time.Second))
 	g.setPaced()
 	sink := pacedSink(g, p)
+	sink.e = &timedEngine{clock: clock, took: took}
+	sink.now = clock.now
 	for i := range 4 {
 		if err := sink.Write([]engine.Record{recordAtDay(uint64(i+1), 3)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tr := g.trace(time.Now(), "background", 0, nil)
+	// the first batch starts the schedule; each of the others waits for what is left of
+	// its 100 ms after the write before it
+	if want := 3; len(clock.sleeps) != want {
+		t.Fatalf("%d sleeps %v, want %d", len(clock.sleeps), clock.sleeps, want)
+	}
+	for i, d := range clock.sleeps {
+		if d != 100*time.Millisecond-took {
+			t.Errorf("sleep %d is %s, want %s", i, d, 100*time.Millisecond-took)
+		}
+	}
+	tr := g.trace(clock.now(), "background", 0, nil)
 	if tr.Outside.Batches != 4 {
 		t.Fatalf("%+v", tr)
 	}
-	if got := time.Duration(tr.Outside.Commit.MaxNs); got > 30*time.Millisecond {
-		t.Errorf("the longest commit the gate recorded is %s: it holds the pacer's sleep of 60ms", got)
-	}
-	if got := time.Duration(sink.t.Writes.MaxNs); got > 30*time.Millisecond {
-		t.Errorf("the longest write in the timings is %s: it holds the pacer's sleep of 60ms", got)
+	for name, h := range map[string]Histogram{"the gate's commits": tr.Outside.Commit, "the timings' writes": sink.t.Writes} {
+		if h.Count != 4 || h.MaxNs != int64(took) || h.TotalNs != 4*int64(took) {
+			t.Errorf("%s: %d of them, longest %dns, together %dns, want 4 of %dns each: they hold the pacer's sleep", name, h.Count, h.MaxNs, h.TotalNs, int64(took))
+		}
 	}
 }
 
