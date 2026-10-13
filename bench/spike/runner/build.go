@@ -161,6 +161,17 @@ type buildSink struct {
 	// pace holds the writer to a rate from a stream day on; nil for a build that is not
 	// paced.
 	pace *paceState
+	// now reads the clock that times each batch; nil for [time.Now]. A test sets it to
+	// move the clock by exactly what the engine and the pacer's sleep take.
+	now func() time.Time
+}
+
+// clock is the time now on the clock that times a batch.
+func (s buildSink) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // paceState is the pacing of a build: it switches on at the first batch whose stream day
@@ -208,12 +219,12 @@ func (s buildSink) Write(batch []engine.Record) error {
 			defer ps.pacer.done(len(batch))
 		}
 	}
-	start := time.Now()
+	start := s.clock()
 	if s.pace != nil && s.pace.on {
 		s.gate.startPacing(start)
 	}
 	err := s.e.Write(batch)
-	d := time.Since(start)
+	d := s.clock().Sub(start)
 	s.t.Writes.Add(d)
 	if *s.afterRetention {
 		*s.afterRetention = false
