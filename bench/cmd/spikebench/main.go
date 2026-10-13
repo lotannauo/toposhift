@@ -494,6 +494,9 @@ type buildFlags struct {
 	// store's retention flushes, for a background build of an Lroot candidate; 0 is the
 	// store's default.
 	retainFlushDels int
+	// profileWindows writes CPU and mutex profiles of each retention pass of a background
+	// build (runner.BuildOptions.ProfileWindows).
+	profileWindows bool
 }
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
@@ -504,6 +507,7 @@ func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.IntVar(&b.pace, "pace", 0, "records per second the writer is held to from stream day 2W + 1.5 - ceil(W/2) on, for a background build of a window (0: unpaced); recorded in the manifest, and a family is built all at one pace")
 	fs.IntVar(&b.retainFlushDels, "retain-flush-dels", 0, "the count of unflushed range deletions at which the root store's retention flushes, for a measurement that compares thresholds: only with -retention-mode background and Lroot candidates (0, the default: the store's own); recorded in the manifest of every Lroot build, and a family is built all at one threshold")
 	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
+	fs.BoolVar(&b.profileWindows, "profile-windows", false, "for a diagnostic build of an Lroot candidate with -retention-mode background: write, under profiles/ in the candidate's directory, a CPU profile of the first 2s after each pass's publication (pass<N>_first.cpu.pprof), a CPU profile from then to the end of its rewrite (pass<N>_window.cpu.pprof), the mutex profile at both ends (pass<N>_start.mutex.pprof, pass<N>_window.mutex.pprof; cumulative, read the window with pprof -base), and index.json, which says what was written for each pass and why a pass published while the window before it was open has none; the profiling takes CPU and sets the mutex profile fraction for the whole build, so it is recorded in the manifest and the build is not a measurement (default: off)")
 }
 
 // resolve gives -rest-after-retention its default once fs is parsed: on for an
@@ -530,6 +534,8 @@ func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 		return fmt.Errorf("-retain-flush-dels %d: give a count of range deletions, or 0 for the store's default", b.retainFlushDels)
 	case b.retainFlushDels > 0 && b.retentionMode != candidates.RetentionBackground:
 		return fmt.Errorf("-retain-flush-dels %d needs -retention-mode background: a threshold is measured only on a build whose retention runs in the background", b.retainFlushDels)
+	case b.profileWindows && b.retentionMode != candidates.RetentionBackground:
+		return errors.New("-profile-windows needs -retention-mode background: only a build whose retention runs in the background has windows to profile")
 	}
 	return nil
 }
@@ -574,11 +580,14 @@ func (b buildFlags) args() []string {
 	if b.retainFlushDels != 0 {
 		out = append(out, "-retain-flush-dels="+strconv.Itoa(b.retainFlushDels))
 	}
+	if b.profileWindows {
+		out = append(out, "-profile-windows")
+	}
 	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels}
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows}
 }
 
 // forward is step with b's flags added to every build it starts.
