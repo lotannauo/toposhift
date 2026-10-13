@@ -90,4 +90,13 @@
 // it. A store with a baseline in place of the records before the horizon has to
 // give the same answer. A store opened with the zero policy ignores boot ids and
 // never quarantines.
+//
+// # Finding a producer's last assertion
+//
+// [Store.NewLookup] opens a [Lookup], whose Last finds the newest record of one
+// reference outside [store.Store], with the answers of the pebblestore's: found,
+// none, and, for a reference whose records all lie before its layer's horizon and
+// whose newest is an Observe still alive there, baseline only, with no payload,
+// which is what a retention would have folded into a baseline. It reads the
+// store as it is at each call, and never exhausts a bound.
 package memstore
