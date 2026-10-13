@@ -292,7 +292,8 @@ func TestConfig(t *testing.T) {
 	eq(q+".enabled", "true")
 	eq(q+".storage", "file_storage/toposhift")
 	eq(q+".num_consumers", "1")
-	eq(q+".queue_size", "1000")
+	eq(q+".sizer", "bytes")
+	eq(q+".queue_size", "2000000000")
 	if _, has := d[q+".block_on_overflow"]; has {
 		t.Errorf("%s.block_on_overflow is set: a full queue is meant to drop", q)
 	}
@@ -340,6 +341,7 @@ func TestConfig(t *testing.T) {
 		q + ".enabled":                                       true,
 		q + ".storage":                                       true,
 		q + ".num_consumers":                                 true,
+		q + ".sizer":                                         true,
 		q + ".queue_size":                                    true,
 		q + ".batch.sizer":                                   true,
 		q + ".batch.max_size":                                true,
