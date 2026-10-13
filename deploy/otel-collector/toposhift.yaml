@@ -76,13 +76,20 @@ exporters:
       storage: file_storage/toposhift
       # One consumer sends requests one at a time, in the order they were queued.
       num_consumers: 1
-      # Up to 1000 requests wait in the queue. When it is full the collector
-      # drops new data (block_on_overflow stays off). A long outage can fill it.
-      queue_size: 1000
+      # The queue is sized in bytes, so what an outage can hold does not depend on
+      # how large the requests are. queue_size is the most the queue holds, about
+      # 2 GB of queued data (an estimate: the size of the requests as the
+      # collector counts it). That is about 125 maximum-size exports of 16 MB, and
+      # many times the largest request a receiver emits. The disk it takes is up
+      # to about twice this while the file compacts; see README.md. Raise or lower
+      # queue_size to change it. When the queue is full the collector drops new
+      # data (block_on_overflow stays off). A long outage can fill it.
+      sizer: bytes
+      queue_size: 2000000000
       # Each export is merged or split to at most 16 MB, by size in bytes whatever
       # the objects weigh, so it stays well under toposhift's limit of 64 MiB for a
-      # decoded request body. This protects toposhift from a 413; it does not
-      # bound the queue's disk.
+      # decoded request body. This protects toposhift from a 413; queue_size above
+      # is what bounds the queue's disk.
       batch:
         sizer: bytes
         max_size: 16000000
