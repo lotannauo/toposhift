@@ -35,11 +35,16 @@ type storeBytesVariant struct {
 	checkpoints pebblelog.CheckpointOptions
 }
 
+// "default" is K_min 64, alpha 2 and a lag of one nanosecond, the product's default
+// until its lag became five minutes; its frozen values stand. "default 5m" is the
+// product's default policy (TestTheDefault5mVariantIsTheProductsDefault).
 var storeBytesVariants = []storeBytesVariant{
 	{"off", pebblelog.CheckpointOptions{}},
 	{"k8", pebblelog.CheckpointOptions{On: true, KMin: 8, Alpha: 1}},
 	{"lag 1ns", pebblelog.CheckpointOptions{On: true, KMin: 1, Lag: time.Nanosecond}},
 	{"default", pebblelog.CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: time.Nanosecond}},
+	{"lag 5m", pebblelog.CheckpointOptions{On: true, KMin: 1, Lag: 5 * time.Minute}},
+	{"default 5m", pebblelog.CheckpointOptions{On: true, KMin: 64, Alpha: 2, Lag: 5 * time.Minute}},
 }
 
 // storeBytesStream is a workload the bytes are frozen for, and the variants that run
@@ -71,13 +76,25 @@ func conformanceStream(i int) storeBytesStream {
 // (config 4: a few pods take most of the churn, and the sequence numbers start
 // near 2^63) for twice as long, which makes it write several.
 var storeBytesStreams = []storeBytesStream{
-	conformanceStream(0),
 	func() storeBytesStream {
-		s := conformanceStream(5)
-		s.variants = []string{"off", "k8", "lag 1ns"}
+		// "default 5m" writes four checkpoints on this stream and no record is late
+		// enough to delete one, so it runs on the hot stream only.
+		s := conformanceStream(0)
+		s.variants = []string{"off", "k8", "lag 1ns", "default", "lag 5m"}
 		return s
 	}(),
-	conformanceStream(6),
+	func() storeBytesStream {
+		s := conformanceStream(5)
+		s.variants = []string{"off", "k8", "lag 1ns", "lag 5m"}
+		return s
+	}(),
+	func() storeBytesStream {
+		// No record of this stream is late by more than the lag of "lag 5m", so
+		// that variant would delete no checkpoint on it.
+		s := conformanceStream(6)
+		s.variants = []string{"off", "k8", "lag 1ns", "default"}
+		return s
+	}(),
 	{
 		name: "hot",
 		config: func() workload.Config {
@@ -85,7 +102,7 @@ var storeBytesStreams = []storeBytesStream{
 			c.Duration *= 2
 			return c
 		},
-		variants:       []string{"default"},
+		variants:       []string{"default", "default 5m"},
 		minCheckpoints: 5,
 	},
 }
@@ -117,19 +134,24 @@ type storeBytesWant struct {
 
 // The values are frozen. They were computed with the layout-L code of main at
 // 909947a, before it was promoted out of the bench module, so that the promoted
-// code is judged against what this code stored and not against itself.
+// code is judged against what this code stored and not against itself. The cases
+// with a lag of five minutes were added later and computed with this module's
+// engine, which the promoted store is judged against in the same way.
 var storeBytesWants = map[string]storeBytesWant{
 	"config 0 default": {2004, 1647, 1, 356, "5424789d5c2a075173f28f052ec9250b88561c975a7e3e0cc8ee09124b68e8ba"},
 	"config 0 k8":      {2078, 1647, 75, 356, "802b6d64144b5632a3de50adc6ded826b2cbd3799777c65981da3c64c26756c2"},
 	"config 0 lag 1ns": {2643, 1647, 640, 356, "3d56bb3f1087e9fe607819666a7101cfdb76b3ca1163e5d6bed7a34530a00b8c"},
+	"config 0 lag 5m":  {2169, 1647, 166, 356, "daa4e01aadd1bea202407ae8723ee9677840d13f91067734d6a2f3c87cbcea3b"},
 	"config 0 off":     {2003, 1647, 0, 356, "1b68c4bb76c9cdc009f9fadacf37ca22211a3f2fe44ba625e616c6e4d08ae6b9"},
 	"config 5 k8":      {2044, 1644, 26, 374, "cb906c7f2f518bcac739e80b319cd8740b12906bdb70aaa03b57d65a4f1d8a79"},
 	"config 5 lag 1ns": {2393, 1644, 375, 374, "8bf96404f065c750147a64ae84337aebc0fe4118cf376dc9052bfaa68df2dba9"},
+	"config 5 lag 5m":  {2109, 1644, 91, 374, "ebe3554849d88a4315123297bddf79e7350134964f9bf9d3474640faa21845e0"},
 	"config 5 off":     {2018, 1644, 0, 374, "1dbee277b0496c2c2dbb01c8500dfdfed323cf245b056a72d193f59b2e661d1a"},
 	"config 6 default": {4030, 3636, 1, 393, "6d802b510bf67756be520d477d9b550ff4d24c5adb259215b5137f30bd0c10ab"},
 	"config 6 k8":      {4064, 3636, 35, 393, "b8ccf02b95fa315424c35cb221c90a7a6b4c97fac4897f099904d95b6e5d73c5"},
 	"config 6 lag 1ns": {6170, 3636, 2141, 393, "39c239c2a7b078a72b405a358495f76effc678907c99fa24d689b49b615d5fa5"},
 	"config 6 off":     {4029, 3636, 0, 393, "1128e93cf79fee66cbfe34c8cb91ae48012e97c5e66f3ea4659073b2e3ef6504"},
+	"hot default 5m":   {14807, 14320, 75, 412, "d04bb62234733c2a619563c3275f01d2a04d0e01b07186bb05e0a72ba4ba4b33"},
 	"hot default":      {14739, 14320, 7, 412, "4734025957b286b3df7abc85cd533733cd08129cd6175666b304a457810ec731"},
 }
 

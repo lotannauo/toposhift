@@ -114,6 +114,20 @@ func rootCheckpoints(c pebblelog.CheckpointOptions) *pebblestore.CheckpointOptio
 	return &pebblestore.CheckpointOptions{On: c.On, KMin: c.KMin, Alpha: c.Alpha, Lag: c.Lag}
 }
 
+// The variant named "default 5m" is the policy a store has when it is given none.
+func TestTheDefault5mVariantIsTheProductsDefault(t *testing.T) {
+	t.Parallel()
+	for _, v := range storeBytesVariants {
+		if v.name == "default 5m" {
+			if got, want := *rootCheckpoints(v.checkpoints), pebblestore.DefaultCheckpoints(); got != want {
+				t.Errorf("the variant %q is %+v, the store's default is %+v", v.name, got, want)
+			}
+			return
+		}
+	}
+	t.Error(`no variant is named "default 5m"`)
+}
+
 // openSpikeBytes opens the spike's engine, keeping the names it counts.
 func openSpikeBytes(names *countNames) storeBytesOpener {
 	return func(dir string, fs vfs.FS, v storeBytesVariant, rec engine.Recorder) (storeBytesEngine, error) {
@@ -229,7 +243,7 @@ func recordsAndBaselines(t *testing.T, fs vfs.FS, dir string) string {
 }
 
 // The promoted store writes the data keys and values the spike's layout L wrote
-// for the same streams, byte for byte, checkpoints included: the twelve frozen
+// for the same streams, byte for byte, checkpoints included: the frozen
 // digests are the ones it must reproduce, with and without the settling of its
 // retentions (which changes no key). It also counts what the spike counted, the
 // same number of times, for every count the spike reports: the checkpoints
