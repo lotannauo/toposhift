@@ -20,6 +20,7 @@ func TestBootsWithNoConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping binary boot test in short mode")
 	}
+	lockDefaultAddress(t)
 	if ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", server.DefaultListen); err != nil {
 		t.Skipf("default address %s is in use; run this test on a clean machine or CI: %v", server.DefaultListen, err)
 	} else {
@@ -39,9 +40,14 @@ func TestBootsWithNoConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	reaped := make(chan struct{})
+	go func() {
+		exited <- cmd.Wait()
+		close(reaped)
+	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
+		<-reaped // the address is free again before the lock is released
 	})
 
 	if err := waitHealthy(t.Context(), "http://"+server.DefaultListen+"/healthz", exited); err != nil {
