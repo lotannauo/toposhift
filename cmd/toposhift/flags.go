@@ -121,8 +121,12 @@ const (
 // not record Keep or Offsets, so a command that opened it with others would
 // retain it differently, and one that retained L0 would discard it for good:
 // this function is the one place they are set, and every command opens its
-// store through it. The L1 default is provisional: its growth over 90 days has
-// not been measured yet.
+// store through it. The L1 default was checked in a bench run of 181.5 simulated
+// days at 20 hosts, with two refresh cadences: the work of host and node reads
+// stayed within the read budget, and its 90th percentile on day 181.5 was within
+// 1.10 times that of day 30 (bench/spike/l1growth). That workload had no boot
+// history and no checkpoint invalidated by a late record, and it was not a
+// full-size store.
 func storeOptions() pebblestore.Options {
 	o := pebblestore.DefaultOptions()
 	o.Keep[0] = true // L0

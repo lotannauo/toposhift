@@ -329,7 +329,7 @@ func TestServeHelpDocumentsRetention(t *testing.T) {
 	}
 	for _, want := range []string{
 		"-retain", "TOPOSHIFT_RETAIN", "--retain off asks for no retention", "L2 up to 31 days, L1 up to 91",
-		"provisional", "restarted", "GET /status", "agree", "loses its records older",
+		"growth check", "restarted", "GET /status", "agree", "loses its records older",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("serve -h does not mention %q", want)
