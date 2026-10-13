@@ -1,6 +1,7 @@
 package sequencer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/detector"
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -92,6 +94,20 @@ type work struct {
 	refusedClock time.Time
 	// notes and skips count what the translators said, by producer and reason.
 	notes, skips map[[3]string]int
+	// resumed counts what the resume step decided for the request's records. It is
+	// added to the sequencer's counts only when the group is answered without
+	// error.
+	resumed resume.Stats
+}
+
+// call is one translator call of a request: the slot of its log record, the
+// cluster name, which translator, and the records it marked backdated (by their
+// index in the slot's records).
+type call struct {
+	slot    int
+	name    string
+	cluster bool
+	marks   []resume.Mark
 }
 
 // coalesce adds the records that passed to the coalescer, in order, and appends
@@ -146,11 +162,14 @@ func compareKeys(a, b [3]string) int {
 }
 
 // translateAll runs each request through the cluster names, the namespace pass
-// and the detector, the translation and the checks, in arrival order. A request
-// whose translation panics is refused, the translators of the names it touched
-// are made anew, and the requests before it that share a name with those are
-// translated again from memory: nothing has reached the coalescer yet.
-func (s *Sequencer) translateAll(reqs []*request, now time.Time) []*work {
+// and the detector, the translation, the resume step and the checks, in arrival
+// order. A request whose translation panics is refused, the translators of the
+// names it touched are made anew, and the requests before it that share a name
+// with those are translated again from memory: nothing has reached the coalescer
+// yet. lk is the group's lookup, nil when resume is off. An error from the resume
+// step that aborts (see [resume.IsAbort]) is returned at once: the group is not
+// written.
+func (s *Sequencer) translateAll(ctx context.Context, reqs []*request, now time.Time, lk resume.Lookup) ([]*work, error) {
 	ws := make([]*work, len(reqs))
 	for i, r := range reqs {
 		ws[i] = &work{r: r}
@@ -166,12 +185,15 @@ func (s *Sequencer) translateAll(reqs []*request, now time.Time) []*work {
 			w.refused = w.r.panicked
 			continue
 		}
-		p := s.translate(w, now)
+		p, err := s.translate(ctx, w, now, lk)
+		if err != nil {
+			return ws, err
+		}
 		if p == nil {
 			continue
 		}
 		w.r.panicked = fmt.Sprintf("translating a record of this request failed (%s); the request is refused", bounded(fmt.Sprint(p), maxQuoted))
-		w.refused, w.out = w.r.panicked, nil
+		w.refused, w.out, w.resumed = w.r.panicked, nil, resume.Stats{}
 		// The names to make anew: those the request touched, and those of every
 		// earlier request that shares one, until no more join.
 		renew := make(map[string]bool)
@@ -206,7 +228,7 @@ func (s *Sequencer) translateAll(reqs []*request, now time.Time) []*work {
 		}
 		i = -1 // translate the reruns, in arrival order, then go on
 	}
-	return ws
+	return ws, nil
 }
 
 func sharesName(names []string, set map[string]bool) bool {
@@ -219,21 +241,23 @@ func sharesName(names []string, set map[string]bool) bool {
 }
 
 // translate takes one request through the cluster names, the namespace pass and
-// the detector, the translation of the rest, and the checks. It returns the
-// value of a panic it recovered, or nil.
-func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
+// the detector, the translation of the rest, the resume step, and the checks. It
+// returns the value of a panic it recovered, or nil, and the error of a resume
+// step that aborts.
+func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk resume.Lookup) (panicked any, abort error) {
 	defer func() {
 		if p := recover(); p != nil {
 			s.log.Error("sequencer: translating a request panicked", "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
-			panicked = p
+			panicked, abort = p, nil
 		}
 	}()
 	if !s.resolveNames(w, now) {
-		return nil
+		return nil, nil
 	}
 	r := w.r
 	w.out = make([][]store.Record, r.records)
 	selected := make([]bool, r.records)
+	var calls []call
 
 	// The namespace pass: only the namespace events go through the translator
 	// first, so that the kube-system set follows every sighting, refused
@@ -251,6 +275,7 @@ func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
 						w.reject(slot, err)
 					} else {
 						w.out[slot] = res.Records
+						calls = append(calls, call{slot: slot, name: name, cluster: true, marks: res.Backdated})
 						for _, ns := range res.Namespaces {
 							s.det.Observe(detector.FromK8sCluster(name, ns))
 						}
@@ -264,7 +289,7 @@ func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
 		if v := s.det.Check(name, now); v.Refuse {
 			// The rest of the request is never translated.
 			w.refused = v.Message
-			return nil
+			return nil, nil
 		}
 	}
 
@@ -278,24 +303,35 @@ func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
 			for _, lr := range sl.LogRecords {
 				if !selected[slot] {
 					var recs []store.Record
+					var marks []resume.Mark
 					var err error
-					if lr.EventName == eventState || lr.EventName == eventDelete {
+					isCluster := lr.EventName == eventState || lr.EventName == eventDelete
+					if isCluster {
 						var res k8scluster.Result
 						res, err = s.translateCluster(c, name, rl.Resource, lr, r.received, w)
-						recs = res.Records
+						recs, marks = res.Records, res.Backdated
 					} else {
 						var res k8sobjects.Result
 						res, err = s.translateObjects(c, name, rl.Resource, lr, w)
-						recs = res.Records
+						recs, marks = res.Records, res.Backdated
 					}
 					if err != nil {
 						w.reject(slot, err)
 					} else {
 						w.out[slot] = recs
+						calls = append(calls, call{slot: slot, name: name, cluster: isCluster, marks: marks})
 					}
 				}
 				slot++
 			}
+		}
+	}
+
+	// The resume step, before the checks and the coalescer: see "Resume" in the
+	// package documentation.
+	if lk != nil {
+		if err := s.resume(ctx, w, lk, calls); err != nil {
+			return nil, err
 		}
 	}
 
@@ -313,6 +349,77 @@ func (s *Sequencer) translate(w *work, now time.Time) (panicked any) {
 				w.reject(slot, err)
 				break
 			}
+		}
+	}
+	return nil, nil
+}
+
+// resume takes the records of each translator of the request through
+// [resume.Apply], one producer at a time in the order the producers first appear,
+// each with its records in the order they were translated (the namespace pass
+// first), and puts back what it kept in their slots.
+func (s *Sequencer) resume(ctx context.Context, w *work, lk resume.Lookup, calls []call) error {
+	type group struct {
+		name    string
+		cluster bool
+	}
+	var order []group
+	byGroup := map[group][]call{}
+	for _, c := range calls {
+		g := group{c.name, c.cluster}
+		if _, ok := byGroup[g]; !ok {
+			order = append(order, g)
+		}
+		byGroup[g] = append(byGroup[g], c)
+	}
+	horizon := func(l catalog.Layer) time.Time {
+		if l < catalog.L0 || l > catalog.L3 {
+			return time.Time{}
+		}
+		return s.horizons[l-catalog.L0]
+	}
+	for _, g := range order {
+		cs := byGroup[g]
+		var res resume.Result
+		marked := false
+		for _, c := range cs {
+			base := len(res.Records)
+			res.Records = append(res.Records, w.out[c.slot]...)
+			for _, m := range c.marks {
+				m.Index += base
+				res.Marks = append(res.Marks, m)
+				marked = true
+			}
+		}
+		if !marked {
+			continue
+		}
+		var tr resume.Resumer = s.clusters[g.name].objects
+		described := k8sobjects.Comparable
+		if g.cluster {
+			tr, described = s.clusters[g.name].cluster, k8scluster.Comparable
+		}
+		st, err := resume.Apply(ctx, lk, horizon, &res, tr, described)
+		if err != nil {
+			return err
+		}
+		w.resumed.Add(st)
+		// Put the records back in their slots, without those Apply dropped.
+		dropped := res.Dropped
+		i, k := 0, 0 // the position in the records as given, and in what Apply kept
+		for _, c := range cs {
+			n := len(w.out[c.slot])
+			var kept []store.Record
+			for range n {
+				if len(dropped) > 0 && dropped[0] == i {
+					dropped = dropped[1:]
+				} else {
+					kept = append(kept, res.Records[k])
+					k++
+				}
+				i++
+			}
+			w.out[c.slot] = kept
 		}
 	}
 	return nil

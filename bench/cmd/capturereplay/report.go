@@ -6,6 +6,9 @@ import (
 	"io"
 	"sort"
 	"time"
+
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // Report is everything the replay measured. It is written as JSON, and printed as text.
@@ -100,6 +103,20 @@ type passRunReport struct {
 	Written    int           `json:"records_written_after_the_coalescer"`
 	Subjects   []subjectSets `json:"subjects_written"`
 	ErrExample []string      `json:"translate_error_examples,omitempty"`
+	// Resume is what the resume step decided in the run, by counter.
+	Resume map[string]int64 `json:"resume"`
+}
+
+// storeReport is what the pass's Pebble store counted: its checkpoints, under the
+// store's default policy, and the lookups of the resume step.
+type storeReport struct {
+	CheckpointPolicy     string `json:"checkpoint_policy"`
+	CheckpointsWritten   int64  `json:"checkpoints_written"`
+	CheckpointsInvalid   int64  `json:"checkpoints_invalidated"`
+	LookupIterators      int64  `json:"lookup_iterators"`
+	LookupKeysWalkedMax  int64  `json:"lookup_keys_walked_max"`
+	LookupExhausted      int64  `json:"lookup_exhausted"`
+	ResumeFirstReadError string `json:"resume_first_read_error,omitempty"`
 }
 
 type sourceCounts struct {
@@ -146,6 +163,10 @@ type passReport struct {
 	NodeLines   *nodeReport     `json:"node_lines"`
 	Containers  containerCheck  `json:"container_fingerprints"`
 	Properties  propertyReport  `json:"properties"`
+	// Resume is what the resume step decided over the pass, by counter, and Store what
+	// the Pebble store counted.
+	Resume map[string]int64 `json:"resume"`
+	Store  storeReport      `json:"pebble_store"`
 	// Disagree are the pairs at which the two stores answered differently.
 	Disagree struct {
 		Pods  violation `json:"pods"`
@@ -221,7 +242,7 @@ func passRunsOf(p *pass) ([]passRunReport, []subjectSets) {
 	for _, pr := range p.Runs {
 		runs = append(runs, passRunReport{
 			N: pr.N, Batches: pr.Batches, Objects: countsOf(pr, srcObjects), Cluster: countsOf(pr, srcCluster),
-			Written: pr.Written, Subjects: subjectsOf(pr), ErrExample: pr.ErrExamples,
+			Written: pr.Written, Subjects: subjectsOf(pr), ErrExample: pr.ErrExamples, Resume: pr.Resume.Counters(),
 		})
 		for s := range numSources {
 			for k := range numSubjects {
@@ -255,6 +276,7 @@ func passRunsOf(p *pass) ([]passRunReport, []subjectSets) {
 func analyzePass(ctx context.Context, p *pass, pods *podsTruth, nodesT *nodesTruth, wl *workload, ws []window, stats []*runStats, margin time.Duration) (*passReport, error) {
 	pr := &passReport{Name: p.Name, Restarts: p.Restarts, FlushRecords: p.FlushRecords}
 	pr.Runs, pr.Subjects = passRunsOf(p)
+	pr.Resume, pr.Store = resumeOf(p)
 
 	pa, err := queryPods(ctx, p, pods, nodesT)
 	if err != nil {
@@ -422,4 +444,26 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// resumeOf is the resume step's counts over the pass, and what the pass's Pebble store
+// counted (nothing for a pass over a store without a recorder).
+func resumeOf(p *pass) (map[string]int64, storeReport) {
+	var st resume.Stats
+	for _, pr := range p.Runs {
+		st.Add(pr.Resume)
+	}
+	c := pebblestore.DefaultCheckpoints()
+	sr := storeReport{CheckpointPolicy: fmt.Sprintf("the store's default: on, %d records between checkpoints (alpha %g), lag %s", c.KMin, c.Alpha, c.Lag)}
+	if st.FirstError != nil {
+		sr.ResumeFirstReadError = st.FirstError.Error()
+	}
+	if p.rec != nil {
+		sr.CheckpointsWritten = p.rec.sum("checkpoint.written")
+		sr.CheckpointsInvalid = p.rec.sum("checkpoint.invalidated")
+		sr.LookupIterators = p.rec.sum("lookup.iterators")
+		sr.LookupKeysWalkedMax = p.rec.max("lookup.keys_walked")
+		sr.LookupExhausted = p.rec.sum("lookup.exhausted")
+	}
+	return st.Counters(), sr
 }

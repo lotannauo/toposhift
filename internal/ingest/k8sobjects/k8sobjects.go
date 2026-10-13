@@ -34,10 +34,11 @@
 //   - The first record of a UID the translator has not seen, whether a watch
 //     event or a list item, takes the object's creationTimestamp (basis object
 //     field). After a restart every object is new to the translator, so the first
-//     list re-asserts each object at its creation time. That is harmless: the
-//     producer and the content are the same and the later sequence number wins.
-//     A record before the store's retention horizon is for the sequencer's late
-//     path, not for this package.
+//     list would re-assert each object at its creation time, late on every prefix
+//     it touches. So first sightings are marked, and ingest resumes them from the
+//     store (see [Result.Backdated] and "After a restart"). A record before the
+//     store's retention horizon is for the sequencer's late path, not for this
+//     package.
 //   - A later watch event whose description changed takes the newest
 //     lastTransitionTime among the conditions that changed and the newest
 //     startedAt or finishedAt of the container states that changed (basis object
@@ -121,7 +122,20 @@
 //
 // # After a restart
 //
-// The state is in memory. A pod seen before a restart is unseen after it, and its
+// The state is in memory. A pod seen before a restart is unseen after it, so its
+// next record is a first sighting: timed at its creation, its containers and their
+// part_of edges with it, and its scheduled_on edge at its PodScheduled time (or,
+// when the pod is listed before its node, at that time once the node arrives).
+// Each such record that carries a Through is marked in [Result.Backdated], and
+// ingest resumes it from the producer's last stored assertion of the subject (see
+// package resume): an unchanged description is raised to it, a changed one takes
+// the observed time. [Translator.Resumed] then raises, and never lowers, the state
+// that times the subject's later records, so that none of them is timed before
+// the resumed one. [Comparable] is what a description is compared on: everything
+// but a scheduled_on edge's resolution, which this translator derives from its
+// own node index.
+//
+// A pod's DELETED after a restart is addressed from the deleted object itself: its
 // DELETED is addressed from the deleted object itself: the delete of each of its
 // containers that has a runtime id, of their part_of edges, and of its scheduled_on
 // edge if the node name resolves at the time the pod was scheduled, or at the
@@ -145,6 +159,7 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -271,6 +286,12 @@ type Result struct {
 	// Notes say what the caller should know and log, sorted by reason. They do
 	// not change the records.
 	Notes []Skip
+	// Backdated marks the records this call backdated, which [resume.Apply] times
+	// from the store: the first record of a pod, a node or a container and of
+	// its part_of edge, and every scheduled_on edge begun at a time before its
+	// observation, directly or when its node arrived. Only an Observe that carries
+	// a Through is marked. The handles are for [Translator.Resumed].
+	Backdated []resume.Mark
 }
 
 // Skip is a count of things set aside for one reason.
@@ -356,6 +377,11 @@ type podEdge struct {
 type ctrState struct {
 	id string
 	fp identity.Fingerprint
+	// last and lastBasis are the time and basis of the container's latest record.
+	// They follow its pod's, except where a resume raised them (see
+	// [Translator.Resumed]).
+	last      time.Time
+	lastBasis store.EventTimeBasis
 	// since and sinceBasis are the time and basis of the latest Observe of the
 	// container's part_of edge.
 	since      time.Time
@@ -455,9 +481,24 @@ type batch struct {
 	pend  []PendingEdge
 	skips map[string]int
 	notes map[string]int
+	marks []resume.Mark
 	// observed is the observed time of the record being translated, which an
 	// Observe timed before it takes as its Through.
 	observed time.Time
+}
+
+// mark marks the record just emitted as backdated, with the handle h, if it is an
+// Observe with a Through.
+func (b *batch) mark(h *handle) {
+	i := len(b.recs) - 1
+	if i < 0 || b.recs[i].Kind != lifecycle.Observe || !b.recs[i].Through.After(b.recs[i].EventTime) {
+		return
+	}
+	var hv any
+	if h != nil {
+		hv = h
+	}
+	b.marks = append(b.marks, resume.Mark{Index: i, Handle: hv, ObservedBasis: store.BasisObserved})
 }
 
 func (b *batch) note(reason string) {
@@ -475,7 +516,7 @@ func (b *batch) skip(reason string) {
 }
 
 func (b *batch) result() Result {
-	r := Result{Records: b.recs, Pending: b.pend}
+	r := Result{Records: b.recs, Pending: b.pend, Backdated: b.marks}
 	for _, reason := range slices.Sorted(maps.Keys(b.skips)) {
 		r.Skipped = append(r.Skipped, Skip{Reason: reason, Count: b.skips[reason]})
 	}
@@ -757,6 +798,9 @@ func (t *Translator) pod(b *batch, watchType string, o object, ns string, observ
 	n := len(b.recs)
 	if changed || t.ttl > 0 {
 		t.observeEntity(b, fp, at, basis, t.ttl, v.payload, b.observed)
+		if first {
+			b.mark(&handle{pod: st})
+		}
 	}
 	t.reconcileContainers(b, st, v, at, basis)
 	t.reconcileEdge(b, st, v, c, at, basis)
@@ -817,8 +861,7 @@ func (t *Translator) reconcileContainers(b *batch, st *podState, v podView, at t
 		if w, ok := want[name]; ok && w.id == old.id {
 			continue
 		}
-		t.deleteEdge(b, old.fp, st.fp, catalog.PartOf, at, basis)
-		t.deleteEntity(b, old.fp, at, basis)
+		t.deleteContainer(b, st, old, at, basis)
 		delete(st.ctrs, name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
@@ -826,7 +869,8 @@ func (t *Translator) reconcileContainers(b *batch, st *podState, v podView, at t
 		payload := canonical(object{"name": name, "pod_uid": v.UID})
 		if old, ok := st.ctrs[name]; ok {
 			if t.ttl > 0 {
-				t.observeEntity(b, w.fp, at, basis, t.ttl, payload, b.observed)
+				old.last, old.lastBasis = b.raise(at, basis, old.last, old.lastBasis)
+				t.observeEntity(b, w.fp, old.last, old.lastBasis, t.ttl, payload, b.observed)
 				old.since, old.sinceBasis = b.raise(at, basis, old.since, old.sinceBasis)
 				t.observeEdge(b, w.fp, st.fp, catalog.PartOf, old.since, old.sinceBasis, t.ttl, []byte("{}"), b.observed)
 				st.ctrs[name] = old
@@ -834,10 +878,22 @@ func (t *Translator) reconcileContainers(b *batch, st *podState, v podView, at t
 			continue
 		}
 		t.observeEntity(b, w.fp, at, basis, t.ttl, payload, b.observed)
+		b.mark(&handle{pod: st, ctr: name, peer: w.fp, entity: true})
 		t.observeEdge(b, w.fp, st.fp, catalog.PartOf, at, basis, t.ttl, []byte("{}"), b.observed)
+		b.mark(&handle{pod: st, ctr: name, peer: w.fp})
+		w.last, w.lastBasis = at, basis
 		w.since, w.sinceBasis = at, basis
 		st.ctrs[name] = w
 	}
+}
+
+// deleteContainer ends a container of the pod and its part_of edge at the time
+// given, or at the latest time either was asserted at if that is later.
+func (t *Translator) deleteContainer(b *batch, st *podState, c ctrState, at time.Time, basis store.EventTimeBasis) {
+	eAt, eBasis := b.raise(at, basis, c.since, c.sinceBasis)
+	t.deleteEdge(b, c.fp, st.fp, catalog.PartOf, eAt, eBasis)
+	cAt, cBasis := b.raise(at, basis, c.last, c.lastBasis)
+	t.deleteEntity(b, c.fp, cAt, cBasis)
 }
 
 // edgePayload says what the edge was resolved from: the raw node name and the
@@ -919,6 +975,7 @@ func (t *Translator) reconcileEdge(b *batch, st *podState, v podView, c clock, a
 func (t *Translator) beginEdge(b *batch, st *podState, sp *nodeSpan, name string, at time.Time, basis store.EventTimeBasis, observed time.Time) {
 	payload := edgePayload(name, sp)
 	t.observeEdge(b, st.fp, sp.fp, catalog.ScheduledOn, at, basis, t.ttl, payload, observed)
+	b.mark(&handle{pod: st, peer: sp.fp})
 	st.edge.node, st.edge.payload = sp.fp, payload
 	st.edge.since, st.edge.sinceBasis = at, basis
 }
@@ -980,9 +1037,7 @@ func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, 
 	}
 	at, basis := b.raise(observed, store.BasisObserved, st.last, st.lastBasis)
 	for _, name := range slices.Sorted(maps.Keys(st.ctrs)) {
-		c := st.ctrs[name]
-		t.deleteEdge(b, c.fp, st.fp, catalog.PartOf, at, basis)
-		t.deleteEntity(b, c.fp, at, basis)
+		t.deleteContainer(b, st, st.ctrs[name], at, basis)
 	}
 	t.dropEdge(b, st, at, basis, SkipPendingDroppedDeleted)
 	t.deleteEntity(b, fp, at, basis)
@@ -1052,6 +1107,9 @@ func (t *Translator) node(b *batch, watchType string, o object, observed time.Ti
 	asserted := at // the latest instant this Observe asserts the node
 	if changed || t.ttl > 0 {
 		t.observeEntity(b, fp, at, basis, t.ttl, v.payload, b.observed)
+		if first {
+			b.mark(&handle{node: st})
+		}
 		emitted = true
 		if at.Before(observed) {
 			asserted = observed

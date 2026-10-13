@@ -70,13 +70,14 @@ func replayRuns(ctx context.Context, paths []string, o replayOptions) (_ *replay
 	}
 	ma, pa := rep.storesA.asStores()
 	mb, pb := rep.storesB.asStores()
-	if rep.A, err = newPass("A", false, ma, pa); err != nil {
+	if rep.A, err = newPass("A", false, ma, pa, rep.storesA.lookup); err != nil {
 		return nil, err
 	}
-	if rep.B, err = newPass("B", true, mb, pb); err != nil {
+	if rep.B, err = newPass("B", true, mb, pb, rep.storesB.lookup); err != nil {
 		return nil, err
 	}
 	rep.A.flushTimes, rep.B.flushTimes = o.FlushTimes, o.FlushTimes
+	rep.A.rec, rep.B.rec = rep.storesA.rec, rep.storesB.rec
 	for i, path := range paths {
 		rf, err := scanRun(path, i+1)
 		if err != nil {

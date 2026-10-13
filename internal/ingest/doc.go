@@ -22,6 +22,11 @@
 //     events and list items for pods and nodes.
 //   - k8scluster translates the entity events of the Kubernetes cluster receiver
 //     into records of nodes, pods and containers and their edges.
+//   - resume times the records a translator backdates (the first sighting of a
+//     subject after the translator lost its state) from the producer's last
+//     assertion the store holds, so that a restart or a reset does not re-assert
+//     history from each object's creation. The sequencer calls it before its
+//     checks and the coalescer.
 //   - sequencer is the sink of the receiver: one goroutine that owns the
 //     translators, the coalescer and the detector, and commits the records of
 //     the requests waiting, in arrival order, in one synced write before it

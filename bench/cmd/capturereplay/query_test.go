@@ -7,6 +7,7 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
@@ -40,12 +41,23 @@ func twoMemStores(t *testing.T) (*memstore.Store, *memstore.Store) {
 	return a, b
 }
 
+// memLookup is the opener of a memstore's lookup, for a pass over two memstores.
+func memLookup(m *memstore.Store) func() (resume.Lookup, error) {
+	return func() (resume.Lookup, error) {
+		lk, err := m.NewLookup()
+		if err != nil {
+			return nil, err
+		}
+		return lk, nil
+	}
+}
+
 // If one store is wrong the self-check sees it, and if both answer alike it does not.
 func TestStoresAreComparedWithEachOther(t *testing.T) {
 	pods, nodes := loadPods(t), loadNodes(t)
 	mem, other := twoMemStores(t)
 
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +97,7 @@ func TestStoresAreComparedWithEachOther(t *testing.T) {
 func TestStoresAreComparedOnNodesToo(t *testing.T) {
 	nodes := loadNodes(t)
 	mem, other := twoMemStores(t)
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +155,7 @@ func TestEdgeCodes(t *testing.T) {
 func TestPodEdgesIncludeTheContainersThatReachIt(t *testing.T) {
 	pods, nodes := loadPods(t), loadNodes(t)
 	mem, other := twoMemStores(t)
-	p, err := newPass("A", false, mem, other)
+	p, err := newPass("A", false, mem, other, memLookup(other))
 	if err != nil {
 		t.Fatal(err)
 	}

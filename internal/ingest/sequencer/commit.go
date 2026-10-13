@@ -13,23 +13,48 @@ import (
 )
 
 // commit takes claimed requests through one synced commit and answers each of
-// them: it reads the horizons, translates and checks each request in arrival
-// order, coalesces what passed, writes it once, and decides the outcome from the
-// error. horizonRetry allows the one rerun a refusal for the horizon gets, and
-// split the one-by-one writing that a refusal for any other validation error
-// gets.
+// them: it reads the horizons, opens the group's lookup, translates, resumes and
+// checks each request in arrival order, closes the lookup, coalesces what passed,
+// writes it once, and decides the outcome from the error. horizonRetry allows the
+// one rerun a refusal for the horizon gets, and split the one-by-one writing that
+// a refusal for any other validation error gets. A resume step that aborts is a
+// failed write: nothing is written, and every request is answered 503.
 func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, split bool) {
 	now := s.now()
 	s.readHorizons()
-	ws := s.translateAll(reqs, now)
+	lk, err := s.openLookup()
+	var ws []*work
+	if err == nil {
+		ws, err = s.translateAll(ctx, reqs, now, lk)
+		if lk != nil {
+			if cerr := lk.Close(); cerr != nil {
+				s.log.Warn("sequencer: closing the resume lookup", "error", cerr)
+			}
+		}
+	}
 	for _, n := range s.det.Notes(now) {
 		s.log.Warn("sequencer: detector note", "message", n.Message)
+	}
+	if err != nil {
+		// The resume step aborted: the store or the lookup is closed, or the
+		// sequencer's context is done. The group is failed as a write that did not
+		// land is, and counts nothing.
+		for len(ws) < len(reqs) {
+			ws = append(ws, &work{r: reqs[len(ws)]})
+		}
+		s.observeClocks(nil, ws)
+		s.reset("the resume step could not read the store", err)
+		s.answer(ws, writeFailed(err))
+		return
 	}
 	var batch []store.Record
 	for _, w := range ws {
 		batch = w.coalesce(s.co, batch)
 	}
 	last, err := s.write(ctx, batch)
+	if err == nil {
+		s.resumed(ws, now)
+	}
 	switch {
 	case err == nil:
 		s.observeClocks(batch, ws)
@@ -64,6 +89,7 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 		if len(batch) > 0 && s.cfg.Store.LastSeq() >= last {
 			s.log.Warn("sequencer: the write returned an error but its batch was stored", "error", err, "last_seq", last)
 			s.observeClocks(batch, ws)
+			s.resumed(ws, now)
 			s.answer(ws, nil)
 			return
 		}
@@ -122,6 +148,11 @@ func (s *Sequencer) tick(ctx context.Context) {
 	s.det.Prune(now)
 	idle := idleMultiple * max(s.cfg.PullInterval, s.cfg.CollectionInterval)
 	for name, c := range s.clusters {
+		if s.cfg.ClusterNameSet && name == s.cfg.ClusterName {
+			// The configured name's translators are kept however long it is idle:
+			// see "Cluster names" in the package documentation.
+			continue
+		}
 		if now.Sub(c.lastUsed) > idle {
 			delete(s.clusters, name)
 			s.log.Info("sequencer: freed the slot of an idle cluster name", "cluster", name, "idle_since", c.lastUsed)

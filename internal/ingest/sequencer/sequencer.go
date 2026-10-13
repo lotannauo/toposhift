@@ -14,6 +14,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/ingest/detector"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -33,9 +34,14 @@ const (
 // k8s.cluster.name when no cluster name is configured.
 const DefaultClusterName = "default"
 
-// idleMultiple is how many of the longer of the two intervals a cluster name may go
-// without a request before [Sequencer] frees its slot (an estimate).
+// idleMultiple is how many of the longer of the two intervals a cluster name other
+// than the configured one may go without a request before [Sequencer] frees its
+// slot (an estimate).
 const idleMultiple = 3
+
+// resumeLogEvery is how often, at most, the sequencer logs each kind of resume
+// warning (on the ingest clock).
+const resumeLogEvery = time.Minute
 
 // Writer is what the sequencer needs of a store: the writing, the last sequence
 // number, and the horizons. Both store packages have it.
@@ -83,6 +89,11 @@ type Config struct {
 	// Retain configures the retention check; nil never retains. See "Retention"
 	// in the package documentation.
 	Retain *RetainConfig
+	// Lookup opens the lookup of the resume step, once per group: the store's own,
+	// such as a wrapper of (*pebblestore.Store).NewLookup. Nil turns resume off,
+	// and then a record a translator backdates is written as the translator timed
+	// it. See "Resume" in the package documentation.
+	Lookup func() (resume.Lookup, error)
 }
 
 // Sequencer takes the requests of the receiver, translates and coalesces their
@@ -113,6 +124,14 @@ type Sequencer struct {
 	last     time.Time  // the latest ingest instant used
 	ret      *retention // nil: never retains
 	hooks    hooks
+	// resumeWarned is the ingest instant each kind of resume warning was last
+	// logged at.
+	resumeWarned map[string]time.Time
+
+	// resumeMu guards resumeStats, the resume counts of every group answered
+	// without error, which ResumeStats reads from any goroutine.
+	resumeMu    sync.Mutex
+	resumeStats resume.Stats
 }
 
 // layers is the number of layers, L0 to L3.
@@ -233,6 +252,8 @@ func New(c Config) (*Sequencer, error) {
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),
 		clusters: make(map[string]*cluster),
+
+		resumeWarned: make(map[string]time.Time),
 	}
 	if c.Retain != nil {
 		r, err := newRetention(*c.Retain)
@@ -558,4 +579,13 @@ func (s *Sequencer) claim(r *request) bool {
 	}
 	r.received = s.now()
 	return true
+}
+
+// ResumeStats returns the resume step's counts, over every group answered without
+// error since New, and whether the step is on ([Config.Lookup] set). It may be
+// called from any goroutine.
+func (s *Sequencer) ResumeStats() (resume.Stats, bool) {
+	s.resumeMu.Lock()
+	defer s.resumeMu.Unlock()
+	return s.resumeStats, s.cfg.Lookup != nil
 }

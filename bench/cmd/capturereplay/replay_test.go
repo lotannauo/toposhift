@@ -9,6 +9,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
+	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -147,31 +148,62 @@ func TestPassBRestartsTheTranslatorsAndTheCoalescer(t *testing.T) {
 		t.Fatalf("restarts: pass A %d, pass B %d; want 0 and 1", rep.A.Restarts, rep.B.Restarts)
 	}
 	// Run 2: pass A's translators and coalescer know both pods and absorb the refresh; pass
-	// B's know nothing: p1 starts a run, and p2 is first seen again, so its record is
-	// timed at its creation and carries a Through.
+	// B's know nothing: p1 starts a run, and p2 is first seen again. Its record, timed at
+	// its creation by the translator, is resumed from the store: raised to the last instant
+	// the store holds for it (the refresh of minute 2, written at the restart), through the
+	// time it was observed.
 	if a, b := rep.A.Runs[1].Written, rep.B.Runs[1].Written; a != 0 || b != 2 {
 		t.Errorf("run 2 wrote %d records in pass A and %d in pass B; want 0 and 2", a, b)
 	}
-	// p2's records timed at its creation: the first sighting of each of its runs.
+	if r := rep.B.Runs[1].Resume; r.Raised != 1 || r.Unknown != 0 || r.Changed != 0 || r.New != 0 {
+		t.Errorf("pass B's resume in run 2: %+v; want p2 raised", r)
+	}
+	if r := rep.A.Runs[1].Resume; r != (resume.Stats{}) {
+		t.Errorf("pass A's resume in run 2: %+v; want nothing marked", r)
+	}
+	// p2's records timed at its creation: the first sighting of its first run only.
 	fp, err := fingerprintOf(rep.A.resolver, catalog.K8sPod, catalog.K8sPodUID, "p2")
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstSightings := func(p *pass) int {
+	window := func(p *pass) []store.Record {
 		recs, err := p.mem.EntityWindow(context.Background(), fp, oldCreated.Add(-time.Minute), min(10), store.Current(catalog.L2))
 		if err != nil {
 			t.Fatal(err)
 		}
+		return recs
+	}
+	firstSightings := func(p *pass) int {
 		n := 0
-		for _, r := range recs {
+		for _, r := range window(p) {
 			if r.EventTime.Equal(oldCreated) {
 				n++
 			}
 		}
 		return n
 	}
-	if a, b := firstSightings(rep.A), firstSightings(rep.B); a != 1 || b != 2 {
-		t.Errorf("records of p2 timed at its creation: %d in pass A and %d in pass B; want 1 and 2", a, b)
+	if a, b := firstSightings(rep.A), firstSightings(rep.B); a != 1 || b != 1 {
+		t.Errorf("records of p2 timed at its creation: %d in pass A and %d in pass B; want 1 and 1", a, b)
+	}
+	resumed := 0
+	for _, r := range window(rep.B) {
+		if r.EventTime.Equal(min(2)) && r.Through.Equal(min(3)) && r.EventTimeBasis == store.BasisObserved {
+			resumed++
+		}
+	}
+	if resumed != 1 {
+		t.Errorf("pass B holds %d records of p2 at minute 2 through minute 3; want 1: %+v", resumed, window(rep.B))
+	}
+	// The report has each pass's resume counts and what its Pebble store counted: one
+	// lookup per batch.
+	for _, p := range []*pass{rep.A, rep.B} {
+		counts, st := resumeOf(p)
+		if st.LookupIterators != int64(p.Runs[0].Batches+p.Runs[1].Batches) || st.CheckpointPolicy == "" || (p == rep.B && st.LookupKeysWalkedMax == 0) {
+			t.Errorf("pass %s: store report %+v", p.Name, st)
+		}
+		if p == rep.B && counts["raised"] != 1 {
+			t.Errorf("pass B's resume counts %v", counts)
+		}
 	}
 }
 

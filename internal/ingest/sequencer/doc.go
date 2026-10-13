@@ -20,16 +20,17 @@
 //
 //  1. The horizons of the layers are read and given to the coalescer, which
 //     keeps only their moves forward. A retention can move them at any time.
+//     Then the group's lookup is opened (see "Resume").
 //  2. Each request in turn: the cluster name of each resource is resolved (see
 //     "Cluster names"); its namespace events go through the namespace pass and
 //     the detector (see "The detector"); the rest of its log records are
 //     translated by event name (entity.state and entity.delete to the cluster
 //     receiver's translator, everything else to the objects receiver's), with
-//     the producers k8sobjects/<cluster> and k8scluster/<cluster>; and every
-//     store record is checked.
-//  3. The records that passed are coalesced, in order, numbered contiguously
-//     above the store's last sequence number, and written once, synced, with
-//     the sequencer's own context, never a request's.
+//     the producers k8sobjects/<cluster> and k8scluster/<cluster>; the records
+//     the translators backdated are resumed; and every store record is checked.
+//  3. The lookup is closed. The records that passed are coalesced, in order,
+//     numbered contiguously above the store's last sequence number, and written
+//     once, synced, with the sequencer's own context, never a request's.
 //
 // Each request keeps the ingest instant it was claimed at, and only the cluster
 // receiver's translator takes it, as the time it received the record, so that a
@@ -71,11 +72,14 @@
 // cluster is its k8s.cluster.name (the last attribute of that key with a string
 // value; an empty one is no name), or "default". Clients then choose the names,
 // and [Config.MaxClusters] bounds the translators they can make: a request that
-// brings a name beyond it is refused, saying so. A name's slot is freed at a
+// brings a name beyond it is refused, saying so. Such a name's slot is freed at a
 // flush tick once the name has had no request for three times the longer of the
 // pull and collection intervals (an estimate); its translators are discarded,
-// which costs that name the restart effects below when it returns. The
-// detector's entries are bounded by its own pruning.
+// which costs that name the restart effects below when it returns: reads of the
+// store for its first sightings (see "Resume"), not rewritten history. The slot
+// of the configured cluster name is never freed, however long it is idle: there is
+// only one, and its translators are kept. The detector's entries are bounded by
+// its own pruning.
 //
 // # The detector
 //
@@ -108,6 +112,10 @@
 //     If it did, every request gets 200. If not, every request gets 503 and the
 //     translators and the coalescer are made anew. A closed store answers 503
 //     with Retry-After: 30, and any other error 503 with Retry-After: 1.
+//   - A resume step that could not read the store because it or its lookup is
+//     closed, or because the sequencer's context is done, fails the group in the
+//     same way before anything is written: every request gets 503, the
+//     translators and the coalescer are made anew, and nothing is counted.
 //
 // There is no sentinel for a store that has latched a failure: every write it
 // refuses is answered 503, and it stays so until the process restarts. The
@@ -121,16 +129,19 @@
 //
 // Making the translators and the coalescer anew is what a restart of the
 // process does, and costs what a restart costs; the detector is kept, because
-// its state comes only from sightings. A snapshot and restore is not built: it
-// would be more code for the same outcome. The effects are:
+// its state comes only from sightings. A snapshot and restore of the translators
+// is not built: the store already holds what they would restore, and the resume
+// step reads it (see "Resume"). The effects are:
 //
 //   - the coalescer's gap: the absorbed refreshes of every run are lost, so a
 //     run is stored only through its last extension, and the next refresh
 //     starts a new run (one extra record per run);
-//   - the first record of each UID is asserted again at its creation, with
-//     Through its observation;
+//   - the first record of each UID is a first sighting again, which the
+//     translators time at its creation with Through its observation, and the
+//     resume step times from the store: one read per first sighting;
 //   - the pending scheduled_on edges of both translators are lost, and come
-//     back when the pod is next seen once its node is known (the next pull);
+//     back when the pod is next seen once its node is known (the next pull); an
+//     edge that was never stored keeps its PodScheduled time;
 //   - the kube-system set is forgotten, apart from the UIDs whose events are in
 //     the requests rerun. The delete of a forgotten UID then gives no sighting,
 //     so a refusal it would have ended ends only when the UID lapses (three
@@ -141,6 +152,94 @@
 // the group before it that share those names; the coalescer has seen nothing
 // of the group yet and is kept. Observing their sightings again changes
 // nothing.
+//
+// # Resume
+//
+// A translator that lost its state times the first record of each subject it
+// sees again at the object's creation (an edge at its PodScheduled time), through
+// the time it was observed. Written as is, each such record would be late on
+// every prefix it touches, and would delete checkpoints that were still true, so
+// that historical reads on busy prefixes would cost far more until retention
+// removed them; answers would stay correct. The translators mark those records
+// (see k8sobjects' and k8scluster's Result.Backdated: first sightings, and every
+// edge resolved from a pending state), and the sequencer resumes them with
+// [resume.Apply], per request, after both translation passes and before the
+// checks and the coalescer, one producer at a time. A group opens one lookup,
+// after the horizons are read and before the first request is translated, and
+// closes it before the coalescer: the store's lookup reads a snapshot of the
+// store as the previous commit left it. A rerun of the group (the horizon retry,
+// the one-by-one split, the requests translated again after a panic) reads again
+// from its own lookup; the reads are the same, since nothing was written.
+//
+// For each marked record, the producer's last stored assertion of the subject,
+// matched by exact identity, decides (start is the record's event time as the
+// translator gave it, obs its Through, the time it was observed, and last the
+// stored record's Through if set, else its event time):
+//
+//	nothing stored                          unchanged (a genuine first sighting)          resume_new
+//	a Delete at or after start              dropped                                       resume_dropped
+//	a Delete before start                   unchanged (a new life)                        resume_new
+//	an Observe with last at or before start unchanged                                     resume_new
+//	an Observe, min(last, obs) below the    obs, no Through                               resume_unknown{below_horizon}
+//	  layer's horizon
+//	an Observe, description unchanged       raised to min(last, obs), its own payload,    resume_raised
+//	                                        its Through kept while after the new time
+//	an Observe, description changed         obs, no Through                               resume_changed (and
+//	                                                                                      resume_changed_gap if obs
+//	                                                                                      is past last plus the TTL)
+//	the walk reached its bound              obs, no Through                               resume_unknown{exhausted}
+//	only a baseline entry is left           obs, no Through                               resume_unknown{baseline_only}
+//	the store could not be read             obs, no Through                               resume_unknown{error}
+//	the store or lookup closed, or the      the group fails, 503, nothing counted         (none)
+//	  sequencer's context done
+//
+// A raised record takes the stored record's basis, or the observed basis when the
+// time came from a Through or was held at obs. The description is compared on
+// what describes the subject (each translator's Comparable), never on what a
+// translator derives from its own state: a scheduled_on edge is compared on its
+// node_name alone, not on the resolution it carries. So when a node is first seen
+// again after a reset without a usable creationTimestamp, its edges are still
+// raised, and each writes its own new payload, whose node_interval_start differs
+// from the stored one: a derived field of history changes. That is harmless; the
+// answers do not read it.
+//
+// Every later record of the same producer and subject in the request that is
+// timed before a resumed record is raised to its time and basis, as the
+// translator's own clamp would have done (resume_mirror_raised), and the
+// translator raises its own state to it, never lowering it, so that later
+// requests are not timed before it either. The raised event time is derived from
+// stored facts and is documented so; the description and the Through are the
+// producer's. No bridge record is written.
+//
+// [Sequencer.ResumeStats] has the counts of the groups answered without error;
+// serve reports them as the sequencer.resume_* counters of GET /status. The
+// sequencer logs, at most once a minute each, a walk that reached its bound and a
+// changed description after a silence longer than the TTL (warnings), and a
+// store that could not be read (an error), each naming an example subject. With
+// no [Config.Lookup] the step is off, and the records are written as the
+// translators timed them; serve logs that as an error and its status says
+// "disabled".
+//
+// Bridging: an unchanged object is bridged by its Through on the reset path,
+// from its stored last assertion to its observation, even across a silence longer
+// than its TTL; on the normal path, after an outage of the collector longer than
+// the TTL, the reference lapses until the next record. That difference is benign,
+// and rests on UID continuity: a Kubernetes object with a given UID exists
+// continuously from its creation to its deletion.
+//
+// What remains:
+//
+//   - a renamed producer (a new cluster name) finds nothing to resume from, and
+//     its first records keep their source timing once;
+//   - an edge never stored and still pending across a reset keeps its
+//     PodScheduled time, one late record for that pod;
+//   - an unknown answer (the walk bound, a baseline entry, a read error) takes
+//     the observed time, counted, and never backdates a possibly changed
+//     description;
+//   - a description changed during a silence longer than the TTL leaves the
+//     producer's reference absent from its stored lapse until the observed time;
+//     only after data loss, or an outage of the collector itself, where it is
+//     what the normal path does without a reset. It is counted.
 //
 // # Panics elsewhere
 //

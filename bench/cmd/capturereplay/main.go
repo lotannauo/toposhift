@@ -9,13 +9,18 @@
 // collector was down) and sizes.txt. The command never writes under it.
 //
 // Each record of a run goes, in the order of the file, to the cluster translator if it is
-// an entity event and to the objects translator if not; their records go through one
+// an entity event and to the objects translator if not; the records each translator
+// backdated go through the production resume step (internal/ingest/resume, as the
+// sequencer calls it, one lookup of the Pebble store per line), all of them through one
 // coalescer, and what is left is written, a batch for each line, to a memory store and a
 // Pebble store. This is done twice: in pass A one translator pair and one coalescer see
 // all five runs (toposhift kept running while the collector restarted), and in pass B a
 // new pair and a new coalescer start at each run boundary (toposhift restarted with the
-// collector). Then every pod and node UID of the truth is asked about at every sample
-// time. A pair within the margin of a UID's first or last presence is not judged.
+// collector), so that pass B's first sightings are resumed from what the store holds.
+// Then every pod and node UID of the truth is asked about at every sample time. A pair
+// within the margin of a UID's first or last presence is not judged. The report gives
+// each pass's resume counts and its Pebble store's checkpoints written and invalidated,
+// under the store's default checkpoint policy.
 //
 // The report is printed, and written to result.json and report.txt in the -out directory,
 // which is never inside a git work tree. Its numbers are local and informational: they
