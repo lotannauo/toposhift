@@ -192,6 +192,11 @@ type Store struct {
 	scanHook    func(at scanPoint, hops int, last []byte)
 	// iterators counts the iterators the Write in progress opens for its state.
 	iterators int64
+	// onInvalidate is the hook of [Instrument.OnInvalidate], nil unless a test sets
+	// it, and invalidated what the Write in progress has noted for it, which is built
+	// only while the hook is set.
+	onInvalidate func(prefix []byte, n int)
+	invalidated  []invalidation
 	// last is how the last Retain spent its time (see [Instrument.LastRetain]).
 	last retainPhases
 	// pass is the background pass that has not ended, if there is one (see

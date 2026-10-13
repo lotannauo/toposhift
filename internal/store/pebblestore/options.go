@@ -46,6 +46,9 @@ import (
 //     read also samples Pebble's iterator statistics under "read.<op>.<name>" (see
 //     [pebblekv.RecordIter]); those are in one unit for every layout, which
 //     "read.records_stepped" is not.
+//   - lookups (see [Lookup]): "lookup.iterators" (one per [Store.NewLookup]),
+//     "lookup.keys_walked" (a sample, the keys one [Lookup.Last] walked) and
+//     "lookup.exhausted" (the calls that reached the bound).
 //   - retention: "retain.prefixes_visited", "retain.prefixes_replayed",
 //     "retain.records_replayed",
 //     "retain.baselines_written", "retain.range_deletes", "retain.seeks",

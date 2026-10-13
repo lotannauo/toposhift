@@ -170,6 +170,8 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		s.states.unpinAll() // the states this Write touched were kept from eviction until now
 	}()
 	s.iterators = 0
+	clear(s.invalidated)
+	s.invalidated = s.invalidated[:0]
 	// Nothing is remembered, and nothing can need invalidating, in a database that
 	// has no checkpoints and is not writing any.
 	track := s.ckpt.On || s.anyCkpt
@@ -231,6 +233,7 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		return s.uncertainCommit("Write", err)
 	}
 	s.lastSeq.Store(prev)
+	s.reportInvalidated()
 	s.rec.Count("write.records", int64(len(puts)))
 	// The second commit: the checkpoints this write made due. It finishes before
 	// Write returns, and its failure is counted, never returned.

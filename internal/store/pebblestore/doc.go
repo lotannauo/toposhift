@@ -40,6 +40,24 @@
 // losing one is harmless, and a stale one is a wrong answer, so a record that makes
 // one untrue deletes it in the same commit.
 //
+// # Finding a producer's last assertion
+//
+// [Store.NewLookup] opens a [Lookup], one iterator for a group of calls of
+// [Lookup.Last], which finds the newest record of one reference (a subject and a
+// producer, exactly) outside [store.Store]. It reads one side only: the forward
+// prefix of an edge's source, or the entity's own prefix, never the target's
+// reverse prefix. It walks from the newest key, steps over checkpoints, which hold
+// no payload, and stops at the first record of the reference, taking, of that
+// instant's records, the latest [store.LastOf] and then the highest Seq; at the
+// baseline a retention left, where the reference's entry gives its times with no
+// payload ([store.LookupBaselineOnly]) or its absence ([store.LookupNone]); or at
+// [LookupWalkBound] keys ([store.LookupExhausted]). It sees the database as it was
+// when the Lookup was opened, and is closed before the group's write. Its counters
+// are in [Recorder]. In a Background store whose pass has not reached the prefix,
+// the records below the horizon are still there: the walk answers for the first of
+// the reference's as the baseline the pass will write would, so the answer does not
+// depend on how far the pass is.
+//
 // # The writer's memory
 //
 // The writer keeps, for the prefixes it touched most recently and within

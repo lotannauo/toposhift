@@ -330,3 +330,56 @@ func (i *Instrument) WaitRetained(ctx context.Context) error {
 		}
 	}
 }
+
+// invalidation is the checkpoints of one prefix that the Write in progress has
+// deleted, for [Instrument.OnInvalidate].
+type invalidation struct {
+	prefix []byte
+	n      int
+}
+
+// OnInvalidate sets fn to be called after each Write's records are committed, once
+// for every prefix in which the Write's records deleted checkpoints (a record
+// timed before a checkpoint makes it untrue), with the prefix and how many were
+// deleted from it by the whole Write. A Write that deletes none calls nothing, and
+// the counts of one Write add up to its change in "checkpoint.invalidated". Nil
+// removes the hook. For tests and measurements.
+//
+// fn is called with the store's lock held, so it must return quickly and must not
+// call the store. The prefix is the store's own: valid during the call, copy it to
+// keep it. While no hook is set a Write builds no list and allocates nothing for
+// this.
+func (i *Instrument) OnInvalidate(fn func(prefix []byte, n int)) {
+	i.s.mu.Lock()
+	defer i.s.mu.Unlock()
+	i.s.onInvalidate = fn
+	i.s.invalidated = nil
+}
+
+// noteInvalidated records that n checkpoints of prefix were deleted by the Write
+// in progress, if a hook is set to be told. The caller holds s.mu.
+func (s *Store) noteInvalidated(prefix []byte, n int) {
+	if s.onInvalidate == nil {
+		return
+	}
+	for i := range s.invalidated {
+		if bytes.Equal(s.invalidated[i].prefix, prefix) {
+			s.invalidated[i].n += n
+			return
+		}
+	}
+	s.invalidated = append(s.invalidated, invalidation{prefix, n})
+}
+
+// reportInvalidated tells the hook what the Write that has just committed noted,
+// and forgets it. The caller holds s.mu.
+func (s *Store) reportInvalidated() {
+	if s.onInvalidate == nil {
+		return
+	}
+	for _, x := range s.invalidated {
+		s.onInvalidate(x.prefix, x.n)
+	}
+	clear(s.invalidated)
+	s.invalidated = s.invalidated[:0]
+}

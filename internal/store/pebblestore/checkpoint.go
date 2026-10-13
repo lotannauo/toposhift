@@ -632,6 +632,7 @@ func (s *Store) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns i
 		}
 	}
 	s.rec.Count("checkpoint.invalidated", int64(len(st.ckpts)-i))
+	s.noteInvalidated(prefix, len(st.ckpts)-i)
 	st.ckpts = st.ckpts[:i]
 	return nil
 }
