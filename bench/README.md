@@ -589,9 +589,10 @@ The ladder, step by step:
    `expected_sha`.
 2. **Smoke.** One dispatch from the tag with the command of step 3 (with `-f expected_sha=<commit>`) but
    `-f candidates=Lroot/off,Lroot/k64a2l1ns,Lroot/k64a2l5m -f reps=1` (6 jobs), at `retain_flush_dels=32768`, to prove
-   the wiring: under the incomplete-builds text a failed build fails its arm. The tag comes before the verdict of Rule L
-   (the registered lag rule: whether the default checkpoint lag becomes 5 minutes), so the smoke covers either
-   candidate. It is logged as "smoke, values seen", is never judged, and is excluded from every pool by its run ID.
+   the wiring: under the incomplete-builds text a failed build fails its arm. The tag came before the verdict of Rule L
+   (the registered lag rule), so the smoke covers both lag candidates. Rule L passed: the default checkpoint lag is
+   5 minutes, and the candidate of the dispatches equals the shipped default. The smoke is logged as "smoke, values
+   seen", is never judged, and is excluded from every pool by its run ID.
 3. **Dispatch the rung 32,768**, with the pre-registered values:
 
    ```sh
@@ -603,7 +604,7 @@ The ladder, step by step:
      -f expected_sha=<commit>
    ```
 
-   `<candidate>` is `Lroot/k64a2l5m` if Rule L passed, else `Lroot/k64a2l1ns`. Without `metrics_every`, Q5 has no
+   `<candidate>` is `Lroot/k64a2l5m`, which is the default lag since Rule L passed. Without `metrics_every`, Q5 has no
    live heap samples and the level 0 peak of the judged part cannot be read, so the workflow refuses a background
    dispatch with none. The pace (4,500 records/s) follows from the retention mode.
 4. **Judge it offline** with `spikebench` built from `<commit>`: `spikebench storegate -commit <commit>` over the
@@ -623,9 +624,16 @@ The ladder, step by step:
 > (c) any judged pass other than the last was overlapped by the next retention: its rewrite was replaced (the report shows "rewrite at least"), or its settle did not end by itself before the next publication (in the gate trace, its settle ends at the next publication and did not reach its deadline; in the report, its publication + rewrite + settle equals the next publication to within 2 ms).
 > The criterion "the settles' total time exceeds 25% of the paced writing time" is withdrawn: a settle is capped at δ and there is one pass per stream day, so at δ = 120 s and T ≈ 555 s the share cannot exceed about 22%, which also caps the share of paced batches a settle removes from Q1 and Q2. T/2 leaves a runner about twice as slow as the local machine before its passes outgrow the stream day. Each judged pass's busy share except the last, (rewrite + settle) / time to the next publication, is reported for information and is not a threshold. Separately, if the unpaced part exceeds 1.5 h locally, this is reported as a coarse alarm and does not by itself block the dispatch; the dispatch condition decides. Every quiet local 30-day build run under this rules version is read for these thresholds, and any one that trips them reopens; a build voided by the pre-registered definition of quiet is recorded with the reason and not read. Logged: written after the void local run of 2026-10-11/12, whose values were seen.
 
-Quiet, as pre-registered: the build runs at normal priority on AC power, with nothing else scheduled. The 5-minute
-load average is sampled once a minute through the whole build, unpaced and paced parts alike, for both the local
-30-day and the local 7-day build; a build is void if any sample exceeds 3. A void run is recorded and not read.
+Quiet, as registered: the local 30-day and 7-day builds run at normal priority on AC power, with nothing else of ours
+running. A sampler records the foreign CPU once a minute through the whole build, unpaced and paced parts alike: the
+host's busy CPU (the `CPU usage` line of `top` times the 10 cores), minus the CPU of the build's own process tree,
+minus kernel_task's. Before each build, once nothing of ours has run for 5 minutes, it records 10 samples with
+nothing of ours running; F0 is their median, and the limit is L = F0 + 1.0 core. A build is not started if
+F0 + 1.0 + D exceeds 9 cores, where D is the 95th percentile of the build tree's CPU over the unpaced part of the
+smoke build that checks this rule. A build is void if, from its fifth sample to its end, the mean of the last five
+foreign-CPU samples exceeds L, or two samples are received more than 3 minutes apart. A void build is stopped,
+recorded with its samples and not read. A smoke build over its limit gets one more smoke after a fix, and then the
+runs stop.
 
 **Dispatch condition for the 30-day arm.**
 
