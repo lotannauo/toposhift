@@ -67,9 +67,9 @@ To keep more, raise `queue_size`. The disk it needs is up to `queue_size` times 
 
 ## What a backlog does to toposhift
 
-After an outage the collector sends the backlog it held. Those records are late: each carries an event time earlier than records toposhift already has, and toposhift diffs a late record against the record just before it in event time and deletes the checkpoints newer than it, since they are no longer true. Checkpoints are derived, so no answer is wrong, but the ones deleted are not put back at once. Until the next ones are due, reads over the replayed interval replay more events than the usual bound, in the worst case about twice as many on a hot prefix. After a long outage a single gap between checkpoints might cover the whole outage (inferred, not measured). The holes are removed only when retention removes that stretch of history; `serve` does not retain yet.
+After an outage the collector sends the backlog it held. Those records are late: each carries an event time earlier than records toposhift already has, and toposhift diffs a late record against the record just before it in event time and deletes the checkpoints newer than it, since they are no longer true. Checkpoints are derived, so no answer is wrong, but the ones deleted are not put back at once. Until the next ones are due, reads over the replayed interval replay more events than the usual bound, in the worst case about twice as many on a hot prefix. After a long outage a single gap between checkpoints might cover the whole outage (inferred, not measured). The holes are removed only when retention removes that stretch of history; `serve` retains by default (`--retain off` turns it off), and it keeps 30 days of pods and nodes and 90 days of hosts (up to a day more).
 
-The persistent queue is what keeps the backlog through an outage and replays it, so this follows from the settings above. Re-placing the deleted checkpoints is planned work in toposhift (not in this directory).
+The persistent queue is what keeps the backlog through an outage and replays it, so this follows from the settings above. toposhift does not put the deleted checkpoints back, and no setting in this directory changes that.
 
 ## Checking the file
 

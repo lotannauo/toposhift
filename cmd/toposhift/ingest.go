@@ -449,7 +449,8 @@ Retention
   --retain on (the default, or $TOPOSHIFT_RETAIN) discards old history once a
   day, in the background: L2 (pods, nodes) keeps 30 days, L1 (hosts) 90 days,
   and L0 is kept. A retention runs once a day, so the store holds up to a day
-  more: L2 up to 31 days, L1 up to 91. The L1 default is provisional.
+  more: L2 up to 31 days, L1 up to 91. The L1 default passed its
+  growth check, a bench run at 20 hosts; none at full size has been run.
   --retain off asks for no retention, and nothing more is discarded, though a
   pass an earlier boot started still completes below the horizon it already
   published. Any other value is refused.
