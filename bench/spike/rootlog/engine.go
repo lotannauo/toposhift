@@ -35,6 +35,9 @@ type Options struct {
 	// Observer, if not nil, is told when each retention of a Background engine
 	// reaches the points that bound its phases (see [pebblestore.RetainObserver]).
 	Observer pebblestore.RetainObserver
+	// RetainFlushDels is the store's [pebblestore.Options.RetainFlushDels]: the count
+	// of unflushed range deletions at which a pass flushes, 0 for the store's default.
+	RetainFlushDels int
 }
 
 // Engine is layout L through the root module's store. It implements
@@ -71,6 +74,8 @@ func Open(dir string, opts Options) (*Engine, error) {
 		Checkpoints: &ckpt,
 		Retention:   opts.Retention,
 		Observer:    opts.Observer,
+
+		RetainFlushDels: opts.RetainFlushDels,
 	}
 	if opts.Recorder != nil { // a nil engine.Recorder must stay a nil recorder, not a typed one
 		so.Recorder = opts.Recorder
@@ -235,6 +240,11 @@ func (e *Engine) ColdStart() { e.kv.ColdStart() }
 // Canonicalize implements [engine.Canonicalizer]. The store's own sequence number,
 // horizons and the rest of its state are keys, rewritten with the others.
 func (e *Engine) Canonicalize(ctx context.Context) error { return e.kv.Canonicalize(ctx) }
+
+// WriteStalls is how many times since the database was opened Pebble began to delay
+// writes: one counter, which a build reads while it writes, apart from the statistics
+// it takes once the database is at rest.
+func (e *Engine) WriteStalls() int64 { return e.kv.WriteStalls() }
 
 // Stats implements [engine.Statser].
 func (e *Engine) Stats() map[string]int64 { return e.kv.Snapshot().Flat() }

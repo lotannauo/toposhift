@@ -269,6 +269,9 @@ func Open(dir string, o Options) (*Store, error) {
 	if o.StateCacheBytes < 0 {
 		return nil, fmt.Errorf("pebblestore: Open: the state cache of %d bytes is negative: %w", o.StateCacheBytes, store.ErrInvalid)
 	}
+	if o.RetainFlushDels < 0 {
+		return nil, fmt.Errorf("pebblestore: Open: the retention flush threshold of %d range deletions is negative: %w", o.RetainFlushDels, store.ErrInvalid)
+	}
 	cacheBytes := o.StateCacheBytes
 	if cacheBytes == 0 {
 		cacheBytes = DefaultStateCacheBytes
@@ -338,11 +341,16 @@ func Open(dir string, o Options) (*Store, error) {
 	if s.l0Sublevels == nil {
 		s.l0Sublevels = kv.L0Sublevels
 	}
+	// The test seam, which may turn the flushes off, wins over the option.
+	flushDels := o.retainFlushDels
+	if flushDels == 0 {
+		flushDels = o.RetainFlushDels
+	}
 	switch {
-	case o.retainFlushDels == 0:
+	case flushDels == 0:
 		s.retainFlushDels = defaultRetainFlushDels
-	case o.retainFlushDels > 0:
-		s.retainFlushDels = int64(o.retainFlushDels)
+	case flushDels > 0:
+		s.retainFlushDels = int64(flushDels)
 	}
 	if s.chunkTime == 0 {
 		s.chunkTime = defaultRetainChunkTime

@@ -192,6 +192,12 @@ type Options struct {
 	// package comment). Zero means [DefaultStateCacheBytes]; Open refuses a negative
 	// value.
 	StateCacheBytes int64
+	// RetainFlushDels is the count of unflushed range deletions at which a pass of a
+	// retention starts a flush (see [DefaultRetainFlushDels]). It is for measurements
+	// that compare thresholds; the product leaves it 0, which means
+	// DefaultRetainFlushDels. Open refuses a negative value, which would turn the
+	// flushes off.
+	RetainFlushDels int
 
 	// retainBatchBytes overrides [defaultRetainBatchBytes] and retainChunkTime
 	// [defaultRetainChunkTime], the two limits of a chunk of a retention.
@@ -212,7 +218,8 @@ type Options struct {
 	beforeRetainChunk func()
 	retainerExited    chan struct{}
 	// retainFlushDels overrides [defaultRetainFlushDels], the count of unflushed
-	// range deletions at which a pass flushes; a negative value turns the flushes off.
+	// range deletions at which a pass flushes, and RetainFlushDels; a negative value
+	// turns the flushes off.
 	// retainFlushL0Margin overrides [defaultRetainFlushL0Margin], how far below its
 	// stop threshold level 0 must be for a flush to start (a negative value never
 	// puts one off), and l0Sublevels replaces the reading of level 0's sublevels and
@@ -272,6 +279,11 @@ type Options struct {
 // DefaultStateCacheBytes is the memory the writer's states of the prefixes it has
 // touched most recently may take when [Options.StateCacheBytes] is zero.
 const DefaultStateCacheBytes = 128 << 20
+
+// DefaultRetainFlushDels is the count of unflushed range deletions at which a pass
+// starts a flush when [Options.RetainFlushDels] is zero. It is provisional until a
+// measurement chooses it.
+const DefaultRetainFlushDels = defaultRetainFlushDels
 
 // DefaultOptions are the options of a store that boots with no configuration:
 // the benchmark tuning, a retention that settles the database before it returns,

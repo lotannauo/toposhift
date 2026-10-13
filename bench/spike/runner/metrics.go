@@ -32,6 +32,10 @@ var phaseNames = [...]string{
 type buildProgress struct {
 	phase               atomic.Int32
 	batches, retentions atomic.Int64
+	// judged says the build is in the part of its stream the store gate judges: from the
+	// start of the pacing (of the stream, for a build that is not paced) to the end of
+	// the stream. Only a build through the root store sets it.
+	judged atomic.Bool
 	// onChange, if set before the build starts, is called after each change of phase,
 	// by the goroutine that made it: the sampler's line for the change.
 	onChange func()
@@ -47,6 +51,13 @@ func (p *buildProgress) setPhase(ph int32) {
 	p.phase.Store(ph)
 	if p.onChange != nil {
 		p.onChange()
+	}
+}
+
+// setJudged says whether the build is in the judged part of its stream.
+func (p *buildProgress) setJudged(on bool) {
+	if p != nil {
+		p.judged.Store(on)
 	}
 }
 
@@ -70,6 +81,10 @@ type metricLine struct {
 	Retentions int64            `json:"retentions"`
 	Stats      map[string]int64 `json:"stats"`
 	Go         goMemory         `json:"go"`
+	// Judged says the line was written in the judged part of the stream (see
+	// buildProgress.judged); a line outside it, or of a build that is not through the
+	// root store, leaves it out.
+	Judged bool `json:"judged,omitempty"`
 }
 
 // goMemory is the Go runtime's memory, read without stopping the world.
@@ -176,7 +191,7 @@ func (s *sampler) writeLocked() {
 		ElapsedMS: time.Since(s.start).Milliseconds(),
 		Phase:     phaseNames[s.prog.phase.Load()],
 		Batches:   s.prog.batches.Load(), Retentions: s.prog.retentions.Load(),
-		Stats: s.stats(), Go: goMemoryNow(),
+		Stats: s.stats(), Go: goMemoryNow(), Judged: s.prog.judged.Load(),
 	}
 	b, err := json.Marshal(l)
 	if err == nil {

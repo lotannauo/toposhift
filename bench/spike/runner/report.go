@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,8 +42,9 @@ func LoadCandidate(dir string) (*Candidate, error) {
 
 // Check returns the reasons the candidates cannot be compared, or nil: results
 // from different plans, from different binaries, from different Pebble options,
-// from a binary a result may not come from, or with an answer that is not the
-// reference engine's. A validation run is never a result, so it is always one
+// from a binary a result may not come from, with an answer that is not the
+// reference engine's, or, among the candidates built through the root store, with
+// different retention flush thresholds. A validation run is never a result, so it is always one
 // reason; allowUntimed leaves that one out, for a caller who is asking whether the
 // run was valid and not whether it can be compared.
 func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
@@ -120,7 +122,39 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 			out = append(out, fmt.Sprintf("%s and %s ran with different Pebble options: %s", ref.Results.Candidate, name, diff))
 		}
 	}
+	names := make([]string, len(cs))
+	ms := make([]*Manifest, len(cs))
+	for i, c := range cs {
+		names[i], ms[i] = c.Results.Candidate, c.Manifest
+	}
+	if why := flushDelsMix(names, ms); why != "" {
+		out = append(out, why)
+	}
 	return out
+}
+
+// flushDelsMix is why the builds through the root store among ms (named by names)
+// cannot be set side by side for their retention flush threshold: they record
+// different ones, or some record it and some do not (a build before it was recorded,
+// which is not taken for the default). It is "" if they agree; a build that is not
+// through the root store has no threshold and is left out.
+func flushDelsMix(names []string, ms []*Manifest) string {
+	by := map[string][]string{}
+	for i, m := range ms {
+		if m.Describe["store"] != "root" {
+			continue
+		}
+		v := describedOr(m, RetainFlushDelsKey, "not recorded")
+		by[v] = append(by[v], names[i])
+	}
+	if len(by) < 2 {
+		return ""
+	}
+	var parts []string
+	for _, v := range slices.Sorted(maps.Keys(by)) {
+		parts = append(parts, fmt.Sprintf("%s=%q: %s", RetainFlushDelsKey, v, strings.Join(by[v], ", ")))
+	}
+	return fmt.Sprintf("the candidates built through the root store were built with different retention flush thresholds (%s): a family is built at one threshold", strings.Join(parts, "; "))
 }
 
 // sameBinary is whether two builds are the same toolchain, platform and source.

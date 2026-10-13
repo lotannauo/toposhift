@@ -414,7 +414,7 @@ plans), which is recorded in the manifest as `go_memory_limit` and in `job.json`
 #### The store's retention gate: storegate
 
 The root store (`Lroot/off` and `Lroot/<policy>`) is judged apart from the spike's gates, by five limits fixed
-before anything is measured (rules version 2), which `spikebench storegate` prints with a digest of their text on every report
+before anything is measured (rules version 3), which `spikebench storegate` prints with a digest of their text on every report
 (the text is a constant in `runner/storegate.go`, and a test pins its digest, so a change to a limit shows in the
 diff). The command never reads `runner.Rules`: the spike's rules version and digest do not depend on it.
 
@@ -422,7 +422,9 @@ diff). The command never reads `runner.Rules`: the spike's rules version and dig
 spikebench build -candidate Lroot/off         -out D/R7 -metrics-every 10s -retention-mode sync
 spikebench build -candidate Lroot/k64a2l1ns   -out D/R7 -metrics-every 10s -retention-mode sync
 spikebench build -candidate Lroot/k64a2l1ns   -out D/R7w -sync -metrics-every 10s -retention-mode background -pace 4500   # over the plan of a window
+spikebench build -candidate Lroot/k64a2l1ns   -out D/R7t -sync -metrics-every 10s -retention-mode background -pace 4500 -retain-flush-dels 24576
 spikebench storegate D/R7                     # or the build directories themselves, or a directory of CI artifacts
+spikebench storegate -commit <commit> D/R7w   # paced builds in the background are judged only as the builds of one commit
 ```
 
 A window is the time from a retention's publication to the end of its rewrite; a batch that overlaps one, its
@@ -470,12 +472,41 @@ of each judged pass, or for a replaced or unfinished pass the least it took: it 
 judged if some pass has only a lower bound, and otherwise passes; its load is over the paced writing time, from D to
 the end of the stream, and Q4's time ends at the end of the stream. A build that is unpaced, or paced at another rate,
 prints its values and is not judged; one paced from another day than D is refused. Q5 compares builds of the same
-retention mode, sync setting, pacing rate and pacing start, and the repetitions of a candidate on an architecture
+retention mode, sync setting, pacing rate, pacing start and retention flush threshold (rules version 3), and the repetitions of a candidate on an architecture
 must share them, or the set is refused (status 3, naming the values); a baseline that differs leaves Q5 not judged.
 The manifest records `pace_records_per_second` (0: unpaced) and `pace_from_day`, and the report prints, for each
 build in the background, how it was paced, how its batches divided, the number of inside batches Q2 is taken over,
 and for each pass the time of its rewrite (or its lower bound), of its settle, and whether the settle reached its
 deadline, with the Q3 note of the rules. The spike's timing judge refuses a paced build.
+
+**The retention flush threshold.** `-retain-flush-dels N` (on `build`, `run` and `windows`) sets the count of
+unflushed range deletions at which the root store's retention flushes (`pebblestore.Options.RetainFlushDels`, a
+field for measurements that the product never sets), for a measurement that compares thresholds. It is accepted only
+with `-retention-mode background` and for the `Lroot` candidates, and refused before anything is built otherwise; 0,
+the default, is the store's own (`pebblestore.DefaultRetainFlushDels`, 32,768, provisional), and a negative count is
+refused. Every `Lroot` manifest records the threshold its store used as `retain_flush_dels`, the default's number
+for 0; a manifest without the key was built before it was recorded and reads "not recorded", never the default. A
+run or `windows` refuses to resume over a build at another threshold, the report and `windows` refuse a family of
+two, the gate refuses a candidate's repetitions at two (or one recorded and one not) and leaves Q5 not judged against
+a baseline at another, and the spike's timing judge refuses a build at any threshold but its binary's default.
+
+**What the gate reports of the judged part.** Beside the whole build's figures, the report gives each build's
+threshold and, apart, the figures of the part the gate judges (the passes published from the start of the pacing,
+every pass of a build that was not paced, and the stream's time from then to its end) and of the rest: for
+`retain.chunk_open_ns`, `retain.chunk_hold_ns` and `retain.chunk_prefixes` over the chunks of those passes, each
+pass's last chunk left out (a pass a later retention replaced keeps it), the count, least, 50th, 90th and 99th
+percentiles, largest and mean, and the exact share of chunks whose opening took more than 10 ms; the flushes started,
+put off and refused; the write stalls, counted from the database's count at the start of the pacing to the end of the
+stream; and the peak sublevels of level 0 over the metrics lines of that part, which can miss a peak between two
+lines. For each retaining build in the background (not `Lroot/off`) it then prints the retention-chunk criteria C1 to
+C5 below, each met or not, and whether the build meets them. None of this is a row of the gate or changes a verdict.
+
+**Where the builds come from.** The repetitions of a candidate on an architecture must also come from one plan, and
+either all from the bench workflow (with its `job.json`) or all built locally; the workflow's must come from one run
+and from its first attempt (`run_attempt` 1), since re-running some of an arm's jobs is not a redispatch. Paced builds
+in the background are judged only with `-commit <commit>`, the frozen commit: every build's manifest revision, and
+its job's commit if it has a `job.json`, must be it. A local build has no job and is checked by its revision alone.
+Any of these refusals ends `storegate` with status 3.
 
 Repetitions of a candidate on an architecture are one row, the worst of those that could be judged, marked
 `(partial)` when some could not be; a build that is untimed, not through the root store, without the gate's record or,
@@ -489,7 +520,134 @@ Exit status of `storegate`:
 | 0 | Nothing is over a limit, and every row the builds' mode has something to judge was judged. Rows that cannot be judged by construction (Q1, Q2 and Q4 of a synchronous retention) do not count against it. |
 | 1 | A row is over its limit (this wins when rows are also not judged). |
 | 2 | A row that the builds' mode should judge was not judged (synchronous: Q3 and both Q5 rows; background: all six; Q1 withheld by its control counts): a run in which nothing could be judged is never a pass. A local build that keeps fewer than 30 days, or has no heap samples, ends with 2 though its report is complete. |
-| 3 | An error: no build was given, a flag is unknown, or a build could not be read. Nothing is judged, and it is not taken for a verdict. |
+| 3 | An error: no build was given, a flag is unknown, a build could not be read, the repetitions of a candidate differ in a setting or in where they came from, or the builds are not all of the commit `-commit` names (or paced builds in the background were given without it). Nothing is judged, and it is not taken for a verdict. |
+
+##### Registered procedures (dated 2026-10-12)
+
+These texts were registered on 2026-10-12, before any background build was judged on CI, and are given here as
+registered. They sit outside the gate's rules text, so its digest does not cover them; the version-3 entry of the gate's rules log
+in `runner/storegate.go` records them, with the incomplete-builds text, which they refer to. Commits are written
+`<commit>`.
+
+**Retention-chunk criteria.**
+
+> **Retention-chunk criteria** (registered 2026-10-12, before any CI build of the retain-chunk lane). They are derived from the design: a chunk's clock charges its iterator's opening up to chunkTime/2. So C1 limits how often that cap binds, and C2 limits what a chunk holds when it does. A change of chunkTime (20 ms) or of `retainBytes` (4 MiB) reopens these criteria.
+>
+> **Where.** Judged only on CI hardware, on the 7-day background arm of the store gate's dispatch (sync=true, `-pace 4500` from day 11.5), for each retaining build (not the Lroot/off baselines).
+>
+> **The judged part.** It is the gate's own:
+> - **chunks:** those of passes whose windows the gate judges (publication at or after D), with each pass's last chunk left out. A pass replaced by a later retention keeps its last chunk, which ended on time or bytes;
+> - **stalls and deferrals:** those that begin between the start of pacing and the end of the stream;
+> - **statistics:** taken over all such chunks of the build pooled, never per pass.
+>
+> **A build meets the criteria if:**
+> - **C1 (opening).** At most 10% of its judged chunks have `retain.chunk_open_ns` > chunkTime/2 (10 ms). This is an exact count of chunks over the bound divided by the count of judged chunks, not a histogram quantile.
+> - **C2 (hold).** The 99th percentile of `retain.chunk_hold_ns` over its judged chunks, read as the upper bound of its histogram bucket, is at most 1.5 × chunkTime (30 ms).
+> - **C3 (progress).** The 50th percentile of `retain.chunk_prefixes` over its judged chunks, read as the lower bound of its bucket, is at least 100.
+> - **C4 (stalls).** Its write stalls (Pebble's `WriteStallBegin`) in the judged part number 0. They are summed over every opening of the database in the build: for each opening, the count at the end of the stream (or at its close) less the count at the start of pacing (0 for an opening after it).
+> - **C5 (flushes).** In the judged part, `retain.flush_deferred` = 0 and `retain.flush_errors` = 0.
+> - **The gate's verdicts.** Its Q1, Q2 and Q4 each pass or are not judged.
+>
+> **Reported, not judged:**
+> - for `chunk_open_ns`, `chunk_hold_ns` and `chunk_prefixes` over the judged chunks: count, min, p50, p90, p99, max and mean, with C1's exact fraction;
+> - `retain.flushes`;
+> - the peak L0 sublevels in the judged part, sampled per metrics line, so it can miss a peak between lines;
+> - the same figures for the unjudged part (unpaced days and unjudged windows);
+> - the number of passes and chunks judged.
+>
+> A build with no judged chunk does not meet C1–C3.
+
+**The threshold ladder.**
+
+> **Threshold ladder** (the one tuning of `retainFlushDels`; never repeated under this registration).
+> - **The rungs.** `retainFlushDels` takes one of 32,768, 24,576 and 16,384, set per build through a bench-only input and recorded in its manifest. Builds of different rungs are never pooled into one verdict. Each rung is one 7-day background dispatch, as pre-registered for that arm: 3 repetitions per architecture, both architectures, the Lroot/off baselines included. All rungs run from the same frozen commit.
+> - **The order.** The rungs are tried from the largest. A rung qualifies only if **every** retaining build of it, on every architecture, meets every criterion of Text 1. The first rung that qualifies is chosen; no smaller rung is dispatched. That is the largest qualifying rung.
+> - **Incomplete builds.** A rung with an incomplete build is treated as an arm is under the incomplete-builds text (registered 2026-10-12): at most one whole redispatch of that rung, unchanged.
+> - **The chosen value:**
+>   - it becomes `defaultRetainFlushDels`, which is also the zero-config product default (`DefaultOptions` and `toposhift serve` use `BenchTuning`), and is frozen;
+>   - its 7-day dispatch is the 7-day arm's verdict, and the other rungs' dispatches are reported beside it;
+>   - the 30-day arm, and its dispatch condition, use that value and that 7-day dispatch only.
+>   - If the 30-day arm fails any criterion of Text 1, the choice stops. There is no step down to a smaller rung: the next lever is registered anew in a new, logged version.
+> - **If no rung qualifies:**
+>   - nothing is chosen, and 32,768 stays the provisional default;
+>   - the 7-day arm has not passed under this registration, and the pre-registered fallback applies (the release ships with retention off by default);
+>   - the next lever is registered anew before any further dispatch. The named candidates, in order:
+>     - (1) open and close an iterator outside the store's lock just before each background chunk and right after a flush starts, so the in-lock opening is cheap [unmeasured];
+>     - (2) a shorter chunkTime, which also reopens Text 1.
+>   - Pebble option changes (compaction concurrency, the L0 stop threshold) are deferred and are not candidates under this registration.
+> - **The delay.** `BenchTuning.FlushDelayDeleteRange` is 0 in every rung. The `Tuning` field stays, defaulting to off.
+
+("Text 1" is the retention-chunk criteria above.)
+
+The ladder, step by step:
+
+1. **Freeze.** The owner tags the frozen commit `gate-freeze-YYYYMMDD`, signed, and records the tag and its commit in
+   the gate's log. A signed tag is annotated, so `git rev-parse gate-freeze-YYYYMMDD` gives the tag object, not the
+   commit: `<commit>` below, recorded in the log and passed as `expected_sha` in the smoke and in every rung, is
+   `git rev-parse gate-freeze-YYYYMMDD^{commit}`. The bench workflow accepts a dispatch from `refs/heads/main` or from a tag matching
+   `^refs/tags/gate-freeze-[0-9]{8}$` whose commit is an ancestor of `main`, and checks that every job runs
+   `expected_sha`.
+2. **Smoke.** One dispatch from the tag with the command of step 3 (with `-f expected_sha=<commit>`) but
+   `-f candidates=Lroot/off,Lroot/k64a2l1ns,Lroot/k64a2l5m -f reps=1` (6 jobs), at `retain_flush_dels=32768`, to prove
+   the wiring: under the incomplete-builds text a failed build fails its arm. The tag comes before the verdict of Rule L
+   (the registered lag rule: whether the default checkpoint lag becomes 5 minutes), so the smoke covers either
+   candidate. It is logged as "smoke, values seen", is never judged, and is excluded from every pool by its run ID.
+3. **Dispatch the rung 32,768**, with the pre-registered values:
+
+   ```sh
+   gh workflow run bench.yml --ref gate-freeze-YYYYMMDD \
+     -f family=rmae -f windows=7 -f candidates=Lroot/off,<candidate> \
+     -f reps=3 -f arches=both -f pins_window=2 -f sync=true \
+     -f metrics_every=10s -f go_mem_limit=11GiB -f max_parallel=12 \
+     -f retention_mode=background -f retain_flush_dels=32768 \
+     -f expected_sha=<commit>
+   ```
+
+   `<candidate>` is `Lroot/k64a2l5m` if Rule L passed, else `Lroot/k64a2l1ns`. Without `metrics_every`, Q5 has no
+   live heap samples and the level 0 peak of the judged part cannot be read, so the workflow refuses a background
+   dispatch with none. The pace (4,500 records/s) follows from the retention mode.
+4. **Judge it offline** with `spikebench` built from `<commit>`: `spikebench storegate -commit <commit>` over the
+   dispatch's artifacts. Read C1 to C5 and Q1, Q2 and Q4 for every retaining build.
+5. **If every retaining build qualifies,** choose that rung and stop. Otherwise dispatch 24,576, then 16,384, with
+   the same command and only `retain_flush_dels` changed.
+6. **The chosen value** becomes `defaultRetainFlushDels` in a later change, after the 30-day arm, as the ladder says.
+7. **Record** each dispatch (run ID, ref, commit, inputs, plan digests, outcome) in the gate's log before the next,
+   and compare its plan digests with those of the local quiet builds.
+8. **While a rung runs,** 12 of the account's 20 concurrent jobs are taken, so pull-request CI queues behind it.
+
+**Reopen thresholds.**
+
+> **Reopen thresholds.** Let T be the nominal wall time of a paced stream day: the plan's records at or after D ÷ 4,500 per second ÷ the number of stream days after D. The median wall time between consecutive publications of judged passes is reported beside it, as is the paced wall time against the paced records ÷ 4,500 per second. Let δ be the settle deadline the build ran with, which is the dispatch's. Reopen if any of these holds:
+> (a) of the judged passes that have a settle (the report does not print "none"), more than half reached their deadline; the last pass counts by its printed flag;
+> (b) any judged pass's rewrite time, or the lower bound of a judged pass that has only a lower bound, exceeds T/2;
+> (c) any judged pass other than the last was overlapped by the next retention: its rewrite was replaced (the report shows "rewrite at least"), or its settle did not end by itself before the next publication (in the gate trace, its settle ends at the next publication and did not reach its deadline; in the report, its publication + rewrite + settle equals the next publication to within 2 ms).
+> The criterion "the settles' total time exceeds 25% of the paced writing time" is withdrawn: a settle is capped at δ and there is one pass per stream day, so at δ = 120 s and T ≈ 555 s the share cannot exceed about 22%, which also caps the share of paced batches a settle removes from Q1 and Q2. T/2 leaves a runner about twice as slow as the local machine before its passes outgrow the stream day. Each judged pass's busy share except the last, (rewrite + settle) / time to the next publication, is reported for information and is not a threshold. Separately, if the unpaced part exceeds 1.5 h locally, this is reported as a coarse alarm and does not by itself block the dispatch; the dispatch condition decides. Every quiet local 30-day build run under this rules version is read for these thresholds, and any one that trips them reopens; a build voided by the pre-registered definition of quiet is recorded with the reason and not read. Logged: written after the void local run of 2026-10-11/12, whose values were seen.
+
+Quiet, as pre-registered: the build runs at normal priority on AC power, with nothing else scheduled. The 5-minute
+load average is sampled once a minute through the whole build, unpaced and paced parts alike, for both the local
+30-day and the local 7-day build; a build is void if any sample exceeds 3. A void run is recorded and not read.
+
+**Dispatch condition for the 30-day arm.**
+
+> **Dispatch condition for the 30-day arm (fixed before the 7-day jobs report).** Before the 7-day arm is dispatched, run a quiet local 30-day and a quiet local 7-day background `sync=true` build, and record for each its unpaced time and that time's two segments: from the start of the build to pass 1's publication, and from there to the start of pacing. Every such local build that is run is recorded, and the estimate is computed for every recorded pair of a local 30-day and a local 7-day build; the largest is used. For each architecture, take the 7-day arm's slowest retaining build (not an Lroot/off baseline), and estimate the 30-day build's step time as the sum of:
+> - U, the larger of: its unpaced time × (local 30-day unpaced time ÷ local 7-day unpaced time); and the sum, over the two segments, of its segment time × (local 30-day segment time ÷ local 7-day segment time);
+> - (the 30-day plan's records at or after D ÷ 4,500 per second) × the larger of: its paced wall time ÷ (its paced records ÷ 4,500 per second); and 4,500 ÷ R, where R is (the 30-day plan's records from the stream day of pass 1's retention to D ÷ the local 30-day build's second-segment time) × (the local 7-day build's second-segment time ÷ the slowest 7-day CI build's second-segment time); and 1;
+> - 0.15 h for the step's tail.
+>
+> The local builds, both arms' dispatches and the plans are built from one commit on main after the retention-chunk fix. Record the estimate and every input. Dispatch only if every architecture's estimate is at most 5.0 h, with `arches` = both; otherwise do not dispatch under this rules version; an arm not dispatched has not passed, and the pre-registered fallback applies.
+
+The single-commit order:
+
+1. the retention-chunk change merges;
+2. the change that gives the workflow its dispatch inputs merges;
+3. that commit is frozen (tagged `gate-freeze-YYYYMMDD`);
+4. the quiet local 30-day build and the quiet local 7-day build;
+5. the 7-day dispatch;
+6. the estimate;
+7. the 30-day dispatch, on that commit.
+
+The dispatches run from the tag at the frozen commit, so later merges to main do not affect them. A change that must be
+included forces a re-freeze and new local builds.
 
 ### Adding a candidate
 

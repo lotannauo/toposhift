@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
@@ -50,6 +51,34 @@ func TestServeStoreOptionsRankTheProducers(t *testing.T) {
 	a.Policy.Rank["k8sobjects/x"] = 9
 	if b.Policy.Rank["k8sobjects/x"] != 2 {
 		t.Error("two calls share one Rank map")
+	}
+}
+
+// The retention flush threshold is for measurements: serve opens its store, at the
+// seam where it is opened, with the field left at zero, which is the store's default,
+// and so does every other command.
+func TestServeOpensItsStoreWithTheDefaultFlushThreshold(t *testing.T) {
+	if o := storeOptions(); o.RetainFlushDels != 0 {
+		t.Errorf("storeOptions sets RetainFlushDels to %d", o.RetainFlushDels)
+	}
+	opened := make(chan pebblestore.Options, 1)
+	setSeam(t, &openStore, func(path string, o pebblestore.Options) (*pebblestore.Store, error) {
+		select {
+		case opened <- o:
+		default:
+		}
+		return pebblestore.Open(path, o)
+	})
+	s := startServe(t, dirEnv(t, t.TempDir()), "--cluster-name", "prod")
+	var o pebblestore.Options
+	select {
+	case o = <-opened:
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve did not open the store")
+	}
+	stopOK(t, s)
+	if o.Retention != pebblestore.Background || o.RetainFlushDels != 0 {
+		t.Errorf("serve opened its store with retention %v and RetainFlushDels %d, want Background and 0", o.Retention, o.RetainFlushDels)
 	}
 }
 

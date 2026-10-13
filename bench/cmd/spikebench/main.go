@@ -11,7 +11,7 @@
 //	spikebench g1     -out DIR                       judge G1 from the windows
 //	spikebench gaps   -out DIR -candidate L/k64a2l1ns  where a build's checkpoints lie in the pinned node prefixes
 //	spikebench timing -in DIR...                     judge G2, G3 and G4 from the bench workflow's artifacts
-//	spikebench storegate DIR...                      judge the root store's retention (Q1 to Q5) from builds
+//	spikebench storegate [-commit SHA] DIR...        judge the root store's retention (Q1 to Q5) from builds
 //
 // Build with CGO_ENABLED=0 and without -race or the invariants tag, from a clean
 // tree; the program refuses to produce a result otherwise (-untimed allows it
@@ -452,6 +452,9 @@ func doBuild(ctx context.Context, args []string) error {
 	if err := checkProducerLen([]string{name}, plan.Spec.Workload.ProducerLen); err != nil {
 		return err
 	}
+	if err := b.flushDelsCandidates([]string{name}); err != nil {
+		return err
+	}
 	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), b.options(), progress)
 	return err
 }
@@ -487,6 +490,10 @@ type buildFlags struct {
 	// pace is the rate, in records per second, a background build holds its writer to
 	// from stream day 2W + 1.5 - ceil(W/2) on; 0 is none.
 	pace int
+	// retainFlushDels is the count of unflushed range deletions at which the root
+	// store's retention flushes, for a background build of an Lroot candidate; 0 is the
+	// store's default.
+	retainFlushDels int
 }
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
@@ -495,6 +502,7 @@ func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.BoolVar(&b.sync, "sync", false, "commit every batch with a sync of the log to the disk, as production does; recorded in the manifest, and a report refuses to compare builds with and without it (default: off)")
 	fs.StringVar(&b.retentionMode, "retention-mode", "", "how the root store's retention runs, for the Lroot candidates (the others ignore it): sync, the default, or background; recorded in the manifest, and a family is built all in one mode")
 	fs.IntVar(&b.pace, "pace", 0, "records per second the writer is held to from stream day 2W + 1.5 - ceil(W/2) on, for a background build of a window (0: unpaced); recorded in the manifest, and a family is built all at one pace")
+	fs.IntVar(&b.retainFlushDels, "retain-flush-dels", 0, "the count of unflushed range deletions at which the root store's retention flushes, for a measurement that compares thresholds: only with -retention-mode background and Lroot candidates (0, the default: the store's own); recorded in the manifest of every Lroot build, and a family is built all at one threshold")
 	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
 }
 
@@ -518,6 +526,25 @@ func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 		return fmt.Errorf("-pace %d: give a rate in records per second, or 0 for none", b.pace)
 	case b.pace > 0 && b.retentionMode != candidates.RetentionBackground:
 		return fmt.Errorf("-pace %d needs -retention-mode background: a build whose retention is synchronous is not paced", b.pace)
+	case b.retainFlushDels < 0:
+		return fmt.Errorf("-retain-flush-dels %d: give a count of range deletions, or 0 for the store's default", b.retainFlushDels)
+	case b.retainFlushDels > 0 && b.retentionMode != candidates.RetentionBackground:
+		return fmt.Errorf("-retain-flush-dels %d needs -retention-mode background: a threshold is measured only on a build whose retention runs in the background", b.retainFlushDels)
+	}
+	return nil
+}
+
+// flushDelsCandidates refuses -retain-flush-dels for a candidate that is not built
+// through the root store, before anything is built: the threshold is the root store's.
+// A name that is not a candidate is left to the caller's own lookup.
+func (b buildFlags) flushDelsCandidates(names []string) error {
+	if b.retainFlushDels == 0 {
+		return nil
+	}
+	for _, n := range names {
+		if v, err := candidates.Lookup(n); err == nil && !v.Root() {
+			return fmt.Errorf("-retain-flush-dels %d is for the candidates built through the root store (Lroot/...), and %s is not", b.retainFlushDels, n)
+		}
 	}
 	return nil
 }
@@ -544,11 +571,14 @@ func (b buildFlags) args() []string {
 	if b.pace != 0 {
 		out = append(out, "-pace="+strconv.Itoa(b.pace))
 	}
+	if b.retainFlushDels != 0 {
+		out = append(out, "-retain-flush-dels="+strconv.Itoa(b.retainFlushDels))
+	}
 	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace}
+	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels}
 }
 
 // forward is step with b's flags added to every build it starts.
@@ -596,6 +626,15 @@ func (b buildFlags) agrees(dir string) error {
 	} {
 		if f.have != f.want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for %s=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, f.key, f.have, f.flag, f.want)
+		}
+	}
+	// The threshold is the root store's: a build through it records the one it used, and
+	// one that does not record it was built before it was recorded, which is not taken
+	// for the default.
+	if m.Describe["store"] == "root" {
+		have, want := orDefault(runner.RetainFlushDelsKey, "not recorded"), strconv.Itoa(runner.RetainFlushDelsOf(b.retainFlushDels))
+		if have != want {
+			return fmt.Errorf("%s was built with %s %q, and this run asks for a threshold of %s range deletions (-retain-flush-dels=%d): a family is built all at one threshold (remove that build, give the flag its value, or use another -out)", dir, runner.RetainFlushDelsKey, have, want, b.retainFlushDels)
 		}
 	}
 	return nil
@@ -732,6 +771,9 @@ func doRun(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := checkProducerLen(strings.Split(names, ","), p.producerLen); err != nil {
+		return err
+	}
+	if err := b.flushDelsCandidates(strings.Split(names, ",")); err != nil {
 		return err
 	}
 	_, statErr := os.Stat(filepath.Join(c.out, planFile))
@@ -954,6 +996,9 @@ func doWindows(ctx context.Context, args []string) error {
 	if err := checkProducerLen(strings.Split(names, ","), p.producerLen); err != nil {
 		return err
 	}
+	if err := b.flushDelsCandidates(strings.Split(names, ",")); err != nil {
+		return err
+	}
 	days, err := parseWindows(windows)
 	if err != nil {
 		return err
@@ -1143,12 +1188,16 @@ func doStoreGate(args []string) error { return runStoreGate(args, os.Stdout, os.
 // ends the program with status 1 if a limit is exceeded, or with status 2 if a row that
 // the build's mode has something to judge in was not judged; only a row that cannot be
 // judged by construction (Q1, Q2 and Q4 of a synchronous retention) is not an error.
-// A limit exceeded wins over a row not judged. A mistake of the command line, or
-// builds that cannot be loaded, ends it with status 3, so that neither is taken for
-// a verdict.
+// A limit exceeded wins over a row not judged. A mistake of the command line, builds
+// that cannot be loaded, a set of builds the gate does not pool (see
+// runner.CheckStoreGateSettings), or builds that are not all of the commit -commit
+// names (or paced builds in the background without it) end it with status 3, so that
+// none of them is taken for a verdict.
 func runStoreGate(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("storegate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	var commit string
+	fs.StringVar(&commit, "commit", "", "the commit every build must be of, as 40 hexadecimal digits: its manifest's revision and, for a build of the bench workflow, its job's commit (required when a build in the background was paced)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -1163,6 +1212,9 @@ func runStoreGate(args []string, stdout, stderr io.Writer) error {
 		return exitCodeError{storeGateErrorStatus, err.Error()}
 	}
 	if err := runner.CheckStoreGateSettings(builds); err != nil {
+		return exitCodeError{storeGateErrorStatus, err.Error()}
+	}
+	if err := runner.CheckStoreGateCommit(builds, commit); err != nil {
 		return exitCodeError{storeGateErrorStatus, err.Error()}
 	}
 	rep := runner.JudgeStoreGate(builds)

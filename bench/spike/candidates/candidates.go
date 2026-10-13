@@ -88,6 +88,11 @@ type Options struct {
 	// points that bound its phases (see [pebblestore.RetainObserver]); a Synchronous
 	// store never calls it. Every other variant ignores it.
 	RetainObserver pebblestore.RetainObserver
+	// RetainFlushDels is, for the Lroot variants only (every other variant ignores
+	// it), the count of unflushed range deletions at which a retention's pass flushes
+	// ([pebblestore.Options.RetainFlushDels]); 0 is the store's default,
+	// [pebblestore.DefaultRetainFlushDels]. The store refuses a negative value.
+	RetainFlushDels int
 	// TallyPrefixes makes a variant of the spike's own layout L (not the root
 	// store's) keep per-prefix counts of the checkpoints a record deleted and a
 	// write put back, in memory (see [pebblelog.Options]); the others ignore it.
@@ -207,7 +212,7 @@ func LrootNoCheckpoints() Variant {
 		if err != nil {
 			return nil, err
 		}
-		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver})
+		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels})
 	}}
 }
 
@@ -220,7 +225,7 @@ func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 			return nil, err
 		}
 		return rootlog.Open(dir, rootlog.Options{
-			Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver,
+			Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels,
 			Checkpoints: pebblestore.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
 		})
 	}}

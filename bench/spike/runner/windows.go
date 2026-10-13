@@ -79,7 +79,8 @@ func LoadWindows(out string) ([]RetainedWindow, error) {
 // CheckWindows returns the reasons the windows cannot be judged together, or nil:
 // each is checked as a set of candidates is, and they must have been made of the
 // same pins and the same cache, the same candidates, and the same binary, over streams
-// of the lengths a window of its days makes.
+// of the lengths a window of its days makes, and the candidates built through the root
+// store all at one retention flush threshold.
 func CheckWindows(ws []RetainedWindow, allowUntimed bool) []string {
 	var out []string
 	for _, w := range ws {
@@ -89,6 +90,18 @@ func CheckWindows(ws []RetainedWindow, allowUntimed bool) []string {
 	}
 	if len(ws) == 0 {
 		return append(out, "no window")
+	}
+	// Within a window Check has compared the thresholds; across windows too.
+	var names []string
+	var ms []*Manifest
+	for _, w := range ws {
+		for _, c := range w.Candidates {
+			names = append(names, fmt.Sprintf("%s at %d days", c.Results.Candidate, w.Days))
+			ms = append(ms, c.Manifest)
+		}
+	}
+	if why := flushDelsMix(names, ms); why != "" {
+		out = append(out, "windows: "+why)
 	}
 	ref := ws[0]
 	for _, w := range ws {
