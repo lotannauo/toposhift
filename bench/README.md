@@ -664,6 +664,75 @@ The single-commit order:
 The dispatches run from the tag at the frozen commit, so later merges to main do not affect them. A change that must be
 included forces a re-freeze and new local builds.
 
+#### Diagnostic builds on CI runners: diag
+
+`.github/workflows/diag.yml` builds the profiling and table-shape diagnostics on
+GitHub-hosted runners, so that they cost no time on a local machine. It is dispatched
+by hand, needs no frozen tag and decides nothing: nothing it produces is a judged arm,
+and each of its runs is left out of every pool by its run id. The judged arms stay on
+`bench.yml`.
+
+A dispatch builds one candidate in two to four configurations on the runners it names
+(`ubuntu-24.04-arm`, `ubuntu-24.04`, `macos-15`), each configuration two or three times
+on each runner. The first configuration is the control (A) and the rest are variants
+(B), given as a JSON list of `{name, build_flags, plan_flags}`:
+
+```sh
+gh workflow run diag.yml --ref main -f label=p5 -f base_sha=<commit of main> \
+  -f candidate=Lroot/k64a2l5m -f runners=ubuntu-24.04-arm \
+  -f configs='[{"name":"control","build_flags":"-profile-windows","plan_flags":""},
+               {"name":"cache2g","build_flags":"-profile-windows","plan_flags":"-cache-mb=2048"}]'
+```
+
+The other inputs default to the local command, `spikebench build -candidate
+Lroot/k64a2l5m -sync -metrics-every 10s -retention-mode background -pace 4500`, on a
+7-day window. Build flags are words from a list that `bench/scripts/diag-dispatch-check.sh`
+checks, which a test runs with each input it must refuse: `-profile-windows`,
+`-disable-delete-only`, `-lbase-target-mb=N`, `-target-sizes-mb=N,N,...` and
+`-read-ahead=N`; plan flags are `-cache-mb=N`. A 30-day window is refused, since its
+build may not fit the 6 hours of a job.
+
+- **Reading a pair.** The repetitions of the control are the noise floor of a runner
+  label (the A/A pair). A variant is read only where it differs from the control by more
+  than the control's repetitions differ from each other (the A/B pair), only within one
+  CPU model (the report table flags a label whose jobs ran on more than one), and only
+  against a control on the same label. Absolute times, and the share of any step that
+  waits for the disk or the scheduler, differ between a runner and a local machine in
+  kind; ratios and counts are more stable. Never compare a runner's figure with a
+  local one, or one runner label with another.
+- **`GOMAXPROCS`.** Every build runs with `GOMAXPROCS=10`, set explicitly: Pebble cuts
+  its block cache into 4 x `GOMAXPROCS` shards, so this keeps the 40 shards of a
+  10-core machine. On a runner with 3 or 4 CPUs it means more runnable goroutines than
+  CPUs, so a figure from a diag run is not comparable with one from `bench.yml`, whose
+  builds run at the default. Each job also times 1,000 durable 4 KiB writes before it builds and records
+  the 50th and 99th percentile.
+- **The binary.** It is built from `base_sha`, a commit of main. A flag that is not on
+  main yet is carried by a patch on that commit: `patch_b64` (the output of `git diff
+  --binary --full-index <base> <commit>`, gzip-compressed and base64-encoded, under about
+  60 KB) or a secret gist with that text in a file named `patch.b64`, with its
+  `patch_sha256` and the `tree` the patched checkout must have. The run refuses unless
+  it does, and `job.json` records the base, the tree, the patch and the binary's sha256.
+  A build of a patch is dispatched from a branch named `verify`, which points at a
+  commit of main and is never given a commit of its own: a patch is code, and code in a
+  job can write to the cache of the ref it runs on, so its caches must be ones that
+  nothing on main reads. Such a result is a diagnostic and nothing more. Before a
+  registration cites a figure, the flag lands on main and `base_sha` alone names the
+  binary.
+- **Approval.** The setup job runs in the environment `diag-approval`, which has a
+  required reviewer, so a dispatch starts only when it is approved in the Actions page.
+  Nothing else of the run starts before that.
+- **What a patched build can reach.** A patch is code, and a patched program runs before
+  the job's later steps, so it can rewrite the scripts that collect and summarise its
+  own output: the `job.json` and the summary of such a job are not evidence of anything
+  but what the artifacts hold. Nothing secret is in reach: the job has no secret and a
+  read-only token, and the checkout keeps no credential.
+- **macOS.** `macos-15` has 3 CPUs and 7 GB of memory, so a dispatch that names it sets
+  `macos_low_rss`, to confirm that its configurations stay under about 6 GB.
+- **What it keeps.** The plans (generated in the run, one per distinct plan flags, with
+  their sha256 in the job summary), and for each build `profiles/`, `index.json`,
+  `metrics.jsonl`, `manifest.json`, `job.json`, the sync probe and the logs (never
+  `db/`) for 30 days. The report job writes one table of the whole dispatch.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

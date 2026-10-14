@@ -1,0 +1,677 @@
+name: diag
+
+# Diagnostic builds of the storage-engine spike on GitHub-hosted runners: profiling
+# builds, and builds of table shapes and read-ahead, in pairs. A dispatch builds one
+# candidate in two to four configurations (the first is the control, A; the others
+# are variants, B) on the runners it names, each configuration two or three times on
+# each runner. The repetitions of the control are the noise floor of that runner
+# label: a variant is read only where it differs from the control by more than the
+# control's own repetitions differ, and only within one CPU model.
+#
+# Nothing this workflow produces is a judged arm. The judged arms stay on bench.yml,
+# from the frozen tag. A diag run needs no tag; it records the commit, the tree, the
+# patch and the binary it ran, and it is left out of every pool by its run id. Figures
+# from a runner are never compared with figures from the Mac or from another runner
+# label, since the machines differ in kind, not only in speed: a hosted runner has 3
+# or 4 CPUs, and a build here runs GOMAXPROCS=10 (explicitly set) so that Pebble's
+# block cache has the 40 shards it has on the Mac. For the same reason a figure from
+# this workflow is not comparable with one from bench.yml, whose builds run at the
+# default GOMAXPROCS.
+#
+# The binary is built from a commit of main (base_sha). A flag that is not on main
+# yet comes in as a patch on that commit, by the mechanism verify.yml uses: the
+# dispatch gives the patch, its sha256 and the tree the patched checkout must have.
+# A build of a patch is dispatched from the verify branch only (see verify.yml); a
+# build of main's own code from main or from the verify branch. Standard GitHub-hosted
+# runners are free for a public repository; a larger runner costs money and is not
+# used.
+#
+# A dispatch waits at its setup job for approval: that job runs in the environment
+# diag-approval, which a maintainer creates beforehand (Settings, Environments) with
+# the maintainer as the required reviewer and "prevent self-review" off. The
+# environment must exist first: GitHub creates a missing one on first use, with no
+# reviewer, and the run then starts unapproved. Nothing else of a run starts until
+# its setup job has been approved.
+#
+#   gh workflow run diag.yml --ref main -f label=p5 -f base_sha=<sha> \
+#     -f candidate=Lroot/k64a2l5m -f runners=ubuntu-24.04-arm \
+#     -f configs='[{"name":"control","build_flags":"-profile-windows","plan_flags":""},
+#                  {"name":"cache2g","build_flags":"-profile-windows","plan_flags":"-cache-mb=2048"}]'
+
+run-name: diag ${{ inputs.label }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: A name for the run (letters, digits, dots, dashes and underscores, at most 40).
+        type: string
+        required: true
+      base_sha:
+        description: The 40-hexadecimal-digit commit of main the binary is built from.
+        type: string
+        required: true
+      patch_sha256:
+        description: With a patch, the sha256 of the plain patch (git diff --binary --full-index). Only from the verify branch.
+        type: string
+        default: ""
+      tree:
+        description: With a patch, the 40-hexadecimal-digit tree the patched checkout must have.
+        type: string
+        default: ""
+      patch_b64:
+        description: The patch, gzip-compressed and base64-encoded on one line, when it is under about 60 KB. Give this or gist_id, or neither.
+        type: string
+        default: ""
+      gist_id:
+        description: The id of a secret gist with the same text in a file named patch.b64.
+        type: string
+        default: ""
+      configs:
+        description: 'A JSON list of 2 to 4 configurations, the first the control: [{"name": "control", "build_flags": "-profile-windows", "plan_flags": ""}, ...]. Build flags are words of -profile-windows, -disable-delete-only, -lbase-target-mb=N, -target-sizes-mb=N,N and -read-ahead=N; plan flags are -cache-mb=N.'
+        type: string
+        required: true
+      candidate:
+        description: The candidate to build, one name such as Lroot/k64a2l5m.
+        type: string
+        default: Lroot/k64a2l5m
+      runners:
+        description: A comma list of the runners to build on, each given every configuration (ubuntu-24.04-arm, ubuntu-24.04, macos-15).
+        type: string
+        default: ubuntu-24.04-arm
+      reps:
+        description: Repetitions of every configuration on every runner, 2 or 3.
+        type: choice
+        options: ["2", "3"]
+        default: "2"
+      window:
+        description: The window, in days. A 30-day build may not fit the 6 hours of a job.
+        type: choice
+        options: ["7", "2", "1"]
+        default: "7"
+      pins_window:
+        description: The window, in days, whose stream the pinned prefixes are chosen from, an integer from 1 to the window.
+        type: string
+        default: "2"
+      family:
+        description: The scenario family, which fixes the scenario flags of the plans.
+        type: choice
+        options: [rmae, ph5m-rmae]
+        default: rmae
+      retention_mode:
+        description: How the root store's retention runs in the Lroot builds.
+        type: choice
+        options: [background, sync]
+        default: background
+      pace:
+        description: Records per second the writer is held to in a background build (0 for none, a pace needs background).
+        type: string
+        default: "4500"
+      retain_flush_dels:
+        description: The retention flush threshold of the Lroot builds, a rung of the registered ladder, or the store's default.
+        type: choice
+        options: [default, "32768", "24576", "16384"]
+        default: default
+      sync:
+        description: Pass -sync to every build.
+        type: boolean
+        default: true
+      metrics_every:
+        description: Pass -metrics-every with this Go duration to every build, or leave empty.
+        type: string
+        default: 10s
+      go_mem_limit:
+        description: Run every build with this Go memory limit (GOMEMLIMIT), as a whole number of MiB or GiB such as 11GiB, or leave empty for none.
+        type: string
+        default: ""
+      macos_low_rss:
+        description: Needed to build on macos-15, which has 7 GB of memory. Confirms that the configurations stay under about 6 GB.
+        type: boolean
+        default: false
+      max_parallel:
+        description: How many build jobs may run at once (1 to 20). The free plan runs 20 jobs at once across the account, and 5 macOS jobs.
+        type: string
+        default: "8"
+
+permissions: {}
+
+concurrency:
+  # A dispatch has a group of its own and is never cancelled: a build that is
+  # cancelled has measured nothing.
+  group: diag-${{ github.run_id }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for an
+    # unnamed bash step does not set pipefail).
+    shell: bash
+
+jobs:
+  # Turns the inputs into a matrix. Every input reaches a script only through env,
+  # and is checked here before anything else runs, so a mistyped dispatch fails in
+  # seconds and not after hours of building. A patch is fetched once, proved to make
+  # the tree the dispatch names, and kept for the other jobs.
+  setup:
+    name: diag setup
+    runs-on: ubuntu-24.04
+    environment: diag-approval
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      plans: ${{ steps.matrix.outputs.plans }}
+      patched: ${{ steps.matrix.outputs.patched }}
+      base_sha: ${{ steps.matrix.outputs.base_sha }}
+      tree: ${{ steps.matrix.outputs.tree }}
+      patch_sha256: ${{ steps.matrix.outputs.patch_sha256 }}
+      family: ${{ steps.matrix.outputs.family }}
+      family_flags: ${{ steps.matrix.outputs.family_flags }}
+      window: ${{ steps.matrix.outputs.window }}
+      pins_window: ${{ steps.matrix.outputs.pins_window }}
+      candidate: ${{ steps.matrix.outputs.candidate }}
+      candidate_slug: ${{ steps.matrix.outputs.candidate_slug }}
+      retention_mode: ${{ steps.matrix.outputs.retention_mode }}
+      retain_flush_dels: ${{ steps.matrix.outputs.retain_flush_dels }}
+      sync: ${{ steps.matrix.outputs.sync }}
+      metrics_every: ${{ steps.matrix.outputs.metrics_every }}
+      go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
+      pace: ${{ steps.matrix.outputs.pace }}
+      max_parallel: ${{ steps.matrix.outputs.max_parallel }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The scripts come from the commit this run was dispatched at, never from a
+      # patch. The whole history, so that the check can see that the base commit is on
+      # main.
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: |
+            .github/scripts
+            bench/scripts
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The checks are in a tracked script, which a test runs on every pull request
+      # with each input it must refuse.
+      - name: Check the inputs and plan the jobs
+        id: matrix
+        working-directory: tools
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          LABEL: ${{ inputs.label }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HAS_PATCH_B64: ${{ inputs.patch_b64 != '' }}
+          GIST_ID: ${{ inputs.gist_id }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          TREE: ${{ inputs.tree }}
+          CONFIGS: ${{ inputs.configs }}
+          CANDIDATE: ${{ inputs.candidate }}
+          RUNNERS: ${{ inputs.runners }}
+          REPS: ${{ inputs.reps }}
+          WINDOW: ${{ inputs.window }}
+          PINS_WINDOW: ${{ inputs.pins_window }}
+          FAMILY: ${{ inputs.family }}
+          RETENTION_MODE: ${{ inputs.retention_mode }}
+          PACE: ${{ inputs.pace }}
+          RETAIN_FLUSH_DELS: ${{ inputs.retain_flush_dels }}
+          SYNC: ${{ inputs.sync }}
+          METRICS_EVERY: ${{ inputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ inputs.go_mem_limit }}
+          MACOS_LOW_RSS: ${{ inputs.macos_low_rss }}
+          MAX_PARALLEL: ${{ inputs.max_parallel }}
+        run: bash bench/scripts/diag-dispatch-check.sh
+
+      - name: Check out the base commit
+        if: ${{ steps.matrix.outputs.patched == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.matrix.outputs.base_sha }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Get the patch
+        if: ${{ steps.matrix.outputs.patched == 'true' }}
+        env:
+          PATCH_B64: ${{ inputs.patch_b64 }}
+          GIST_ID: ${{ inputs.gist_id }}
+          PATCH_SHA256: ${{ steps.matrix.outputs.patch_sha256 }}
+          GITHUB_TOKEN: ${{ github.token }}
+          OUT: ${{ runner.temp }}/patch/diag.patch
+        run: |
+          mkdir -p "$(dirname "$OUT")"
+          bash tools/.github/scripts/apply-patch.sh fetch
+
+      # The step each job runs, here first, so that a patch that does not apply or
+      # makes another tree fails in a minute and not after the queue.
+      - name: Apply the patch, and check the tree
+        if: ${{ steps.matrix.outputs.patched == 'true' }}
+        working-directory: src
+        env:
+          BASE_SHA: ${{ steps.matrix.outputs.base_sha }}
+          PATCH_FILE: ${{ runner.temp }}/patch/diag.patch
+          PATCH_SHA256: ${{ steps.matrix.outputs.patch_sha256 }}
+          TREE: ${{ steps.matrix.outputs.tree }}
+        run: bash ../tools/.github/scripts/apply-patch.sh apply
+
+      - name: Keep the patch for the other jobs
+        if: ${{ steps.matrix.outputs.patched == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/patch/diag.patch
+          if-no-files-found: error
+          retention-days: 3
+
+  # Makes the pins and the plans once for every distinct set of plan flags. A 7-day
+  # plan takes about 200 s and its file is about 350 KB, so it is made here and the
+  # build jobs, on every architecture, download it. Plans are never committed: the
+  # static shard refuses a tracked plan.json.
+  plans:
+    name: diag plans
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch the patch
+        if: ${{ needs.setup.outputs.patched == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: diag-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/patch
+
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.base_sha }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Apply the patch, and check the tree
+        if: ${{ needs.setup.outputs.patched == 'true' }}
+        working-directory: src
+        env:
+          BASE_SHA: ${{ needs.setup.outputs.base_sha }}
+          PATCH_FILE: ${{ runner.temp }}/patch/diag.patch
+          PATCH_SHA256: ${{ needs.setup.outputs.patch_sha256 }}
+          TREE: ${{ needs.setup.outputs.tree }}
+        run: bash ../tools/.github/scripts/apply-patch.sh apply
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+          working_directory: src
+
+      # time -v is how each step's peak memory is read.
+      - name: Check that GNU time is present
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update && sudo apt-get install --yes time
+          fi
+          /usr/bin/time --version
+
+      # A timed build refuses a binary from a tree with uncommitted or untracked
+      # changes, and the plans are made by the same binary the builds use. The binary
+      # and everything after it are written outside the checkout.
+      - name: Build spikebench
+        working-directory: src
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      - name: Make the pins and the plans
+        env:
+          # From the setup job's fixed mapping of the family and its checked plan
+          # flags, never from free text; they are split into words on purpose.
+          FAMILY_FLAGS: ${{ needs.setup.outputs.family_flags }}
+          PLANS_JSON: ${{ needs.setup.outputs.plans }}
+          PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
+          WINDOW: ${{ needs.setup.outputs.window }}
+        run: |
+          set -euo pipefail
+          SB="$RUNNER_TEMP/spikebench"
+          PLANS="$RUNNER_TEMP/plans"
+          LOGS="$RUNNER_TEMP/logs"
+          mkdir -p "$LOGS"
+          read -ra family <<<"$FAMILY_FLAGS"
+          printf '%s' "$PLANS_JSON" | jq -r '.[] | .id + " " + .flags' | while IFS=' ' read -r id flags; do
+            read -ra extra <<<"$flags"
+            /usr/bin/time -v -o "$LOGS/$id-pins.time.txt" \
+              "$SB" pins -out "$PLANS/$id" -preset ci "${family[@]}" "${extra[@]}" -window "$PINS_WINDOW" \
+              2>&1 | tee "$LOGS/$id-pins.log"
+            /usr/bin/time -v -o "$LOGS/$id-plan-R$WINDOW.time.txt" \
+              "$SB" plan -out "$PLANS/$id/R$WINDOW" -preset ci "${family[@]}" "${extra[@]}" -window "$WINDOW" -pins "$PLANS/$id/pins.json" -full \
+              2>&1 | tee "$LOGS/$id-plan-R$WINDOW.log"
+          done
+
+      - name: Summarise the plans
+        if: always()
+        env:
+          PLANS_JSON: ${{ needs.setup.outputs.plans }}
+          WINDOW: ${{ needs.setup.outputs.window }}
+        run: |
+          set -uo pipefail
+          PLANS="$RUNNER_TEMP/plans"
+          LOGS="$RUNNER_TEMP/logs"
+          peak() {
+            awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$1" 2>/dev/null
+          }
+          {
+            echo "### Plans (diagnostic only)"
+            echo
+            echo "| plan | flags | file | sha256 | peak memory of the step that made it |"
+            echo "|---|---|---|---|---|"
+            printf '%s' "$PLANS_JSON" | jq -r '.[] | .id + " " + .flags' | while IFS=' ' read -r id flags; do
+              for f in pins.json "R$WINDOW/plan.json"; do
+                if [ -f "$PLANS/$id/$f" ]; then
+                  echo "| $id | \`${flags:-none}\` | $f | \`$(sha256sum "$PLANS/$id/$f" | cut -d' ' -f1)\` | $(peak "$LOGS/$id-plan-R$WINDOW.time.txt") |"
+                else
+                  echo "| $id | \`${flags:-none}\` | $f | not written | |"
+                fi
+              done
+            done
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the plans for the build jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-plans-${{ github.run_id }}
+          path: ${{ runner.temp }}/plans
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 30
+
+      - name: Keep the plans' logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-plans-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 30
+
+  # One spikebench build per job. Every job gets its own runner, and so its own disk
+  # and its own memory. The names must not start with "ci (".
+  build:
+    name: "diag build (${{ matrix.os }} ${{ matrix.name }} rep ${{ matrix.rep }})"
+    needs: [setup, plans]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # The free plan runs 20 jobs at once across the account, and 5 macOS jobs.
+      max-parallel: ${{ fromJSON(needs.setup.outputs.max_parallel) }}
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      # The action supports Linux runners only.
+      - name: Harden runner
+        if: ${{ runner.os == 'Linux' }}
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch the patch
+        if: ${{ needs.setup.outputs.patched == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: diag-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/patch
+
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.base_sha }}
+          path: src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Apply the patch, and check the tree
+        if: ${{ needs.setup.outputs.patched == 'true' }}
+        working-directory: src
+        env:
+          BASE_SHA: ${{ needs.setup.outputs.base_sha }}
+          PATCH_FILE: ${{ runner.temp }}/patch/diag.patch
+          PATCH_SHA256: ${{ needs.setup.outputs.patch_sha256 }}
+          TREE: ${{ needs.setup.outputs.tree }}
+        run: bash ../tools/.github/scripts/apply-patch.sh apply
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+          working_directory: src
+
+      - name: Fetch the plans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: diag-plans-${{ github.run_id }}
+          path: ${{ runner.temp }}/plans
+
+      # time -v is how the build's peak memory and elapsed time are read on Linux;
+      # macOS has time -l.
+      - name: Check that GNU time is present
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update && sudo apt-get install --yes time
+          fi
+          /usr/bin/time --version
+
+      # The binary and everything after it are written outside the checkout.
+      - name: Build spikebench
+        working-directory: src
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      # A build wants plan.json in its output directory, and nothing else there but
+      # other candidates.
+      - name: Prepare the build directory
+        env:
+          WINDOW: ${{ needs.setup.outputs.window }}
+          PLAN_ID: ${{ matrix.plan }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          mkdir -p "$WORK" "$RUNNER_TEMP/logs"
+          cp "$RUNNER_TEMP/plans/$PLAN_ID/R$WINDOW/plan.json" "$WORK/plan.json"
+
+      # How long a durable write takes on this machine now, so that a disk that
+      # differs between runs shows up beside the CPU model.
+      - name: Time durable writes
+        run: python3 tools/.github/scripts/sync-probe.py "$RUNNER_TEMP" | tee "$RUNNER_TEMP/logs/sync-probe.txt"
+
+      # Not timed for judging: a diagnostic, with the flags of the configuration. Its
+      # own step with a timeout shorter than the job's, so that an overrun still
+      # reaches the upload. GOMAXPROCS is set, not left to the runner: Pebble cuts its
+      # block cache into 4 x GOMAXPROCS shards, and 10 gives the 40 of the Mac.
+      - name: Build the candidate
+        timeout-minutes: 340
+        env:
+          GOMAXPROCS: "10"
+          WINDOW: ${{ needs.setup.outputs.window }}
+          CANDIDATE: ${{ needs.setup.outputs.candidate }}
+          SLUG: ${{ needs.setup.outputs.candidate_slug }}
+          SYNC: ${{ needs.setup.outputs.sync }}
+          METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
+          PACE: ${{ needs.setup.outputs.pace }}
+          RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
+          # The checked words of the configuration, split on purpose.
+          BUILD_FLAGS: ${{ matrix.build_flags }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          extra=(-retention-mode "$RETENTION_MODE")
+          if [ "$SYNC" = true ]; then
+            extra+=(-sync)
+          fi
+          if [ -n "$METRICS_EVERY" ]; then
+            extra+=(-metrics-every "$METRICS_EVERY")
+          fi
+          if [ "$PACE" != 0 ]; then
+            extra+=(-pace "$PACE")
+          fi
+          if [ "$RETAIN_FLUSH_DELS" != default ]; then
+            extra+=(-retain-flush-dels "$RETAIN_FLUSH_DELS")
+          fi
+          if [ -n "$BUILD_FLAGS" ]; then
+            read -ra cfg <<<"$BUILD_FLAGS"
+            extra+=("${cfg[@]}")
+          fi
+          # Explicit, so that an empty input leaves the variable unset.
+          if [ -n "$GO_MEM_LIMIT" ]; then
+            export GOMEMLIMIT="$GO_MEM_LIMIT"
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            timer=(/usr/bin/time -l -o "$RUNNER_TEMP/logs/time.txt")
+          else
+            timer=(/usr/bin/time -v -o "$RUNNER_TEMP/logs/time.txt")
+          fi
+          "${timer[@]}" \
+            "$RUNNER_TEMP/spikebench" build -out "$WORK" -candidate "$CANDIDATE" "${extra[@]}" \
+            2>&1 | tee "$RUNNER_TEMP/logs/build.log"
+
+      - name: Collect the profiles, the manifest and the logs
+        if: always()
+        env:
+          GOMAXPROCS: "10"
+          WORK: ${{ runner.temp }}/bench/R${{ needs.setup.outputs.window }}
+          SLUG: ${{ needs.setup.outputs.candidate_slug }}
+          OUT: ${{ runner.temp }}/out
+          LOGS: ${{ runner.temp }}/logs
+          SPIKEBENCH: ${{ runner.temp }}/spikebench
+          PLAN: ${{ runner.temp }}/bench/R${{ needs.setup.outputs.window }}/plan.json
+          OS: ${{ matrix.os }}
+          NAME: ${{ matrix.name }}
+          ROLE: ${{ matrix.role }}
+          REP: ${{ matrix.rep }}
+          BUILD_FLAGS: ${{ matrix.build_flags }}
+          PLAN_ID: ${{ matrix.plan }}
+          BASE_SHA: ${{ needs.setup.outputs.base_sha }}
+          PATCHED: ${{ needs.setup.outputs.patched }}
+          PATCH_SHA256: ${{ needs.setup.outputs.patch_sha256 }}
+          TREE: ${{ needs.setup.outputs.tree }}
+          CANDIDATE: ${{ needs.setup.outputs.candidate }}
+          WINDOW: ${{ needs.setup.outputs.window }}
+          PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
+          FAMILY: ${{ needs.setup.outputs.family }}
+          RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
+          PACE: ${{ needs.setup.outputs.pace }}
+          RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
+          SYNC: ${{ needs.setup.outputs.sync }}
+          METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
+          GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          REF: ${{ github.ref }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: bash tools/.github/scripts/diag-collect.sh
+
+      - name: Keep the profiles, the manifest and the logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: diag-build-${{ github.run_id }}-${{ matrix.os }}-${{ matrix.name }}-rep${{ matrix.rep }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: warn
+          # A re-run of this job in the same run replaces the artifact.
+          overwrite: true
+          retention-days: 30
+
+  # One table for the whole dispatch, from the job.json of every build job, and one
+  # result: it fails unless the setup, the plans and every build succeeded. Its name
+  # must not start with "ci (".
+  report:
+    name: diag report
+    if: always() && needs.setup.result == 'success'
+    needs: [setup, plans, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch what the build jobs kept
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: diag-build-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/report
+
+      - name: Tabulate the jobs
+        env:
+          REPORT_DIR: ${{ runner.temp }}/report
+        run: bash tools/.github/scripts/diag-report.sh
+
+      - name: Check that everything succeeded
+        env:
+          PLANS: ${{ needs.plans.result }}
+          BUILD: ${{ needs.build.result }}
+        run: |
+          if [ "$PLANS" != success ] || [ "$BUILD" != success ]; then
+            echo "the plans finished with result '${PLANS}' and the builds with '${BUILD}', not success" >&2
+            exit 1
+          fi
+          echo "every build job succeeded"
