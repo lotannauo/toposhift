@@ -28,6 +28,28 @@ const envClusterName = "TOPOSHIFT_CLUSTER_NAME"
 // envRetain is the environment twin of --retain.
 const envRetain = "TOPOSHIFT_RETAIN"
 
+// envNodeInterval is the environment twin of --node-interval.
+const envNodeInterval = "TOPOSHIFT_NODE_INTERVAL"
+
+// The bounds of --node-interval: a whole number of seconds, at least a minute and
+// at most an hour.
+const (
+	minNodeInterval = time.Minute
+	maxNodeInterval = time.Hour
+)
+
+// checkNodeInterval refuses a node interval outside the bounds, or with a part of
+// a second.
+func checkNodeInterval(d time.Duration) error {
+	switch {
+	case d%time.Second != 0:
+		return usagef("--node-interval %s is not a whole number of seconds", d)
+	case d < minNodeInterval || d > maxNodeInterval:
+		return usagef("--node-interval %s is outside %s to %s", d, minNodeInterval, maxNodeInterval)
+	}
+	return nil
+}
+
 // retainEvery is the interval of the retention check, a constant of serve. It is
 // a variable only so tests can lower it.
 var retainEvery = sequencer.DefaultRetainEvery
@@ -75,6 +97,8 @@ type ingestConfig struct {
 	acceptGiven bool
 	// pullInterval is the objects receiver's pull interval.
 	pullInterval time.Duration
+	// nodeInterval is the report interval the node agents are configured with.
+	nodeInterval time.Duration
 	// retain is --retain on: the sequencer retains the store once a day.
 	retain bool
 }
@@ -233,6 +257,40 @@ type statusRoute struct {
 	seq    atomic.Pointer[sequencer.Sequencer]
 }
 
+// nodeAgentStatus is the node agents' status: on with the interval expected of the
+// agents, the counters, and the latest host event of each cluster that has had
+// one, or off while ingest is not running.
+type nodeAgentStatus struct {
+	Mode     string                        `json:"mode"`
+	Interval string                        `json:"interval,omitempty"`
+	Counters map[string]int64              `json:"counters,omitempty"`
+	Clusters map[string]nodeAgentClusterOf `json:"clusters,omitempty"`
+}
+
+// nodeAgentClusterOf is one cluster's latest host event. Silent is true once more
+// than three intervals have passed since, as of the latest flush tick.
+type nodeAgentClusterOf struct {
+	LastHostEvent time.Time `json:"last_host_event"`
+	Silent        bool      `json:"silent"`
+}
+
+// nodeAgentOf is the node agents' status of the sequencer, off when ingest is not
+// running.
+func nodeAgentOf(seq *sequencer.Sequencer) nodeAgentStatus {
+	if seq == nil {
+		return nodeAgentStatus{Mode: "off"}
+	}
+	st := seq.NodeAgentStatus()
+	out := nodeAgentStatus{
+		Mode: "on", Interval: st.Interval.String(), Counters: st.Counters,
+		Clusters: make(map[string]nodeAgentClusterOf, len(st.Clusters)),
+	}
+	for name, c := range st.Clusters {
+		out.Clusters[name] = nodeAgentClusterOf{LastHostEvent: c.LastHostEvent, Silent: c.Silent}
+	}
+	return out
+}
+
 // resumeStatus is the resume step's status: on with its counters, disabled when
 // the sequencer was given no lookup, or off while ingest is not running.
 type resumeStatus struct {
@@ -306,7 +364,8 @@ func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 		body = on
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(s.seq.Load())})
+	seq := s.seq.Load()
+	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(seq), "nodeagent": nodeAgentOf(seq)})
 }
 
 // ingest is what boot opened for ingest: the store, and the sequencer with its
@@ -392,6 +451,7 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		ClusterName:    ic.clusterName,
 		ClusterNameSet: ic.set,
 		PullInterval:   ic.pullInterval,
+		NodeInterval:   ic.nodeInterval,
 		Logger:         log,
 		Retain:         retain,
 		Lookup:         lookup,
@@ -530,4 +590,25 @@ Resume
   new, raised to the stored record, changed (timed when observed), dropped
   after a stored delete, unknown (by reason: walk bound, baseline only, below
   the horizon, read error), and later records raised with them.
+
+Node agents
+
+  The cluster collector's pipeline may also carry the host entity events of
+  node-level collectors (deploy/otel-collector/nodeagent.yaml), which place each
+  Kubernetes node on its host. The agents send only to the cluster collector,
+  never to serve. The producer is nodeagent/<cluster name>, and every event's
+  record lives for three times --node-interval (or $TOPOSHIFT_NODE_INTERVAL;
+  default 5m, a whole number of seconds from 1m to 1h), which must be the
+  interval the agents report at: an event that reports another is stored all the
+  same and counted. An event with no usable host.id is not stored.
+
+  GET /status also answers "nodeagent": its counters, and for each cluster the
+  time of its latest host event. A counter named refused_* is a record, or a part
+  of one, that was not stored; substituted_* is a record that was stored with
+  something put in place of what it gave (the receipt time for the agent's clock,
+  no boot id); skipped_* is a record set aside. legacy_entity_events counts
+  entity events in the older form, from either receiver, which are never
+  translated: the collector was started without the feature gate. The log warns
+  of the refused and legacy events at most once a minute for each cluster, and
+  once each time a cluster's host events stop for three intervals.
 `

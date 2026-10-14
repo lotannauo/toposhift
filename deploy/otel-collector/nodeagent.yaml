@@ -1,0 +1,113 @@
+# OPTIONAL node agent for toposhift: one OpenTelemetry collector (contrib 0.162.0)
+# on each Kubernetes node, as a DaemonSet. It reports which host the node runs on.
+# Without it, placement stops at the Kubernetes node. See README.md in this
+# directory ("Node agents"), which says what to do first.
+#
+# The components it uses are Development stability, and its entity events need the
+# feature gate. Start every agent with:
+#
+#   otelcol-contrib --config nodeagent.yaml \
+#     --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+#
+# Without the gate the host_metrics receiver sends no entity events in the shape
+# toposhift reads, and the hosts lapse about 15 minutes after the agents start.
+#
+# The agent sends only to the cluster collector (toposhift.yaml, once you have
+# enabled its otlp receiver: README.md says how, and what it opens), never to
+# toposhift. Edit one thing and nothing else:
+#   <GATEWAY_HOST>  the exporter below: where the cluster collector's otlp
+#                   receiver listens (port 4318), as seen from the nodes
+#
+# The pod needs, and this file does not set:
+#   - the environment variable K8S_NODE_NAME, from the downward API
+#     (fieldRef spec.nodeName);
+#   - a service account that may get nodes;
+#   - a read-only hostPath mount of the file /etc/machine-id at the same path in
+#     the container, which is where the host's identity comes from;
+#   - no hostNetwork.
+#
+# The report interval is 5 minutes, which is what toposhift serve expects
+# (--node-interval, default 5m). If you change it, change both.
+
+receivers:
+  host_metrics:
+    # The entity event, one report of the host, is sent every metadata interval.
+    # At least one scraper must be on; the metrics it reads are not sent anywhere.
+    collection_interval: 5m
+    metadata_collection_interval: 5m
+    scrapers:
+      load: {}
+
+processors:
+  # The host and node identity. The first detector that names a key wins, so the
+  # cloud detectors come before system: on a cloud, host.id is then the provider's
+  # instance id, and only elsewhere the machine id. host.id is taken exactly as
+  # given by toposhift, and is never hashed here.
+  #
+  # k8s_api reads the node this agent runs on. A missing permission is silent: the
+  # record has no k8s.node.uid, and toposhift stores the host and no placement.
+  resource_detection:
+    detectors:
+      - env
+      - k8s_api
+      - ec2
+      - gcp
+      - azure
+      - oraclecloud
+      - system
+    timeout: 5s
+    override: false
+    k8s_api:
+      auth_type: serviceAccount
+      node_from_env_var: K8S_NODE_NAME
+      resource_attributes:
+        k8s.cluster.uid:
+          enabled: false
+    system:
+      hostname_sources:
+        - os
+      resource_attributes:
+        host.id:
+          enabled: true
+        host.arch:
+          enabled: true
+        os.type:
+          enabled: true
+
+  # The kernel's boot id, read when the agent starts. A reboot restarts the pod, so
+  # it is current. The file ends in a newline, which the next processor removes.
+  resource/boot:
+    attributes:
+      - key: topo.host.boot.id
+        value: ${file:/proc/sys/kernel/random/boot_id}
+        action: upsert
+
+  transform/boot:
+    log_statements:
+      - context: resource
+        statements:
+          - replace_pattern(attributes["topo.host.boot.id"], "\\s+$", "")
+
+exporters:
+  # To the cluster collector, never to toposhift. The cluster collector adds the
+  # cluster name and sends in order.
+  otlp_http/gateway:
+    endpoint: http://<GATEWAY_HOST>:4318
+    encoding: proto
+    compression: gzip
+    timeout: 30s
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    logs:
+      receivers:
+        - host_metrics
+      processors:
+        - resource_detection
+        - resource/boot
+        - transform/boot
+      exporters:
+        - otlp_http/gateway

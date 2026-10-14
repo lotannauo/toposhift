@@ -40,6 +40,17 @@ receivers:
     auth_type: serviceAccount
     metadata_collection_interval: 5m
 
+  # The node agents' port: OFF by default, and the opt-in step of README.md ("Node
+  # agents"). Read that section first: enabling it opens an unauthenticated port in
+  # the one pipeline, and anything that can reach it can send the records every
+  # receiver here sends. To enable it, remove the prefix "#NODEAGENTS " (with its
+  # space) from the lines that carry it: these four, and the one in the pipeline.
+  #
+#NODEAGENTS   otlp:
+#NODEAGENTS     protocols:
+#NODEAGENTS       http:
+#NODEAGENTS         endpoint: 0.0.0.0:4318
+
 processors:
   # The name of this cluster. Set it once per cluster. It is at most 21 bytes of
   # the characters A-Z a-z 0-9 . _ : / and -. Delete this processor, and its entry
@@ -117,6 +128,7 @@ service:
       receivers:
         - k8s_objects
         - k8s_cluster
+#NODEAGENTS         - otlp
       processors:
         - resource
       exporters:

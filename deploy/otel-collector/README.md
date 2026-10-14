@@ -1,6 +1,6 @@
 # OpenTelemetry collector configuration for toposhift
 
-`toposhift.yaml` is an OpenTelemetry collector configuration that reads a Kubernetes cluster and sends it to toposhift. It is written for the collector contrib distribution, version 0.162.0.
+`toposhift.yaml` is an OpenTelemetry collector configuration that reads a Kubernetes cluster and sends it to toposhift. It is written for the collector contrib distribution, version 0.162.0. `nodeagent.yaml` is an optional second configuration, for a collector on each node, that tells toposhift which host each node runs on: see "Node agents" below.
 
 toposhift takes the logs in when it has a data directory (by default under `$HOME/.local/share/toposhift`, or the one named by `--data-dir` or `TOPOSHIFT_DATA_DIR`; see `toposhift serve -h`). It answers an export `200` only once its records are committed to disk. While it starts, and whenever ingest is off, it answers `503` with `Retry-After: 30` and says why; the collector retries, so the data waits in its queue:
 
@@ -52,7 +52,7 @@ The collector's service account needs permission to `get`, `list` and `watch` po
 
 - **Receivers.** `k8s_objects` reads pods and nodes twice: in watch mode, which sends each change as it happens, and in pull mode every 5 minutes, which lists the whole kind and repairs what a dropped watch missed. `k8s_cluster` reads cluster entities every 5 minutes (`metadata_collection_interval: 5m`), which makes the entity report interval 300 seconds. Both are on the logs pipeline, the only pipeline there is. `events` objects are not read: toposhift does not translate them yet.
 - **Exporter.** OTLP over HTTP, protobuf, gzip, with a 30 second timeout. 429, 502, 503 and 504 are retried, and a `Retry-After` on 429 and 503 is honoured. Every other status is permanent: the request is dropped. `max_elapsed_time: 0` means the collector never gives up on a retryable failure. The retry interval starts at 5 seconds and grows to at most 30.
-- **Sending queue.** `num_consumers: 1` means one request is sent at a time, in the order it was queued, which toposhift relies on. The queue is on disk (`storage`), so a restart of the collector keeps it. In the collector's design the queue holds the receivers' own requests, and its consumer merges or splits what it reads off the queue before sending. Each export is merged or split to at most 16,000,000 bytes, by size in bytes whatever the objects weigh, so it stays well under toposhift's limit of 64 MiB for a decoded request body. That bound protects toposhift from a 413 (payload too large); it does not bound the queue's disk; `queue_size` does. toposhift supports a single collector sending to it: more than one collector for one cluster is not supported, because the records of a second one can arrive late and delete checkpoints that are not put back (see "What a backlog does to toposhift").
+- **Sending queue.** `num_consumers: 1` means one request is sent at a time, in the order it was queued, which toposhift relies on. The queue is on disk (`storage`), so a restart of the collector keeps it. In the collector's design the queue holds the receivers' own requests, and its consumer merges or splits what it reads off the queue before sending. Each export is merged or split to at most 16,000,000 bytes, by size in bytes whatever the objects weigh, so it stays well under toposhift's limit of 64 MiB for a decoded request body. That bound protects toposhift from a 413 (payload too large); it does not bound the queue's disk; `queue_size` does. toposhift supports a single collector sending to it: more than one collector for one cluster is not supported, because the records of a second one can arrive late and delete checkpoints that are not put back (see "What a backlog does to toposhift"). The optional node agents are no exception: they send to this one collector and never to toposhift (see "Node agents").
 - **Storage.** The `file_storage/toposhift` extension holds the queue in `directory`. `create_directory: true` makes the collector create it. The directory must be writable by the user the collector runs as, which is usually not root: in a container, mount a volume there and make it writable by that user (for Kubernetes, `fsGroup` in the pod's security context). `compaction` shrinks the file when the collector starts, and again once the stored data has grown past `rebound_needed_threshold_mib` (default 100) and then fallen below `rebound_trigger_threshold_mib` (default 10), which the extension checks every 5 seconds.
 
 ## `fsync: true` costs throughput
@@ -75,15 +75,79 @@ After an outage the collector sends the backlog it held. Those records are late:
 
 The persistent queue is what keeps the backlog through an outage and replays it, so this follows from the settings above. toposhift does not put the deleted checkpoints back, and no setting in this directory changes that.
 
-## Checking the file
+## Node agents
 
-`config_test.go` in this directory reads `toposhift.yaml` and checks the values that matter (the intervals of each pull object, the queue, the retry, the storage and the pipeline) and that this README mentions every placeholder. It does not parse YAML, so it cannot say the collector accepts the file. To check that, validate it with the collector, with the same feature gate:
+`nodeagent.yaml` is **optional**. Without it, toposhift knows which Kubernetes node a pod is on and nothing about the machine under the node: placement stops at the node, and two pods are said to share a node, never a host. With it, a collector on each node (a DaemonSet) reports the host the node runs on, and toposhift stores the host and the edge from the node to it (`runs_on`). It is not part of the default install, and toposhift needs nothing from it to start.
+
+**The supported topology** is one cluster collector per cluster, as above, and node agents that send only to it. The agents' `otlp_http` exporter points at an `otlp` receiver on the cluster collector, in the same logs pipeline, so their records share the one exporter and the one in-order queue (one pipeline, one exporter, one queue: nothing about the collector's shape changes). An agent that sends straight to toposhift is not supported: its records would not go through the queue in order, and would arrive late. The records are stored under the producer `nodeagent/<cluster name>`, which writes only its own hosts and edges, and the collector adds the cluster name, so the agents do not set it.
+
+**The receiver is off by default, and enabling it opens an unauthenticated port.** `toposhift.yaml` ships the receiver, and its entry in the pipeline, commented out. Anything that can reach the port can send any record the pipeline takes, not only host events: the receiver feeds the same pipeline as `k8s_objects` and `k8s_cluster`, and toposhift routes each record by what it is, so a workload that can reach the pod could forge facts of every kind. Enable it only if you run the agents, and restrict it with a network policy so that only the agents' pods (the DaemonSet) can reach port 4318 of the collector's pod. To enable it, remove the prefix `#NODEAGENTS ` (with the space after it) from the five lines of `toposhift.yaml` that carry it. Enabled, they read, under `receivers:`:
+
+```yaml
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+```
+
+and, in the list `service.pipelines.logs.receivers`, after `k8s_cluster`:
+
+```yaml
+        - otlp
+```
+
+`mise run check:collector` validates the file in this enabled form too, so the step cannot rot, and `config_test.go` checks that the default file has no `otlp` receiver and that the lines above are the ones the file carries.
+
+**Stability.** The `host_metrics` receiver's logs output is Development stability, and its entity events need the same feature gate as `k8s_cluster`:
+
+```sh
+otelcol-contrib --config nodeagent.yaml \
+  --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+```
+
+The file is pinned to 0.162.0. At each collector upgrade, check again that the agents still send entity events in the shape toposhift reads. If they stop, or the gate is missing, the hosts and their `runs_on` edges lapse about 15 minutes later. Three signals say so: `GET /status` has a `nodeagent` object with the latest host event of each cluster, and toposhift warns, once each time it happens, when a cluster that had host events has had none for three intervals; entity events in the older form that a collector writes without the gate are never translated, and are counted in `sequencer.legacy_entity_events` and warned about at most once a minute (for both this receiver and `k8s_cluster`); and the counters below show what was refused.
+
+**What to edit:** `<GATEWAY_HOST>` in `exporters.otlp_http/gateway.endpoint`, the host at which the nodes reach the cluster collector's `otlp` receiver (port 4318). Nothing else.
+
+**What the pod needs**, which the file cannot say:
+
+- the environment variable `K8S_NODE_NAME`, from the downward API (`fieldRef: spec.nodeName`);
+- a service account that may `get` nodes. A missing permission is silent: the collector sends events with no `k8s.node.uid`, and toposhift stores the host and no edge (`nodeagent.refused_no_node_uid`, and a warning);
+- a read-only `hostPath` mount of the single file `/etc/machine-id`, at the same path in the container: without it, and without a cloud detector, there is no `host.id`, and nothing is stored for that node (`nodeagent.refused_no_host_id`, and a warning). In a cluster run in containers (kind, k3d, k3s in Docker) the file is usually absent, so placement stops at the node there;
+- no `hostNetwork`: it would give the agent only a host name and an address, which toposhift does not store, and it makes the collector's own telemetry port clash.
+
+```yaml
+env:
+  - name: K8S_NODE_NAME
+    valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+volumeMounts:
+  - {name: machine-id, mountPath: /etc/machine-id, readOnly: true}
+volumes:
+  - name: machine-id
+    hostPath: {path: /etc/machine-id, type: File}
+```
+
+**Identity.** The host is identified by `host.id` and the node by `k8s.node.uid`, each exactly as the agent sends it: nothing is trimmed, changed or hashed, here or in toposhift. The detectors are listed so that a cloud provider's instance id (`ec2`, `gcp`, `azure`, `oraclecloud`) comes before the machine id (`system`), which is the host's identity only on machines that are not in a cloud. On a machine outside every cloud the cloud detectors find nothing; detection runs once, when the agent starts, and `timeout: 5s` bounds it. `host.name`, the node's name and addresses are never used to identify anything. Two nodes on one machine report one `host.id`: one host, two nodes. Two machines that report one `host.id` with different boot ids (a cloned image) are a clone collision, and toposhift quarantines the host and says so. Hashing the id in the agent would make the same machine two hosts to any other source that states its raw `host.id`, so nothing hashes it, and toposhift's own fingerprint of it is the only hash.
+
+**Where the machine id is held.** A machine id is meant to be kept confidential. The collector's queue holds it in transit, the traffic between the collectors carries it, and a capture of the exports holds it raw, as `host.id` among the resource attributes. toposhift's store keeps only the 16-byte fingerprint of it, but the descriptions of the Kubernetes nodes that `k8s_objects` reads already carry the kubelet's machine id, and those are in the store and in activity files. The same machine gives the same fingerprint in two installs, a stable pseudonym. Keep captures and queue volumes as private as the machines' ids, and commit only throwaway ids as fixtures.
+
+**What is stored.** The host, with its boot id, its architecture and operating system type, its CPU model and the provider's description when there is one; and the `runs_on` edge. `host.arch` is the architecture of the collector's binary, which is the host's except under emulation (an amd64 image on an arm64 node); it describes and never identifies. The operating system version and description are not stored: the detector reads them from the collector's container, not from the host. Zones are off in this version.
+
+**The interval.** The agents report every 5 minutes (`metadata_collection_interval`; `collection_interval` only paces the scrapers), and toposhift expects that: `--node-interval` (or `TOPOSHIFT_NODE_INTERVAL`), 5 minutes by default, a whole number of seconds from one minute to one hour. Every record the agents cause lives for three times that interval, whatever interval an event carries; an event that reports another is stored all the same and counted (`nodeagent.substituted_configured_interval`). If you change the interval in the file, change it in toposhift too, and the other way round.
+
+**The counters.** `GET /status` has a `nodeagent` object: the interval, the counters, and for each cluster the time of its latest host event and whether three intervals have passed since. A name says what was done with a record, not that it is gone: `refused_*` is a record, or a part of one, that was not stored (`refused_no_host_id`, `refused_no_node_uid`, `refused_zone_id`); `substituted_*` is a record that was stored with something put in place of what it gave (`substituted_receipt_no_time` and `substituted_receipt_implausible_time` take the time of receipt for the agent's clock, `substituted_no_boot` and `substituted_bad_boot` store the host with no boot id, `substituted_configured_interval` is the interval above); `skipped_*` is a record set aside. `host_events` counts every host event, and `sequencer.legacy_entity_events` the entity events in the older form.
+
+## Checking the files
+
+`config_test.go` in this directory reads `toposhift.yaml` and `nodeagent.yaml` and checks the values that matter (the intervals of each pull object, the queue, the retry, the storage and the pipeline; for the agent, the feature gate, a metadata interval equal to toposhift's default node interval, the order of the detectors, the boot id and that the agent sends only to the gateway's port) and that this README mentions every placeholder. It does not parse YAML, so it cannot say the collector accepts a file. To check that, validate it with the collector, with the same feature gate:
 
 ```sh
 otelcol-contrib validate --config toposhift.yaml \
+  --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
+otelcol-contrib validate --config nodeagent.yaml \
   --feature-gates=pkg.experimentalmetricmetadata.useEntityEventsSpecification
 ```
 
 An unknown key fails validation. An unedited placeholder does not.
 
-CI runs this check with `mise run check:collector`, in the static shard: it validates `toposhift.yaml` in the collector image pinned by tag and digest in `mise.toml` (`OTELCOL_IMAGE`; change the tag and the digest together when the collector is bumped), then confirms that a copy with one misspelt key is refused. The validation runs with `--network none`; the first local run pulls the image, about 100 MB. Without Docker the task is skipped locally and fails when `CI=true`. If the runner's egress policy ever blocks instead of auditing, it must allow `registry-1.docker.io`, `auth.docker.io` and `production.cloudflare.docker.com`.
+CI runs this check with `mise run check:collector`, in the static shard: it validates `toposhift.yaml`, a copy of it with the node agents' receiver enabled (the opt-in step above), and `nodeagent.yaml` in the collector image pinned by tag and digest in `mise.toml` (`OTELCOL_IMAGE`; change the tag and the digest together when the collector is bumped), then confirms that a copy with one misspelt key is refused. The validation runs with `--network none`; the first local run pulls the image, about 100 MB. Without Docker the task is skipped locally and fails when `CI=true`. If the runner's egress policy ever blocks instead of auditing, it must allow `registry-1.docker.io`, `auth.docker.io` and `production.cloudflare.docker.com`.

@@ -118,6 +118,7 @@ func TestServeHelpDocumentsIngest(t *testing.T) {
 	for _, want := range []string{
 		"-cluster-name", "TOPOSHIFT_CLUSTER_NAME", "-accept-new-cluster-name", "command line only",
 		"-pull-interval", "Ingest", "committed to disk", "restarted",
+		"-node-interval", "TOPOSHIFT_NODE_INTERVAL", "Node agents", "nodeagent", "refused_*", "substituted_*", "legacy_entity_events",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("serve -h does not mention %q", want)

@@ -9,6 +9,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/detector"
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
+	"github.com/lotannauo/toposhift/internal/ingest/nodeagent"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
@@ -30,12 +32,28 @@ const (
 	eventState      = "entity.state"
 	eventDelete     = "entity.delete"
 	typeNamespace   = "k8s.namespace"
+	typeHost        = "host"
+	// attrLegacyPrefix starts the name of every attribute of the older form of the
+	// entity events, and scopeEventAsLog is the scope attribute the receivers set
+	// on the entity events they write as logs, in both forms.
+	attrLegacyPrefix = "otel.entity."
+	scopeEventAsLog  = "otel.entity.event_as_log"
+)
+
+// translatorKind says which of a cluster name's translators takes a log record.
+type translatorKind uint8
+
+const (
+	kindObjects   translatorKind = iota // the Kubernetes objects receiver's records
+	kindCluster                         // the cluster receiver's entity events
+	kindNodeAgent                       // a node collector's host entity events
 )
 
 // cluster is the translators of one cluster name.
 type cluster struct {
-	objects *k8sobjects.Translator
-	cluster *k8scluster.Translator
+	objects   *k8sobjects.Translator
+	cluster   *k8scluster.Translator
+	nodeagent *nodeagent.Translator
 	// lastUsed is the ingest instant of the latest request that used the name.
 	lastUsed time.Time
 }
@@ -58,7 +76,15 @@ func (s *Sequencer) newCluster(name string) (*cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &cluster{objects: objects, cluster: cl}, nil
+	na, err := nodeagent.New(nodeagent.Config{
+		Producer: lifecycle.Producer(nodeagent.Source + "/" + name),
+		Resolver: s.resolver,
+		Interval: s.cfg.NodeInterval,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &cluster{objects: objects, cluster: cl, nodeagent: na}, nil
 }
 
 // renewCluster makes the translators of a cluster name anew, keeping its slot.
@@ -94,6 +120,11 @@ type work struct {
 	refusedClock time.Time
 	// notes and skips count what the translators said, by producer and reason.
 	notes, skips map[[3]string]int
+	// agent counts, by cluster name and counter name, what the node agents'
+	// records and the legacy entity events of the request stood for (see
+	// nodeagent.go). The counts are kept only when the request is answered
+	// without error.
+	agent map[string]map[string]int64
 	// resumed counts what the resume step decided for the request's records. It is
 	// added to the sequencer's counts only when the group is answered without
 	// error.
@@ -104,10 +135,10 @@ type work struct {
 // cluster name, which translator, and the records it marked backdated (by their
 // index in the slot's records).
 type call struct {
-	slot    int
-	name    string
-	cluster bool
-	marks   []resume.Mark
+	slot  int
+	name  string
+	kind  translatorKind
+	marks []resume.Mark
 }
 
 // coalesce adds the records that passed to the coalescer, in order, and appends
@@ -268,14 +299,15 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 		c := s.clusters[name]
 		for _, sl := range rl.ScopeLogs {
 			for _, lr := range sl.LogRecords {
-				if namespaceEvent(lr) {
+				// A legacy event is counted in the second pass and never translated.
+				if namespaceEvent(lr) && !legacyEntityEvent(sl.Scope, lr) {
 					selected[slot] = true
 					res, err := s.translateCluster(c, name, rl.Resource, lr, r.received, w)
 					if err != nil {
 						w.reject(slot, err)
 					} else {
 						w.out[slot] = res.Records
-						calls = append(calls, call{slot: slot, name: name, cluster: true, marks: res.Backdated})
+						calls = append(calls, call{slot: slot, name: name, kind: kindCluster, marks: res.Backdated})
 						for _, ns := range res.Namespaces {
 							s.det.Observe(detector.FromK8sCluster(name, ns))
 						}
@@ -293,24 +325,36 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 		}
 	}
 
-	// The rest, by event name: the cluster receiver's entity events to its
-	// translator, everything else to the objects translator.
+	// The rest, by what the record is. A legacy entity event, the older form the
+	// receivers write when the feature gate is off, is counted and translated by
+	// nobody. Of the entity events, those of a host go to the node agents'
+	// translator and the others to the cluster receiver's; everything else goes to
+	// the objects translator.
 	slot = 0
 	for i, rl := range r.data.ResourceLogs {
 		name := w.names[i]
 		c := s.clusters[name]
 		for _, sl := range rl.ScopeLogs {
 			for _, lr := range sl.LogRecords {
-				if !selected[slot] {
+				switch {
+				case selected[slot]:
+				case legacyEntityEvent(sl.Scope, lr):
+					w.countAgent(name, counterLegacyEvents, 1)
+				default:
 					var recs []store.Record
 					var marks []resume.Mark
 					var err error
-					isCluster := lr.EventName == eventState || lr.EventName == eventDelete
-					if isCluster {
+					kind := kindOf(lr)
+					switch kind {
+					case kindNodeAgent:
+						var res nodeagent.Result
+						res, err = s.translateNodeAgent(c, name, rl.Resource, lr, r.received, w)
+						recs, marks = res.Records, res.Backdated
+					case kindCluster:
 						var res k8scluster.Result
 						res, err = s.translateCluster(c, name, rl.Resource, lr, r.received, w)
 						recs, marks = res.Records, res.Backdated
-					} else {
+					default:
 						var res k8sobjects.Result
 						res, err = s.translateObjects(c, name, rl.Resource, lr, w)
 						recs, marks = res.Records, res.Backdated
@@ -319,7 +363,7 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 						w.reject(slot, err)
 					} else {
 						w.out[slot] = recs
-						calls = append(calls, call{slot: slot, name: name, cluster: isCluster, marks: marks})
+						calls = append(calls, call{slot: slot, name: name, kind: kind, marks: marks})
 					}
 				}
 				slot++
@@ -354,19 +398,32 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 	return nil, nil
 }
 
+// resumerOf is the translator of a cluster name's kind as the resume step wants
+// it, with the function that gives what describes a subject in its payloads.
+func (s *Sequencer) resumerOf(name string, kind translatorKind) (resume.Resumer, func(store.Subject, []byte) []byte) {
+	c := s.clusters[name]
+	switch kind {
+	case kindCluster:
+		return c.cluster, k8scluster.Comparable
+	case kindNodeAgent:
+		return c.nodeagent, nodeagent.Comparable
+	}
+	return c.objects, k8sobjects.Comparable
+}
+
 // resume takes the records of each translator of the request through
 // [resume.Apply], one producer at a time in the order the producers first appear,
 // each with its records in the order they were translated (the namespace pass
 // first), and puts back what it kept in their slots.
 func (s *Sequencer) resume(ctx context.Context, w *work, lk resume.Lookup, calls []call) error {
 	type group struct {
-		name    string
-		cluster bool
+		name string
+		kind translatorKind
 	}
 	var order []group
 	byGroup := map[group][]call{}
 	for _, c := range calls {
-		g := group{c.name, c.cluster}
+		g := group{c.name, c.kind}
 		if _, ok := byGroup[g]; !ok {
 			order = append(order, g)
 		}
@@ -394,11 +451,7 @@ func (s *Sequencer) resume(ctx context.Context, w *work, lk resume.Lookup, calls
 		if !marked {
 			continue
 		}
-		var tr resume.Resumer = s.clusters[g.name].objects
-		described := k8sobjects.Comparable
-		if g.cluster {
-			tr, described = s.clusters[g.name].cluster, k8scluster.Comparable
-		}
+		tr, described := s.resumerOf(g.name, g.kind)
 		st, err := resume.Apply(ctx, lk, horizon, &res, tr, described)
 		if err != nil {
 			return err
@@ -440,6 +493,26 @@ func (s *Sequencer) translateCluster(c *cluster, name string, res capture.Resour
 	return out, err
 }
 
+// translateNodeAgent gives a host entity event to the cluster name's node agent
+// translator, with the ingest instant of the request as the time it was received:
+// the translator checks the agent's clock against it.
+func (s *Sequencer) translateNodeAgent(c *cluster, name string, res capture.Resource, lr capture.LogRecord, received time.Time, w *work) (nodeagent.Result, error) {
+	if s.hooks.beforeTranslate != nil {
+		s.hooks.beforeTranslate(name, lr)
+	}
+	w.countAgent(name, counterHostEvents, 1)
+	out, err := c.nodeagent.Translate(res, lr, received)
+	producer := nodeagent.Source + "/" + name
+	for _, n := range out.Notes {
+		w.count(&w.notes, producer, n.Reason, n.Detail, n.Count)
+	}
+	for _, k := range out.Skipped {
+		w.count(&w.skips, producer, k.Reason, "", k.Count)
+		w.countAgent(name, agentCounter(k.Reason), int64(k.Count))
+	}
+	return out, err
+}
+
 func (s *Sequencer) translateObjects(c *cluster, name string, res capture.Resource, lr capture.LogRecord, w *work) (k8sobjects.Result, error) {
 	if s.hooks.beforeTranslate != nil {
 		s.hooks.beforeTranslate(name, lr)
@@ -455,20 +528,64 @@ func (s *Sequencer) translateObjects(c *cluster, name string, res capture.Resour
 	return out, err
 }
 
-// namespaceEvent says whether a log record is an entity event of a namespace. It
-// reads entity.type as the cluster translator does: the last attribute of that
-// key with a string value.
-func namespaceEvent(lr capture.LogRecord) bool {
-	if lr.EventName != eventState && lr.EventName != eventDelete {
-		return false
-	}
+// entityType is the entity.type of a log record, read as the cluster translator
+// reads it: the last attribute of that key with a string value.
+func entityType(lr capture.LogRecord) string {
 	typ := ""
 	for _, kv := range lr.Attributes {
 		if kv.Key == attrEntityType && kv.Value.StringValue != nil {
 			typ = *kv.Value.StringValue
 		}
 	}
-	return typ == typeNamespace
+	return typ
+}
+
+// entityEvent says whether a log record is an entity event of the current form.
+func entityEvent(lr capture.LogRecord) bool {
+	return lr.EventName == eventState || lr.EventName == eventDelete
+}
+
+// namespaceEvent says whether a log record is an entity event of a namespace. It
+// reads entity.type as the cluster translator does.
+func namespaceEvent(lr capture.LogRecord) bool {
+	return entityEvent(lr) && entityType(lr) == typeNamespace
+}
+
+// kindOf is the translator that takes a log record: a host entity event goes to
+// the node agents' translator, any other entity event to the cluster receiver's,
+// and everything else to the objects receiver's.
+func kindOf(lr capture.LogRecord) translatorKind {
+	switch {
+	case !entityEvent(lr):
+		return kindObjects
+	case entityType(lr) == typeHost:
+		return kindNodeAgent
+	}
+	return kindCluster
+}
+
+// legacyEntityEvent says whether a log record is an entity event in the older
+// form, which the receivers write when the entity-events feature gate is off.
+// That form has no event name and carries its entity in attributes named
+// otel.entity.*; the scope attribute otel.entity.event_as_log marks it too, but
+// the current form carries that attribute as well, so it counts only on a record
+// that has no entity event name. A record of the current form with an
+// otel.entity.* attribute of its own is legacy as the translators read it.
+func legacyEntityEvent(scope capture.InstrumentationScope, lr capture.LogRecord) bool {
+	for _, kv := range lr.Attributes {
+		if strings.HasPrefix(kv.Key, attrLegacyPrefix) {
+			return true
+		}
+	}
+	if entityEvent(lr) {
+		return false
+	}
+	for _, kv := range scope.Attributes {
+		if kv.Key == scopeEventAsLog {
+			return true
+		}
+	}
+	return false
 }
 
 // check reports why the store would refuse a translated record on any retry: it
@@ -528,7 +645,7 @@ func (s *Sequencer) resolveNames(w *work, now time.Time) bool {
 	}
 	if len(fresh) > 0 && len(s.clusters)+len(fresh) > s.cfg.MaxClusters {
 		w.refused = fmt.Sprintf("cluster name %s is one more than the %d this server takes at once; a name is freed after %s without a request",
-			quote(fresh[0]), s.cfg.MaxClusters, idleMultiple*max(s.cfg.PullInterval, s.cfg.CollectionInterval))
+			quote(fresh[0]), s.cfg.MaxClusters, idleMultiple*max(s.cfg.PullInterval, s.cfg.CollectionInterval, s.cfg.NodeInterval))
 		return false
 	}
 	w.names = names
