@@ -68,8 +68,9 @@ fetch() {
   elif [ -n "${GIST_ID:-}" ]; then
     re='^[0-9a-f]{20,40}$'
     [[ $GIST_ID =~ $re ]] || fail "gist_id: 20 to 40 lowercase hexadecimal digits"
-    # A secret gist is readable by its id. No credential is sent: the raw address is
-    # taken from the gist's own record and must be on the gist host.
+    # A secret gist is readable by its id. GITHUB_TOKEN goes to api.github.com and to
+    # nowhere else: the raw address is taken from the gist's own record and must be on
+    # the gist host.
     # The call to the API carries GITHUB_TOKEN when there is one (the unauthenticated
     # limit is 60 an hour per address, and runners share addresses), in a config read
     # from standard input so that it is not in a command line. The raw file is fetched
