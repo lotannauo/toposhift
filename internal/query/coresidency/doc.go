@@ -29,6 +29,21 @@
 // listed in [Result].Quarantined, and still counts as a claim; when it is the
 // node's only claim the node is unattributed (QuarantinedHost).
 //
+// # The seed's hosts
+//
+// [Result].SeedHosts reports, for each of the seed's nodes that was read, each
+// host the node was on while the seed was there, with the spans of that time:
+// the seed's time on the node alone, intersected with the node's time on the
+// host alone. These are the first two legs of a shared-host path, with no read
+// of their own. An instant is attributed to a host only where the seed has one
+// node and that node has one live, unquarantined runs_on; every other instant
+// of the seed's time on a node that was read is listed in [Result].Unattributed
+// (SeveralNodes, NoHost, SeveralHosts, QuarantinedHost) and is in no entry of
+// SeedHosts. The entries are ordered by node, then host, and are nil with
+// [Options].NodeOnly. [Policy].MaxHosts does not cut them: it bounds the hosts
+// whose nodes are read. A node over [Policy].MaxNodes is not read, and is
+// listed in [Result].Truncated.
+//
 // The local union and subtraction of spans work only on the alternatives of
 // one hop (the nodes of one pod, the hosts of one node). Every path is
 // interval.Along of its legs.

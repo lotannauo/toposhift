@@ -229,6 +229,16 @@ type Unattributed struct {
 	Candidates []identity.Fingerprint
 }
 
+// HostSpans is the seed's time on one node while that node is on one host: the
+// seed is on Node alone, and Node's one live, unquarantined runs_on is to Host.
+// It is derived.
+type HostSpans struct {
+	Node, Host identity.Fingerprint
+	// Spans are ascending, disjoint, never touching and never empty, inside the
+	// window.
+	Spans []interval.Span
+}
+
 // ViaCount counts the entries of one (Via, Mechanism) dropped by MaxPerVia.
 type ViaCount struct {
 	Via       identity.Fingerprint
@@ -266,6 +276,14 @@ type Result struct {
 	Truncated   Truncation
 	// Unattributed is ordered by subject, then first span.
 	Unattributed []Unattributed
+	// SeedHosts is where the seed's attributed time on each of its nodes that was read
+	// was attributed to a host, ordered by node, then host. An instant of the
+	// seed's is in at most one entry: it is left out while the seed is on two or
+	// more nodes, and while its node has no host, several, or only a quarantined
+	// one, which Unattributed lists. It is nil with Options.NodeOnly, which reads
+	// no host, and it is never cut by Policy.MaxHosts, which bounds only the
+	// frontier read from the hosts.
+	SeedHosts []HostSpans
 	// Quarantined holds the edges read but not used because an endpoint is
 	// quarantined, ordered by subject.
 	Quarantined []interval.Element

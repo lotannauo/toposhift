@@ -475,8 +475,9 @@ func (o *oracle) find(seed identity.Fingerprint, nodeOnly bool) (coresidency.Res
 			}
 			for _, ce := range claims {
 				h := ce.B
-				if len(o.probe(crit, func(x time.Time) bool { return on(x) && o.onHost(n, h, x) })) > 0 {
+				if s := o.probe(crit, func(x time.Time) bool { return on(x) && o.onHost(n, h, x) }); len(s) > 0 {
 					hs = append(hs, h)
+					res.SeedHosts = append(res.SeedHosts, coresidency.HostSpans{Node: n, Host: h, Spans: s})
 				}
 			}
 		}
@@ -526,6 +527,12 @@ func (o *oracle) find(seed identity.Fingerprint, nodeOnly bool) (coresidency.Res
 			}
 		}
 	}
+	slices.SortFunc(res.SeedHosts, func(a, b coresidency.HostSpans) int {
+		if c := store.CompareFingerprints(a.Node, b.Node); c != 0 {
+			return c
+		}
+		return store.CompareFingerprints(a.Host, b.Host)
+	})
 	slices.SortFunc(cands, oracleRank)
 	res.CoResidents = cands
 	slices.SortFunc(res.Unattributed, func(a, b coresidency.Unattributed) int {

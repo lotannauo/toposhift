@@ -86,6 +86,10 @@ func unattr(subject identity.Fingerprint, why coresidency.UnattributedReason, ca
 	return fmt.Sprintf("%s %s %s %v", subject, why, spansString(ss), cands)
 }
 
+func hostLine(n, h identity.Fingerprint, ss ...interval.Span) string {
+	return fmt.Sprintf("%s %s %s", n, h, spansString(ss))
+}
+
 func sp(a, b time.Time) interval.Span { return interval.Span{Start: a, End: b} }
 
 func find(t *testing.T, st store.Store, seed identity.Fingerprint, w interval.Window, o coresidency.Options) coresidency.Result {
@@ -326,6 +330,7 @@ func TestScenarioESharedHostThroughTwoNodes(t *testing.T) {
 		viaHost(Y, N1, N2, H, S, 10*time.Minute, interval.ClassTransient, 2,
 			ov{hm(10, 10), hm(10, 20), false, legs(sk, sa, sk, sa), []string{"end(2,producer)"}}))
 	expect(t, "unattributed", describeUnattributed(res.Unattributed))
+	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), hostLine(N1, H, sp(hm(10, 0), hm(10, 30))))
 	expectReads(t, res.Reads, 6, 6, 14, 14)
 	if got := coresidency.Intersection(res.CoResidents); len(got) != 1 || got[0].Peer != Z {
 		t.Errorf("Intersection = %v", peers(got))
@@ -335,6 +340,7 @@ func TestScenarioESharedHostThroughTwoNodes(t *testing.T) {
 	res = find(t, st, S, w30, coresidency.Options{})
 	expect(t, "Find(S) without runs_on", describeAll(res.CoResidents), zLine)
 	expect(t, "unattributed", describeUnattributed(res.Unattributed), unattr(N1, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 30))))
+	expect(t, "seed hosts without runs_on", describeSeedHosts(res.SeedHosts))
 	expectReads(t, res.Reads, 3, 3, 5, 5)
 }
 
@@ -358,7 +364,19 @@ func TestScenarioENodeBetweenTwoHosts(t *testing.T) {
 	)
 	expect(t, "unattributed", describeUnattributed(res.Unattributed),
 		unattr(N1, coresidency.SeveralHosts, []identity.Fingerprint{H, H2}, sp(hm(10, 10), hm(10, 15))))
+	// The instants with two hosts are in neither entry.
+	wantHosts := []string{hostLine(N1, H, sp(hm(10, 0), hm(10, 10))), hostLine(N1, H2, sp(hm(10, 15), hm(10, 30)))}
+	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), wantHosts...)
 	expectReads(t, res.Reads, 6, 9, 20, 20)
+
+	// MaxHosts bounds the hosts whose nodes are read, not the seed's hosts.
+	pol := coresidency.DefaultPolicy()
+	pol.MaxHosts = 1
+	capped := find(t, st, S, w30, coresidency.Options{Policy: pol})
+	if !slices.Equal(capped.Truncated.Hosts, []identity.Fingerprint{H}) {
+		t.Errorf("Truncated.Hosts = %v, want [%s]", capped.Truncated.Hosts, H)
+	}
+	expect(t, "seed hosts, MaxHosts 1", describeSeedHosts(capped.SeedHosts), wantHosts...)
 }
 
 func TestScenarioFQuarantinedHost(t *testing.T) {
@@ -380,6 +398,7 @@ func TestScenarioFQuarantinedHost(t *testing.T) {
 	}
 	expect(t, "unattributed", describeUnattributed(res.Unattributed),
 		unattr(N1, coresidency.QuarantinedHost, []identity.Fingerprint{H}, sp(hm(10, 0), hm(10, 30))))
+	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts))
 	expectReads(t, res.Reads, 3, 3, 7, 6)
 }
 
@@ -601,4 +620,86 @@ func TestScenarioMTheSeedOnTwoNodes(t *testing.T) {
 		unattr(N1, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 10)), sp(hm(10, 20), hm(10, 30))),
 		unattr(S, coresidency.SeveralNodes, []identity.Fingerprint{N1, N2}, sp(hm(10, 10), hm(10, 20))))
 	expectReads(t, res.Reads, 3, 3, 6, 6)
+}
+
+func TestScenarioNSeedHosts(t *testing.T) {
+	H, H2, N1, N2 := host(1), host(2), node(1), node(2)
+
+	t.Run("one host, clipped to the window", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, H, N1, S)
+		f.write(observe(sched(S, N1), k8s, hm(9, 0), 0),
+			observe(runsOn(N1, H), agent, hm(10, 10), 0), deleted(runsOn(N1, H), agent, hm(10, 20)))
+		res := find(t, st, S, w30, coresidency.Options{})
+		expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), hostLine(N1, H, sp(hm(10, 10), hm(10, 20))))
+		expect(t, "unattributed", describeUnattributed(res.Unattributed),
+			unattr(N1, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 10)), sp(hm(10, 20), hm(10, 30))))
+
+		// The seed's own time on the node bounds the spans too.
+		st, f = world(t, memstore.Options{}, H, N1, S)
+		f.write(observe(runsOn(N1, H), agent, hm(9, 0), 0),
+			observe(sched(S, N1), k8s, hm(10, 5), 0), deleted(sched(S, N1), k8s, hm(10, 25)))
+		res = find(t, st, S, w30, coresidency.Options{})
+		expect(t, "seed hosts, seed on the node 10:05 to 10:25", describeSeedHosts(res.SeedHosts), hostLine(N1, H, sp(hm(10, 5), hm(10, 25))))
+	})
+
+	t.Run("no host, and no node", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, N1, S, A)
+		f.write(observe(sched(S, N1), k8s, hm(9, 0), 0))
+		res := find(t, st, S, w30, coresidency.Options{})
+		if res.SeedHosts != nil {
+			t.Errorf("seed hosts %v, want none", describeSeedHosts(res.SeedHosts))
+		}
+		// A pod with no scheduled_on is on no node.
+		res = find(t, st, A, w30, coresidency.Options{})
+		if res.SeedHosts != nil {
+			t.Errorf("seed hosts of a pod on no node: %v", describeSeedHosts(res.SeedHosts))
+		}
+	})
+
+	t.Run("several hosts at once", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, H, H2, N1, S)
+		f.write(observe(sched(S, N1), k8s, hm(9, 0), 0),
+			observe(runsOn(N1, H), agent, hm(9, 0), 0), observe(runsOn(N1, H2), agent, hm(9, 0), 0))
+		res := find(t, st, S, w30, coresidency.Options{})
+		if res.SeedHosts != nil {
+			t.Errorf("seed hosts %v, want none", describeSeedHosts(res.SeedHosts))
+		}
+		expect(t, "unattributed", describeUnattributed(res.Unattributed),
+			unattr(N1, coresidency.SeveralHosts, []identity.Fingerprint{H, H2}, sp(hm(10, 0), hm(10, 30))))
+	})
+
+	t.Run("node only reads no host", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, H, N1, S)
+		f.write(observe(sched(S, N1), k8s, hm(9, 0), 0), observe(runsOn(N1, H), agent, hm(9, 0), 0))
+		if res := find(t, st, S, w30, coresidency.Options{NodeOnly: true}); res.SeedHosts != nil {
+			t.Errorf("seed hosts %v, want none", describeSeedHosts(res.SeedHosts))
+		}
+		res := find(t, st, S, w30, coresidency.Options{})
+		expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), hostLine(N1, H, sp(hm(10, 0), hm(10, 30))))
+	})
+
+	t.Run("two nodes at once leave those instants out", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, H, H2, N1, N2, S)
+		f.write(observe(runsOn(N1, H), agent, hm(9, 0), 0), observe(runsOn(N2, H2), agent, hm(9, 0), 0),
+			observe(sched(S, N1), k8s, hm(9, 0), 0), deleted(sched(S, N1), k8s, hm(10, 20)),
+			observe(sched(S, N2), "k8scluster/default", hm(10, 10), 0))
+		res := find(t, st, S, w30, coresidency.Options{})
+		expect(t, "seed hosts", describeSeedHosts(res.SeedHosts),
+			hostLine(N1, H, sp(hm(10, 0), hm(10, 10))),
+			hostLine(N2, H2, sp(hm(10, 20), hm(10, 30))))
+		expect(t, "unattributed", describeUnattributed(res.Unattributed),
+			unattr(S, coresidency.SeveralNodes, []identity.Fingerprint{N1, N2}, sp(hm(10, 10), hm(10, 20))))
+	})
+
+	t.Run("two nodes on one host are two entries, by node", func(t *testing.T) {
+		st, f := world(t, memstore.Options{}, H, N1, N2, S)
+		f.write(observe(runsOn(N1, H), agent, hm(9, 0), 0), observe(runsOn(N2, H), agent, hm(9, 0), 0),
+			observe(sched(S, N2), k8s, hm(9, 0), 0), deleted(sched(S, N2), k8s, hm(10, 10)),
+			observe(sched(S, N1), k8s, hm(10, 10), 0))
+		res := find(t, st, S, w30, coresidency.Options{})
+		expect(t, "seed hosts", describeSeedHosts(res.SeedHosts),
+			hostLine(N1, H, sp(hm(10, 10), hm(10, 30))),
+			hostLine(N2, H, sp(hm(10, 0), hm(10, 10))))
+		expect(t, "unattributed", describeUnattributed(res.Unattributed))
+	})
 }
