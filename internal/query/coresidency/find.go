@@ -252,7 +252,9 @@ func (q *query) hops() error {
 		p := q.place(n, out[i])
 		q.attributeNode(n, p)
 		for h, on := range p.on {
-			if d := interval.Duration(interval.Intersect(q.seedOn[n], on)); d > 0 {
+			seedOnH := interval.Intersect(q.seedOn[n], on)
+			if d := interval.Duration(seedOnH); d > 0 {
+				q.res.SeedHosts = append(q.res.SeedHosts, HostSpans{Node: n, Host: h, Spans: seedOnH})
 				if _, ok := hostTime[h]; !ok {
 					hs = append(hs, h)
 				}
@@ -536,6 +538,12 @@ func (q *query) finish() error {
 			return c
 		}
 		return cmp.Compare(a.Reason, b.Reason)
+	})
+	slices.SortFunc(q.res.SeedHosts, func(a, b HostSpans) int {
+		if c := store.CompareFingerprints(a.Node, b.Node); c != 0 {
+			return c
+		}
+		return store.CompareFingerprints(a.Host, b.Host)
 	})
 	for _, el := range q.quarantined {
 		q.res.Quarantined = append(q.res.Quarantined, el)

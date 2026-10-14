@@ -247,6 +247,14 @@ func describeUnattributed(us []coresidency.Unattributed) []string {
 	return out
 }
 
+func describeSeedHosts(hs []coresidency.HostSpans) []string {
+	out := make([]string, len(hs))
+	for i, h := range hs {
+		out[i] = fmt.Sprintf("%s %s %s", h.Node, h.Host, spansString(h.Spans))
+	}
+	return out
+}
+
 func diffLines(what string, got, want []string) string {
 	if slices.Equal(got, want) {
 		return ""
@@ -272,6 +280,7 @@ func sameResult(got, want coresidency.Result) string {
 		diffLines("co-residents", describeAll(got.CoResidents), describeAll(want.CoResidents)),
 		diffLines("suppressed", describeAll(got.Suppressed), describeAll(want.Suppressed)),
 		diffLines("unattributed", describeUnattributed(got.Unattributed), describeUnattributed(want.Unattributed)),
+		diffLines("seed hosts", describeSeedHosts(got.SeedHosts), describeSeedHosts(want.SeedHosts)),
 		diffLines("quarantined", quarantinedSubjects(got.Quarantined), quarantinedSubjects(want.Quarantined)),
 	} {
 		if d != "" {
