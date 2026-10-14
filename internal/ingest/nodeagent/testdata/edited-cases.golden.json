@@ -1,0 +1,718 @@
+[
+ {
+  "input": "as captured entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "host id empty entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "skipped": {
+   "no host id": 1
+  }
+ },
+ {
+  "input": "host id white space entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "skipped": {
+   "no host id": 1
+  }
+ },
+ {
+  "input": "host id absent entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "skipped": {
+   "no host id": 1
+  }
+ },
+ {
+  "input": "host id with surrounding space is kept as given entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host  ea01b04",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host  ea01b04",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "node uid absent entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   }
+  ],
+  "skipped": {
+   "no node uid: edge refused, host written": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "node uid white space entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   }
+  ],
+  "skipped": {
+   "no node uid: edge refused, host written": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "time an hour ahead of receipt entity.state",
+  "instant": "2026-10-14T13:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "implausible time: receipt substituted": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "time zero entity.state",
+  "instant": "1970-01-01T00:00:00Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "no event time: receipt substituted": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "boot blank entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "no boot id: host written without one": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "boot absent entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "no boot id: host written without one": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "boot with a trailing newline is kept as given entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405\n",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "interval 600 entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "report interval differs: configured one used": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)",
+   "report interval differs from the configured one: 10m0s (x1)"
+  ]
+ },
+ {
+  "input": "interval absent entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "report interval differs: configured one used": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)",
+   "report interval differs from the configured one: missing (x1)"
+  ]
+ },
+ {
+  "input": "interval a string entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "report interval differs: configured one used": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)",
+   "report interval differs from the configured one: unusable (x1)"
+  ]
+ },
+ {
+  "input": "delete event entity.delete",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "skipped": {
+   "host delete: not translated": 1
+  }
+ },
+ {
+  "input": "another entity type entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "skipped": {
+   "entity type is not host": 1
+  }
+ },
+ {
+  "input": "empty and unwanted description keys entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.ip (x1)",
+   "description key dropped: host.mac (x1)",
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)",
+   "description key dropped: os.description (x1)",
+   "description key dropped: os.version (x1)",
+   "description key dropped: test.tag (x1)"
+  ]
+ },
+ {
+  "input": "description keys that are kept entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.availability_zone": "eu-west-1b",
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "cloud.region": "eu-west-1",
+     "cloud.resource_id": "i-0abc",
+     "host.arch": "arm64",
+     "host.cpu.model.name": "Neoverse-N1",
+     "host.type": "m5.large",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "zones off, cloud keys given entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.availability_zone": "eu-west-1b",
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "cloud.region": "eu-west-1",
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "zones on, cloud keys given entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.availability_zone": "eu-west-1b",
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "cloud.region": "eu-west-1",
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   },
+   {
+    "subject": "zone aws/eu-west-1/eu-west-1b",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   },
+   {
+    "subject": "located_in host ea01b04c to zone aws/eu-west-1/eu-west-1b",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "zones on, region missing entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.availability_zone": "eu-west-1b",
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "zones on, a part with a slash entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.availability_zone": "eu-west-1b",
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "cloud.region": "eu/west-1",
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "skipped": {
+   "zone id part contains a slash: zone refused, host written": 1
+  },
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "zones on, zone empty entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "cloud.platform": "aws_ec2",
+     "cloud.provider": "aws",
+     "cloud.region": "eu-west-1",
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:21.46120567Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "the producer's clock distrusted entity.state",
+  "instant": "2026-10-14T12:28:21.46120567Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 72c578b9 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:28:22.46120567Z",
+    "basis": "receipt",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ }
+]

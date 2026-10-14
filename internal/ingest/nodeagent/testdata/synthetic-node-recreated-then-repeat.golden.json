@@ -1,0 +1,87 @@
+[
+ {
+  "input": "synthetic-node-recreated-then-repeat.logs.jsonl:1 entity.state",
+  "instant": "2026-10-14T12:30:31.988286419Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:30:31.988286419Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-1 e81f1010 to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:30:31.988286419Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ],
+  "notes": [
+   "description key dropped: host.name (x1)",
+   "description key dropped: k8s.node.name (x1)"
+  ]
+ },
+ {
+  "input": "synthetic-node-recreated-then-repeat.logs.jsonl:2 entity.state",
+  "instant": "2026-10-14T12:33:23.568501791Z",
+  "records": [
+   {
+    "subject": "host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:33:23.568501791Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-agent-2 29ffa0da to host ea01b04c",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:33:23.568501791Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ]
+ },
+ {
+  "input": "synthetic-node-recreated-then-repeat.logs.jsonl:3 entity.state",
+  "instant": "2026-10-14T12:33:25.727411613Z",
+  "records": [
+   {
+    "subject": "host 6c48ce4f",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:33:25.727411613Z",
+    "basis": "producer_event",
+    "ttl": "15m0s",
+    "boot": "c574baf2-0d0a-4145-991b-575c9e44f405",
+    "payload": {
+     "host.arch": "arm64",
+     "os.type": "linux"
+    }
+   },
+   {
+    "subject": "runs_on node l1r1-server 56de6bdd to host 6c48ce4f",
+    "layer": "L1",
+    "kind": "observe",
+    "event_time": "2026-10-14T12:33:25.727411613Z",
+    "basis": "producer_event",
+    "ttl": "15m0s"
+   }
+  ]
+ }
+]
