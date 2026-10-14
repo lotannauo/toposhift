@@ -18,8 +18,11 @@
 //
 // An answer is read at one snapshot token. [store.Latest], and a token above
 // store.Store.LastSeq, are resolved once, to LastSeq before the first read;
-// every read of the answer uses that token, and [Result] names it. The window is
-// in event time only: what was known between two tokens is another query.
+// every read of the answer uses that token, and [Result] names it. A batched
+// read, [Reader.EdgesBatch] or [Reader.Entities], is one answer: one token for
+// every fingerprint, and at most one existence read per distinct entity. The
+// window is in event time only: what was known between two tokens is another
+// query.
 //
 // # What is folded
 //
@@ -71,6 +74,32 @@
 // [store.QuarantineError]) is an element marked [Element].Quarantine, with no
 // pieces; it is shown, never dropped or guessed. An edge whose endpoint is
 // quarantined keeps its own pieces, uncut, and is marked [Element].Uncascaded.
+//
+// # Descriptions
+//
+// A reader with [Options].Describe also gives each element its merged
+// description at the window's two ends: [Element].AtFrom at From and
+// [Element].AtLast at To-1ns, the window's last instant, each when a piece
+// contains that instant (for an edge read with the cascade, a cut piece) and
+// nil otherwise. A quarantined entity has neither. The description is the
+// store's single payload attribute: a record's whole payload, one opaque
+// value, never split into keys here.
+//
+// It is merged by rank and never by recency. Of the producers whose reference
+// is live at the instant, a producer listed in [Options].Rank beats an
+// unlisted one, a higher rank beats a lower one, and the smaller name breaks
+// every remaining tie; the description is that producer's, the payload of its
+// latest assertion at or before the instant. So a reader with no Rank ranks
+// producers by name, and when the winner differs between the two ends the two
+// payloads are two producers' descriptions, not one that changed.
+//
+// A reader that describes reads nothing more: it folds a second time, under
+// Rank, the records of the subject the call has already read. Rank changes no
+// existence: pieces, classes and transitions are the same with Describe on or
+// off and under any Rank. Its cost is memory and CPU only: an entity read
+// keeps each entity's records until the call ends, and an element with a
+// piece at either end is folded twice, while the endpoints an edge read reads
+// for the cascade keep no records.
 //
 // # A multigraph of subjects
 //
