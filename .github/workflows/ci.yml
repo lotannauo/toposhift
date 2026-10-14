@@ -294,6 +294,9 @@ jobs:
               echo "[sampler] $(date -u +%T) load=$(cut -d' ' -f1 /proc/loadavg) $(free -m | awk '/^Mem:/{print "mem_avail_mb="$7} /^Swap:/{print "swap_used_mb="$3}' | tr '\n' ' ')root_avail=$(df -h --output=avail / | tail -n 1 | tr -d ' ')" || true
             done
           }
+          # Which host this was: runners of one label differ in speed, and a slow
+          # run can then be tied to the processor it ran on.
+          echo "[sampler] host nproc=$(nproc) cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p')" || true
           sample & sampler=$!
           mise run ci:deep & tests=$!
           trap 'snapshot "signal received"; kill -TERM "$tests" 2>/dev/null || true; wait "$tests" || true; kill "$sampler" 2>/dev/null || true; exit 143' INT TERM
@@ -336,6 +339,20 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # The step summary is not served by the API, so the reports themselves are
+      # kept: a run that passes, fails or times out leaves the duration of every
+      # test it got through.
+      - name: Keep the test reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports-deep-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/test-reports/test-deep.json
+            ${{ runner.temp }}/test-reports/bench-test-deep.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Keep the inputs that failed a property
         if: failure()
