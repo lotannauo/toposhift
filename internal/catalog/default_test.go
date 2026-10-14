@@ -101,7 +101,7 @@ func TestDefaultRelations(t *testing.T) {
 	}{
 		{
 			catalog.PartOf,
-			[]catalog.Endpoint{{From: catalog.Container, To: catalog.K8sPod}},
+			[]catalog.Endpoint{{From: catalog.Container, To: catalog.K8sPod}, {From: catalog.ServiceInstance, To: catalog.K8sPod}},
 			catalog.PropagateDown, catalog.StorageFrom, catalog.L2,
 		},
 		{
@@ -164,6 +164,41 @@ func TestDefaultRelations(t *testing.T) {
 	}
 	if n != len(tests) {
 		t.Errorf("catalog has %d relation types, spec covers %d", n, len(tests))
+	}
+}
+
+// A service instance is part of the pod it runs in, and nothing else about
+// part_of changes: its id, layer and propagation stay those of a container's
+// edge, and the pair is allowed in one direction only.
+func TestPartOfAllowsAServiceInstanceInAPod(t *testing.T) {
+	t.Parallel()
+
+	r, ok := catalog.Default().Relation(catalog.PartOf)
+	if !ok {
+		t.Fatal("part_of is not registered")
+	}
+	tests := []struct {
+		name     string
+		from, to catalog.EntityType
+		want     bool
+	}{
+		{"a service instance in a pod", catalog.ServiceInstance, catalog.K8sPod, true},
+		{"a container in a pod", catalog.Container, catalog.K8sPod, true},
+		{"a pod of a service instance", catalog.K8sPod, catalog.ServiceInstance, false},
+		{"a pod of a container", catalog.K8sPod, catalog.Container, false},
+		{"a service instance in a container", catalog.ServiceInstance, catalog.Container, false},
+		{"a service instance in a node", catalog.ServiceInstance, catalog.K8sNode, false},
+		{"a service instance in a service", catalog.ServiceInstance, catalog.Service, false},
+		{"a process in a pod", catalog.Process, catalog.K8sPod, false},
+		{"a service in a pod", catalog.Service, catalog.K8sPod, false},
+	}
+	for _, tt := range tests {
+		if got := r.Allows(tt.from, tt.to); got != tt.want {
+			t.Errorf("%s: Allows(%s, %s) = %v, want %v", tt.name, tt.from, tt.to, got, tt.want)
+		}
+	}
+	if r.ID() != 1 || r.Layer() != catalog.L2 || r.Propagation() != catalog.PropagateDown {
+		t.Errorf("part_of has id %d, layer %s, propagation %s; want 1, L2, down", r.ID(), r.Layer(), r.Propagation())
 	}
 }
 

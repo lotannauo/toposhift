@@ -69,9 +69,16 @@ func defaultEntities() []EntitySpec {
 func defaultRelations() []RelationSpec {
 	return []RelationSpec{
 		{
-			ID:          1,
-			Type:        PartOf,
-			Endpoints:   []Endpoint{{From: Container, To: K8sPod}},
+			// A container is part of its pod. So is a service instance, which
+			// places it: an instance runs in a container of the pod, or in the
+			// pod, and the pod contains it. A writer asserts the second endpoint only from a resource that
+			// carries k8s.pod.uid, never by matching an address.
+			ID:   1,
+			Type: PartOf,
+			Endpoints: []Endpoint{
+				{From: Container, To: K8sPod},
+				{From: ServiceInstance, To: K8sPod},
+			},
 			Propagation: PropagateDown,
 			Storage:     StorageFrom,
 			Layer:       L2,
