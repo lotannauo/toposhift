@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
@@ -25,6 +27,16 @@ type Options struct {
 	// of its endpoints. It is for diagnostics, and for the equality with
 	// store.Store.Neighbors.
 	Raw bool
+	// Describe fills [Element].AtFrom and [Element].AtLast. It folds a second
+	// time, under Rank, the records of the subject the call has already read,
+	// and reads nothing more.
+	Describe bool
+	// Rank is the authority order of descriptions, as lifecycle.Policy.Rank: a
+	// listed producer beats an unlisted one, a higher rank beats a lower one,
+	// and the smaller name breaks every remaining tie, so with no Rank the
+	// smallest name wins. Only Describe uses it: no existence depends on it.
+	// NewReader copies it.
+	Rank map[lifecycle.Producer]int
 }
 
 // Reader reads windows of a store as intervals. It holds no state between
@@ -41,6 +53,7 @@ type Reader struct {
 
 // NewReader returns a reader of st, which it only reads.
 func NewReader(st store.Store, opts Options) *Reader {
+	opts.Rank = maps.Clone(opts.Rank)
 	return &Reader{st: st, opts: opts, cat: catalog.Default()}
 }
 
@@ -52,19 +65,47 @@ func (r *Reader) Entity(ctx context.Context, fp identity.Fingerprint, w Window) 
 	if err != nil {
 		return Result{}, err
 	}
-	ex, err := c.existence(fp)
+	c.keepRecords = r.opts.Describe
+	el, err := c.entity(fp)
 	if err != nil {
 		return Result{}, err
 	}
-	el := Element{Subject: store.EntitySubject(fp), Layer: ex.layer, Quarantine: ex.quarantine}
-	if ex.quarantine == nil {
-		if el.Pieces, err = clip(ex.f.ivs, c.from, c.to); err != nil {
-			return Result{}, c.fail(fmt.Errorf("%s: %w", describeSubject(el.Subject), err))
-		}
-		attribute(el.Pieces, ex.f)
-		el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
-	}
 	return Result{Token: c.token, From: c.from, To: c.to, Elements: []Element{el}}, nil
+}
+
+// Entities is Entity for many entities at one token: out[i] answers fps[i],
+// and token is the one every read used. fps may repeat and may mix entity
+// types; an entity listed twice is read once, and its two answers share
+// nothing a caller may change. The arguments are checked as Entity checks
+// them, and every entity layer before the first read. No fingerprints give the
+// token and an empty out, with no read but the token's. One failure, a refusal
+// included, fails the whole call, with a nil out: there is no partial answer.
+func (r *Reader) Entities(ctx context.Context, fps []identity.Fingerprint, w Window) (token uint64, out []Element, err error) {
+	c, err := r.begin(ctx, "Entities", w, false, 0, fps...)
+	if err != nil {
+		return 0, nil, err
+	}
+	c.keepRecords = r.opts.Describe
+	for _, fp := range fps {
+		// begin has checked that the catalog knows the type.
+		ent, _ := r.cat.Entity(fp.Type())
+		if err := c.checkRetention(ent.Layer()); err != nil {
+			return 0, nil, err
+		}
+	}
+	out = make([]Element, len(fps))
+	first := map[identity.Fingerprint]int{}
+	for i, fp := range fps {
+		if j, ok := first[fp]; ok {
+			out[i] = cloneElement(out[j])
+			continue
+		}
+		if out[i], err = c.entity(fp); err != nil {
+			return 0, nil, err
+		}
+		first[fp] = i
+	}
+	return c.token, out, nil
 }
 
 // Edges reads every edge touching fp in dir that has a piece in w, from each
@@ -137,14 +178,71 @@ type call struct {
 	token    uint64
 	clear    map[catalog.Layer]bool // layers whose horizon was checked and is zero
 	ends     map[identity.Fingerprint]*existence
+	// keepRecords keeps each entity's records for its description: set by the
+	// entity reads of a reader that describes, never by an edge read, whose
+	// endpoints are read for the cascade only.
+	keepRecords bool
 }
 
 // existence is what a call has read of one entity: its layer, and either its
-// quarantine or its fold.
+// quarantine or its fold, with the records folded when the call keeps them.
 type existence struct {
 	layer      catalog.Layer
 	quarantine *store.QuarantineError
 	f          folded
+	recs       []store.Record
+}
+
+// entity is the element of one entity: its existence in the call's window, or
+// its quarantine.
+func (c *call) entity(fp identity.Fingerprint) (Element, error) {
+	ex, err := c.existence(fp)
+	if err != nil {
+		return Element{}, err
+	}
+	el := Element{Subject: store.EntitySubject(fp), Layer: ex.layer, Quarantine: ex.quarantine}
+	if ex.quarantine != nil {
+		return el, nil
+	}
+	if el.Pieces, err = clip(ex.f.ivs, c.from, c.to); err != nil {
+		return Element{}, c.fail(fmt.Errorf("%s: %w", describeSubject(el.Subject), err))
+	}
+	attribute(el.Pieces, ex.f)
+	el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
+	if err := c.describe(&el, ex.recs); err != nil {
+		return Element{}, err
+	}
+	return el, nil
+}
+
+// describe sets an element's descriptions at From and at the window's last
+// instant, To-1ns, when the reader describes and a piece contains the
+// instant. recs are the subject's records the call has read: they are folded
+// again under the reader's Rank, and nothing more is read.
+func (c *call) describe(el *Element, recs []store.Record) error {
+	if !c.r.opts.Describe {
+		return nil
+	}
+	last := c.to.Add(-time.Nanosecond)
+	atFrom, atLast := containsAt(el.Pieces, c.from), containsAt(el.Pieces, last)
+	if !atFrom && !atLast {
+		return nil
+	}
+	tl, err := foldRanked(el.Subject, recs, c.r.opts.Rank)
+	if err != nil {
+		return c.fail(err)
+	}
+	if atFrom {
+		if el.AtFrom, err = describeAt(tl, el.Subject, c.from); err != nil {
+			return c.fail(err)
+		}
+	}
+	if atLast {
+		if el.AtLast, err = describeAt(tl, el.Subject, last); err != nil {
+			return c.fail(err)
+		}
+	}
+	return nil
 }
 
 // begin checks the arguments, in this order: the window, the direction (when
@@ -343,6 +441,9 @@ func (c *call) edge(g group, l catalog.Layer) (Element, error) {
 	}
 	attribute(el.Pieces, f)
 	el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
+	if err := c.describe(&el, g.recs); err != nil {
+		return Element{}, err
+	}
 	return el, nil
 }
 
@@ -375,20 +476,30 @@ func (c *call) existence(fp identity.Fingerprint) (*existence, error) {
 		if ex.f, err = foldSubject(recs); err != nil {
 			return nil, c.fail(err)
 		}
+		if c.keepRecords {
+			ex.recs = recs
+		}
 	}
 	c.ends[fp] = ex
 	return ex, nil
 }
 
-// cloneElements copies elements and their pieces, so two answers of one batch
-// share nothing a caller may change.
+// cloneElements copies elements, so two answers of one batch share nothing a
+// caller may change.
 func cloneElements(els []Element) []Element {
 	out := slices.Clone(els)
 	for i := range out {
-		out[i].Pieces = slices.Clone(out[i].Pieces)
-		for k := range out[i].Pieces {
-			out[i].Pieces[k].Producers = slices.Clone(out[i].Pieces[k].Producers)
-		}
+		out[i] = cloneElement(out[i])
 	}
 	return out
+}
+
+// cloneElement copies an element's pieces and descriptions.
+func cloneElement(el Element) Element {
+	el.Pieces = slices.Clone(el.Pieces)
+	for k := range el.Pieces {
+		el.Pieces[k].Producers = slices.Clone(el.Pieces[k].Producers)
+	}
+	el.AtFrom, el.AtLast = el.AtFrom.clone(), el.AtLast.clone()
+	return el
 }

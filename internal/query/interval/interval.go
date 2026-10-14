@@ -1,6 +1,7 @@
 package interval
 
 import (
+	"bytes"
 	"fmt"
 	"time"
 
@@ -105,6 +106,34 @@ type Element struct {
 	// pieces are then the edge's own, not cut by its endpoints. When both are,
 	// it is the source's.
 	Uncascaded *store.QuarantineError
+	// AtFrom and AtLast are set only by a reader with [Options].Describe:
+	// AtFrom is the description at From, if a piece contains From, and AtLast
+	// the description at To-1ns, the window's last instant, if a piece
+	// contains it; otherwise each is nil. For an edge read with the cascade a
+	// piece is a cut one, so an edge whose endpoint is gone at that instant
+	// has no description there; an Uncascaded edge is described where its own
+	// uncut pieces are. A quarantined entity has neither.
+	AtFrom, AtLast *Description
+}
+
+// Description is the merged description of a subject at one instant: the
+// payload of the producer that wins under the reader's [Options].Rank. It is
+// derived, and a copy that shares nothing with the store or with another
+// element.
+type Description struct {
+	// Producer is the winner: of the producers whose reference is live at the
+	// instant, the one that outranks the others.
+	Producer lifecycle.Producer
+	// Payload is the payload of the winner's latest assertion at or before the
+	// instant, as the store holds it; nil when that payload is empty.
+	Payload []byte
+}
+
+func (d *Description) clone() *Description {
+	if d == nil {
+		return nil
+	}
+	return &Description{Producer: d.Producer, Payload: bytes.Clone(d.Payload)}
 }
 
 // Result is a range answer: the token every read of it used, the window, and

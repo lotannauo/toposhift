@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -91,6 +92,44 @@ func foldRecords(recs []store.Record) ([]ival, error) {
 				describeSubject(recs[0].Subject), formatTime(iv.Start), formatTime(iv.End))
 		}
 		out[i] = ival{start: iv.Start, end: iv.End, open: iv.Open(), src: iv.EndSource}
+	}
+	return out, nil
+}
+
+// payloadAttr is the attribute a record's payload enters its lifecycle
+// assertion as: store.Record.Assertion gives every Observe this one
+// descriptive attribute (and a host's boot id beside it). A test pins it to
+// the store's.
+const payloadAttr catalog.AttributeKey = "payload"
+
+// foldRanked folds the records of one subject under rank, for its
+// descriptions only: its existence is foldSubject's, under the zero policy.
+func foldRanked(sub store.Subject, recs []store.Record, rank map[lifecycle.Producer]int) (lifecycle.Timeline, error) {
+	as := make([]lifecycle.Assertion, len(recs))
+	for i, r := range recs {
+		as[i] = r.Assertion()
+	}
+	tl, err := lifecycle.Fold(as, lifecycle.Policy{Rank: rank})
+	if err != nil {
+		return lifecycle.Timeline{}, fmt.Errorf("folding %s for its description: %w", describeSubject(sub), err)
+	}
+	return tl, nil
+}
+
+// describeAt is the description at x of a subject whose ranked fold is tl,
+// for an instant a piece contains: the payload attribute, a copy, and the
+// producer it went to. A subject that exists at x with no payload there is an
+// error rather than a guess.
+func describeAt(tl lifecycle.Timeline, sub store.Subject, x time.Time) (*Description, error) {
+	d, ok := tl.DescribeAt(x)
+	a, has := d[payloadAttr]
+	v, isString := a.Value.(string)
+	if !ok || !has || !isString {
+		return nil, fmt.Errorf("%s exists at %s with no payload there", describeSubject(sub), formatTime(x))
+	}
+	out := &Description{Producer: a.Producer}
+	if v != "" {
+		out.Payload = []byte(v)
 	}
 	return out, nil
 }
