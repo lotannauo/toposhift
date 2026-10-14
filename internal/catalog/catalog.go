@@ -2,8 +2,8 @@
 //
 // It is the single source of truth for which entity types exist, which
 // attributes identify each one, and how each relation is directed. The
-// identity layer reads it to know which keys to canonicalize and hash, ingest
-// reads it to reject edges between the wrong types, and the query layer reads
+// identity layer reads it to know which keys to canonicalize and hash, the
+// interval reader refuses stored edges between the wrong types, and the query layer reads
 // it for failure-propagation rules.
 //
 // A [Catalog] can only be built by [New], which checks every invariant and
@@ -14,6 +14,11 @@
 // Entity types and identifying attributes that OpenTelemetry defines keep
 // OpenTelemetry's names verbatim, so identities match other producers. Types
 // OpenTelemetry lacks use a "topo." prefix.
+//
+// A relation may allow several pairs of endpoint types, and [Relation.Allows]
+// answers for one pair. In the shipped catalog part_of allows a container and
+// a service instance as parts of a pod, so a read that reaches a pod through
+// part_of can find either.
 //
 // Every stored relation is stored in exactly one layer, and is read from
 // either end in that layer. The layer is the first byte of every stored key of
