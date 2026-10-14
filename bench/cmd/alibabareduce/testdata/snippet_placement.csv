@@ -1,0 +1,14 @@
+# Synthetic rows in the format of an MSMetricsUpdate archive. Lines starting with # are
+# not rows. Each row's fate is in the comment before it. No row here is from the trace.
+# columns: three fields
+60000,MS_S,MS_S_POD_0
+# timestamp: not a number
+abc,MS_S,MS_S_POD_1,NODE_S,0.1,0.2
+# timestamp: negative
+-60000,MS_S,MS_S_POD_1,NODE_S,0.1,0.2
+# empty_id: no msname
+60000,,MS_S_POD_2,NODE_S,0.1,0.2
+# empty_id: a blank node id
+60000,MS_S,MS_S_POD_3, ,0.1,0.2
+# used
+60000,MS_S,MS_S_POD_4,NODE_S,0.1,0.2
