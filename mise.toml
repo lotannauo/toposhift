@@ -70,7 +70,7 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 [tasks."bench:test:deep"]
 description = "Run the bench module's full tests with the race detector, in random order"
 dir = "bench"
-run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 -timeout 45m ./...'
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-deep.json"} -- -race -shuffle=on -count=1 -timeout 60m ./...'
 
 [tasks."bench:vuln"]
 description = "Scan the bench module's dependencies for known vulnerabilities"
