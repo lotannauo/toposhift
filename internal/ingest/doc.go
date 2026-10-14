@@ -22,6 +22,8 @@
 //     events and list items for pods and nodes.
 //   - k8scluster translates the entity events of the Kubernetes cluster receiver
 //     into records of nodes, pods and containers and their edges.
+//   - nodeagent translates the host entity events of node-level collectors into
+//     records of hosts and of the placement of Kubernetes nodes on them.
 //   - resume times the records a translator backdates (the first sighting of a
 //     subject after the translator lost its state) from the producer's last
 //     assertion the store holds, so that a restart or a reset does not re-assert
