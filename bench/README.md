@@ -343,6 +343,13 @@ percentage point with the exact bytes of the filler; the decision takes it and t
 entry, and an index bucketed by the hour and by the day, which is written only when a run begins, lapses
 or moves its deadline into another bucket.
 
+`alibabareduce` reduces one hour of the Alibaba cluster trace v2022 (the `MSMetricsUpdate` and `CallGraph`
+archives) to activity files, tables and a report: `go run ./cmd/alibabareduce -in ~/datasets/alibaba-v2022 -out
+~/spikebench/alibaba-reduce/<date>`. It streams the archives with the standard library, counts every skipped row by
+reason, and refuses an output directory inside a git work tree. The trace, and everything derived from it, stays
+outside the repository; `cmd/alibabareduce/testdata` holds synthetic rows and `check.sql`, an independent check for
+the DuckDB command line (never linked, never run in CI). Its numbers are local and informational.
+
 `dbhash <db>...` prints, for each Pebble database it opens read-only, the number of keys, how many are
 layout-L records, checkpoints and baselines, and a SHA-256 of every key and value, so two stores built from
 the same stream can be compared byte for byte. With `-data` it digests only layout L's data keys (those whose

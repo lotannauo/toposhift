@@ -1,0 +1,22 @@
+# Synthetic rows in the format of a CallGraph archive. Lines starting with # are not
+# rows. Each row's fate is in the comment before it. No row here is from the trace.
+# columns: five fields
+60000,T_1,S_1,0.1,rpc
+# columns: twelve fields
+60000,T_1,S_1,0.1,0.1.1,rpc,MS_A,MS_A_POD_1,IF,MS_B,MS_B_POD_1,1.0
+# shifted: the rpctype holds an rpc_id
+60000,T_1,S_1,0.1,0.1.1,MS_A,MS_A_POD_1,IF,MS_B,MS_B_POD_1,1.0
+# timestamp: not a number
+x,T_1,S_1,0.1,rpc,MS_A,MS_A_POD_1,IF,MS_B,MS_B_POD_1,1.0
+# empty_id: no upstream
+60000,T_1,S_1,0.1,rpc,,MS_A_POD_1,IF,MS_B,MS_B_POD_1,1.0
+# unknown_endpoint: an UNKNOWN upstream
+60000,T_1,S_1,0.1,rpc,UNKNOWN,UNKNOWN_POD_9,IF,MS_B,MS_B_POD_1,1.0
+# unknown_endpoint: every endpoint UNAVAILABLE
+60000,T_1,S_1,0.1,mc,UNAVAILABLE,UNAVAILABLE,UNAVAILABLE,UNAVAILABLE,UNAVAILABLE,None
+# unknown_endpoint: an UNKNOWN_POD instance
+60000,T_1,S_1,0.1,rpc,MS_A,UNKNOWN_POD_9,IF,MS_B,MS_B_POD_1,1.0
+# unknown_endpoint: an empty instance
+60000,T_1,S_1,0.1,rpc,MS_A,,IF,MS_B,MS_B_POD_1,1.0
+# used
+60000,T_1,S_1,0.1,rpc,MS_A,MS_A_POD_1,IF,MS_B,MS_B_POD_1,1.0
