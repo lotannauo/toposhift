@@ -33,6 +33,10 @@ type Reader struct {
 	st   store.Store
 	opts Options
 	cat  *catalog.Catalog
+	// everyEndpoint turns off the skip of endpoint reads for edges with no
+	// interval in the window. Only tests set it, to compare the answers with
+	// those of reading every endpoint.
+	everyEndpoint bool
 }
 
 // NewReader returns a reader of st, which it only reads.
@@ -311,6 +315,13 @@ func (c *call) edge(g group, l catalog.Layer) (Element, error) {
 		return Element{}, c.fail(err)
 	}
 	ivs := f.ivs
+	if !c.r.everyEndpoint && !slices.ContainsFunc(ivs, func(iv ival) bool { return iv.meets(c.from, c.to) }) {
+		// No interval of the edge's own meets the window, so it has no piece,
+		// cut or uncut, and its endpoints are not read: the cascade costs one
+		// existence read per endpoint of an edge in the window, not per endpoint
+		// in the whole history before To.
+		return el, nil
+	}
 	if !c.r.opts.Raw {
 		var ends [2]*existence
 		for i, e := range []identity.Fingerprint{g.sub.A, g.sub.B} {

@@ -17,6 +17,11 @@ type ival struct {
 	src        lifecycle.EndSource
 }
 
+// meets reports whether the interval has an instant in [from, to).
+func (a ival) meets(from, to time.Time) bool {
+	return a.start.Before(to) && (a.open || a.end.After(from))
+}
+
 // endsBy reports whether a ends at or before b: an open interval ends after
 // every finite one.
 func (a ival) endsBy(b ival) bool {
@@ -129,7 +134,7 @@ func cut(edge, end []ival) []ival {
 func clip(ivs []ival, from, to time.Time) ([]Piece, error) {
 	var out []Piece
 	for _, iv := range ivs {
-		if !iv.start.Before(to) || (!iv.open && !iv.end.After(from)) {
+		if !iv.meets(from, to) {
 			continue
 		}
 		p := Piece{Span: Span{Start: iv.start, End: to}, Before: iv.start.Before(from)}

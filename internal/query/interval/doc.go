@@ -58,6 +58,13 @@
 // computed on the intersected interval. [Options].Raw reads an edge's own
 // intervals, with no endpoint read.
 //
+// Only an edge with an interval of its own in the window has its endpoints
+// read: one existence read per distinct endpoint of such an edge, at most, per
+// call. An edge with none has no piece whatever its endpoints did, so the
+// endpoints of an edge that ended before From, which a node's history is full
+// of, are never read, and an error reading them (a retained endpoint layer
+// among them) cannot fail the call.
+//
 // # Quarantine
 //
 // An entity the store quarantines (store.Store.Alive returns a
