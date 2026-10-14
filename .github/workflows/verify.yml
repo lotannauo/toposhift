@@ -1,0 +1,408 @@
+name: verify
+
+# Runs the shards of ci.yml on a change that has not been committed to GitHub: a
+# patch, applied here to a commit of main. Nothing is pushed and nothing is signed;
+# the run is the evidence that the change passes the checks a pull request runs, on
+# both architectures, before the change is landed as one signed commit.
+#
+# The dispatch names the base commit (on main), the patch (inline, gzip + base64, or
+# as the file patch.b64 of a gist; see .github/scripts/apply-patch.sh) with its
+# sha256, and the tree the patched checkout must have. The run refuses unless the
+# patched tree is exactly that tree, so the tree it passes is the tree that lands.
+#
+# It is dispatched from the verify branch, which points at a commit of main and is
+# advanced only to another commit of main, by fast-forward, never given a commit of its
+# own: the workflow and the scripts a run uses are those at the branch's head, so the
+# setup job refuses a head that is not on main. The branch also needs a ruleset (a
+# maintainer's one-time action): no force push, no deletion, and updates restricted to
+# the maintainer; commits are signed already. Creating the branch and advancing it are
+# writes to the repository's refs, made by a maintainer.
+#
+# The patch is code, and code in a job can write to the cache of the ref the job runs
+# on, through a later action of the same job. So the jobs only restore the Go caches
+# that main saved (a branch can read the default branch's caches) and have no step
+# that saves one, and every cache entry in the verify branch's scope, which nothing
+# but this workflow reads and which it never writes, is deleted before the shards
+# start and after they end. The jobs hold no secret; the shard jobs, which run the
+# patch, hold a read-only token, and the setup and result jobs, which run no patched
+# code, also hold actions: write, only to delete the verify branch's cache entries.
+# The workflow has no other trigger: no pull_request_target, and no code from a fork.
+# A dispatch's inputs, and so an inline patch, are public on a public repository: never
+# dispatch a patch that holds a secret.
+#
+#   gh workflow run verify.yml --ref verify -f label=... -f base_sha=... -f tree=... \
+#     -f patch_sha256=... -f patch_b64=...   (or -f gist_id=...)
+
+run-name: verify ${{ inputs.label }} ${{ inputs.tree }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      label:
+        description: A name for the run, such as the change's (letters, digits, dots, dashes and underscores, at most 40).
+        type: string
+        required: true
+      base_sha:
+        description: The 40-hexadecimal-digit commit of main the patch applies to.
+        type: string
+        required: true
+      tree:
+        description: The 40-hexadecimal-digit tree the patched checkout must have (the tree of the commit that will land).
+        type: string
+        required: true
+      patch_sha256:
+        description: The sha256 of the plain patch, which is the output of git diff --binary --full-index.
+        type: string
+        required: true
+      patch_b64:
+        description: The patch, gzip-compressed and base64-encoded on one line, when it is under about 60 KB. Give this or gist_id.
+        type: string
+        default: ""
+      gist_id:
+        description: The id of a secret gist with the same text in a file named patch.b64. Give this or patch_b64.
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  # A run has a group of its own and is never cancelled.
+  group: verify-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  # What the Go cache holds. This list must be the one ci.yml uses: actions/cache
+  # versions an entry by it, so an entry saved with one list is never restored with
+  # another.
+  GO_CACHE_PATHS: |
+    ~/.cache/go-build
+    ~/go/pkg/mod
+    ~/.cache/golangci-lint
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Checks the inputs, gets the patch once, proves that it makes the tree the dispatch
+  # names, and reads the shards from ci.yml. Every input reaches a script only through
+  # env.
+  setup:
+    name: verify setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # to delete the cache entries of the verify branch; no patch runs in this job
+    outputs:
+      base_sha: ${{ steps.inputs.outputs.base_sha }}
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The scripts come from the commit this run was dispatched at, never from the
+      # patch.
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Check the inputs
+        id: inputs
+        env:
+          REF: ${{ github.ref }}
+          LABEL: ${{ inputs.label }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          TREE: ${{ inputs.tree }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          HAS_PATCH_B64: ${{ inputs.patch_b64 != '' }}
+          GIST_ID: ${{ inputs.gist_id }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1" >&2; exit 1; }
+          # The caches of main are what pull requests restore, and a patch is code.
+          [ "$REF" = refs/heads/verify ] || fail "the ref: a verification is dispatched from the verify branch"
+          re='^[A-Za-z0-9._-]{1,40}$'
+          [[ $LABEL =~ $re ]] || fail "label: 1 to 40 letters, digits, dots, dashes and underscores"
+          re='^[0-9a-f]{40}$'
+          [[ $BASE_SHA =~ $re ]] || fail "base_sha: 40 lowercase hexadecimal digits"
+          [[ $TREE =~ $re ]] || fail "tree: 40 lowercase hexadecimal digits"
+          re='^[0-9a-f]{64}$'
+          [[ $PATCH_SHA256 =~ $re ]] || fail "patch_sha256: 64 lowercase hexadecimal digits"
+          if [ "$HAS_PATCH_B64" = true ] && [ -n "$GIST_ID" ]; then
+            fail "patch_b64 and gist_id: give the patch one way, not both"
+          fi
+          if [ "$HAS_PATCH_B64" != true ] && [ -z "$GIST_ID" ]; then
+            fail "patch_b64 and gist_id: give the patch one way"
+          fi
+          echo "base_sha=$BASE_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.inputs.outputs.base_sha }}
+          path: src
+          # The whole history, so that the base commit can be checked to be on main.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The workflow and the scripts of this run are at the head of the verify branch,
+      # which must be a commit of main. The ruleset on the branch is the other guard.
+      - name: Check that the verify branch is at a commit of main
+        working-directory: src
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null || {
+            echo "::error::the verify branch is not at a commit of main" >&2
+            exit 1
+          }
+
+      - name: Delete any cache entry of the verify branch
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/.github/scripts/clear-verify-caches.sh
+
+      - name: Get the patch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PATCH_B64: ${{ inputs.patch_b64 }}
+          GIST_ID: ${{ inputs.gist_id }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          OUT: ${{ runner.temp }}/patch/verify.patch
+        run: |
+          mkdir -p "$(dirname "$OUT")"
+          bash tools/.github/scripts/apply-patch.sh fetch
+
+      # The same step each shard runs, here first, so that a patch that does not apply
+      # or makes another tree fails in a minute and not after the queue.
+      - name: Apply the patch, and check the tree
+        working-directory: src
+        env:
+          BASE_SHA: ${{ steps.inputs.outputs.base_sha }}
+          PATCH_FILE: ${{ runner.temp }}/patch/verify.patch
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          TREE: ${{ inputs.tree }}
+          REQUIRE_ON_MAIN: "true"
+        run: bash ../tools/.github/scripts/apply-patch.sh apply
+
+      # The shards are the ones the patched ci.yml lists on its `shard: [...]` line,
+      # the line check:ci-shards holds equal to the shards mise run ci depends on.
+      - name: Read the shards
+        id: shards
+        env:
+          LABEL: ${{ inputs.label }}
+          BASE_SHA: ${{ steps.inputs.outputs.base_sha }}
+          TREE: ${{ inputs.tree }}
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+        run: |
+          set -euo pipefail
+          line="$(grep -E '^ +shard: \[[a-z, ]+\]$' src/.github/workflows/ci.yml || true)"
+          if [ "$(printf '%s\n' "$line" | grep -c .)" != 1 ]; then
+            echo "::error::expected exactly one 'shard: [...]' line in .github/workflows/ci.yml" >&2
+            exit 1
+          fi
+          # The patched line must be the base commit's: a patch that shortens the list
+          # would make "every shard passed" mean less. A change of the shards is
+          # verified through a pull request.
+          base="$(git -C src show "${BASE_SHA}:.github/workflows/ci.yml" | grep -E '^ +shard: \[[a-z, ]+\]$' || true)"
+          if [ "$base" != "$line" ]; then
+            echo "::error::the patch changes the shard line of ci.yml; verify such a change through a pull request" >&2
+            exit 1
+          fi
+          list="$(printf '%s\n' "$line" | sed -E 's/.*\[(.*)\]/\1/' | tr -d ' ')"
+          shards="$(printf '%s\n' "$list" | tr ',' '\n' | jq -R . | jq -sc .)"
+          echo "shards=$shards" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Verification"
+            echo
+            echo "- label: \`$LABEL\`"
+            echo "- base commit: \`$BASE_SHA\`"
+            echo "- patched tree: \`$TREE\` (the patch applies and makes this tree)"
+            echo "- patch sha256: \`$PATCH_SHA256\`"
+            echo "- shards: $list, on ubuntu-24.04 and ubuntu-24.04-arm"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # The shards download this one file, so that every job applies the same bytes.
+      - name: Keep the patch for the shards
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/patch/verify.patch
+          if-no-files-found: error
+          retention-days: 3
+
+  # mise run ci is the shards of ci.yml, and each runs here as its own job on each
+  # architecture, with the same task. These names must not start with "ci (": those
+  # are the required checks, which only ci.yml reports.
+  shard:
+    name: verify ${{ matrix.shard }} (${{ matrix.os }})
+    needs: setup
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        shard: ${{ fromJSON(needs.setup.outputs.shards) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Fetch the patch
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verify-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/patch
+
+      - name: Check out the base commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.setup.outputs.base_sha }}
+          path: src
+          # The whole history for static, where gitleaks scans it; the last commit
+          # elsewhere.
+          fetch-depth: ${{ matrix.shard != 'static' && 1 || 0 }}
+          persist-credentials: false
+
+      - name: Apply the patch, and check the tree
+        working-directory: src
+        env:
+          BASE_SHA: ${{ needs.setup.outputs.base_sha }}
+          PATCH_FILE: ${{ runner.temp }}/patch/verify.patch
+          PATCH_SHA256: ${{ inputs.patch_sha256 }}
+          TREE: ${{ inputs.tree }}
+        run: bash ../tools/.github/scripts/apply-patch.sh apply
+
+      # As in ci.yml: go test keys a cached result by the modification times of the
+      # files a test read, and a checkout writes every file at the current time.
+      - name: Give checked-out files times derived from their content
+        working-directory: src
+        run: python3 ../tools/.github/scripts/stable-mtimes.py
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+          working_directory: src
+
+      # Only restores, whatever the ref: the verify branch saves nothing, and reads
+      # the entries main saved. The keys are the ones ci.yml's shards use, so a shard
+      # starts from the newest entry of its own, else of any shard, else of this
+      # platform; the Go build cache is content-addressed, so an entry is never used
+      # for different code.
+      - name: Restore Go builds and modules
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-${{ matrix.shard }}-verify-${{ github.run_id }}
+          restore-keys: |
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-${{ matrix.shard }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Run the shard, as local development does
+        working-directory: src
+        env:
+          SHARD: ${{ matrix.shard }}
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          mkdir -p "$TEST_REPORT_DIR"
+          mise run "ci:${SHARD}"
+
+      - name: Report the slowest tests
+        if: ${{ always() }}
+        continue-on-error: true
+        working-directory: src
+        env:
+          TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
+        run: |
+          slowest="$RUNNER_TEMP/slowest.txt"
+          for report in "$TEST_REPORT_DIR"/*.json; do
+            [ -e "$report" ] || continue
+            mise exec -- gotestsum tool slowest --jsonfile "$report" --threshold 3s > "$slowest"
+            {
+              echo "### Slowest tests: $(basename "$report" .json)"
+              echo '```'
+              head -n 15 "$slowest"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-rapid-failures-${{ matrix.shard }}-${{ matrix.os }}-${{ github.run_id }}
+          path: "src/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # One result for the whole run, as ci.yml's ci job gives one for its shards: it
+  # fails unless every shard passed on both architectures (a skipped or cancelled one
+  # fails it too), clears the verify branch's caches, and prints the tree that passed so that it can be compared with the
+  # tree that will land. Its name must not start with "ci (".
+  result:
+    name: verify result
+    if: always()
+    needs: [setup, shard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write # to delete the cache entries of the verify branch; no patch runs in this job
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out the scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tools
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # Whatever the shards did: an entry here was not saved by this workflow.
+      - name: Delete any cache entry of the verify branch
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/.github/scripts/clear-verify-caches.sh
+
+      - name: Check that every shard passed
+        env:
+          SETUP: ${{ needs.setup.result }}
+          RESULT: ${{ needs.shard.result }}
+          BASE_SHA: ${{ needs.setup.outputs.base_sha }}
+          TREE: ${{ inputs.tree }}
+        run: |
+          if [ "$SETUP" != success ] || [ "$RESULT" != success ]; then
+            echo "setup finished with result '${SETUP}' and the shards with '${RESULT}', not success" >&2
+            exit 1
+          fi
+          echo "every shard passed on base ${BASE_SHA} with tree ${TREE}"
+          {
+            echo "### Verified"
+            echo
+            echo "Every shard passed on both architectures for tree \`${TREE}\` on base \`${BASE_SHA}\`."
+          } >>"$GITHUB_STEP_SUMMARY"
