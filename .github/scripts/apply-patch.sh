@@ -68,20 +68,22 @@ fetch() {
   elif [ -n "${GIST_ID:-}" ]; then
     re='^[0-9a-f]{20,40}$'
     [[ $GIST_ID =~ $re ]] || fail "gist_id: 20 to 40 lowercase hexadecimal digits"
-    # A secret gist is readable by its id. GITHUB_TOKEN goes to api.github.com and to
-    # nowhere else: the raw address is taken from the gist's own record and must be on
-    # the gist host.
-    # The call to the API carries GITHUB_TOKEN when there is one (the unauthenticated
-    # limit is 60 an hour per address, and runners share addresses), in a config read
-    # from standard input so that it is not in a command line. The raw file is fetched
-    # without it, from the gist host.
-    meta="$(
+    # A secret gist is readable by its id. The raw address is taken from the gist's own
+    # record and must be on the gist host.
+    # The call to the API first carries GITHUB_TOKEN when there is one (the
+    # unauthenticated limit is 60 an hour per address, and runners share addresses), in
+    # a config read from standard input so that it is not in a command line. The token
+    # of a job is refused by the gists API (HTTP 403), so when that call fails it is
+    # repeated with no credential. The raw file is fetched without a credential, from the
+    # gist host.
+    gist_meta() {
       {
         echo 'header = "Accept: application/vnd.github+json"'
-        [ -z "${GITHUB_TOKEN:-}" ] || echo "header = \"Authorization: Bearer ${GITHUB_TOKEN}\""
+        [ "$1" = anon ] || [ -z "${GITHUB_TOKEN:-}" ] || echo "header = \"Authorization: Bearer ${GITHUB_TOKEN}\""
       } | curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
         --retry 3 --max-time 60 -K - "https://api.github.com/gists/${GIST_ID}"
-    )" || fail "the gist could not be read"
+    }
+    meta="$(gist_meta auth)" || meta="$(gist_meta anon)" || fail "the gist could not be read"
     url="$(printf '%s' "$meta" | jq -r '.files["patch.b64"].raw_url // empty')"
     case "$url" in
       https://gist.githubusercontent.com/*) ;;
