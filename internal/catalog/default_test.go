@@ -97,38 +97,39 @@ func TestDefaultRelations(t *testing.T) {
 		endpoints   []catalog.Endpoint
 		propagation catalog.Propagation
 		storage     catalog.Storage
+		layer       catalog.Layer
 	}{
 		{
 			catalog.PartOf,
 			[]catalog.Endpoint{{From: catalog.Container, To: catalog.K8sPod}},
-			catalog.PropagateDown, catalog.StorageFrom,
+			catalog.PropagateDown, catalog.StorageFrom, catalog.L2,
 		},
 		{
 			catalog.ScheduledOn,
 			[]catalog.Endpoint{{From: catalog.K8sPod, To: catalog.K8sNode}},
-			catalog.PropagateDown, catalog.StorageFrom,
+			catalog.PropagateDown, catalog.StorageFrom, catalog.L2,
 		},
 		{
 			catalog.RunsOn,
 			[]catalog.Endpoint{{From: catalog.K8sNode, To: catalog.Host}, {From: catalog.Process, To: catalog.Host}},
-			catalog.PropagateDown, catalog.StorageFrom,
+			catalog.PropagateDown, catalog.StorageFrom, catalog.L1,
 		},
 		{
 			catalog.LocatedIn,
 			[]catalog.Endpoint{{From: catalog.Host, To: catalog.Rack}, {From: catalog.Host, To: catalog.Zone}},
-			catalog.PropagateDown, catalog.StorageFrom,
+			catalog.PropagateDown, catalog.StorageFrom, catalog.L1,
 		},
 		{
 			catalog.InstanceOf,
 			[]catalog.Endpoint{{From: catalog.ServiceInstance, To: catalog.Service}},
-			catalog.PropagateNone, catalog.StorageFrom,
+			catalog.PropagateNone, catalog.StorageFrom, catalog.L2,
 		},
 		{
 			catalog.DependsOn,
 			[]catalog.Endpoint{{From: catalog.Service, To: catalog.Service}},
-			catalog.PropagateUp, catalog.StorageFrom,
+			catalog.PropagateUp, catalog.StorageFrom, catalog.L3,
 		},
-		{catalog.SameAs, nil, catalog.PropagateNone, catalog.StorageDerived},
+		{catalog.SameAs, nil, catalog.PropagateNone, catalog.StorageDerived, 0},
 	}
 
 	c := catalog.Default()
@@ -147,6 +148,9 @@ func TestDefaultRelations(t *testing.T) {
 			}
 			if r.Storage() != tt.storage {
 				t.Errorf("storage = %s, want %s", r.Storage(), tt.storage)
+			}
+			if r.Layer() != tt.layer {
+				t.Errorf("layer = %s, want %s", r.Layer(), tt.layer)
 			}
 			if r.Derived() != (tt.storage == catalog.StorageDerived) {
 				t.Errorf("Derived() = %v, inconsistent with storage %s", r.Derived(), tt.storage)

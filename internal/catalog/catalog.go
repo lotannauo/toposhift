@@ -14,6 +14,11 @@
 // Entity types and identifying attributes that OpenTelemetry defines keep
 // OpenTelemetry's names verbatim, so identities match other producers. Types
 // OpenTelemetry lacks use a "topo." prefix.
+//
+// Every stored relation is stored in exactly one layer, and is read from
+// either end in that layer. The layer is the first byte of every stored key of
+// the relation's edges, so changing one orphans stored data. A derived
+// relation has no layer.
 package catalog
 
 import (
@@ -176,13 +181,16 @@ type EntitySpec struct {
 }
 
 // RelationSpec describes a relation type to [New]. A relation with no
-// endpoints is unconstrained: it may connect any two entity types.
+// endpoints is unconstrained: it may connect any two entity types. A stored
+// relation names the layer its edges are stored in; a derived relation leaves
+// Layer zero.
 type RelationSpec struct {
 	ID          RelationID
 	Type        RelationType
 	Endpoints   []Endpoint
 	Propagation Propagation
 	Storage     Storage
+	Layer       Layer
 }
 
 // Entity is a registered entity type. It is a read-only view.
@@ -222,6 +230,7 @@ type Relation struct {
 	endpoints   []Endpoint
 	propagation Propagation
 	storage     Storage
+	layer       Layer
 }
 
 // ID returns the relation's stable number.
@@ -239,6 +248,10 @@ func (r Relation) Propagation() Propagation { return r.propagation }
 
 // Storage returns where the relation comes from.
 func (r Relation) Storage() Storage { return r.storage }
+
+// Layer returns the layer every edge of this relation is stored in, from
+// either end; zero for a derived relation, which is never stored.
+func (r Relation) Layer() Layer { return r.layer }
 
 // Derived reports whether the relation is computed at read time and never
 // stored as a fact.

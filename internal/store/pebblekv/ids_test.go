@@ -94,8 +94,8 @@ func TestIDsFollowTheCatalogNotDeclarationOrder(t *testing.T) {
 		{ID: 7, Type: "gamma", Layer: catalog.L2, Keys: key("gamma.id")},
 	}
 	relations := []catalog.RelationSpec{
-		{ID: 1, Type: "near", Storage: catalog.StorageFrom, Propagation: catalog.PropagateDown, Endpoints: []catalog.Endpoint{{From: "alpha", To: "beta"}}},
-		{ID: 5, Type: "far", Storage: catalog.StorageFrom, Propagation: catalog.PropagateDown, Endpoints: []catalog.Endpoint{{From: "beta", To: "gamma"}}},
+		{ID: 1, Type: "near", Storage: catalog.StorageFrom, Layer: catalog.L0, Propagation: catalog.PropagateDown, Endpoints: []catalog.Endpoint{{From: "alpha", To: "beta"}}},
+		{ID: 5, Type: "far", Storage: catalog.StorageFrom, Layer: catalog.L1, Propagation: catalog.PropagateDown, Endpoints: []catalog.Endpoint{{From: "beta", To: "gamma"}}},
 	}
 	build := func(es []catalog.EntitySpec, rs []catalog.RelationSpec) *IDs {
 		c, err := catalog.New(es, rs)
