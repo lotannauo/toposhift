@@ -162,11 +162,12 @@ func parseNode(o object) nodeView {
 	}
 	// Descriptive only: never used to identify a host. A providerID, an address
 	// or a boot id says what the node reports about itself, and a different
-	// source may report the same machine under another one.
+	// source may report the same machine under another one. The payload holds the
+	// boot id and the provider id and leaves out the kubelet's machine id and
+	// system UUID: they identify the machine (machine-id(5) calls the machine id
+	// confidential) and nothing reads them.
 	info := object{}
 	put(info, "boot_id", str(o, "status", "nodeInfo", "bootID"))
-	put(info, "machine_id", str(o, "status", "nodeInfo", "machineID"))
-	put(info, "system_uuid", str(o, "status", "nodeInfo", "systemUUID"))
 	if len(info) > 0 {
 		m["node_info"] = info
 	}

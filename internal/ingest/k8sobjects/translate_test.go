@@ -884,7 +884,7 @@ func TestPayloadAllowList(t *testing.T) {
 		map[string]any{"type": "InternalIP", "address": "10.0.0.2"},
 		map[string]any{"type": "Hostname", "address": node},
 	}
-	n["status"].(map[string]any)["nodeInfo"] = map[string]any{"machineID": "m", "systemUUID": "s", "bootID": "b", "kubeletVersion": "v1"}
+	n["status"].(map[string]any)["nodeInfo"] = map[string]any{"machineID": "machine-x", "systemUUID": "uuid-x", "bootID": "b", "kubeletVersion": "v1"}
 	rec := only(t, translate(t, tr, pullRec(t0.Add(time.Minute), n)))
 	// The node was created a minute before it was seen, so the Observe at its
 	// creation carries the observed time as its Through.
@@ -894,9 +894,16 @@ func TestPayloadAllowList(t *testing.T) {
 	want := `{"addresses":[{"address":"kwok-node-2","type":"Hostname"},{"address":"10.0.0.2","type":"InternalIP"}],` +
 		`"conditions":[{"last_transition_time":"2026-10-09T10:00:00Z","reason":"KubeletReady","status":"True","type":"Ready"}],` +
 		`"labels":{"kubernetes.io/hostname":"kwok-node-2"},"name":"kwok-node-2",` +
-		`"node_info":{"boot_id":"b","machine_id":"m","system_uuid":"s"},"provider_id":"kwok://n-1"}`
+		`"node_info":{"boot_id":"b"},"provider_id":"kwok://n-1"}`
 	if string(rec.Payload) != want {
 		t.Errorf("node payload\n got %s\nwant %s", rec.Payload, want)
+	}
+	// The node reported a machine id and a system UUID. They identify the machine,
+	// so neither the keys nor the values are in the payload.
+	for _, dropped := range []string{"machine_id", "system_uuid", "machine-x", "uuid-x"} {
+		if strings.Contains(string(rec.Payload), dropped) {
+			t.Errorf("node payload carries %q: %s", dropped, rec.Payload)
+		}
 	}
 
 	p := podSpec{UID: "p1", Name: "p", Created: t0, Phase: "Running"}
