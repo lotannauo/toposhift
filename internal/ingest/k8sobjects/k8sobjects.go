@@ -692,9 +692,24 @@ func layerOf(fp identity.Fingerprint) catalog.Layer {
 	return e.Layer()
 }
 
+// recordLayer is the layer a record about the subject is stored in: an entity
+// takes its type's layer, and an edge takes the layer its relation is stored
+// in, which the catalog records.
+func recordLayer(subj store.Subject) catalog.Layer {
+	if subj.Kind != store.SubjectEdge {
+		return layerOf(subj.A)
+	}
+	r, ok := catalog.Default().Relation(subj.Relation)
+	if !ok || r.Derived() {
+		// A translator emits only stored relations the default catalog lists.
+		panic("k8sobjects: relation " + string(subj.Relation) + " is not a stored relation of the default catalog")
+	}
+	return r.Layer()
+}
+
 func (t *Translator) emit(b *batch, subj store.Subject, kind lifecycle.Kind, at time.Time, basis store.EventTimeBasis, ttl time.Duration, payload []byte, observed time.Time) {
 	r := store.Record{
-		Layer:          layerOf(subj.A),
+		Layer:          recordLayer(subj),
 		Subject:        subj,
 		Producer:       t.producer,
 		EventTime:      at,

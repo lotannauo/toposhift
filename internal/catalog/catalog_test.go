@@ -25,6 +25,7 @@ func validRelations() []catalog.RelationSpec {
 		Endpoints:   []catalog.Endpoint{{From: "pod", To: "host"}},
 		Propagation: catalog.PropagateDown,
 		Storage:     catalog.StorageFrom,
+		Layer:       catalog.L2,
 	}}
 }
 
@@ -201,6 +202,33 @@ func TestNewRejects(t *testing.T) {
 			want: catalog.ErrInvalid, offend: "at least one endpoint",
 		},
 		{
+			name: "stored relation with layer zero",
+			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
+				(*r)[0].Layer = 0
+			},
+			want: catalog.ErrInvalid, offend: `relation "runs_on": layer Layer(0)`,
+		},
+		{
+			name: "stored relation with layer above L3",
+			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
+				(*r)[0].Layer = catalog.L3 + 1
+			},
+			want: catalog.ErrInvalid, offend: `relation "runs_on": layer Layer(5)`,
+		},
+		{
+			name: "derived relation with a layer",
+			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
+				*r = append(*r, catalog.RelationSpec{
+					ID:          2,
+					Type:        "same_as",
+					Propagation: catalog.PropagateNone,
+					Storage:     catalog.StorageDerived,
+					Layer:       catalog.L2,
+				})
+			},
+			want: catalog.ErrInvalid, offend: `relation "same_as": a derived relation is never stored and has no layer`,
+		},
+		{
 			name: "endpoint from unregistered type",
 			mutate: func(_ *[]catalog.EntitySpec, r *[]catalog.RelationSpec) {
 				(*r)[0].Endpoints = []catalog.Endpoint{{From: "ghost", To: "host"}}
@@ -255,6 +283,10 @@ func TestNewReportsEveryViolation(t *testing.T) {
 	e = append(e, e[1])                                              // ErrDuplicate
 	e[1].ID = 0                                                      // ErrInvalid, an id violation
 	r[0].Endpoints = []catalog.Endpoint{{From: "ghost", To: "host"}} // ErrUnknown
+	r[0].Layer = 0                                                   // ErrInvalid, a relation layer violation
+	r = append(r, catalog.RelationSpec{
+		ID: 2, Type: "same_as", Propagation: catalog.PropagateNone, Storage: catalog.StorageDerived, Layer: catalog.L1,
+	}) // ErrInvalid, a derived relation with a layer
 
 	_, err := catalog.New(e, r)
 	for _, want := range []error{catalog.ErrInvalid, catalog.ErrDuplicate, catalog.ErrUnknown} {
@@ -262,7 +294,10 @@ func TestNewReportsEveryViolation(t *testing.T) {
 			t.Errorf("error does not wrap %v: %v", want, err)
 		}
 	}
-	for _, text := range []string{`entity "host": layer`, `entity "pod": id 0: invalid`, `entity "pod": duplicate`, `"ghost"`} {
+	for _, text := range []string{
+		`entity "host": layer`, `entity "pod": id 0: invalid`, `entity "pod": duplicate`, `"ghost"`,
+		`relation "runs_on": layer`, `relation "same_as": a derived relation is never stored and has no layer`,
+	} {
 		if !strings.Contains(err.Error(), text) {
 			t.Errorf("error does not report %q: %v", text, err)
 		}
@@ -289,8 +324,8 @@ func TestNewDoesNotBlameAnIdOfARejectedSpec(t *testing.T) {
 	}
 
 	_, err = catalog.New(validEntities(), []catalog.RelationSpec{
-		{ID: 1, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom},
-		{ID: 3, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom},
+		{ID: 1, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom, Layer: catalog.L2},
+		{ID: 3, Type: "runs_on", Endpoints: []catalog.Endpoint{{From: "pod", To: "host"}}, Propagation: catalog.PropagateDown, Storage: catalog.StorageFrom, Layer: catalog.L2},
 		{ID: 3, Type: "same_as", Propagation: catalog.PropagateNone, Storage: catalog.StorageDerived},
 	})
 	if !errors.Is(err, catalog.ErrDuplicate) || !strings.Contains(err.Error(), `relation "runs_on": duplicate`) {

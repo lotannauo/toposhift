@@ -93,6 +93,7 @@ func New(entities []EntitySpec, relations []RelationSpec) (*Catalog, error) {
 			endpoints:   slices.Clone(s.Endpoints),
 			propagation: s.Propagation,
 			storage:     s.Storage,
+			layer:       s.Layer,
 		})
 	}
 
@@ -164,6 +165,12 @@ func checkRelation(s RelationSpec, entities map[EntityType]int) []error {
 	}
 	if s.Storage == StorageFrom && len(s.Endpoints) == 0 {
 		fail(ErrInvalid, "a stored relation needs at least one endpoint")
+	}
+	switch {
+	case s.Storage == StorageFrom && (s.Layer < L0 || s.Layer > L3):
+		fail(ErrInvalid, "layer %s", s.Layer)
+	case s.Storage == StorageDerived && s.Layer != 0:
+		fail(ErrInvalid, "a derived relation is never stored and has no layer")
 	}
 
 	seen := make(map[Endpoint]bool, len(s.Endpoints))

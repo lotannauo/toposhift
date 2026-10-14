@@ -59,6 +59,13 @@ func defaultEntities() []EntitySpec {
 
 // defaultRelations lists the shipped relations. Their ids are written out and
 // follow the same rules as the entity ids above, in a space of their own.
+//
+// Each stored relation also names its layer, written out like the ids and
+// frozen by testdata/relation_layers_v1.json. An edge is stored in the layer
+// of its "from" entity type, except where a relation below says otherwise;
+// TestRelationLayerRule lists every exception. A relation's layer is the first
+// byte of every stored key of its edges, so changing one needs a migration of
+// stored edges.
 func defaultRelations() []RelationSpec {
 	return []RelationSpec{
 		{
@@ -67,6 +74,7 @@ func defaultRelations() []RelationSpec {
 			Endpoints:   []Endpoint{{From: Container, To: K8sPod}},
 			Propagation: PropagateDown,
 			Storage:     StorageFrom,
+			Layer:       L2,
 		},
 		{
 			ID:          2,
@@ -74,8 +82,11 @@ func defaultRelations() []RelationSpec {
 			Endpoints:   []Endpoint{{From: K8sPod, To: K8sNode}},
 			Propagation: PropagateDown,
 			Storage:     StorageFrom,
+			Layer:       L2,
 		},
 		{
+			// Both sources are L2 entities, but binding a workload to its host is
+			// host placement, so the edges are stored in L1.
 			ID:   3,
 			Type: RunsOn,
 			Endpoints: []Endpoint{
@@ -84,6 +95,7 @@ func defaultRelations() []RelationSpec {
 			},
 			Propagation: PropagateDown,
 			Storage:     StorageFrom,
+			Layer:       L1,
 		},
 		{
 			ID:   4,
@@ -94,6 +106,7 @@ func defaultRelations() []RelationSpec {
 			},
 			Propagation: PropagateDown,
 			Storage:     StorageFrom,
+			Layer:       L1,
 		},
 		{
 			ID:          5,
@@ -101,6 +114,7 @@ func defaultRelations() []RelationSpec {
 			Endpoints:   []Endpoint{{From: ServiceInstance, To: Service}},
 			Propagation: PropagateNone,
 			Storage:     StorageFrom,
+			Layer:       L2,
 		},
 		{
 			// The caller stores the edge. A callee failure hits its callers.
@@ -109,6 +123,7 @@ func defaultRelations() []RelationSpec {
 			Endpoints:   []Endpoint{{From: Service, To: Service}},
 			Propagation: PropagateUp,
 			Storage:     StorageFrom,
+			Layer:       L3,
 		},
 		{
 			// Cross-source device reconciliation, computed at read time over

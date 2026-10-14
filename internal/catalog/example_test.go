@@ -20,6 +20,7 @@ func Example() {
 	fmt.Println(runsOn.Allows(catalog.K8sNode, catalog.Host)) // asserted direction
 	fmt.Println(runsOn.Allows(catalog.Host, catalog.K8sNode)) // reversed
 	fmt.Println(runsOn.Propagation())
+	fmt.Println(runsOn.Layer()) // the layer its edges are stored in
 
 	// Output:
 	// service.namespace optional=true
@@ -27,4 +28,5 @@ func Example() {
 	// true
 	// false
 	// down
+	// L1
 }
