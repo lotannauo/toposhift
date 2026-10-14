@@ -24,6 +24,7 @@ import (
 const (
 	DefaultPullInterval       = 5 * time.Minute
 	DefaultCollectionInterval = 5 * time.Minute
+	DefaultNodeInterval       = 5 * time.Minute
 	DefaultMergeWait          = 10 * time.Second
 	DefaultQueueLen           = 64
 	DefaultMaxGroupRecords    = 20_000
@@ -73,6 +74,10 @@ type Config struct {
 	// event that carries none, and the detector's windows: a warmup of one and an
 	// alive time of three.
 	CollectionInterval time.Duration
+	// NodeInterval is the report interval the node agents are configured with
+	// (--node-interval): the TTL of the node agents' producer is three times it,
+	// and a cluster whose host events stop for three of them is warned about.
+	NodeInterval time.Duration
 	// MergeWait is how long a request waits to be merged into a group before it is
 	// answered 503.
 	MergeWait time.Duration
@@ -127,6 +132,13 @@ type Sequencer struct {
 	// resumeWarned is the ingest instant each kind of resume warning was last
 	// logged at.
 	resumeWarned map[string]time.Time
+
+	// agentMu guards what NodeAgentStatus reads from any goroutine: agentCount,
+	// the node agents' counters, and agentSeen, the clusters that have had a host
+	// entity event. The loop writes them.
+	agentMu    sync.Mutex
+	agentCount map[string]int64
+	agentSeen  map[string]*agentCluster
 
 	// resumeMu guards resumeStats, the resume counts of every group answered
 	// without error, which ResumeStats reads from any goroutine.
@@ -204,6 +216,7 @@ func New(c Config) (*Sequencer, error) {
 	}{
 		{"PullInterval", &c.PullInterval, DefaultPullInterval},
 		{"CollectionInterval", &c.CollectionInterval, DefaultCollectionInterval},
+		{"NodeInterval", &c.NodeInterval, DefaultNodeInterval},
 		{"MergeWait", &c.MergeWait, DefaultMergeWait},
 	}
 	for _, f := range durations {
@@ -254,6 +267,8 @@ func New(c Config) (*Sequencer, error) {
 		clusters: make(map[string]*cluster),
 
 		resumeWarned: make(map[string]time.Time),
+		agentCount:   make(map[string]int64),
+		agentSeen:    make(map[string]*agentCluster),
 	}
 	if c.Retain != nil {
 		r, err := newRetention(*c.Retain)

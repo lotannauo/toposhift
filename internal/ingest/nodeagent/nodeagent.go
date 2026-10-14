@@ -117,7 +117,10 @@
 // make a changing payload, which would end the run of refreshes. os.version and
 // os.description are never kept, because the detector reads them from the
 // collector's own container, not from the host: the payload would state the
-// collector image's userland as the host's. Every other attribute (host.name, the
+// collector image's userland as the host's. host.arch is the architecture of the
+// collector's binary, which is the host's except under emulation (an amd64 image
+// on an arm64 node); like the rest of the payload it describes the host and never
+// identifies it. Every other attribute (host.name, the
 // node's name and every address among them) is dropped. The first time this
 // translator drops a key name it counts it with [NoteDescriptionKeyDropped] in
 // [Result.Notes], so that a steady stream adds nothing after the first. A key that

@@ -54,6 +54,7 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 	last, err := s.write(ctx, batch)
 	if err == nil {
 		s.resumed(ws, now)
+		s.noteAgents(ws, now)
 	}
 	switch {
 	case err == nil:
@@ -90,6 +91,7 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 			s.log.Warn("sequencer: the write returned an error but its batch was stored", "error", err, "last_seq", last)
 			s.observeClocks(batch, ws)
 			s.resumed(ws, now)
+			s.noteAgents(ws, now)
 			s.answer(ws, nil)
 			return
 		}
@@ -146,7 +148,8 @@ func (s *Sequencer) tick(ctx context.Context) {
 	s.writeDerived(ctx, s.co.Flush(now, nil), "a flush")
 	s.co.Prune(now)
 	s.det.Prune(now)
-	idle := idleMultiple * max(s.cfg.PullInterval, s.cfg.CollectionInterval)
+	s.checkAgentsSilent(now)
+	idle := idleMultiple * max(s.cfg.PullInterval, s.cfg.CollectionInterval, s.cfg.NodeInterval)
 	for name, c := range s.clusters {
 		if s.cfg.ClusterNameSet && name == s.cfg.ClusterName {
 			// The configured name's translators are kept however long it is idle:
@@ -155,6 +158,7 @@ func (s *Sequencer) tick(ctx context.Context) {
 		}
 		if now.Sub(c.lastUsed) > idle {
 			delete(s.clusters, name)
+			s.forgetWarned(name)
 			s.log.Info("sequencer: freed the slot of an idle cluster name", "cluster", name, "idle_since", c.lastUsed)
 		}
 	}

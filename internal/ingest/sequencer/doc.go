@@ -1,8 +1,8 @@
 // Package sequencer commits the logs the receiver takes into the store. It is
 // the receiver's sink: one goroutine, the loop, owns the translators (a
-// k8sobjects and a k8scluster translator per cluster name, made on first use),
-// the coalescer, the detector, and the store's writing. Nothing else writes to
-// the store.
+// k8sobjects, a k8scluster and a nodeagent translator per cluster name, made on
+// first use), the coalescer, the detector, and the store's writing. Nothing else
+// writes to the store.
 //
 // # The 200 is the durability boundary
 //
@@ -24,17 +24,20 @@
 //  2. Each request in turn: the cluster name of each resource is resolved (see
 //     "Cluster names"); its namespace events go through the namespace pass and
 //     the detector (see "The detector"); the rest of its log records are
-//     translated by event name (entity.state and entity.delete to the cluster
-//     receiver's translator, everything else to the objects receiver's), with
-//     the producers k8sobjects/<cluster> and k8scluster/<cluster>; the records
-//     the translators backdated are resumed; and every store record is checked.
+//     translated by what they are (see "The node agents": a legacy entity event
+//     is counted and translated by nobody; of the entity events, those of type
+//     host go to the node agents' translator and the others to the cluster
+//     receiver's; everything else goes to the objects receiver's), with the
+//     producers nodeagent/<cluster>, k8scluster/<cluster> and
+//     k8sobjects/<cluster>; the records the translators backdated are resumed;
+//     and every store record is checked.
 //  3. The lookup is closed. The records that passed are coalesced, in order,
 //     numbered contiguously above the store's last sequence number, and written
 //     once, synced, with the sequencer's own context, never a request's.
 //
-// Each request keeps the ingest instant it was claimed at, and only the cluster
-// receiver's translator takes it, as the time it received the record, so that a
-// rerun from memory translates alike. The detector, the coalescer's flush and
+// Each request keeps the ingest instant it was claimed at, and the cluster
+// receiver's and the node agents' translators take it, as the time they received
+// the record, so that a rerun from memory translates alike. The detector, the coalescer's flush and
 // the pruning take the ingest clock's present, which the sequencer never lets go
 // backwards.
 //
@@ -73,8 +76,8 @@
 // value; an empty one is no name), or "default". Clients then choose the names,
 // and [Config.MaxClusters] bounds the translators they can make: a request that
 // brings a name beyond it is refused, saying so. Such a name's slot is freed at a
-// flush tick once the name has had no request for three times the longer of the
-// pull and collection intervals (an estimate); its translators are discarded,
+// flush tick once the name has had no request for three times the longest of the
+// pull, collection and node intervals (an estimate); its translators are discarded,
 // which costs that name the restart effects below when it returns: reads of the
 // store for its first sightings (see "Resume"), not rewritten history. The slot
 // of the configured cluster name is never freed, however long it is idle: there is
@@ -93,6 +96,60 @@
 // translated, so nothing needs resetting. The detector's notes are logged. Its
 // warmup is one collection interval and a sighting with no end vouches for
 // three.
+//
+// # The node agents
+//
+// A node-level collector (deploy/otel-collector/nodeagent.yaml) reports a host
+// entity event every node interval: eventName entity.state, entity.type host, the
+// host's identity and description in the resource. The agents send only to the
+// cluster collector, whose one logs pipeline, exporter and in-order queue carry
+// their records with everything else, so one cluster has one stream. The
+// sequencer routes by the record, in this order, after the namespace pass and the
+// detector:
+//
+//  1. A legacy entity event is counted and translated by nobody. It is the form
+//     the receivers write when the entity-events feature gate is off: no event
+//     name, and attributes named otel.entity.*. A record with an otel.entity.*
+//     attribute is legacy; a record with no entity event name and the scope
+//     attribute otel.entity.event_as_log is legacy too. The current form carries
+//     that scope attribute as well, so on a record with an entity event name it
+//     decides nothing. Both receivers' records are checked, and the count
+//     (sequencer.legacy_entity_events in GET /status) is warned about at most
+//     once a minute for each cluster: a collector started without the gate.
+//  2. An entity.state or entity.delete whose entity.type, read as the cluster
+//     translator reads it, is host goes to the node agents' translator, with the
+//     producer nodeagent/<cluster> and the ingest instant of the request as the
+//     time received. A host delete is translated to nothing and counted.
+//  3. Any other entity event goes to the cluster receiver's translator, and
+//     everything else to the objects receiver's.
+//
+// [Config.NodeInterval] (serve: --node-interval, 5 minutes) is the interval the
+// agents report at, and three times it is the TTL of every record of the node
+// agents' producer, whatever interval an event carries. The counters of
+// [Sequencer.NodeAgentStatus], which serve reports under "nodeagent" in GET
+// /status, are named for what was done with a record: refused_* for a record or a
+// part of one that was not written (no host id; no node uid, which writes the
+// host and no edge; a part of a zone id that contains a slash), substituted_* for
+// a record that was written with something put in place of what it gave (the
+// receipt time for a time that was absent or too far ahead, the configured
+// interval for another, no boot for a boot id that was absent or unusable), and
+// skipped_* for a record set aside. They count the groups answered without error.
+// The sequencer warns, at most once a minute for each kind and cluster, of host
+// events with no usable host.id and with no node uid, with the likely cause.
+//
+// The status also holds, for each cluster that has had a host entity event, the
+// ingest instant of the latest group that held one. At each flush tick a cluster
+// whose latest is more than three node intervals old is marked silent and warned
+// about, once for each time it goes silent: its hosts and runs_on edges lapse at three
+// intervals, so the agents are down or cannot reach the collector, the collector
+// no longer sends entity events, or --node-interval is wrong. The entry stays in
+// the status for a day after the cluster's latest event, past the freeing of its
+// slot, and then is dropped.
+//
+// The records of the node agents are ordinary refreshes: they are coalesced as the
+// others are, and the translator is stateless in what it writes, so a reset
+// changes nothing it writes. They count as another machine's clock for retention
+// (see "Retention"), unless an agent runs on this host.
 //
 // # Failed writes
 //
@@ -124,6 +181,14 @@
 // A refusal of a request (400) is given whatever the write did. A flush's
 // records, which no request waits on, are dropped when the store refuses them or
 // did not store them, the coalescer is made anew, and the error is logged.
+//
+// A dropped flush loses the run extensions it held, so a stored run can lapse by
+// its TTL before the next record of its producer re-asserts it. A reference can
+// then be absent for at most one extension interval plus one pull interval (7.5
+// and 5 minutes with the defaults; for the node agents' producer, their interval
+// stands in for the pull's). It reads as a liveness expiry, never as a Delete:
+// the producer was not heard from, and nothing says it ended. The next assertion
+// restores the run.
 //
 // # Restart effects
 //
@@ -227,6 +292,15 @@
 // and rests on UID continuity: a Kubernetes object with a given UID exists
 // continuously from its creation to its deletion.
 //
+// The node agents' translator marks nothing: it backdates no record, because a
+// report says only that the host was seen at the instant of the report, and its
+// Resumed and Comparable are the no-ops that let it stand where the step asks for
+// a translator. The step skips any group with no marks, whatever the kind, so
+// the node agents' records never reach it; a translator that later marked its
+// records would reach [resume.Apply] with its own Comparable and no change here.
+// After a reset its records are not late, and invalidate no checkpoint: each is
+// later than any before it.
+//
 // What remains:
 //
 //   - a renamed producer (a new cluster name) finds nothing to resume from, and
@@ -315,7 +389,8 @@
 // until its next batch; retention is only delayed, and the supported deployment
 // is a server. The guard protects only against producers on other hosts: a
 // collector on the same host shares its clock, and agrees with it whatever it
-// reads.
+// reads. The node agents' records are stamped by the clocks of the nodes the
+// agents run on, which are other machines' unless an agent shares this host.
 //
 // The agreement data is read from the records the sequencer writes: the
 // coalesced batch of each group and the output of each flush, not the records
@@ -378,8 +453,6 @@
 //     capped advance carries L2's horizon past true time after about W days;
 //     later records on true time are refused, and the state becomes disagree
 //     once they are seen.
-//   - Host prefixes with boots are kept whole by the store until boot-prefix
-//     retention exists.
 //   - A deployment whose every producer runs on the server's own host (a single
 //     machine, such as kind, k3s or a development box) has no second clock: its
 //     records agree with the server's clock whatever that clock reads, and the

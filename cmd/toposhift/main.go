@@ -72,6 +72,16 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	}
 	// An empty TOPOSHIFT_CLUSTER_NAME is the same as an unset one: no name.
 	clusterName := getenv(envClusterName)
+	// An empty TOPOSHIFT_NODE_INTERVAL is the same as an unset one.
+	nodeInterval := sequencer.DefaultNodeInterval
+	if v := getenv(envNodeInterval); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "toposhift serve: %s %q: %v\n", envNodeInterval, v, err)
+			return 2
+		}
+		nodeInterval = d
+	}
 	// An empty TOPOSHIFT_RETAIN is the same as an unset one: on.
 	retain := getenv(envRetain)
 	if retain == "" {
@@ -87,6 +97,8 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	accept := fs.String(clustername.FlagName, "",
 		"accept, for this boot, that the store's recorded cluster name changes to the configured one (command line only; give it empty to accept that none is set)")
 	pullInterval := fs.Duration("pull-interval", sequencer.DefaultPullInterval, "the interval of the collector's pulls of pods and nodes")
+	fs.DurationVar(&nodeInterval, "node-interval", nodeInterval,
+		"the report interval of the node agents, a whole number of seconds from 1m to 1h; their records live for three of them (env "+envNodeInterval+")")
 	fs.StringVar(&retain, "retain", retain, "on or off: discard history older than each layer's window once a day, or keep everything (env "+envRetain+")")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, serveUsage)
@@ -110,6 +122,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		accept:       *accept,
 		acceptGiven:  setFlags(fs)[clustername.FlagName],
 		pullInterval: *pullInterval,
+		nodeInterval: nodeInterval,
 	}
 	if ic.set {
 		if err := store.CheckClusterNameLimit(ic.clusterName); err != nil {
@@ -119,6 +132,10 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	}
 	if ic.pullInterval <= 0 {
 		_, _ = fmt.Fprintf(stderr, "toposhift serve: --pull-interval %s is not above zero\n", ic.pullInterval)
+		return 2
+	}
+	if err := checkNodeInterval(ic.nodeInterval); err != nil {
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
 		return 2
 	}
 	switch retain {

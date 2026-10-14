@@ -262,8 +262,9 @@ func TestServeClusterNameFromTheEnvironment(t *testing.T) {
 	}
 }
 
-// A configured cluster name the store cannot hold, and a pull interval that is
-// not above zero, are mistakes in how serve was called: exit 2, before anything
+// A configured cluster name the store cannot hold, a pull interval that is not
+// above zero, and a node interval that is not a whole number of seconds from a
+// minute to an hour, are mistakes in how serve was called: exit 2, before anything
 // listens.
 func TestServeRefusesBadIngestFlags(t *testing.T) {
 	long := strings.Repeat("c", store.MaxClusterNameLen+1)
@@ -277,6 +278,12 @@ func TestServeRefusesBadIngestFlags(t *testing.T) {
 		{"a long variable", map[string]string{"TOPOSHIFT_CLUSTER_NAME": long}, nil, "--cluster-name"},
 		{"a byte outside the format", nil, []string{"--cluster-name", "<CLUSTER_NAME>"}, "outside"},
 		{"a zero pull interval", nil, []string{"--pull-interval", "0s"}, "--pull-interval"},
+		{"a node interval under a minute", nil, []string{"--node-interval", "59s"}, "--node-interval"},
+		{"a node interval over an hour", nil, []string{"--node-interval", "61m"}, "--node-interval"},
+		{"a node interval with a part of a second", nil, []string{"--node-interval", "90s500ms"}, "whole number of seconds"},
+		{"a node interval of zero", nil, []string{"--node-interval", "0s"}, "--node-interval"},
+		{"a node interval in the variable out of bounds", map[string]string{"TOPOSHIFT_NODE_INTERVAL": "10s"}, nil, "--node-interval"},
+		{"a node interval in the variable that is not a duration", map[string]string{"TOPOSHIFT_NODE_INTERVAL": "soon"}, nil, "TOPOSHIFT_NODE_INTERVAL"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
