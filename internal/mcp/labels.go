@@ -94,6 +94,10 @@ func sourceReason(src lifecycle.EndSource) (*string, string) {
 		return strPtr("liveness_expiry"), "its producer went silent past its TTL (not known to be gone)"
 	case lifecycle.EndCascade:
 		return strPtr("cascade"), "an endpoint ended"
+	case lifecycle.EndRetention:
+		return strPtr("retention"), "the retention horizon moved past it; history before the horizon is gone"
+	case lifecycle.EndOperator:
+		return strPtr("operator"), "purged by an operator"
 	}
 	return strPtr(endReasonNotKnown), "not known"
 }

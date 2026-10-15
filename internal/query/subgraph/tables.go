@@ -122,9 +122,11 @@ const (
 	EndReasonRetention EndReason = 4
 	// EndReasonOperator is an operator purge (lifecycle.EndOperator).
 	EndReasonOperator EndReason = 5
-	// EndReasonUnattributed is the end of a derived span because a leg's
-	// placement or mapping became ambiguous: the store prefers unattributed to
-	// a guess. It is for derived subjects only.
+	// EndReasonUnattributed is the end a leg gives (LegEnd.Reason) when the leg
+	// goes on but its placement or mapping became ambiguous: the store prefers
+	// unattributed to a guess. The adapters end the derived span itself with
+	// [EndReasonReachEnded]; the format also accepts unattributed as the end of
+	// a derived piece. It is for derived subjects only.
 	EndReasonUnattributed EndReason = 6
 	// EndReasonReachEnded is the end_reason of a derived span whose end is the
 	// end of an intersection or of an ambiguity: a blast-radius reach, a

@@ -118,9 +118,9 @@
 // A service is (the namespace or none, the name). The name is the client or server
 // label, the namespace the client_service.namespace or server_service.namespace
 // label; an empty namespace is none. A value is used as received if it is a string,
-// given once, and not blank. A point whose client or server, or whose namespace, is
-// not usable writes nothing and is counted. The namespace of one side is never used
-// for the other. Nothing else identifies anything.
+// given once or repeated with the same value, and not blank. A point whose client or
+// server, or whose namespace, is not usable writes nothing and is counted. The
+// namespace of one side is never used for the other. Nothing else identifies anything.
 //
 // # State across a failed group
 //
