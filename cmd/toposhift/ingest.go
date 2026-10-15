@@ -18,7 +18,9 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
+	"github.com/lotannauo/toposhift/internal/mcp/mcphttp"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
+	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
@@ -63,13 +65,14 @@ const ingestStarting = "ingest is starting: the store is opening; send the reque
 var sequencerStopTimeout = 5 * time.Second
 
 // The seams of the boot, for tests: how the store is opened, what the sequencer
-// writes through, how it opens the lookup of its resume step, and a hook called
-// with the open store once the cluster name is recorded and before the receiver is
-// switched to the sequencer.
+// writes through, how it opens the lookup of its resume step, what the read-only
+// tools read through, and a hook called with the open store once the cluster name
+// is recorded and before the receiver is switched to the sequencer.
 var (
 	openStore    = pebblestore.Open
 	writerFor    = func(st *pebblestore.Store) sequencer.Writer { return st }
 	lookupFor    = storeLookup
+	readerFor    = func(st *pebblestore.Store) store.Store { return st }
 	beforeSwitch func(*pebblestore.Store)
 )
 
@@ -121,15 +124,22 @@ func serveStoreOptions(clusterName string, set bool, obs pebblestore.RetainObser
 	o := storeOptions()
 	o.Retention = pebblestore.Background
 	o.Observer = obs
+	o.Policy.Rank = serveRank(clusterName, set)
+	return o
+}
+
+// serveRank is the authority of the producers of the configured cluster name, or
+// of "default" when none is set, that serve opens its store with. The read-only
+// tools carry a digest of it, so they are given the same map.
+func serveRank(clusterName string, set bool) map[lifecycle.Producer]int {
 	c := sequencer.DefaultClusterName
 	if set {
 		c = clusterName
 	}
-	o.Policy.Rank = map[lifecycle.Producer]int{
+	return map[lifecycle.Producer]int{
 		lifecycle.Producer("k8sobjects/" + c): 2,
 		lifecycle.Producer("k8scluster/" + c): 1,
 	}
-	return o
 }
 
 // switchSink is the receiver's sink, which boot switches: a gate that answers
@@ -385,18 +395,27 @@ type ingest struct {
 // stays up. stopped is closed when the server has ended; boot that finds it
 // ended, or ctx done, after the store opened closes the store and starts
 // nothing.
-func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *switchSink, status *statusRoute, log *slog.Logger, stopped <-chan struct{}) *ingest {
+//
+// The read-only tools are handed the store as soon as it is open, whatever
+// keeps ingest off after that: reading needs no cluster name. When the store
+// cannot be opened they answer with the receiver's sentence.
+func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *switchSink, status *statusRoute, reads *mcphttp.Server, log *slog.Logger, stopped <-chan struct{}) *ingest {
 	start := time.Now()
 	rl := newRetainLog(log, storeOptions())
 	opts := serveStoreOptions(ic.clusterName, ic.set, rl)
 	st, err := openStore(dir.Store, opts)
 	if err != nil {
 		log.Error("ingest is off: the store could not be opened", "path", dir.Store, "err", err)
-		sink.set(gateSink{message: "ingest is off: the store could not be opened: " + err.Error() + "; see the server's log"})
+		msg := "ingest is off: the store could not be opened: " + err.Error() + "; see the server's log"
+		sink.set(gateSink{message: msg})
+		reads.Unavailable(msg)
 		return nil
 	}
 	log.Info("store opened", "path", dir.Store, "took", time.Since(start))
 	in := &ingest{st: st}
+	if err := reads.Attach(readerFor(st)); err != nil {
+		log.Error("the tools cannot read the store", "err", err)
+	}
 	select {
 	case <-ctx.Done():
 		return in // stopping: the store is closed with nothing started
@@ -497,7 +516,11 @@ func showName(ic ingestConfig) string {
 // (seconds) [estimate]. Each step's time is logged. A stop that timed out is
 // not an error: the stored data is valid, and only absorbed refreshes may be
 // unwritten.
-func (in *ingest) stop(log *slog.Logger) {
+//
+// closeStore is false when a call of the read-only tools may still be reading
+// the store: the store must not be closed under a read. It is then left open,
+// with a line in the log, for the process to end with.
+func (in *ingest) stop(log *slog.Logger, closeStore bool) {
 	if in == nil {
 		return
 	}
@@ -516,6 +539,10 @@ func (in *ingest) stop(log *slog.Logger) {
 		}
 		in.cancel()
 		log.Info("sequencer stopped", "took", time.Since(start))
+	}
+	if !closeStore {
+		log.Warn("the store was not closed: a call of the tools may still be reading it")
+		return
 	}
 	start := time.Now()
 	if err := in.st.Close(); err != nil {
