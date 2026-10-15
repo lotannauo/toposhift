@@ -146,7 +146,7 @@ func prefixBounds(prefix []byte) (lo, hi []byte) {
 // so a range is the keys from one boundary up to the next. The first covers type ids
 // below the first registered one, the last range of an id also covers any unregistered
 // ids before the next registered one, and the last covers ids from maxID+1 on. With
-// the shipped catalog (11 types) that is 1 + 16 x 11 + 1 = 178 ranges per layer. When
+// the shipped catalog (12 types) that is 1 + 16 x 12 + 1 = 194 ranges per layer. When
 // maxID is the largest id there is no edge above it, and the last range of that id
 // reaches the end of the layer.
 //

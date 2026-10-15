@@ -168,7 +168,7 @@
 //
 // With Config.SettleRetention a Background pass settles after its last chunk, without
 // holding the lock: a flush, then a compaction of the key ranges of each layer it
-// moved, one range after another (178 per layer with the shipped catalog, cut on the
+// moved, one range after another (194 per layer with the shipped catalog, cut on the
 // first byte of the digest within each entity type; see [pebblekv.KV.CompactRanges]),
 // until they are done or Config.SettleDeadline passes, which is counted, not an
 // error. Writers go on meanwhile, and the marker stays, in its settling phase, until

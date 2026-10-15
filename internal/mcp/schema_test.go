@@ -60,7 +60,7 @@ func TestDescribeSchema(t *testing.T) {
 	for _, r := range out.Relations {
 		rels[r.Type] = r
 	}
-	if len(rels) != 7 {
+	if len(rels) != 8 {
 		t.Fatalf("%d relations", len(rels))
 	}
 	if r := rels["scheduled_on"]; r.Propagation != "down" || r.Layer == nil || *r.Layer != "L2" || r.Derived || r.Subject != "asserted" || len(r.Endpoints) != 1 {

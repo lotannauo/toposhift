@@ -205,7 +205,7 @@ func TestScenarioAHostSubstrate(t *testing.T) {
 	if fmt.Sprint(res.Truncated) != fmt.Sprint(blastradius.Truncation{}) {
 		t.Errorf("truncated %+v", res.Truncated)
 	}
-	expectReads(t, res.Reads, 4, 7, 12, 12)
+	expectReads(t, res.Reads, 4, 9, 12, 12)
 	if res.Token != st.LastSeq() || res.Seed != H || res.PolicyVersion != 1 || res.IntervalPolicy != interval.PolicyVersion ||
 		!res.From.Equal(hm(10, 0)) || !res.To.Equal(hm(10, 30)) {
 		t.Errorf("header %+v", res)
@@ -241,7 +241,7 @@ func TestScenarioBPathThatNeverExisted(t *testing.T) {
 	expect(t, "Impact(H)", briefs(res.Members),
 		mline(N, 1, span(hm(10, 0), hm(10, 10)), interval.ClassDisappeared, 1, arr{H, catalog.RunsOn, span(hm(10, 0), hm(10, 10))}))
 	expectLegEnd(t, res, N, H, hm(10, 10), lifecycle.EndProducer)
-	expectReads(t, res.Reads, 3, 3, 6, 6)
+	expectReads(t, res.Reads, 3, 4, 6, 6)
 }
 
 func TestScenarioCNodeBetweenTwoHosts(t *testing.T) {
@@ -256,7 +256,7 @@ func TestScenarioCNodeBetweenTwoHosts(t *testing.T) {
 		mline(N, 1, first, interval.ClassDisappeared, 1, arr{H, catalog.RunsOn, first}),
 		mline(P, 2, first, interval.ClassDisappeared, 1, arr{N, catalog.ScheduledOn, first}))
 	expect(t, "Impact(H) unattributed", describeUnattributed(res.Unattributed), both)
-	expectReads(t, res.Reads, 4, 4, 7, 7)
+	expectReads(t, res.Reads, 4, 5, 7, 7)
 
 	res = impact(t, st, H2, w30, blastradius.Options{})
 	last := span(hm(10, 15), hm(10, 30))
@@ -264,7 +264,7 @@ func TestScenarioCNodeBetweenTwoHosts(t *testing.T) {
 		mline(N, 1, last, interval.ClassAppeared, 1, arr{H2, catalog.RunsOn, last}),
 		mline(P, 2, last, interval.ClassAppeared, 1, arr{N, catalog.ScheduledOn, last}))
 	expect(t, "Impact(H2) unattributed", describeUnattributed(res.Unattributed), both)
-	expectReads(t, res.Reads, 4, 4, 7, 7)
+	expectReads(t, res.Reads, 4, 5, 7, 7)
 }
 
 // TestScenarioCClaimOfAQuarantinedTarget is C with the second host quarantined:
@@ -288,7 +288,7 @@ func TestScenarioCClaimOfAQuarantinedTarget(t *testing.T) {
 	expect(t, "unattributed", describeUnattributed(res.Unattributed),
 		uline(N, catalog.RunsOn, catalog.Host, []identity.Fingerprint{H, H2}, sp(hm(10, 10), hm(10, 30))))
 	expect(t, "quarantined", quarantinedSubjects(res.Quarantined), quarantinedSubjects([]interval.Element{{Subject: runsOn(N, H2)}})...)
-	expectReads(t, res.Reads, 4, 4, 7, 6)
+	expectReads(t, res.Reads, 4, 5, 7, 6)
 
 	res = impact(t, st, H2, w30, blastradius.Options{})
 	expect(t, "Impact(H2)", briefs(res.Members))
@@ -549,7 +549,7 @@ func TestScenarioLTheHotHost(t *testing.T) {
 	if len(res.Members) != 221 || depths[1] != 1 || depths[2] != 110 || depths[3] != 110 || fmt.Sprint(res.Truncated) != fmt.Sprint(blastradius.Truncation{}) {
 		t.Errorf("%d members by depth %v, truncated %+v", len(res.Members), depths, res.Truncated)
 	}
-	expectReads(t, res.Reads, 4, 113, 335, 335)
+	expectReads(t, res.Reads, 4, 114, 335, 335)
 	if res.Reads.Alive > blastradius.BudgetReferenceExistence || res.Reads.Windows > blastradius.BudgetReferenceWindows {
 		t.Errorf("reads %+v over the budget", res.Reads)
 	}
@@ -557,7 +557,7 @@ func TestScenarioLTheHotHost(t *testing.T) {
 	// none for the 40 pods whose placement ended before the window.
 	p := blastradius.DefaultPolicy()
 	p.MaxDepth = 2
-	expectReads(t, impact(t, st, H, w30, blastradius.Options{Policy: p}).Reads, 3, 3, 115, 115)
+	expectReads(t, impact(t, st, H, w30, blastradius.Options{Policy: p}).Reads, 3, 4, 115, 115)
 }
 
 func TestScenarioMFabricPlacementPerTargetType(t *testing.T) {
@@ -578,7 +578,7 @@ func TestScenarioMFabricPlacementPerTargetType(t *testing.T) {
 			mline(N1, 2, whole, interval.ClassStable, 0, arr{H1, catalog.RunsOn, whole}),
 			mline(P1, 3, whole, interval.ClassStable, 0, arr{N1, catalog.ScheduledOn, whole}))
 		expect(t, "unattributed", describeUnattributed(res.Unattributed))
-		expectReads(t, res.Reads, 6, 8, 13, 13)
+		expectReads(t, res.Reads, 6, 9, 13, 13)
 	})
 	t.Run("M′", func(t *testing.T) {
 		st, f := data(t)
@@ -592,7 +592,7 @@ func TestScenarioMFabricPlacementPerTargetType(t *testing.T) {
 			mline(P1, 3, whole, interval.ClassStable, 0, arr{N1, catalog.ScheduledOn, whole}))
 		expect(t, "unattributed", describeUnattributed(res.Unattributed),
 			uline(H2, catalog.LocatedIn, catalog.Rack, []identity.Fingerprint{R, R2}, sp(hm(10, 10), hm(10, 30))))
-		expectReads(t, res.Reads, 6, 8, 14, 14)
+		expectReads(t, res.Reads, 6, 9, 14, 14)
 	})
 }
 
@@ -644,7 +644,7 @@ func TestScenarioPTheWalkReachesServiceInstancesAndStops(t *testing.T) {
 	}
 	// Depth 3 reads P1, C1 and SI. There is no depth-4 call: neither a
 	// container nor a service instance has a reverse edge layer.
-	expectReads(t, res.Reads, 4, 7, 13, 13)
+	expectReads(t, res.Reads, 4, 9, 13, 13)
 
 	// From the service, the instance_of edge into it is read and counted, and
 	// not followed.

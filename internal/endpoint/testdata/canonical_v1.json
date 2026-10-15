@@ -1,0 +1,1156 @@
+[
+  {
+    "cluster": "default",
+    "input": "10.42.0.5",
+    "realm": "k8s/default",
+    "address": "10.42.0.5",
+    "fingerprint": "topo.endpoint:5748edb0ec76293370c331921ba78add"
+  },
+  {
+    "cluster": "prod/eu-1:a",
+    "input": "10.42.0.5",
+    "realm": "k8s/prod/eu-1:a",
+    "address": "10.42.0.5",
+    "fingerprint": "topo.endpoint:0ad283ecf74201ccb1c73c968b27be13"
+  },
+  {
+    "cluster": "default",
+    "input": "8.8.8.8",
+    "realm": "global",
+    "address": "8.8.8.8",
+    "fingerprint": "topo.endpoint:130354458a38130bd6c9e3332a612714"
+  },
+  {
+    "cluster": "prod/eu-1:a",
+    "input": "8.8.8.8",
+    "realm": "global",
+    "address": "8.8.8.8",
+    "fingerprint": "topo.endpoint:130354458a38130bd6c9e3332a612714"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:DB8::1",
+    "realm": "k8s/default",
+    "address": "2001:db8::1",
+    "fingerprint": "topo.endpoint:11029333a10afd831654cfbd7868077e"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:0db8:0000:0000:0000:0000:0000:0001",
+    "realm": "k8s/default",
+    "address": "2001:db8::1",
+    "fingerprint": "topo.endpoint:11029333a10afd831654cfbd7868077e"
+  },
+  {
+    "cluster": "default",
+    "input": "2600:1F18::1",
+    "realm": "global",
+    "address": "2600:1f18::1",
+    "fingerprint": "topo.endpoint:0425a6ac39d20cabed9d38c92916824b"
+  },
+  {
+    "cluster": "default",
+    "input": "2600:1f18::1",
+    "realm": "global",
+    "address": "2600:1f18::1",
+    "fingerprint": "topo.endpoint:0425a6ac39d20cabed9d38c92916824b"
+  },
+  {
+    "cluster": "default",
+    "input": "::ffff:10.42.0.5",
+    "realm": "k8s/default",
+    "address": "10.42.0.5",
+    "fingerprint": "topo.endpoint:5748edb0ec76293370c331921ba78add"
+  },
+  {
+    "cluster": "default",
+    "input": "::FFFF:8.8.8.8",
+    "realm": "global",
+    "address": "8.8.8.8",
+    "fingerprint": "topo.endpoint:130354458a38130bd6c9e3332a612714"
+  },
+  {
+    "cluster": "default",
+    "input": "fd00::1",
+    "realm": "k8s/default",
+    "address": "fd00::1",
+    "fingerprint": "topo.endpoint:9952f7a7807a716020ca20765fdfa37c"
+  },
+  {
+    "cluster": "default",
+    "input": "100.64.0.1",
+    "realm": "k8s/default",
+    "address": "100.64.0.1",
+    "fingerprint": "topo.endpoint:6506b4945166b59648e3309f46c4c825"
+  },
+  {
+    "cluster": "default",
+    "input": "010.42.0.5",
+    "refused": "not_address"
+  },
+  {
+    "cluster": "default",
+    "input": "10.42.0.05",
+    "refused": "not_address"
+  },
+  {
+    "cluster": "default",
+    "input": " 10.42.0.5",
+    "refused": "not_address"
+  },
+  {
+    "cluster": "default",
+    "input": "10.42.0.5/24",
+    "refused": "not_address"
+  },
+  {
+    "cluster": "default",
+    "input": "",
+    "refused": "not_address"
+  },
+  {
+    "cluster": "default",
+    "input": "fe80::1%eth0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:db8::1%eth0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "127.0.0.1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "0.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "169.254.1.1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "fe80::1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "224.0.0.1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "ff02::1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::ffff:127.0.0.1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "",
+    "input": "10.42.0.5",
+    "refused": "cluster"
+  },
+  {
+    "cluster": "default",
+    "input": "1.0.0.0",
+    "realm": "global",
+    "address": "1.0.0.0",
+    "fingerprint": "topo.endpoint:e9a918c12310c8d542c6eb55e9bb4585"
+  },
+  {
+    "cluster": "default",
+    "input": "0.0.0.1",
+    "realm": "k8s/default",
+    "address": "0.0.0.1",
+    "fingerprint": "topo.endpoint:709bc6d247b945791621135b2eac67d3"
+  },
+  {
+    "cluster": "default",
+    "input": "9.255.255.255",
+    "realm": "global",
+    "address": "9.255.255.255",
+    "fingerprint": "topo.endpoint:fd1a121e6aa5a07af792e9781713764c"
+  },
+  {
+    "cluster": "default",
+    "input": "11.0.0.0",
+    "realm": "global",
+    "address": "11.0.0.0",
+    "fingerprint": "topo.endpoint:4771e651dbd2ff555f7f4289b6d46dc6"
+  },
+  {
+    "cluster": "default",
+    "input": "100.63.255.255",
+    "realm": "global",
+    "address": "100.63.255.255",
+    "fingerprint": "topo.endpoint:f702c183915609ed4efabaf77de9a812"
+  },
+  {
+    "cluster": "default",
+    "input": "100.128.0.0",
+    "realm": "global",
+    "address": "100.128.0.0",
+    "fingerprint": "topo.endpoint:d09314adf13495be0a99897e77982fd8"
+  },
+  {
+    "cluster": "default",
+    "input": "126.255.255.255",
+    "realm": "global",
+    "address": "126.255.255.255",
+    "fingerprint": "topo.endpoint:b2f990a1ec96b8bb857d2ea5c205bac6"
+  },
+  {
+    "cluster": "default",
+    "input": "128.0.0.0",
+    "realm": "global",
+    "address": "128.0.0.0",
+    "fingerprint": "topo.endpoint:8670cf0e20862bf95f60cb7ec0b1c777"
+  },
+  {
+    "cluster": "default",
+    "input": "169.253.255.255",
+    "realm": "global",
+    "address": "169.253.255.255",
+    "fingerprint": "topo.endpoint:516a78a29dbcf287f31c01372ea6bac2"
+  },
+  {
+    "cluster": "default",
+    "input": "169.255.0.0",
+    "realm": "global",
+    "address": "169.255.0.0",
+    "fingerprint": "topo.endpoint:eadcad8053397c72b7dfe1045ee1442b"
+  },
+  {
+    "cluster": "default",
+    "input": "172.15.255.255",
+    "realm": "global",
+    "address": "172.15.255.255",
+    "fingerprint": "topo.endpoint:5e054de1b38202027e7a5118785c9eac"
+  },
+  {
+    "cluster": "default",
+    "input": "172.32.0.0",
+    "realm": "global",
+    "address": "172.32.0.0",
+    "fingerprint": "topo.endpoint:d8b659f73361c411e1757041dad2509f"
+  },
+  {
+    "cluster": "default",
+    "input": "191.255.255.255",
+    "realm": "global",
+    "address": "191.255.255.255",
+    "fingerprint": "topo.endpoint:c63437d6bbc9b651ea4387ebc58226df"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.1.0",
+    "realm": "global",
+    "address": "192.0.1.0",
+    "fingerprint": "topo.endpoint:a8bbc0893f0d8db7db93ea35f53c62c1"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.7",
+    "realm": "k8s/default",
+    "address": "192.0.0.7",
+    "fingerprint": "topo.endpoint:dda6ac9470bb62a5d96d44901bbbf081"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.9",
+    "realm": "k8s/default",
+    "address": "192.0.0.9",
+    "fingerprint": "topo.endpoint:5f3ae17289ae5cafd44cd22866fa9169"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.169",
+    "realm": "k8s/default",
+    "address": "192.0.0.169",
+    "fingerprint": "topo.endpoint:862dc7e896c9d669b1fdf49657120bbf"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.172",
+    "realm": "k8s/default",
+    "address": "192.0.0.172",
+    "fingerprint": "topo.endpoint:aaab7243ee47b7667ffd49b61d722fbf"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.1.255",
+    "realm": "global",
+    "address": "192.0.1.255",
+    "fingerprint": "topo.endpoint:27fa15fd19cb5ba35f71e868dff164d3"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.3.0",
+    "realm": "global",
+    "address": "192.0.3.0",
+    "fingerprint": "topo.endpoint:aa3bc65ee80d73cc2234c3346bb95bb9"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.98.255",
+    "realm": "global",
+    "address": "192.88.98.255",
+    "fingerprint": "topo.endpoint:c6e3935019b2ebb5faea1c87fb7670a7"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.100.0",
+    "realm": "global",
+    "address": "192.88.100.0",
+    "fingerprint": "topo.endpoint:11d39b587db5b9d6ab55c177f1809fd0"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.1",
+    "realm": "k8s/default",
+    "address": "192.88.99.1",
+    "fingerprint": "topo.endpoint:2e65fce3baf96f3d671c4f6489570ef2"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.3",
+    "realm": "k8s/default",
+    "address": "192.88.99.3",
+    "fingerprint": "topo.endpoint:9ba93787798b5566d37b4518dcdaf952"
+  },
+  {
+    "cluster": "default",
+    "input": "192.167.255.255",
+    "realm": "global",
+    "address": "192.167.255.255",
+    "fingerprint": "topo.endpoint:397c7a28635a0c48a7898f4ee7a47b15"
+  },
+  {
+    "cluster": "default",
+    "input": "192.169.0.0",
+    "realm": "global",
+    "address": "192.169.0.0",
+    "fingerprint": "topo.endpoint:d9554a8767d19617aabd614783368fe2"
+  },
+  {
+    "cluster": "default",
+    "input": "198.17.255.255",
+    "realm": "global",
+    "address": "198.17.255.255",
+    "fingerprint": "topo.endpoint:27d2a05e353079ceb54c2d4ad9c2128e"
+  },
+  {
+    "cluster": "default",
+    "input": "198.20.0.0",
+    "realm": "global",
+    "address": "198.20.0.0",
+    "fingerprint": "topo.endpoint:28c989bb38a25b4440cc2e21155fffd6"
+  },
+  {
+    "cluster": "default",
+    "input": "198.51.99.255",
+    "realm": "global",
+    "address": "198.51.99.255",
+    "fingerprint": "topo.endpoint:f6c053351a8268a7658976eed3871524"
+  },
+  {
+    "cluster": "default",
+    "input": "198.51.101.0",
+    "realm": "global",
+    "address": "198.51.101.0",
+    "fingerprint": "topo.endpoint:db07322e7266be2aa226d7e007726175"
+  },
+  {
+    "cluster": "default",
+    "input": "203.0.112.255",
+    "realm": "global",
+    "address": "203.0.112.255",
+    "fingerprint": "topo.endpoint:464d75f28a79b94cb80970d339ccd82c"
+  },
+  {
+    "cluster": "default",
+    "input": "203.0.114.0",
+    "realm": "global",
+    "address": "203.0.114.0",
+    "fingerprint": "topo.endpoint:f1e9981082cdeb031b08b5c0e56e2a9f"
+  },
+  {
+    "cluster": "default",
+    "input": "239.255.255.255",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "255.255.255.254",
+    "realm": "k8s/default",
+    "address": "255.255.255.254",
+    "fingerprint": "topo.endpoint:1a19cf9d24074bde03945004958b2b4f"
+  },
+  {
+    "cluster": "default",
+    "input": "::2",
+    "realm": "k8s/default",
+    "address": "::2",
+    "fingerprint": "topo.endpoint:e0f476cda5ca9f84de8b8e94f43ab777"
+  },
+  {
+    "cluster": "default",
+    "input": "::fffe:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "::fffe:ffff:ffff",
+    "fingerprint": "topo.endpoint:d3d58eb546310ea10f04850080cf8ceb"
+  },
+  {
+    "cluster": "default",
+    "input": "::1:0:0:0",
+    "realm": "k8s/default",
+    "address": "::1:0:0:0",
+    "fingerprint": "topo.endpoint:f3ee869d44627f3159361d0a18877e85"
+  },
+  {
+    "cluster": "default",
+    "input": "64:ff9b:0:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "64:ff9b:0:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:128e427f10009d58c77629d90ce315d0"
+  },
+  {
+    "cluster": "default",
+    "input": "64:ff9b:2::",
+    "realm": "k8s/default",
+    "address": "64:ff9b:2::",
+    "fingerprint": "topo.endpoint:b19078bdfdc9f26963563e94c426c279"
+  },
+  {
+    "cluster": "default",
+    "input": "ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "ff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:ec00f88ce53b0fbd1d05a607602d48a0"
+  },
+  {
+    "cluster": "default",
+    "input": "100:0:0:2::",
+    "realm": "k8s/default",
+    "address": "100:0:0:2::",
+    "fingerprint": "topo.endpoint:2349429736771f3c06c621ce2215cea1"
+  },
+  {
+    "cluster": "default",
+    "input": "2000:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "global",
+    "address": "2000:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:b852b9e230c2217554874f2979aadbd2"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:200::",
+    "realm": "global",
+    "address": "2001:200::",
+    "fingerprint": "topo.endpoint:e4e8d2478aae9a148e325a63a5e6c6d1"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:1::",
+    "realm": "k8s/default",
+    "address": "2001:1::",
+    "fingerprint": "topo.endpoint:a5da40577635f3bfc58bf55e9fa94270"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:1:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:1:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:ada6f7acb7799dcf0f179095cd2c564d"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:2:1::",
+    "realm": "k8s/default",
+    "address": "2001:2:1::",
+    "fingerprint": "topo.endpoint:9157c4d26deab0e4d2ce8414e7797af8"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:f:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:f:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:a9ee544fa6fc197805db9bae0d278627"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:20::",
+    "realm": "k8s/default",
+    "address": "2001:20::",
+    "fingerprint": "topo.endpoint:46f19a0adc49a0e6395bcd7050cbd29b"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:db7:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "global",
+    "address": "2001:db7:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:50337d9f7b7e9bba08f8dc7c19db2999"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:db9::",
+    "realm": "global",
+    "address": "2001:db9::",
+    "fingerprint": "topo.endpoint:70a88cdc02877f394096ab6908cf0ef5"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "global",
+    "address": "2001:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:8a41e85ffb7593f8cdcb7a6e285c7e52"
+  },
+  {
+    "cluster": "default",
+    "input": "2003::",
+    "realm": "global",
+    "address": "2003::",
+    "fingerprint": "topo.endpoint:abe0a1fb2d61cd77313c16d926f79b28"
+  },
+  {
+    "cluster": "default",
+    "input": "3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "global",
+    "address": "3ffe:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:1404ce89fc1733c0c213a519bd165042"
+  },
+  {
+    "cluster": "default",
+    "input": "3fff:1000::",
+    "realm": "global",
+    "address": "3fff:1000::",
+    "fingerprint": "topo.endpoint:ab711c664c38cff3e9dfe731fa102dfa"
+  },
+  {
+    "cluster": "default",
+    "input": "5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "5eff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:e745e73979ab4c5fb8eee9db345f4e64"
+  },
+  {
+    "cluster": "default",
+    "input": "5f01::",
+    "realm": "k8s/default",
+    "address": "5f01::",
+    "fingerprint": "topo.endpoint:3dfbae90af08f1e3a543299bf08959bd"
+  },
+  {
+    "cluster": "default",
+    "input": "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:7b87179a349e194394ec27f5fa066c41"
+  },
+  {
+    "cluster": "default",
+    "input": "fe00::",
+    "realm": "k8s/default",
+    "address": "fe00::",
+    "fingerprint": "topo.endpoint:009ea27c92ba2dfed7f4360d2e6a65f2"
+  },
+  {
+    "cluster": "default",
+    "input": "fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:c78f99f841a0172f2b6114481c6ab926"
+  },
+  {
+    "cluster": "default",
+    "input": "fec0::",
+    "realm": "k8s/default",
+    "address": "fec0::",
+    "fingerprint": "topo.endpoint:e0ee0f2857b7eebc760e737eb5673327"
+  },
+  {
+    "cluster": "default",
+    "input": "1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:25dec35ef764051041f1dfee24ab867e"
+  },
+  {
+    "cluster": "default",
+    "input": "2000::",
+    "realm": "global",
+    "address": "2000::",
+    "fingerprint": "topo.endpoint:862e26cd650757873104edf3d1d82b2c"
+  },
+  {
+    "cluster": "default",
+    "input": "3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "global",
+    "address": "3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:8da18839e8da3de55fe9a8e0f502e45a"
+  },
+  {
+    "cluster": "default",
+    "input": "4000::",
+    "realm": "k8s/default",
+    "address": "4000::",
+    "fingerprint": "topo.endpoint:7b2f1eeacac40fcdb1cca88cfd57fa72"
+  },
+  {
+    "cluster": "default",
+    "input": "::10.42.0.5",
+    "realm": "k8s/default",
+    "address": "::a2a:5",
+    "fingerprint": "topo.endpoint:38fce7181ada26f8aa1ad19cddaca585"
+  },
+  {
+    "cluster": "default",
+    "input": "64:ff9b::1",
+    "realm": "k8s/default",
+    "address": "64:ff9b::1",
+    "fingerprint": "topo.endpoint:742fe824bc1c39afeee58aa796f82095"
+  },
+  {
+    "cluster": "default",
+    "input": "fec0::1",
+    "realm": "k8s/default",
+    "address": "fec0::1",
+    "fingerprint": "topo.endpoint:a681824ece7ff6c78fee494be2d6fef0"
+  },
+  {
+    "cluster": "default",
+    "input": "fe00::1",
+    "realm": "k8s/default",
+    "address": "fe00::1",
+    "fingerprint": "topo.endpoint:a59b2165003dafcb1a18b5f0e2e2f576"
+  },
+  {
+    "cluster": "default",
+    "input": "3000::1",
+    "realm": "global",
+    "address": "3000::1",
+    "fingerprint": "topo.endpoint:16e8c6b6fe48459e57ade34d8ef4e3c2"
+  },
+  {
+    "cluster": "default",
+    "input": "4000::1",
+    "realm": "k8s/default",
+    "address": "4000::1",
+    "fingerprint": "topo.endpoint:a253a56e4cad57fbe4b0d10482704871"
+  },
+  {
+    "cluster": "default",
+    "input": "8000::1",
+    "realm": "k8s/default",
+    "address": "8000::1",
+    "fingerprint": "topo.endpoint:d1911e3cd6a650d5498e22923f66c857"
+  },
+  {
+    "cluster": "default",
+    "input": "0.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "0.255.255.255",
+    "realm": "k8s/default",
+    "address": "0.255.255.255",
+    "fingerprint": "topo.endpoint:a7338670ea2715e6071703cf92061841"
+  },
+  {
+    "cluster": "default",
+    "input": "0.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "0.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "10.0.0.0",
+    "realm": "k8s/default",
+    "address": "10.0.0.0",
+    "fingerprint": "topo.endpoint:7e17f69c6b4eae7b04c80e6acbcecae5"
+  },
+  {
+    "cluster": "default",
+    "input": "10.255.255.255",
+    "realm": "k8s/default",
+    "address": "10.255.255.255",
+    "fingerprint": "topo.endpoint:a6192d90e3b91c4334bc9310e4d9b48d"
+  },
+  {
+    "cluster": "default",
+    "input": "100.64.0.0",
+    "realm": "k8s/default",
+    "address": "100.64.0.0",
+    "fingerprint": "topo.endpoint:8bb38b06440067b058ca0cf17a05ad4d"
+  },
+  {
+    "cluster": "default",
+    "input": "100.127.255.255",
+    "realm": "k8s/default",
+    "address": "100.127.255.255",
+    "fingerprint": "topo.endpoint:b0c718239c8ffe058c9778eee42fbd2e"
+  },
+  {
+    "cluster": "default",
+    "input": "127.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "127.255.255.255",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "169.254.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "169.254.255.255",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "172.16.0.0",
+    "realm": "k8s/default",
+    "address": "172.16.0.0",
+    "fingerprint": "topo.endpoint:3ae4bcdab946baab0b473a6fa29041d6"
+  },
+  {
+    "cluster": "default",
+    "input": "172.31.255.255",
+    "realm": "k8s/default",
+    "address": "172.31.255.255",
+    "fingerprint": "topo.endpoint:aa3310943c560e16d82216bfb49569eb"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.0",
+    "realm": "k8s/default",
+    "address": "192.0.0.0",
+    "fingerprint": "topo.endpoint:4267d9a292eff08c43609faff44739e7"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.255",
+    "realm": "k8s/default",
+    "address": "192.0.0.255",
+    "fingerprint": "topo.endpoint:e7249691c5bb033db05b40ad5272a506"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.0",
+    "realm": "k8s/default",
+    "address": "192.0.0.0",
+    "fingerprint": "topo.endpoint:4267d9a292eff08c43609faff44739e7"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.7",
+    "realm": "k8s/default",
+    "address": "192.0.0.7",
+    "fingerprint": "topo.endpoint:dda6ac9470bb62a5d96d44901bbbf081"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.8",
+    "realm": "k8s/default",
+    "address": "192.0.0.8",
+    "fingerprint": "topo.endpoint:89f85f823fc12c84146d873bcf140fda"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.8",
+    "realm": "k8s/default",
+    "address": "192.0.0.8",
+    "fingerprint": "topo.endpoint:89f85f823fc12c84146d873bcf140fda"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.170",
+    "realm": "k8s/default",
+    "address": "192.0.0.170",
+    "fingerprint": "topo.endpoint:d55c28b827574f2805586b0855947dea"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.170",
+    "realm": "k8s/default",
+    "address": "192.0.0.170",
+    "fingerprint": "topo.endpoint:d55c28b827574f2805586b0855947dea"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.171",
+    "realm": "k8s/default",
+    "address": "192.0.0.171",
+    "fingerprint": "topo.endpoint:7fde2236761265149a7600b15f162d93"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.0.171",
+    "realm": "k8s/default",
+    "address": "192.0.0.171",
+    "fingerprint": "topo.endpoint:7fde2236761265149a7600b15f162d93"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.2.0",
+    "realm": "k8s/default",
+    "address": "192.0.2.0",
+    "fingerprint": "topo.endpoint:debe656371936cfe47b697409fec9416"
+  },
+  {
+    "cluster": "default",
+    "input": "192.0.2.255",
+    "realm": "k8s/default",
+    "address": "192.0.2.255",
+    "fingerprint": "topo.endpoint:0cb6786c1e164e222bd5053649ee7f1a"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.0",
+    "realm": "k8s/default",
+    "address": "192.88.99.0",
+    "fingerprint": "topo.endpoint:9283f4d9a7dba8605f40a244eb96fb61"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.255",
+    "realm": "k8s/default",
+    "address": "192.88.99.255",
+    "fingerprint": "topo.endpoint:ad3cda687a2b188740169606cb5c4079"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.2",
+    "realm": "k8s/default",
+    "address": "192.88.99.2",
+    "fingerprint": "topo.endpoint:17184053b9e1a22d7c634588adca4d17"
+  },
+  {
+    "cluster": "default",
+    "input": "192.88.99.2",
+    "realm": "k8s/default",
+    "address": "192.88.99.2",
+    "fingerprint": "topo.endpoint:17184053b9e1a22d7c634588adca4d17"
+  },
+  {
+    "cluster": "default",
+    "input": "192.168.0.0",
+    "realm": "k8s/default",
+    "address": "192.168.0.0",
+    "fingerprint": "topo.endpoint:a26376b9bba27752b39783eeb5a75186"
+  },
+  {
+    "cluster": "default",
+    "input": "192.168.255.255",
+    "realm": "k8s/default",
+    "address": "192.168.255.255",
+    "fingerprint": "topo.endpoint:c24862fc326e1aa36093135dd1e38b42"
+  },
+  {
+    "cluster": "default",
+    "input": "198.18.0.0",
+    "realm": "k8s/default",
+    "address": "198.18.0.0",
+    "fingerprint": "topo.endpoint:14948a94e28db8809f8f537126efe603"
+  },
+  {
+    "cluster": "default",
+    "input": "198.19.255.255",
+    "realm": "k8s/default",
+    "address": "198.19.255.255",
+    "fingerprint": "topo.endpoint:603355e5079adb56433babbc2381345c"
+  },
+  {
+    "cluster": "default",
+    "input": "198.51.100.0",
+    "realm": "k8s/default",
+    "address": "198.51.100.0",
+    "fingerprint": "topo.endpoint:30495697398e00f581002e6af59d2ab1"
+  },
+  {
+    "cluster": "default",
+    "input": "198.51.100.255",
+    "realm": "k8s/default",
+    "address": "198.51.100.255",
+    "fingerprint": "topo.endpoint:8ffc748436fc0546dcdcb6af9e79c53f"
+  },
+  {
+    "cluster": "default",
+    "input": "203.0.113.0",
+    "realm": "k8s/default",
+    "address": "203.0.113.0",
+    "fingerprint": "topo.endpoint:0d9db333049b645cdc8d998e2a0ea3e4"
+  },
+  {
+    "cluster": "default",
+    "input": "203.0.113.255",
+    "realm": "k8s/default",
+    "address": "203.0.113.255",
+    "fingerprint": "topo.endpoint:7f545a032e2cdccd6f2e3b36ecec16bb"
+  },
+  {
+    "cluster": "default",
+    "input": "240.0.0.0",
+    "realm": "k8s/default",
+    "address": "240.0.0.0",
+    "fingerprint": "topo.endpoint:ec0d5ee01331933bb1f74ccc88755072"
+  },
+  {
+    "cluster": "default",
+    "input": "255.255.255.255",
+    "realm": "k8s/default",
+    "address": "255.255.255.255",
+    "fingerprint": "topo.endpoint:7add802ffbd36ccb2936e690623c0bde"
+  },
+  {
+    "cluster": "default",
+    "input": "255.255.255.255",
+    "realm": "k8s/default",
+    "address": "255.255.255.255",
+    "fingerprint": "topo.endpoint:7add802ffbd36ccb2936e690623c0bde"
+  },
+  {
+    "cluster": "default",
+    "input": "255.255.255.255",
+    "realm": "k8s/default",
+    "address": "255.255.255.255",
+    "fingerprint": "topo.endpoint:7add802ffbd36ccb2936e690623c0bde"
+  },
+  {
+    "cluster": "default",
+    "input": "::1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::1",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::ffff:0.0.0.0",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "::ffff:255.255.255.255",
+    "realm": "k8s/default",
+    "address": "255.255.255.255",
+    "fingerprint": "topo.endpoint:7add802ffbd36ccb2936e690623c0bde"
+  },
+  {
+    "cluster": "default",
+    "input": "64:ff9b:1::",
+    "realm": "k8s/default",
+    "address": "64:ff9b:1::",
+    "fingerprint": "topo.endpoint:2a01e3669446b3eb01535533438af340"
+  },
+  {
+    "cluster": "default",
+    "input": "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:89374e3a32c2a4b6072eee598fd9b71b"
+  },
+  {
+    "cluster": "default",
+    "input": "100::",
+    "realm": "k8s/default",
+    "address": "100::",
+    "fingerprint": "topo.endpoint:ed9e1bfdfc7b33e61643582b96a0c181"
+  },
+  {
+    "cluster": "default",
+    "input": "100::ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "100::ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:4b73d786de02c67e50aab331d7f5091c"
+  },
+  {
+    "cluster": "default",
+    "input": "100:0:0:1::",
+    "realm": "k8s/default",
+    "address": "100:0:0:1::",
+    "fingerprint": "topo.endpoint:0166516a32497b34eb3209dddea91be5"
+  },
+  {
+    "cluster": "default",
+    "input": "100::1:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "100::1:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:92d7810b5cb185a051fb950670bc4f83"
+  },
+  {
+    "cluster": "default",
+    "input": "2001::",
+    "realm": "k8s/default",
+    "address": "2001::",
+    "fingerprint": "topo.endpoint:7f7fc5e4fd5f9430aa6fadd70b071f95"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:1ff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:d0bde271f2340288e0a7fdbe50f43ddc"
+  },
+  {
+    "cluster": "default",
+    "input": "2001::",
+    "realm": "k8s/default",
+    "address": "2001::",
+    "fingerprint": "topo.endpoint:7f7fc5e4fd5f9430aa6fadd70b071f95"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:0:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:0:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:bb248b22f189fc846cac9aabc738448a"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:2::",
+    "realm": "k8s/default",
+    "address": "2001:2::",
+    "fingerprint": "topo.endpoint:28f7835a78c68d906b524ca8a4e45869"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:2:0:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:2:0:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:691e5d1b30e80da0b9ea1dbd57377ba1"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:10::",
+    "realm": "k8s/default",
+    "address": "2001:10::",
+    "fingerprint": "topo.endpoint:a055890a8638505f111f6fe1c4e57841"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:1f:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:910570797a5b71ce342c4f668f2d83fd"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:db8::",
+    "realm": "k8s/default",
+    "address": "2001:db8::",
+    "fingerprint": "topo.endpoint:a4965a23a2ec9c383fa6036b9f5322e9"
+  },
+  {
+    "cluster": "default",
+    "input": "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:46fea61cf92916a7940db1057426453c"
+  },
+  {
+    "cluster": "default",
+    "input": "2002::",
+    "realm": "k8s/default",
+    "address": "2002::",
+    "fingerprint": "topo.endpoint:ad5772db5285402868029b220003d252"
+  },
+  {
+    "cluster": "default",
+    "input": "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:49d4d82ea180532b6952bd8b44b112d3"
+  },
+  {
+    "cluster": "default",
+    "input": "3fff::",
+    "realm": "k8s/default",
+    "address": "3fff::",
+    "fingerprint": "topo.endpoint:644b73da75997940775d9be88c1840ad"
+  },
+  {
+    "cluster": "default",
+    "input": "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:a60f92017b55be4024385b6d89220a0a"
+  },
+  {
+    "cluster": "default",
+    "input": "5f00::",
+    "realm": "k8s/default",
+    "address": "5f00::",
+    "fingerprint": "topo.endpoint:59e3af82248f041e6cef08a2b44a3f1c"
+  },
+  {
+    "cluster": "default",
+    "input": "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "5f00:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:d6f7ddcd9363d25e8fa55d895a58e5b3"
+  },
+  {
+    "cluster": "default",
+    "input": "fc00::",
+    "realm": "k8s/default",
+    "address": "fc00::",
+    "fingerprint": "topo.endpoint:55e2496f72dbfae9ce9b991854178d4a"
+  },
+  {
+    "cluster": "default",
+    "input": "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "realm": "k8s/default",
+    "address": "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "fingerprint": "topo.endpoint:fe1f28e24a3020ebcfe8d904aad34f61"
+  },
+  {
+    "cluster": "default",
+    "input": "fe80::",
+    "refused": "scoped"
+  },
+  {
+    "cluster": "default",
+    "input": "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "refused": "scoped"
+  }
+]

@@ -95,7 +95,7 @@
 // # Reads
 //
 // A query makes two to six interval calls, and [Result].Reads counts them and
-// their store reads: one Window per node or host read, and one existence read
+// their store reads: one Window per edge layer read, and one existence read
 // (an Alive and, unless quarantined, an EntityWindow) per distinct endpoint of
 // an edge with an interval of its own in the window, per call. The read budget
 // of the cascade is fixed in [BudgetDate] and the constants beside it.

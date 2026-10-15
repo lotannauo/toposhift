@@ -698,7 +698,7 @@ func TestP12EdgeLayers(t *testing.T) {
 		dir  store.Direction
 		want []catalog.Layer
 	}{
-		{catalog.K8sNode, store.Forward, []catalog.Layer{catalog.L1}},
+		{catalog.K8sNode, store.Forward, []catalog.Layer{catalog.L1, catalog.L2}},
 		{catalog.K8sNode, store.Reverse, []catalog.Layer{catalog.L2}},
 		{catalog.Host, store.Forward, []catalog.Layer{catalog.L1}},
 		{catalog.Host, store.Reverse, []catalog.Layer{catalog.L1}},

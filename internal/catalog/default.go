@@ -54,6 +54,16 @@ func defaultEntities() []EntitySpec {
 			{Name: ServiceNamespace, Kind: KindString, Optional: true},
 			{Name: ServiceName, Kind: KindString},
 		}},
+
+		// L2 again: a network address, keyed by its realm, the address space it
+		// is unique in, and by the address in its one canonical form. Both values
+		// are built only by internal/endpoint. The type is named topo.endpoint;
+		// the Go name says network, because Endpoint is the pair of types a
+		// relation connects.
+		{ID: 12, Type: NetworkEndpoint, Layer: L2, Keys: []Key{
+			{Name: EndpointRealm, Kind: KindString},
+			{Name: EndpointAddress, Kind: KindString},
+		}},
 	}
 }
 
@@ -140,6 +150,21 @@ func defaultRelations() []RelationSpec {
 			Type:        SameAs,
 			Propagation: PropagateNone,
 			Storage:     StorageDerived,
+		},
+		{
+			// An owner claims an address over the intervals of the edge, asserted
+			// only from what the owner's own object reports, never inferred from
+			// a match. An address claimed by two owners at once is owned by
+			// neither. A claim is not a failure path.
+			ID:   8,
+			Type: HasAddress,
+			Endpoints: []Endpoint{
+				{From: K8sPod, To: NetworkEndpoint},
+				{From: K8sNode, To: NetworkEndpoint},
+			},
+			Propagation: PropagateNone,
+			Storage:     StorageFrom,
+			Layer:       L2,
 		},
 	}
 }

@@ -127,6 +127,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 		Notes: []string{
 			"Every id is an entity type, a colon, and 32 lowercase hex digits: a hash of the exact identifying attributes. Use resolve_entity to compute one.",
 			"Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
+			"An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/<cluster>\". It is unnamed and has no description: its address is an identity attribute, printed only where the request gave it. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
 			"Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
 		},
 	}

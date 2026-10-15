@@ -163,7 +163,7 @@ func TestScenarioATwoPodsThatNeverCoexisted(t *testing.T) {
 	)
 	expect(t, "Find(S) suppressed", describeAll(res.Suppressed))
 	expect(t, "Find(S) unattributed", describeUnattributed(res.Unattributed), unattr(N, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 30))))
-	expectReads(t, res.Reads, 3, 3, 6, 6)
+	expectReads(t, res.Reads, 3, 4, 6, 6)
 	if res.PolicyVersion != 1 || res.IntervalPolicy != interval.PolicyVersion || res.Token != st.LastSeq() || res.Seed != S {
 		t.Errorf("header %+v", res)
 	}
@@ -331,7 +331,7 @@ func TestScenarioESharedHostThroughTwoNodes(t *testing.T) {
 			ov{hm(10, 10), hm(10, 20), false, legs(sk, sa, sk, sa), []string{"end(2,producer)"}}))
 	expect(t, "unattributed", describeUnattributed(res.Unattributed))
 	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), hostLine(N1, H, sp(hm(10, 0), hm(10, 30))))
-	expectReads(t, res.Reads, 6, 6, 14, 14)
+	expectReads(t, res.Reads, 6, 8, 14, 14)
 	if got := coresidency.Intersection(res.CoResidents); len(got) != 1 || got[0].Peer != Z {
 		t.Errorf("Intersection = %v", peers(got))
 	}
@@ -341,7 +341,7 @@ func TestScenarioESharedHostThroughTwoNodes(t *testing.T) {
 	expect(t, "Find(S) without runs_on", describeAll(res.CoResidents), zLine)
 	expect(t, "unattributed", describeUnattributed(res.Unattributed), unattr(N1, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 30))))
 	expect(t, "seed hosts without runs_on", describeSeedHosts(res.SeedHosts))
-	expectReads(t, res.Reads, 3, 3, 5, 5)
+	expectReads(t, res.Reads, 3, 4, 5, 5)
 }
 
 func TestScenarioENodeBetweenTwoHosts(t *testing.T) {
@@ -367,7 +367,7 @@ func TestScenarioENodeBetweenTwoHosts(t *testing.T) {
 	// The instants with two hosts are in neither entry.
 	wantHosts := []string{hostLine(N1, H, sp(hm(10, 0), hm(10, 10))), hostLine(N1, H2, sp(hm(10, 15), hm(10, 30)))}
 	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts), wantHosts...)
-	expectReads(t, res.Reads, 6, 9, 20, 20)
+	expectReads(t, res.Reads, 6, 12, 20, 20)
 
 	// MaxHosts bounds the hosts whose nodes are read, not the seed's hosts.
 	pol := coresidency.DefaultPolicy()
@@ -399,7 +399,7 @@ func TestScenarioFQuarantinedHost(t *testing.T) {
 	expect(t, "unattributed", describeUnattributed(res.Unattributed),
 		unattr(N1, coresidency.QuarantinedHost, []identity.Fingerprint{H}, sp(hm(10, 0), hm(10, 30))))
 	expect(t, "seed hosts", describeSeedHosts(res.SeedHosts))
-	expectReads(t, res.Reads, 3, 3, 7, 6)
+	expectReads(t, res.Reads, 3, 4, 7, 6)
 }
 
 func TestScenarioGTokenPinnedOnce(t *testing.T) {
@@ -553,7 +553,7 @@ func TestScenarioJTheHotNode(t *testing.T) {
 	if d := diffLines("with hosts", describeAll(withHosts.CoResidents), describeAll(res.CoResidents)); d != "" {
 		t.Error(d)
 	}
-	expectReads(t, withHosts.Reads, 4, 4, 137, 137)
+	expectReads(t, withHosts.Reads, 4, 5, 137, 137)
 }
 
 func TestScenarioKRankingAndTheBudget(t *testing.T) {
@@ -619,7 +619,7 @@ func TestScenarioMTheSeedOnTwoNodes(t *testing.T) {
 	expect(t, "unattributed", describeUnattributed(res.Unattributed),
 		unattr(N1, coresidency.NoHost, nil, sp(hm(10, 0), hm(10, 10)), sp(hm(10, 20), hm(10, 30))),
 		unattr(S, coresidency.SeveralNodes, []identity.Fingerprint{N1, N2}, sp(hm(10, 10), hm(10, 20))))
-	expectReads(t, res.Reads, 3, 3, 6, 6)
+	expectReads(t, res.Reads, 3, 4, 6, 6)
 }
 
 func TestScenarioNSeedHosts(t *testing.T) {

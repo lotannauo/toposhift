@@ -25,13 +25,13 @@
 DESCRIBE SELECT * FROM 'internal/replay/activity/testdata/activity_v1.parquet';
 
 -- The key-value metadata of the footer. Expected keys: toposhift.activity.version
--- (1), .records (14), .min_seq (1), .max_seq (18446744073709551615),
--- .group_digests (two digests of 64 hex digits, separated by a comma) and .digest
+-- (1), .records (15), .min_seq (1), .max_seq (18446744073709551615),
+-- .group_digests (three digests of 64 hex digits, separated by commas) and .digest
 -- (sha256: and 64 hex digits; the pinned values are goldenGroupDigests and
 -- goldenDigest in golden_test.go).
 SELECT key, value FROM parquet_kv_metadata('internal/replay/activity/testdata/activity_v1.parquet');
 
--- Row count and sequence range. Expected: 14, 1, 18446744073709551615.
+-- Row count and sequence range. Expected: 15, 1, 18446744073709551615.
 SELECT count(*) AS records, min(seq) AS min_seq, max(seq) AS max_seq
 FROM 'internal/replay/activity/testdata/activity_v1.parquet';
 
@@ -45,7 +45,7 @@ SELECT seq, make_timestamp_ns(event_time_ns) AS event_time, layer, subject_kind,
 FROM 'internal/replay/activity/testdata/activity_v1.parquet'
 ORDER BY seq;
 
--- The event time bases. Expected: 0 for 3 rows, 1 for 3, 2 for 3, 3 for 3, 4 for 2.
+-- The event time bases. Expected: 0 for 3 rows, 1 for 3, 2 for 4, 3 for 3, 4 for 2.
 SELECT event_time_basis, count(*) AS records FROM 'internal/replay/activity/testdata/activity_v1.parquet'
 GROUP BY event_time_basis ORDER BY event_time_basis;
 

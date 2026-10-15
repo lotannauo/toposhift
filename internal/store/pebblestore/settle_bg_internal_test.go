@@ -73,19 +73,19 @@ func holding(ranges [][2][]byte, key []byte) []int {
 	return out
 }
 
-// The ranges of a layer are consecutive, cover it exactly, and are 178 with the
-// shipped catalog: 1 below its first type, 16 for each of its 11 types, 1 above.
+// The ranges of a layer are consecutive, cover it exactly, and are 194 with the
+// shipped catalog: 1 below its first type, 16 for each of its 12 types, 1 above.
 func TestSettleRangesCoverTheLayerExactly(t *testing.T) {
 	t.Parallel()
 	ids := entityIDs(pebblekv.Default)
-	if len(ids) != 11 {
-		t.Fatalf("the catalog has %d entity types, and this test is written for 11 (178 ranges): update it with the catalog", len(ids))
+	if len(ids) != 12 {
+		t.Fatalf("the catalog has %d entity types, and this test is written for 12 (194 ranges): update it with the catalog", len(ids))
 	}
 	for layer := catalog.L0; layer <= catalog.L3; layer++ {
 		ranges := settleRanges(layer, ids)
 		coverage(t, layer, ranges)
-		if len(ranges) != 178 {
-			t.Errorf("layer %s: %d ranges, want 178", layer, len(ranges))
+		if len(ranges) != 194 {
+			t.Errorf("layer %s: %d ranges, want 194", layer, len(ranges))
 		}
 
 		// A random key of the layer, with any type id and any digest, is in exactly one
@@ -113,9 +113,9 @@ func TestSettleRangesCoverTheLayerExactly(t *testing.T) {
 				t.Fatalf("layer %s: the key %x of the next layer is in ranges %v", layer, other, got)
 			}
 		}
-		// 11 types of 16 ranges each: every one of those 176 is reached by 20000 draws.
-		if len(used) != 11*16 {
-			t.Errorf("layer %s: keys of the registered types fell in %d ranges, want %d", layer, len(used), 11*16)
+		// 12 types of 16 ranges each: every one of those 192 is reached by 20000 draws.
+		if len(used) != 12*16 {
+			t.Errorf("layer %s: keys of the registered types fell in %d ranges, want %d", layer, len(used), 12*16)
 		}
 	}
 
@@ -146,7 +146,7 @@ func TestSettleRangesCoverTheLayerExactly(t *testing.T) {
 				}
 			}
 		}
-		if n != 11*256*3 {
+		if n != 12*256*3 {
 			t.Fatalf("%d prefixes tried", n)
 		}
 	})
@@ -455,12 +455,12 @@ func TestBackgroundSettleHoldsNoLock(t *testing.T) {
 
 			gate.free()
 			waitRetained(t, s)
-			want := int64(4 * 178)
+			want := int64(4 * 194)
 			if keep[0] {
-				want = 3 * 178
+				want = 3 * 194
 			}
 			if got := total.Load(); got != want {
-				t.Errorf("%d ranges were compacted, want %d (178 for each layer moved)", got, want)
+				t.Errorf("%d ranges were compacted, want %d (194 for each layer moved)", got, want)
 			}
 		})
 	}
@@ -607,7 +607,7 @@ func TestBackgroundSettleLeavesNoTombstonesInMovingLayers(t *testing.T) {
 }
 
 // What a Background settle costs in flushes while a writer keeps writing: Pebble's
-// Compact flushes a memtable that overlaps the range it is given, so a settle of 178
+// Compact flushes a memtable that overlaps the range it is given, so a settle of 194
 // ranges for each layer moved could force a flush at each. This reports, and asserts
 // nothing about, how many flushes ran across one settle beside a writer, and how many
 // the same writer brings on alone in the same time.
@@ -681,7 +681,7 @@ func TestBackgroundSettleFlushesBesideAWriter(t *testing.T) {
 			_, flush, settle, hit := s.Instrument().LastRetain()
 			delta := s.kv.Metrics().Flush.Count - quiet.Load()
 			t.Logf("one settle beside a writer: %d CompactRanges calls done (of %d), deadline reached %v (%d), flush %s, settle %s, %d records written meanwhile (%d bytes of payload), Flush.Count changed by %d",
-				ranges.Load(), 4*178, hit, rec.Counter("retain.settle_deadline_hits"), flush, settle, written, written*len(payload), delta)
+				ranges.Load(), 4*194, hit, rec.Counter("retain.settle_deadline_hits"), flush, settle, written, written*len(payload), delta)
 
 			// The same writer alone, for as long as the settle took.
 			alone := mustOpen(t, bgOptions(vfs.NewMem(), policy(stress(0))))
@@ -896,8 +896,8 @@ func TestCloseDuringSettleThenReopen(t *testing.T) {
 			if rec.Counter("retain.flush_ns") <= 0 || rec.Counter("retain.settle_ns") <= 0 {
 				t.Errorf("the reopened store did not settle: flush %d ns, settle %d ns", rec.Counter("retain.flush_ns"), rec.Counter("retain.settle_ns"))
 			}
-			if mode == Background && settled.Load() != 4*178 {
-				t.Errorf("the reopened store compacted %d ranges, want %d", settled.Load(), 4*178)
+			if mode == Background && settled.Load() != 4*194 {
+				t.Errorf("the reopened store compacted %d ranges, want %d", settled.Load(), 4*194)
 			}
 			if mode == Synchronous && settled.Load() != 0 {
 				t.Errorf("the synchronous reopening compacted %d ranges, want its own settle", settled.Load())

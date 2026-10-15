@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/apache/arrow-go/v18/parquet/file"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/endpoint"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/activity"
@@ -36,16 +38,18 @@ var update = flag.Bool("update", false, "rewrite testdata/activity_v1.parquet fr
 
 const goldenFile = "testdata/activity_v1.parquet"
 
-// goldenDigest is the content digest of the file: the digest of the two row
+// goldenDigest is the content digest of the file: the digest of the three row
 // group digests below. Neither depends on how the Parquet library encodes the
 // file, only on the canonical encoding of the records and on how they are
 // divided into row groups.
-const goldenDigest = "sha256:c4d8bbc4c1eb09d5486d754f598e2db393a13d1911c4876f16dd469186645031"
+const goldenDigest = "sha256:d9bdd15ef0e6543023837156a9b4ad705b8c31529a743ab0632af273891843ae"
 
-// goldenGroupDigests are the digests of the two row groups of the file.
-const goldenGroupDigests = "9e68e1f713ff3f88ffba574273bc02bc6812a4541a306f265cbc79fb8f56efd8,07dfa921173825a3066eb51ce64c6306051e4bf2f1b3e3fe470c782959ed7d2d"
+// goldenGroupDigests are the digests of the three row groups of the file.
+const goldenGroupDigests = "9e68e1f713ff3f88ffba574273bc02bc6812a4541a306f265cbc79fb8f56efd8," +
+	"c07e799b7cd314a88135cfa9fb37e875ab49011ba50646aac573bc88f54f4ea4," +
+	"e371e2468dace6047f47b2f6955d601da7e86fd00cd1f02378eb4b548b0bc94a"
 
-// goldenRowGroupRows gives the file two row groups of 7 records.
+// goldenRowGroupRows gives the file row groups of 7, 7 and 1 records.
 const goldenRowGroupRows = 7
 
 func must(fp identity.Fingerprint, err error) identity.Fingerprint {
@@ -72,7 +76,7 @@ func everyByte() []byte {
 // relation, a delete of each subject kind, a run with Through, a TTL, an empty
 // payload, a payload with every byte value, both ends of the event time range
 // and a Seq above 2^63.
-var goldenRecords = withBases(func() []store.Record {
+var goldenRecords = withClaim(withBases(func() []store.Record {
 	rack := resolve(catalog.Rack, identity.Attr{Key: catalog.RackID, Value: "rack-1"})
 	host := resolve(catalog.Host, identity.Attr{Key: catalog.HostID, Value: "host-1"})
 	node := resolve(catalog.K8sNode, identity.Attr{Key: catalog.K8sNodeUID, Value: "node-1"})
@@ -123,7 +127,27 @@ var goldenRecords = withBases(func() []store.Record {
 		},
 		{Layer: catalog.L1, Subject: store.EdgeSubject(host, rack, catalog.LocatedIn), Producer: "dcim", EventTime: t0.Add(11 * time.Second), Seq: math.MaxUint64, Kind: del},
 	}
-}())
+}()))
+
+// withClaim adds the has_address edge, added to the file after the records
+// above. Seqs ascend and the last is the largest there is, so it is placed by its
+// Seq, 13, between the records of Seq 12 and 2^63 + 5, and no field of theirs changes; the records after it move one position;
+// it carries its event time basis itself, so the bases withBases gave the others
+// by their positions stay theirs.
+func withClaim(recs []store.Record) []store.Record {
+	pod := resolve(catalog.K8sPod, identity.Attr{Key: catalog.K8sPodUID, Value: "pod-1"})
+	addr, err := endpoint.Identity("default", "10.42.0.5")
+	if err != nil {
+		panic(err)
+	}
+	claim := store.Record{
+		Layer: catalog.L2, Subject: store.EdgeSubject(pod, addr.Fingerprint(), catalog.HasAddress), Producer: "k8sobjects/default",
+		EventTime: time.Date(2026, 3, 1, 12, 0, 12, 0, time.UTC), Seq: 13, Kind: lifecycle.Observe, TTL: 10 * time.Minute,
+		Payload: []byte("{}"), EventTimeBasis: store.BasisObserved,
+	}
+	i := slices.IndexFunc(recs, func(r store.Record) bool { return r.Seq > claim.Seq })
+	return slices.Insert(recs, i, claim)
+}
 
 // withBases gives the records the event time bases 0 to 4 in turn, so that every
 // basis is in the file, on observations and deletes alike.
@@ -215,7 +239,7 @@ func TestGolden(t *testing.T) {
 		t.Fatalf("NewReader on the golden file: %v", err)
 	}
 	last := goldenRecords[len(goldenRecords)-1]
-	want := activity.Info{Version: 1, Records: int64(len(goldenRecords)), MinSeq: goldenRecords[0].Seq, MaxSeq: last.Seq, RowGroups: 2}
+	want := activity.Info{Version: 1, Records: int64(len(goldenRecords)), MinSeq: goldenRecords[0].Seq, MaxSeq: last.Seq, RowGroups: 3}
 	if got := r.Info(); got != want {
 		t.Errorf("Info() = %+v, want %+v", got, want)
 	}

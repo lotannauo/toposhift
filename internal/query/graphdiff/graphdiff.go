@@ -38,6 +38,12 @@ const (
 	BudgetReferenceExistence = 256
 )
 
+// The read budget of a diff, revised on 2026-10-15, when has_address gave a node
+// a second forward edge layer: the comment above stands, except that a diff of a
+// scope of one node N makes at most 3 + D + C + A existence reads, where A is the
+// number of distinct addresses N claims through has_address in the window, and D
+// and C are as above. Every constant above is unchanged.
+
 // Policy is the result budget of a diff.
 type Policy struct {
 	// MaxScope is the most distinct entities a scope may name; a larger scope

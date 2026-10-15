@@ -116,12 +116,12 @@ func TestDefaultLookupByIDRoundTrips(t *testing.T) {
 			t.Errorf("RelationByID(%d) = %q, %v; want %q", r.ID(), got.Type(), ok, r.Type())
 		}
 	}
-	for _, id := range []catalog.EntityID{0, 12, 0xFFFF} {
+	for _, id := range []catalog.EntityID{0, 13, 0xFFFF} {
 		if got, ok := c.EntityByID(id); ok {
 			t.Errorf("EntityByID(%d) = %q, want none", id, got.Type())
 		}
 	}
-	for _, id := range []catalog.RelationID{0, 8, 0xFFFF} {
+	for _, id := range []catalog.RelationID{0, 9, 0xFFFF} {
 		if got, ok := c.RelationByID(id); ok {
 			t.Errorf("RelationByID(%d) = %q, want none", id, got.Type())
 		}

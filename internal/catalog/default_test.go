@@ -55,6 +55,9 @@ func TestDefaultEntities(t *testing.T) {
 		{catalog.Service, catalog.L3, []wantKey{
 			{"service.namespace", catalog.KindString, true}, {"service.name", catalog.KindString, false},
 		}},
+		{catalog.NetworkEndpoint, catalog.L2, []wantKey{
+			{"topo.endpoint.realm", catalog.KindString, false}, {"topo.endpoint.address", catalog.KindString, false},
+		}},
 	}
 
 	c := catalog.Default()
@@ -130,6 +133,11 @@ func TestDefaultRelations(t *testing.T) {
 			catalog.PropagateUp, catalog.StorageFrom, catalog.L3,
 		},
 		{catalog.SameAs, nil, catalog.PropagateNone, catalog.StorageDerived, 0},
+		{
+			catalog.HasAddress,
+			[]catalog.Endpoint{{From: catalog.K8sPod, To: catalog.NetworkEndpoint}, {From: catalog.K8sNode, To: catalog.NetworkEndpoint}},
+			catalog.PropagateNone, catalog.StorageFrom, catalog.L2,
+		},
 	}
 
 	c := catalog.Default()
@@ -199,6 +207,46 @@ func TestPartOfAllowsAServiceInstanceInAPod(t *testing.T) {
 	}
 	if r.ID() != 1 || r.Layer() != catalog.L2 || r.Propagation() != catalog.PropagateDown {
 		t.Errorf("part_of has id %d, layer %s, propagation %s; want 1, L2, down", r.ID(), r.Layer(), r.Propagation())
+	}
+}
+
+// A pod or a node claims an address, in that direction only, and nothing else
+// does. The claim is no failure path, so a blast radius never reaches an owner
+// from an address, and it is stored with the owner, in L2.
+func TestHasAddressIsAClaimByAPodOrANode(t *testing.T) {
+	t.Parallel()
+
+	r, ok := catalog.Default().Relation(catalog.HasAddress)
+	if !ok {
+		t.Fatal("has_address is not registered")
+	}
+	tests := []struct {
+		name     string
+		from, to catalog.EntityType
+		want     bool
+	}{
+		{"a pod's address", catalog.K8sPod, catalog.NetworkEndpoint, true},
+		{"a node's address", catalog.K8sNode, catalog.NetworkEndpoint, true},
+		{"an address of a pod", catalog.NetworkEndpoint, catalog.K8sPod, false},
+		{"an address of a node", catalog.NetworkEndpoint, catalog.K8sNode, false},
+		{"a host's address", catalog.Host, catalog.NetworkEndpoint, false},
+		{"a process's address", catalog.Process, catalog.NetworkEndpoint, false},
+		{"a container's address", catalog.Container, catalog.NetworkEndpoint, false},
+		{"a service instance's address", catalog.ServiceInstance, catalog.NetworkEndpoint, false},
+		{"a service's address", catalog.Service, catalog.NetworkEndpoint, false},
+		{"an address of an address", catalog.NetworkEndpoint, catalog.NetworkEndpoint, false},
+	}
+	for _, tt := range tests {
+		if got := r.Allows(tt.from, tt.to); got != tt.want {
+			t.Errorf("%s: Allows(%s, %s) = %v, want %v", tt.name, tt.from, tt.to, got, tt.want)
+		}
+	}
+	if r.ID() != 8 || r.Layer() != catalog.L2 || r.Propagation() != catalog.PropagateNone || r.Storage() != catalog.StorageFrom {
+		t.Errorf("has_address has id %d, layer %s, propagation %s, storage %s; want 8, L2, none, from", r.ID(), r.Layer(), r.Propagation(), r.Storage())
+	}
+	e, ok := catalog.Default().Entity(catalog.NetworkEndpoint)
+	if !ok || e.ID() != 12 || e.Layer() != catalog.L2 {
+		t.Errorf("topo.endpoint: %v, id %d, layer %s; want 12, L2", ok, e.ID(), e.Layer())
 	}
 }
 
