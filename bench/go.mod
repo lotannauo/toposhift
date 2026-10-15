@@ -5,6 +5,7 @@ go 1.27.2
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/lotannauo/toposhift v0.0.0-00010101000000-000000000000
+	go.yaml.in/yaml/v3 v3.0.5
 	pgregory.net/rapid v1.3.0
 )
 

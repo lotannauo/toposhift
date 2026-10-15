@@ -25,9 +25,14 @@
 //     edge from the seed in either direction. B_union is reverse depends_on
 //     reachability over every edge with a piece in the window, ignoring when. It
 //     is a union-graph comparator, reported as a ceiling and never judged.
-//   - W->pod, the projection of W's service members onto pods, is an evaluation
-//     rule that needs the instance and bridge facts of a loader. It joins this
-//     package with the loader; the type and the strata already name it.
+//   - W->pod is the projection of W's service members onto pods, an evaluation
+//     rule and not a product rule: a pod is named where W's reach of a member, the
+//     instance_of edge of one of its instances and that instance's part_of edge to
+//     the pod are all live at once. An instance part of two pods at once, or of two
+//     services at once, names neither over the overlap, and a claim whose other end
+//     is quarantined is never followed but still counts as a claim. A pod takes the
+//     hop of the nearest member that names it. It needs the instance and bridge
+//     facts a loader writes. At pod level W+C is W->pod followed by C.
 //
 // A hit is an entity in both the list and the truth. Credit goes only to what
 // the walk returns: a truth service reachable only callee-ward is a miss, and
@@ -58,8 +63,8 @@
 // of the dataset's cases fail the load check (uninstrumented seeds are excluded
 // before that count, and only two things fail it: the seed is absent from the
 // store in the window, or the facts hold no depends_on piece in it; a quarantined
-// seed, an unmappable root and a missing window are reported and are not load
-// failures); or, for a co-residency predictor, if fewer than 8 cases
+// seed, an unmappable root, a missing window, labels that cannot be read and missing
+// Kubernetes objects are reported and are not load failures, and stay in the count); or, for a co-residency predictor, if fewer than 8 cases
 // remain after the single-node rule (a cluster of one node leaves co-residency
 // predicting everything, so C, C->svc and W+C are not scored there). Otherwise it
 // is Good if micro recall is at least 0.80 with a 95 % lower bound of at least

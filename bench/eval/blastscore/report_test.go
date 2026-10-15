@@ -193,14 +193,16 @@ func TestDatasetLoadRule(t *testing.T) {
 				add(CaseRun{Outcome: OutcomeCannotSay, Reason: ReasonQuarantinedSeed})
 				add(CaseRun{Outcome: OutcomeExcluded, Exclusion: ExcludedUnmappableRoot})
 				add(CaseRun{Outcome: OutcomeExcluded, Exclusion: ExcludedNoWindow})
+				add(CaseRun{Outcome: OutcomeExcluded, Exclusion: ExcludedUnreadableLabels})
 			}
+			add(CaseRun{Outcome: OutcomeExcluded, Exclusion: ExcludedMissingObjects})
 			for len(runs) < 24 {
 				add(CaseRun{Outcome: OutcomeScored})
 			}
 			return runs
 		}
 		d := datasetCheck(build(6))
-		if !d.Pass || d.LoadFailures != 6 || d.QuarantinedSeeds != 3 || d.UnmappableRoots != 3 || d.NoWindow != 3 || d.Counted != 24 {
+		if !d.Pass || d.LoadFailures != 6 || d.QuarantinedSeeds != 3 || d.UnmappableRoots != 3 || d.NoWindow != 3 || d.UnreadableLabels != 3 || d.MissingObjects != 1 || d.Counted != 24 {
 			t.Errorf("%+v", d)
 		}
 		if d := datasetCheck(build(7)); d.Pass || d.LoadFailures != 7 || d.Counted != 24 {
@@ -488,6 +490,7 @@ func reasonNames() []string {
 		ReasonFewCases, ReasonSingleNode, ReasonUnresolvedTruth, ReasonLoadFailures, ReasonLiftUndefined, ReasonNoComparator,
 		ReasonSeedAbsent, ReasonQuarantinedSeed, ReasonNoDependsOn, ReasonSnapshotOutside, ReasonNoSeedPods, ReasonSingleNodeCase,
 		Reason(ExcludedUninstrumentedSeed), Reason(ExcludedUnmappableRoot), Reason(ExcludedNoWindow),
+		Reason(ExcludedUnreadableLabels), Reason(ExcludedMissingObjects),
 	} {
 		out = append(out, string(r))
 	}

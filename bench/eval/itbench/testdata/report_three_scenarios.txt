@@ -1,0 +1,125 @@
+dataset itbench-lite@d0916b0, loader factload-1; policy versions: blastradius 1, coresidency 1, extract 1, interval 1
+acceptance rule fixed 2026-10-15; bootstrap 10000 resamples, seed 20261015, paired, 95 % percentile intervals
+load check: 3 cases, 0 uninstrumented seeds excluded, 3 counted, 0 failed to load (rule: pass if at most 1/4): pass=true
+reported, not in the rule: 0 quarantined seeds, 0 unmappable roots, 0 without a window, 0 with unreadable labels, 0 without objects
+What 35 cases resolve (an estimate made before any measurement): the headline stratum keeps about 15-25 of the 35 cases; at a recall of 0.80 the 95 % interval on micro recall is about +/-0.13 at 25 cases and +/-0.23 at 8, so a true 0.80 is called good only with about 20 cases or more; differences between two predictors under about 0.12-0.15 cannot be resolved; chance-level precision is about 0.11-0.22, so a lift of 1.10 is chance.
+
+service / call-graph / W [headline]: 2 cases (2 scorable), n=5 hits=3 truth=4
+  precision 0.600 [0.500, 0.667], recall 0.750 [0.500, 1.000], F1 0.667 [0.500, 0.800], lift 0.900 [0.750, 1.000]
+  without truncated cases: precision 0.600 recall 0.750 (2 cases); without uninstrumented truth: recall 0.750
+  F1 minus B_1hop: -0.190 [-0.500, 0.133] (not resolved)
+  F1 minus B_all: -0.133 [-0.300, 0.000] (not resolved)
+  ceiling (B_union recall, reported and not judged): 0.750; below 0.80, so good is out of reach because of direction or data, not interval semantics
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / call-graph / C->svc: 2 cases (2 scorable), n=2 hits=1 truth=4
+  precision 0.500 [0.500, 0.500], recall 0.250 [0.000, 0.500], F1 0.333 [0.333, 0.500], lift 0.750 [0.750, 0.750]
+  without truncated cases: precision 0.500 recall 0.250 (2 cases); without uninstrumented truth: recall 0.250
+  F1 minus B_1hop: -0.524 [-0.524, -0.500]
+  F1 minus B_all: -0.467 [-0.467, -0.300]
+  ceiling (B_union recall, reported and not judged): 0.750; below 0.80, so good is out of reach because of direction or data, not interval semantics
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / call-graph / W+C: 2 cases (2 scorable), n=5 hits=3 truth=4
+  precision 0.600 [0.500, 0.667], recall 0.750 [0.500, 1.000], F1 0.667 [0.500, 0.800], lift 0.900 [0.750, 1.000]
+  without truncated cases: precision 0.600 recall 0.750 (2 cases); without uninstrumented truth: recall 0.750
+  F1 minus B_1hop: -0.190 [-0.500, 0.133] (not resolved)
+  F1 minus B_all: -0.133 [-0.300, 0.000] (not resolved)
+  ceiling (B_union recall, reported and not judged): 0.750; below 0.80, so good is out of reach because of direction or data, not interval semantics
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / call-graph / B_all: 2 cases (2 scorable), n=6 hits=4 truth=4
+  precision 0.667 [0.667, 0.667], recall 1.000 [1.000, 1.000], F1 0.800 [0.800, 0.800], lift 1.000 [1.000, 1.000]
+  without truncated cases: precision 0.667 recall 1.000 (2 cases); without uninstrumented truth: recall 1.000
+
+service / call-graph / B_1hop: 2 cases (2 scorable), n=3 hits=3 truth=4
+  precision 1.000 [1.000, 1.000], recall 0.750 [0.500, 1.000], F1 0.857 [0.667, 1.000], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 1.000 recall 0.750 (2 cases); without uninstrumented truth: recall 0.750
+  F1 minus B_all: 0.057 [-0.133, 0.200] (not resolved)
+
+service / call-graph / B_union: 2 cases (2 scorable), n=5 hits=3 truth=4
+  precision 0.600 [0.500, 0.667], recall 0.750 [0.500, 1.000], F1 0.667 [0.500, 0.800], lift 0.900 [0.750, 1.000]
+  without truncated cases: precision 0.600 recall 0.750 (2 cases); without uninstrumented truth: recall 0.750
+  F1 minus B_all: -0.133 [-0.300, 0.000] (not resolved)
+
+service / co-residency / W: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_1hop: 0.500 [0.500, 0.500]
+  F1 minus B_all: 0.200 [0.200, 0.200]
+  ceiling (B_union recall, reported and not judged): 1.000
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / co-residency / C->svc: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_1hop: 0.500 [0.500, 0.500]
+  F1 minus B_all: 0.200 [0.200, 0.200]
+  ceiling (B_union recall, reported and not judged): 1.000
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / co-residency / W+C: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_1hop: 0.500 [0.500, 0.500]
+  F1 minus B_all: 0.200 [0.200, 0.200]
+  ceiling (B_union recall, reported and not judged): 1.000
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+service / co-residency / B_all: 1 cases (1 scorable), n=3 hits=2 truth=2
+  precision 0.667 [0.667, 0.667], recall 1.000 [1.000, 1.000], F1 0.800 [0.800, 0.800], lift 1.000 [1.000, 1.000]
+  without truncated cases: precision 0.667 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+
+service / co-residency / B_1hop: 1 cases (1 scorable), n=2 hits=1 truth=2
+  precision 0.500 [0.500, 0.500], recall 0.500 [0.500, 0.500], F1 0.500 [0.500, 0.500], lift 0.750 [0.750, 0.750]
+  without truncated cases: precision 0.500 recall 0.500 (1 cases); without uninstrumented truth: recall 0.500
+  F1 minus B_all: -0.300 [-0.300, -0.300]
+
+service / co-residency / B_union: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_all: 0.200 [0.200, 0.200]
+
+pod / call-graph / W->pod: 2 cases (1 scorable), n=5 hits=1 truth=2
+  precision 0.200 [0.000, 0.333], recall 0.500 [0.500, 0.500], F1 0.286 [0.286, 0.400], lift 1.200 [1.000, 1.200]
+  without truncated cases: precision 0.200 recall 0.500 (2 cases); without uninstrumented truth: recall 0.500
+  F1 minus B_all: 0.000 [-0.100, 0.000] (not resolved)
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / call-graph / C: 2 cases (1 scorable), n=4 hits=1 truth=2
+  precision 0.250 [0.000, 0.500], recall 0.500 [0.500, 0.500], F1 0.333 [0.333, 0.500], lift 1.500 [1.500, 1.500]
+  without truncated cases: precision 0.250 recall 0.500 (2 cases); without uninstrumented truth: recall 0.500
+  F1 minus B_all: 0.048 [0.000, 0.048] (not resolved)
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / call-graph / W+C: 2 cases (1 scorable), n=7 hits=2 truth=2
+  precision 0.286 [0.000, 0.400], recall 1.000 [1.000, 1.000], F1 0.444 [0.444, 0.571], lift 1.714 [1.200, 1.714]
+  without truncated cases: precision 0.286 recall 1.000 (2 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_all: 0.159 [0.071, 0.159]
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / call-graph / B_all: 2 cases (1 scorable), n=12 hits=2 truth=2
+  precision 0.167 [0.000, 0.333], recall 1.000 [1.000, 1.000], F1 0.286 [0.286, 0.500], lift 1.000 [1.000, 1.000]
+  without truncated cases: precision 0.167 recall 1.000 (2 cases); without uninstrumented truth: recall 1.000
+
+pod / co-residency / W->pod: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 3.000 [3.000, 3.000]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_all: 0.500 [0.500, 0.500]
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / co-residency / C: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 3.000 [3.000, 3.000]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_all: 0.500 [0.500, 0.500]
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / co-residency / W+C: 1 cases (1 scorable), n=2 hits=2 truth=2
+  precision 1.000 [1.000, 1.000], recall 1.000 [1.000, 1.000], F1 1.000 [1.000, 1.000], lift 3.000 [3.000, 3.000]
+  without truncated cases: precision 1.000 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
+  F1 minus B_all: 0.500 [0.500, 0.500]
+  verdict: cannot_say [fewer_than_8_scorable_cases]
+
+pod / co-residency / B_all: 1 cases (1 scorable), n=6 hits=2 truth=2
+  precision 0.333 [0.333, 0.333], recall 1.000 [1.000, 1.000], F1 0.500 [0.500, 0.500], lift 1.000 [1.000, 1.000]
+  without truncated cases: precision 0.333 recall 1.000 (1 cases); without uninstrumented truth: recall 1.000
