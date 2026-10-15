@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -153,7 +154,7 @@ func TestStagesWriteTheirTablesOutsideTheRepository(t *testing.T) {
 	if sum(string(a)) != sumA {
 		t.Error("the sha256 printed is not that of the file")
 	}
-	if _, err := os.Stat(filepath.Join(out, "report.json")); err == nil {
+	if fileExists(filepath.Join(out, resultsFile)) {
 		t.Error("the truth stage wrote a report")
 	}
 
@@ -185,6 +186,18 @@ func tables(t *testing.T, data string) (a, b, services string) {
 	b = hashOf(t, stdout, "B")
 	_, stdout, _ = invoke("-source", "itbench", "-data", data, "-out", out, "-stage", "pool")
 	return a, b, hashOf(t, stdout, "services")
+}
+
+// probeFile writes an invented probe file with the given lines after its comments
+// and column line, and returns its path and sha256.
+func probeFile(t *testing.T, lines ...string) (path, digest string) {
+	t.Helper()
+	text := "# an invented probe\nscenario\tcovers\toverlap_minutes\tto_fetch\treason\n" + strings.Join(lines, "")
+	path = filepath.Join(t.TempDir(), "probe.tsv")
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path, sum(text)
 }
 
 func TestPoolIsTheUnionOfTracesAndProbeNames(t *testing.T) {
@@ -232,14 +245,17 @@ func TestScoreWritesAReportThatNamesNoEntity(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b, svc := tables(t, data)
+	probe, probeSum := probeFile(t, "Scenario-1\ttrue\t13\ttrue\tcovers_window\n", "Scenario-2\tna\tna\tfalse\tno_window_in_table_a\n")
 	out := t.TempDir()
-	code, stdout, stderr := invoke("-source", "itbench", "-data", data, "-out", out, "-stage", "score", "-table-a", a, "-table-b", b, "-services", svc)
+	code, stdout, stderr := invoke("-source", "itbench", "-data", data, "-out", out, "-stage", "score", "-table-a", a, "-table-b", b, "-services", svc,
+		"-probe", probe, "-probe-sha256", probeSum)
 	if code != 0 {
 		t.Fatalf("score: %d %s", code, stderr)
 	}
 	for _, want := range []string{
 		"dataset itbench-lite@d0916b0, loader factload-1", "policy versions: blastradius", "scenarios in the count: 2; not fully loaded: 1",
 		"not fully loaded: Scenario-2: unreadable_ground_truth", "1 with unreadable labels", "address-associated", "service names with a span in the trace data read: 2",
+		"trace coverage from the probe (sha256 " + probeSum + "): 1 cases covered, 0 not covered, 1 not computed",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("the report lacks %q:\n%s", want, stdout)
@@ -250,18 +266,83 @@ func TestScoreWritesAReportThatNamesNoEntity(t *testing.T) {
 			t.Errorf("the report prints a timing (%q)", banned)
 		}
 	}
-	js, err := os.ReadFile(filepath.Join(out, "report.json"))
+	// The results file is written under the name it is recorded by, and only there.
+	if !fileExists(filepath.Join(out, resultsFile)) {
+		t.Fatalf("no %s under -out", resultsFile)
+	}
+	if fileExists(filepath.Join(out, "report.json")) {
+		t.Error("the report was also written under another name")
+	}
+	js, err := os.ReadFile(filepath.Join(out, resultsFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Results hold numbers keyed by case id, and no name, uid, label or time.
 	for _, banned := range []string{"shop", "pod-", "node-", "2026-03", "10:"} {
 		if strings.Contains(string(js), banned) {
-			t.Errorf("report.json holds %q", banned)
+			t.Errorf("the results hold %q", banned)
 		}
 	}
-	if !strings.Contains(string(js), `"Scenario-1"`) || !strings.Contains(string(js), `"Scenario-2"`) {
-		t.Error("report.json lacks a case")
+	var doc struct {
+		Schema int `json:"schema"`
+		Cases  map[string]struct {
+			Diag map[string]any `json:"diagnostics"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(js, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Schema != 2 || len(doc.Cases) != 2 {
+		t.Fatalf("schema %d, %d cases", doc.Schema, len(doc.Cases))
+	}
+	// Each case carries its own line of the probe; na is null, not false or zero.
+	for id, want := range map[string][2]any{"Scenario-1": {true, float64(13)}, "Scenario-2": {nil, nil}} {
+		d := doc.Cases[id].Diag
+		got := [2]any{d["trace_covers_window"], d["trace_overlap_minutes"]}
+		_, has1 := d["trace_covers_window"]
+		_, has2 := d["trace_overlap_minutes"]
+		if got != want || !has1 || !has2 {
+			t.Errorf("%s: trace coverage %v (present %t %t), want %v", id, got, has1, has2, want)
+		}
+	}
+}
+
+// resultsFile is the name the results are recorded by in the repository.
+const resultsFile = "itbench-lite-d0916b08.json"
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// The probe is frozen by its hash and must name the dataset's scenarios exactly.
+func TestScoreRefusesAProbeThatIsNotTheDatasets(t *testing.T) {
+	data := t.TempDir()
+	writeScenario(t, data, 1)
+	writeScenario(t, data, 2)
+	a, b, svc := tables(t, data)
+	one := "Scenario-1\ttrue\t13\ttrue\tcovers_window\n"
+	two := "Scenario-2\tfalse\t0\tfalse\tdoes_not_cover_window\n"
+	for _, c := range []struct {
+		name  string
+		lines []string
+		code  int
+	}{
+		{"both scenarios", []string{one, two}, 0},
+		{"a scenario missing", []string{one}, 1},
+		{"a scenario the dataset lacks", []string{one, two, "Scenario-3\ttrue\t1\ttrue\tcovers_window\n"}, 1},
+		{"a line that is not one", []string{one, two, "Scenario-4\ttrue\n"}, 1},
+	} {
+		probe, digest := probeFile(t, c.lines...)
+		out := t.TempDir()
+		code, _, stderr := invoke("-source", "itbench", "-data", data, "-out", out, "-stage", "score", "-table-a", a, "-table-b", b, "-services", svc,
+			"-probe", probe, "-probe-sha256", digest)
+		if code != c.code {
+			t.Errorf("%s: exit %d, want %d (%s)", c.name, code, c.code, stderr)
+		}
+		if written := fileExists(filepath.Join(out, resultsFile)); written != (c.code == 0) {
+			t.Errorf("%s: results written %t", c.name, written)
+		}
 	}
 }
 
@@ -269,8 +350,10 @@ func TestOrderOfStagesCannotBeSkipped(t *testing.T) {
 	data := t.TempDir()
 	writeScenario(t, data, 1)
 	a, b, svc := tables(t, data)
+	probe, ps := probeFile(t, "Scenario-1\ttrue\t13\ttrue\tcovers_window\n")
 	zero := strings.Repeat("0", 64)
 	base := []string{"-source", "itbench", "-data", data}
+	pr := []string{"-probe", probe, "-probe-sha256", ps}
 	for _, c := range []struct {
 		name string
 		args []string
@@ -280,12 +363,16 @@ func TestOrderOfStagesCannotBeSkipped(t *testing.T) {
 		{"map with a malformed hash", []string{"-stage", "map", "-table-a", "abc"}},
 		{"map with another table A", []string{"-stage", "map", "-table-a", zero}},
 		{"score without any hash", []string{"-stage", "score"}},
-		{"score without table B", []string{"-stage", "score", "-table-a", a, "-services", svc}},
-		{"score without the services", []string{"-stage", "score", "-table-a", a, "-table-b", b}},
-		{"score with another table B", []string{"-stage", "score", "-table-a", a, "-table-b", zero, "-services", svc}},
-		{"score with another table A", []string{"-stage", "score", "-table-a", zero, "-table-b", b, "-services", svc}},
-		{"score with another set of services", []string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", zero}},
-		{"score on a subset", []string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", svc, "-scenarios", "1"}},
+		{"score without table B", append([]string{"-stage", "score", "-table-a", a, "-services", svc}, pr...)},
+		{"score without the services", append([]string{"-stage", "score", "-table-a", a, "-table-b", b}, pr...)},
+		{"score with another table B", append([]string{"-stage", "score", "-table-a", a, "-table-b", zero, "-services", svc}, pr...)},
+		{"score with another table A", append([]string{"-stage", "score", "-table-a", zero, "-table-b", b, "-services", svc}, pr...)},
+		{"score with another set of services", append([]string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", zero}, pr...)},
+		{"score on a subset", append([]string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", svc, "-scenarios", "1"}, pr...)},
+		{"score without the probe", []string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", svc, "-probe-sha256", ps}},
+		{"score without the probe's hash", []string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", svc, "-probe", probe}},
+		{"score with another probe", []string{"-stage", "score", "-table-a", a, "-table-b", b, "-services", svc, "-probe", probe, "-probe-sha256", zero}},
+		{"a probe for another stage", append([]string{"-stage", "pool"}, pr...)},
 		{"pool on a subset", []string{"-stage", "pool", "-scenarios", "1"}},
 	} {
 		out := t.TempDir()
@@ -293,7 +380,7 @@ func TestOrderOfStagesCannotBeSkipped(t *testing.T) {
 		if code != 2 {
 			t.Errorf("%s: exit %d, want 2", c.name, code)
 		}
-		if _, err := os.Stat(filepath.Join(out, "report.json")); err == nil {
+		if fileExists(filepath.Join(out, resultsFile)) || fileExists(filepath.Join(out, "report.txt")) {
 			t.Errorf("%s: a report was written", c.name)
 		}
 	}

@@ -67,8 +67,9 @@ into its package, and so reruns it and everything that imports it.
   prints the table made from the labels alone, `-stage map` the table made from the
   Kubernetes objects, `-stage pool` the set of service names with a span in the trace data
   read, and `-stage score` scores. The first three print a sha256, and score
-  needs the sha256 of both tables and of the pooled set. Its output names entities of the dataset and is written outside the
-  repository.
+  needs the sha256 of both tables and of the pooled set, and the probe file of the traces
+  exports' coverage with its sha256. All its output is written outside the repository;
+  everything but the results file names entities of the dataset.
 
 ## spike
 

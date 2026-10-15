@@ -82,9 +82,12 @@
 //
 // [Report.JSON] holds pooled numbers, and numbers keyed by case id
 // ([CaseIDPattern]), the diagnostic counters, the policy versions and two plain
-// labels. It holds no entity or pod or node name, no uid, no label text and no
-// timestamp: a case carries fingerprints that are never printed, and the only
-// time a result keeps is the boolean "the pulls overlap the window".
+// labels. It holds no entity or pod or node name, no uid, no label text, no
+// timestamp and no row of a dataset: a case carries fingerprints that are never
+// printed, and what a result keeps of time is the boolean "the pulls overlap the
+// window" and, since schema 2, each case's trace coverage: the boolean "the traces
+// export can cover the window" and the whole minutes it overlaps it, each null
+// where it could not be computed.
 //
 // # What a loader reads: the ground-truth files
 //

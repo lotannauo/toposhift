@@ -3,7 +3,7 @@
 //	go run ./cmd/evalblast -source itbench -data DIR -out DIR -stage truth [-scenarios 1,2,3]
 //	go run ./cmd/evalblast -source itbench -data DIR -out DIR -stage map -table-a SHA256
 //	go run ./cmd/evalblast -source itbench -data DIR -out DIR -stage pool
-//	go run ./cmd/evalblast -source itbench -data DIR -out DIR -stage score -table-a SHA256 -table-b SHA256 -services SHA256
+//	go run ./cmd/evalblast -source itbench -data DIR -out DIR -stage score -table-a SHA256 -table-b SHA256 -services SHA256 -probe FILE -probe-sha256 SHA256
 //
 // DIR of -data holds the fetched files, one folder a scenario. The run has four
 // stages:
@@ -23,19 +23,27 @@
 //     have arrived and before any score. A service outside it is uninstrumented.
 //   - score loads each scenario into a store of its own, runs the
 //     product queries and the baselines on it, and judges the pooled strata by the
-//     acceptance rule. The store is discarded after each scenario.
+//     acceptance rule. The store is discarded after each scenario. Each case also
+//     carries its trace coverage from the probe file (-probe): whether its traces
+//     export can cover its window, and the whole minutes it overlaps it.
 //
 // There is no default stage. The truth and map stages print the sha256 of their
 // table; map needs the sha256 of table A, and score needs both tables' and the
 // pooled set's, recomputes all three, and refuses unless they match, so that no score
-// is made before they are approved. Score refuses -scenarios: the dataset's rules
-// are never judged on a subset. Every scenario stays in the dataset's count, also
+// is made before they are approved. Score likewise refuses a probe file whose
+// sha256 is not -probe-sha256, and one that does not name every scenario and
+// nothing else, before any scenario is loaded. Score refuses -scenarios: the
+// dataset's rules are never judged on a subset. Every scenario stays in the dataset's count, also
 // one whose files are missing.
 //
-// Every table and report names entities, times and labels of the dataset, and is
-// written under -out, which must be outside the repository. The report prints the
-// dataset revision, the loader version and the versions of the queries, and no
-// timing: these are accuracy numbers.
+// Every table and the text report name entities, times and labels of the dataset,
+// and are written under -out, which must be outside the repository. Score also
+// writes the results file there, under the name it is recorded by in the
+// repository (bench/eval/results/itbench-lite-d0916b08.json): the report as JSON,
+// which holds pooled numbers, numbers, booleans and fixed words keyed by case id,
+// and no name, uid, label text or time. The report prints the dataset revision, the
+// loader version and the versions of the queries, and no timing: these are
+// accuracy numbers.
 package main
 
 import (
@@ -72,6 +80,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.tableA, "table-a", "", "map and score: the sha256 of table A, as printed by the truth stage")
 	fs.StringVar(&o.tableB, "table-b", "", "score: the sha256 of table B, as printed by the map stage")
 	fs.StringVar(&o.services, "services", "", "score: the sha256 of the pooled service names, as printed by the pool stage")
+	fs.StringVar(&o.probe, "probe", "", "score: the probe file of the traces exports' coverage, one line a scenario")
+	fs.StringVar(&o.probeSum, "probe-sha256", "", "score: the sha256 of the probe file")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -87,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 type options struct {
-	source, data, out, stage, only, tableA, tableB, services string
+	source, data, out, stage, only, tableA, tableB, services, probe, probeSum string
 }
 
 type usageError struct{ msg string }
@@ -121,6 +131,10 @@ func execute(ctx context.Context, o options, stdout io.Writer) error {
 		return usage("-stage score needs -table-b, the sha256 of table B")
 	case o.stage == "score" && !sha256Hex.MatchString(o.services):
 		return usage("-stage score needs -services, the sha256 of the pooled service names")
+	case o.stage == "score" && (o.probe == "" || !sha256Hex.MatchString(o.probeSum)):
+		return usage("-stage score needs -probe, the probe file, and -probe-sha256, its sha256")
+	case o.stage != "score" && (o.probe != "" || o.probeSum != ""):
+		return usage("-probe and -probe-sha256 are for the score stage")
 	}
 	numbers, err := parseNumbers(o.only)
 	if err != nil {
@@ -180,12 +194,31 @@ func execute(ctx context.Context, o options, stdout io.Writer) error {
 	if sum(poolText) != o.services {
 		return usage("the pooled service names are not the set named by -services (sha256 %s)", sum(poolText))
 	}
-	return score(ctx, o.data, o.out, pooled, poolText, stdout)
+	// The probe's coverage of each case, frozen by its hash like the tables.
+	probeBytes, err := os.ReadFile(o.probe)
+	if err != nil {
+		return err
+	}
+	if sum(string(probeBytes)) != o.probeSum {
+		return usage("the probe file is not the one named by -probe-sha256 (sha256 %s)", sum(string(probeBytes)))
+	}
+	probe, err := itbench.ReadProbe(probeBytes)
+	if err != nil {
+		return err
+	}
+	return score(ctx, o.data, o.out, pooled, poolText, probe, o.probeSum, stdout)
 }
 
-func score(ctx context.Context, data, out string, pooled map[string]bool, poolText string, stdout io.Writer) error {
+func score(ctx context.Context, data, out string, pooled map[string]bool, poolText string, probe itbench.Probe, probeSum string, stdout io.Writer) error {
 	scs, err := itbench.Scenarios(data)
 	if err != nil {
+		return err
+	}
+	ids := make([]string, len(scs))
+	for i, dir := range scs {
+		ids[i] = filepath.Base(dir)
+	}
+	if err := probe.Check(ids); err != nil {
 		return err
 	}
 
@@ -204,6 +237,9 @@ func score(ctx context.Context, data, out string, pooled map[string]bool, poolTe
 	if len(runs) == 0 {
 		return errors.New("the dataset has no scenario")
 	}
+	if err := probe.Apply(runs); err != nil {
+		return err
+	}
 	rep, err := blastscore.Evaluate(runs, blastscore.Meta{Dataset: itbench.Dataset, Loader: factload.Version})
 	if err != nil {
 		return err
@@ -212,7 +248,7 @@ func score(ctx context.Context, data, out string, pooled map[string]bool, poolTe
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(out, "report.json"), append(js, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(out, itbench.ResultsFile), append(js, '\n'), 0o644); err != nil {
 		return err
 	}
 
@@ -221,6 +257,17 @@ func score(ctx context.Context, data, out string, pooled map[string]bool, poolTe
 	fmt.Fprintf(&b, "\nevaluation parameters: lifetime of an object in a single pull %s (a series of pulls: three intervals), service TTL %s, minute buckets; pod links from spans are address-associated\n",
 		factload.ObjectTTL, factload.ServiceTTL)
 	fmt.Fprintf(&b, "service names with a span in the trace data read: %d (sha256 %s)\n", len(pooled), sum(poolText))
+	var covers, unknown int
+	for _, r := range runs {
+		switch c := r.Diag.TraceCoversWindow; {
+		case c == nil:
+			unknown++
+		case *c:
+			covers++
+		}
+	}
+	fmt.Fprintf(&b, "trace coverage from the probe (sha256 %s): %d cases covered, %d not covered, %d not computed\n",
+		probeSum, covers, len(runs)-covers-unknown, unknown)
 	fmt.Fprintf(&b, "scenarios in the count: %d; not fully loaded: %d\n", len(runs), len(notes))
 	for _, n := range notes {
 		fmt.Fprintf(&b, "  not fully loaded: %s\n", n)

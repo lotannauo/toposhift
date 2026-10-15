@@ -15,8 +15,10 @@ import (
 	"github.com/lotannauo/toposhift/internal/query/interval"
 )
 
-// SchemaVersion is the version of the results JSON contract.
-const SchemaVersion = 1
+// SchemaVersion is the version of the results JSON contract. Version 2 added
+// each case's trace coverage (trace_covers_window, trace_overlap_minutes) to its
+// diagnostics.
+const SchemaVersion = 2
 
 // Meta names what was scored. Both are labels such as a dataset revision and a
 // loader version; they are validated to hold no more than that.

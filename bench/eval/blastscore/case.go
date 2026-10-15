@@ -135,6 +135,16 @@ type Provenance struct {
 	NamespaceSplit       int `json:"namespace_split"`
 	SpansLoaded          int `json:"spans_loaded"`
 	DependsOnPieces      int `json:"depends_on_pieces"`
+	// TraceCoversWindow says whether the case's traces export can hold a span that
+	// gives a depends_on piece in the window: its last span is no more than the
+	// service TTL before the window's start, and its first span is before the
+	// window's end. TraceOverlapMinutes is the whole minutes the export's span
+	// overlaps the window, an upper bound. Both come from reading the start and the
+	// end of the export only, before it was fetched; they are durations and a
+	// boolean, never times. Nil is a value that could not be computed (the case has
+	// no window, or the export's ends could not be read), never a guess.
+	TraceCoversWindow   *bool `json:"trace_covers_window"`
+	TraceOverlapMinutes *int  `json:"trace_overlap_minutes"`
 }
 
 // Case is one labelled scenario, ready to score against a store that holds its
