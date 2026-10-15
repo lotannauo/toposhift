@@ -1,0 +1,437 @@
+[
+ {
+  "input": "native.jsonl:1 LIST Node node-a",
+  "observed": "2026-10-15T06:55:26.228764923Z",
+  "records": [
+   {
+    "subject": "node node-a f0125f00",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:24:30Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.228764923Z",
+    "payload": {
+     "addresses": [
+      {
+       "address": "node-a",
+       "type": "Hostname"
+      },
+      {
+       "address": "node-a",
+       "type": "InternalDNS"
+      },
+      {
+       "address": "10.0.0.10",
+       "type": "InternalIP"
+      }
+     ],
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-15T06:24:30Z",
+       "reason": "KubeletHasNoDiskPressure",
+       "status": "False",
+       "type": "DiskPressure"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:24:30Z",
+       "reason": "KubeletHasSufficientMemory",
+       "status": "False",
+       "type": "MemoryPressure"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:24:30Z",
+       "reason": "RouteCreated",
+       "status": "False",
+       "type": "NetworkUnavailable"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:24:30Z",
+       "reason": "KubeletHasSufficientPID",
+       "status": "False",
+       "type": "PIDPressure"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:24:30Z",
+       "reason": "KubeletReady",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "name": "node-a",
+     "node_info": {
+      "boot_id": "00000000-0000-0000-0000-000000000000"
+     },
+     "provider_id": "test:///node-a"
+    }
+   }
+  ]
+ },
+ {
+  "input": "native.jsonl:2 LIST Pod native-app-0",
+  "observed": "2026-10-15T06:55:26.401183071Z",
+  "records": [
+   {
+    "subject": "pod native-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-15T06:27:50Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:50Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:50Z",
+       "status": "True",
+       "type": "PodReadyToStartContainers"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:50Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:50Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-15T06:27:50Z",
+       "state": "running"
+      },
+      {
+       "name": "proxy",
+       "native_sidecar": true,
+       "restart_count": 0,
+       "started_at": "2026-10-15T06:27:50Z",
+       "state": "running"
+      }
+     ],
+     "host_ip": "10.0.0.10",
+     "name": "native-app-0",
+     "namespace": "native",
+     "node_name": "node-a",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "native-app"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.1.233"
+     ]
+    }
+   },
+   {
+    "subject": "container native-app-0/app",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "name": "app",
+     "pod_uid": "4318f26e-310f-4a73-b170-22c77d28176f"
+    }
+   },
+   {
+    "subject": "part_of container native-app-0/app -\u003e pod native-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {}
+   },
+   {
+    "subject": "container native-app-0/proxy",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "name": "proxy",
+     "pod_uid": "4318f26e-310f-4a73-b170-22c77d28176f"
+    }
+   },
+   {
+    "subject": "part_of container native-app-0/proxy -\u003e pod native-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {}
+   },
+   {
+    "subject": "scheduled_on pod native-app-0 -\u003e node node-a f0125f00",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:50Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "node_name": "node-a",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-15T06:24:30Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "native.jsonl:3 LIST Pod classic-app-0",
+  "observed": "2026-10-15T06:55:26.401183071Z",
+  "records": [
+   {
+    "subject": "pod classic-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-15T06:27:45Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:45Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:45Z",
+       "status": "True",
+       "type": "PodReadyToStartContainers"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:45Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:45Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-15T06:27:45Z",
+       "state": "running"
+      },
+      {
+       "name": "proxy",
+       "restart_count": 0,
+       "started_at": "2026-10-15T06:27:45Z",
+       "state": "running"
+      }
+     ],
+     "host_ip": "10.0.0.10",
+     "name": "classic-app-0",
+     "namespace": "classic",
+     "node_name": "node-a",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "classic-app"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.1.137"
+     ]
+    }
+   },
+   {
+    "subject": "container classic-app-0/app",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "name": "app",
+     "pod_uid": "b4bfabef-1d70-4f84-9616-d22b1260f4c9"
+    }
+   },
+   {
+    "subject": "part_of container classic-app-0/app -\u003e pod classic-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {}
+   },
+   {
+    "subject": "container classic-app-0/proxy",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "name": "proxy",
+     "pod_uid": "b4bfabef-1d70-4f84-9616-d22b1260f4c9"
+    }
+   },
+   {
+    "subject": "part_of container classic-app-0/proxy -\u003e pod classic-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {}
+   },
+   {
+    "subject": "scheduled_on pod classic-app-0 -\u003e node node-a f0125f00",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:45Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "node_name": "node-a",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-15T06:24:30Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "native.jsonl:4 LIST Pod plain-app-0",
+  "observed": "2026-10-15T06:55:26.401183071Z",
+  "records": [
+   {
+    "subject": "pod plain-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:26Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "conditions": [
+      {
+       "last_transition_time": "2026-10-15T06:27:26Z",
+       "status": "True",
+       "type": "ContainersReady"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:26Z",
+       "status": "True",
+       "type": "Initialized"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:26Z",
+       "status": "True",
+       "type": "PodReadyToStartContainers"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:26Z",
+       "status": "True",
+       "type": "PodScheduled"
+      },
+      {
+       "last_transition_time": "2026-10-15T06:27:26Z",
+       "status": "True",
+       "type": "Ready"
+      }
+     ],
+     "containers": [
+      {
+       "name": "app",
+       "restart_count": 0,
+       "started_at": "2026-10-15T06:27:26Z",
+       "state": "running"
+      }
+     ],
+     "host_ip": "10.0.0.10",
+     "name": "plain-app-0",
+     "namespace": "plain",
+     "node_name": "node-a",
+     "owner": {
+      "kind": "ReplicaSet",
+      "name": "plain-app"
+     },
+     "phase": "Running",
+     "pod_ips": [
+      "10.0.0.20"
+     ]
+    }
+   },
+   {
+    "subject": "container plain-app-0/app",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:26Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "name": "app",
+     "pod_uid": "1fe487f6-c72d-466c-9f37-a6981b9e3414"
+    }
+   },
+   {
+    "subject": "part_of container plain-app-0/app -\u003e pod plain-app-0",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:26Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {}
+   },
+   {
+    "subject": "scheduled_on pod plain-app-0 -\u003e node node-a f0125f00",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:27:26Z",
+    "basis": "object_field",
+    "ttl": "0s",
+    "through": "2026-10-15T06:55:26.401183071Z",
+    "payload": {
+     "node_name": "node-a",
+     "resolution": {
+      "basis": "node-name-index",
+      "node_interval_start": "2026-10-15T06:24:30Z"
+     }
+    }
+   }
+  ]
+ },
+ {
+  "input": "native.jsonl:5 LIST Node node-a",
+  "observed": "2026-10-15T07:00:26.189160662Z"
+ },
+ {
+  "input": "native.jsonl:6 LIST Pod native-app-0",
+  "observed": "2026-10-15T07:00:26.363124686Z"
+ },
+ {
+  "input": "native.jsonl:7 LIST Pod classic-app-0",
+  "observed": "2026-10-15T07:00:26.363124686Z"
+ },
+ {
+  "input": "native.jsonl:8 LIST Pod plain-app-0",
+  "observed": "2026-10-15T07:00:26.363124686Z"
+ }
+]

@@ -27,8 +27,18 @@ import "testing"
 //	run2.jsonl  1:2            the re-created kwok-node-2 in the pull after a restart
 //	            2:7            a pod created while the collector was down, first seen in a pull
 //	            212            that pod DELETED
+//	native.jsonl  from a capture of 2026-10-15 of a simulated cluster with a service mesh
+//	            whose proxy runs as a native sidecar in one namespace and as a regular
+//	            container, beside a classic init container, in another; a third has
+//	            neither. Two pull generations five minutes apart in the steady state
+//	            (capture lines 14726 15087, then 16156 16914): one node, and three pods
+//	            that run on it (a native sidecar, a classic init container with a proxy
+//	            container, and a plain pod). Every name, image, address, cluster name and
+//	            namespace is replaced, the node and pod specs are cut to the fields that
+//	            matter here, and labels, annotations and managed fields are dropped.
+//	            UIDs, runtime ids, pod IPs and times are the capture's.
 func TestGolden(t *testing.T) {
-	for _, name := range []string{"run1", "run2"} {
+	for _, name := range []string{"run1", "run2", "native"} {
 		t.Run(name, func(t *testing.T) {
 			in := loadCapture(t, name+".jsonl")
 			rs := translateAll(t, newTranslator(t, 0), in)

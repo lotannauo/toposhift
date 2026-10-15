@@ -182,6 +182,18 @@ func labels(t testing.TB, in []input) map[identity.Fingerprint]string {
 		switch subStr(o, "kind") {
 		case "Pod":
 			out[podFP(t, uid)] = "pod " + name
+			// A container is named by its pod and its own name. Every status that
+			// carries a runtime id is named, those of init containers too, so that a
+			// golden file shows a classic init container if one were ever an entity.
+			for _, key := range []string{"containerStatuses", "initContainerStatuses"} {
+				cs, _ := sub(o, "status", key).([]any)
+				for _, c := range cs {
+					st, _ := c.(map[string]any)
+					if _, id, ok := strings.Cut(subStr(st, "containerID"), "://"); ok && id != "" {
+						out[containerFP(t, id)] = "container " + name + "/" + subStr(st, "name")
+					}
+				}
+			}
 		case "Node":
 			out[nodeFP(t, uid)] = "node " + name + " " + uid[:8]
 		}
@@ -390,6 +402,8 @@ type podSpec struct {
 	Phase           string
 	Conds           []map[string]any // type, status, lastTransitionTime
 	Containers      []map[string]any // name, containerID, restartCount, state
+	InitSpec        []map[string]any // spec.initContainers: name, restartPolicy
+	InitStatuses    []map[string]any // status.initContainerStatuses, as Containers
 	Extra           map[string]any   // merged into metadata
 	Heartbeat       string           // an excluded field that changes with every record
 }
@@ -423,6 +437,20 @@ func (p podSpec) object() map[string]any {
 			cs = append(cs, c)
 		}
 		status["containerStatuses"] = cs
+	}
+	if len(p.InitSpec) > 0 {
+		var cs []any
+		for _, c := range p.InitSpec {
+			cs = append(cs, c)
+		}
+		spec["initContainers"] = cs
+	}
+	if len(p.InitStatuses) > 0 {
+		var cs []any
+		for _, c := range p.InitStatuses {
+			cs = append(cs, c)
+		}
+		status["initContainerStatuses"] = cs
 	}
 	return map[string]any{"kind": "Pod", "apiVersion": "v1", "metadata": meta, "spec": spec, "status": status}
 }
