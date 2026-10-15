@@ -78,6 +78,7 @@ func Build(in Input) (Subgraph, error) {
 		Basis: BasisDerived, PolicyVersion: PolicyVersion,
 		Token: in.Token, From: in.From.UTC(), To: in.To.UTC(),
 	}
+	var paths [][][]Key
 	for _, c := range cks {
 		switch {
 		case c.quarantine != nil:
@@ -86,7 +87,14 @@ func Build(in Input) (Subgraph, error) {
 			sg.Quarantine.Edges = append(sg.Quarantine.Edges, StaticEdge{Element: c.el, Cause: c.uncascaded})
 		case len(c.el.Pieces) > 0:
 			sg.Elements = append(sg.Elements, c.el)
+			paths = append(paths, c.paths)
 		}
+	}
+	if err := resolvePaths(&sg, paths); err != nil {
+		return Subgraph{}, err
+	}
+	if sg.Sections, err = checkSections(in.Sections, w, sg); err != nil {
+		return Subgraph{}, fmt.Errorf("subgraph: sections: %w", err)
 	}
 	sg.Entities = dictionary(sg, in.Read)
 	sg.Deltas = deltas(sg.Elements, w.width())
@@ -127,6 +135,7 @@ func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 // checked is a source that passed every check, in the output's shape.
 type checked struct {
 	el                     Element
+	paths                  [][]Key
 	quarantine, uncascaded *store.QuarantineError
 }
 
@@ -171,7 +180,11 @@ func checkSource(s Source, w window) (checked, error) {
 	if s.Uncascaded != nil && (s.Key.Kind != KindEdge || (s.Uncascaded.Entity != s.Key.A && s.Uncascaded.Entity != s.Key.B)) {
 		return checked{}, invalid("an uncascaded mark that is not of an endpoint of the edge")
 	}
-	ps, err := checkPieces(s.Pieces, subject, w)
+	spec, err := pathSpecOf(s)
+	if err != nil {
+		return checked{}, err
+	}
+	ps, err := checkPieces(s.Pieces, subject, spec, w)
 	if err != nil {
 		return checked{}, err
 	}
@@ -182,6 +195,7 @@ func checkSource(s Source, w window) (checked, error) {
 	}
 	return checked{
 		el:         Element{Key: s.Key, Subject: subject, Rule: rule, Class: class, Transitions: transitions, Pieces: ps},
+		paths:      spec.paths,
 		quarantine: s.Quarantine, uncascaded: s.Uncascaded,
 	}, nil
 }
@@ -228,6 +242,9 @@ func label(k Key) (Subject, string, error) {
 		case rel.Storage() == catalog.StorageFrom:
 			return SubjectAsserted, RuleExistence, nil
 		case rel.Storage() == catalog.StorageDerived:
+			if dk, ok := DerivedKindOf(string(k.Relation)); !ok || !derivedKinds[dk].edge {
+				return 0, "", invalid("the derived relation %q has no rule in the derived-kind table", k.Relation)
+			}
 			return SubjectDerived, string(k.Relation), nil
 		}
 		return 0, "", invalid("the relation %q has the unknown storage %s", k.Relation, rel.Storage())
@@ -235,15 +252,58 @@ func label(k Key) (Subject, string, error) {
 		if k.Rule == "" {
 			return 0, "", invalid("a derived key without a rule")
 		}
-		if !k.A.IsZero() || !k.B.IsZero() || k.Relation != "" {
-			return 0, "", invalid("a derived key with an entity or a relation")
+		if dk, ok := DerivedKindOf(k.Rule); !ok || derivedKinds[dk].edge {
+			return 0, "", invalid("the rule %q is not a derived key rule of the derived-kind table", k.Rule)
+		}
+		if k.Relation != "" {
+			return 0, "", invalid("a derived key with a relation")
+		}
+		if err := known(k.A); err != nil {
+			return 0, "", fmt.Errorf("the first end: %w", err)
+		}
+		if err := known(k.B); err != nil {
+			return 0, "", fmt.Errorf("the second end: %w", err)
 		}
 		return SubjectDerived, k.Rule, nil
 	}
 	return 0, "", invalid("the key kind %s", k.Kind)
 }
 
-func checkPieces(in []SourcePiece, subject Subject, w window) ([]Piece, error) {
+// pathSpec is what a source's pieces are checked against: its legs, and whether
+// its rule names the legs that end.
+type pathSpec struct {
+	paths   [][]Key
+	derived bool
+	// legEnds says a piece that ends inside the window must list the legs that
+	// end there.
+	legEnds bool
+}
+
+func pathSpecOf(s Source) (pathSpec, error) {
+	var spec pathSpec
+	if s.Key.Kind == KindDerived {
+		spec.derived = true
+		dk, _ := DerivedKindOf(s.Key.Rule)
+		spec.legEnds = derivedKinds[dk].legEnds
+	}
+	if len(s.Paths) > 0 && !spec.derived {
+		return spec, invalid("legs on a subject that is not a derived key")
+	}
+	for i, p := range s.Paths {
+		if len(p) == 0 {
+			return spec, invalid("path %d has no leg", i)
+		}
+		for j, k := range p {
+			if k.Kind != KindEdge {
+				return spec, invalid("leg %d of path %d is the %s %s, not an edge", j, i, k.Kind, k)
+			}
+		}
+	}
+	spec.paths = s.Paths
+	return spec, nil
+}
+
+func checkPieces(in []SourcePiece, subject Subject, spec pathSpec, w window) ([]Piece, error) {
 	out := make([]Piece, 0, len(in))
 	for i, p := range in {
 		start, okS := w.rel(p.Start)
@@ -274,9 +334,128 @@ func checkPieces(in []SourcePiece, subject Subject, w window) ([]Piece, error) {
 				return nil, invalid("piece %d producers are not sorted and distinct", i)
 			}
 		}
-		out = append(out, Piece{Start: start, End: end, Before: p.Before, EndReason: p.EndReason, Producers: cloneProducers(p.Producers)})
+		if err := checkEnds(p.Ends, spec, end == w.width()); err != nil {
+			return nil, fmt.Errorf("piece %d: %w", i, err)
+		}
+		out = append(out, Piece{
+			Start: start, End: end, Before: p.Before, EndReason: p.EndReason, Producers: cloneProducers(p.Producers),
+			Ends: slices.Clone(p.Ends),
+		})
 	}
 	return out, nil
+}
+
+// checkEnds checks the leg ends of a piece: they are only of a derived subject,
+// ascending, of legs it has, each with a reason a leg can end by; a piece that
+// reaches To has none, and one that ends inside the window has some exactly
+// when the subject's rule names them.
+func checkEnds(ends []LegEnd, spec pathSpec, atTo bool) error {
+	switch {
+	case len(ends) > 0 && (!spec.derived || atTo || !spec.legEnds):
+		return invalid("leg ends on a piece that is not a derived subject's end naming its legs")
+	case len(ends) == 0 && spec.derived && spec.legEnds && !atTo && len(spec.paths) > 0:
+		return invalid("a derived piece ends inside the window and names no leg that ends")
+	}
+	for i, e := range ends {
+		if e.Path < 0 || e.Path >= len(spec.paths) || e.Leg < 0 || e.Leg >= len(spec.paths[e.Path]) {
+			return invalid("leg end %d is of the leg %d of path %d, which does not exist", i, e.Leg, e.Path)
+		}
+		if i > 0 && (ends[i-1].Path > e.Path || (ends[i-1].Path == e.Path && ends[i-1].Leg >= e.Leg)) {
+			return invalid("leg ends are not ascending by path and leg")
+		}
+		if !e.Reason.lifecycleOnly() && e.Reason != EndReasonUnattributed {
+			return invalid("leg end %d has the reason %s", i, e.Reason)
+		}
+	}
+	return nil
+}
+
+// resolvePaths gives each derived element its legs as element ids, and checks
+// that every leg is an edge that exists in the window and that every piece of
+// the element lies within the instants at which all the legs of some path do.
+// Only an interval check of the legs makes a derived span true: it is never a
+// claim the builder takes on trust.
+func resolvePaths(sg *Subgraph, paths [][][]Key) error {
+	for i := range sg.Elements {
+		el := &sg.Elements[i]
+		if len(paths[i]) == 0 {
+			continue
+		}
+		var held [][]span
+		for _, p := range paths[i] {
+			ids := make([]uint32, len(p))
+			cover := []span{{0, ^uint64(0)}}
+			for j, k := range p {
+				id, ok := sg.ElementID(k)
+				if !ok {
+					return invalid("subgraph: %s has the leg %s, which is not an element", el.Key, k)
+				}
+				ids[j] = id
+				cover = meet(cover, spansOf(sg.Elements[id].Pieces))
+			}
+			el.Paths = append(el.Paths, ids)
+			held = append(held, cover)
+		}
+		cover := join(held)
+		for j, p := range el.Pieces {
+			if !within(cover, span{p.Start, p.End}) {
+				return invalid("subgraph: piece %d of %s is not inside the time at which all legs of some path exist", j, el.Key)
+			}
+		}
+	}
+	return nil
+}
+
+// span is a half-open interval of relative times.
+type span struct{ start, end uint64 }
+
+func spansOf(ps []Piece) []span {
+	out := make([]span, len(ps))
+	for i, p := range ps {
+		out[i] = span{p.Start, p.End}
+	}
+	return out
+}
+
+// meet is the intersection of two ascending lists of disjoint spans.
+func meet(a, b []span) []span {
+	var out []span
+	for i, j := 0, 0; i < len(a) && j < len(b); {
+		lo, hi := max(a[i].start, b[j].start), min(a[i].end, b[j].end)
+		if lo < hi {
+			out = append(out, span{lo, hi})
+		}
+		if a[i].end < b[j].end {
+			i++
+		} else {
+			j++
+		}
+	}
+	return out
+}
+
+// join is the union of lists of spans, as ascending disjoint spans that do not
+// touch.
+func join(lists [][]span) []span {
+	var all []span
+	for _, l := range lists {
+		all = append(all, l...)
+	}
+	slices.SortFunc(all, func(a, b span) int { return cmp.Compare(a.start, b.start) })
+	var out []span
+	for _, s := range all {
+		if n := len(out); n > 0 && s.start <= out[n-1].end {
+			out[n-1].end = max(out[n-1].end, s.end)
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// within reports whether s lies inside one span of the list.
+func within(list []span, s span) bool {
+	return slices.ContainsFunc(list, func(c span) bool { return c.start <= s.start && s.end <= c.end })
 }
 
 // classify gives the class of pieces in a window of the given width, and its
@@ -327,10 +506,13 @@ func dictionary(sg Subgraph, read []identity.Fingerprint) []Entity {
 		switch el.Key.Kind {
 		case KindEntity:
 			note(el.Key.A, true)
-		case KindEdge:
+		case KindEdge, KindDerived:
 			note(el.Key.A, false)
 			note(el.Key.B, false)
 		}
+	}
+	for _, fp := range sg.Sections.entities() {
+		note(fp, false)
 	}
 	for _, q := range sg.Quarantine.Entities {
 		note(q.Fingerprint, true)

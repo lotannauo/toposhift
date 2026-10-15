@@ -347,10 +347,26 @@ func TestBuildRefusesInvalidInput(t *testing.T) {
 			return input(w, mk(w, k, sp(2, 5)))
 		},
 		"a derived key without a rule": func() subgraph.Input { return input(w, mk(w, derived("", "x"), sp(2, 5))) },
-		"a derived key with an entity": func() subgraph.Input {
+		"a derived key with a relation": func() subgraph.Input {
 			k := derived("pair.shared_node", "x")
-			k.A = pod(1)
+			k.Relation = catalog.ScheduledOn
 			return input(w, mk(w, k, sp(2, 5)))
+		},
+		"a derived key without a first end": func() subgraph.Input {
+			k := derived("pair.shared_node", "x")
+			k.A = identity.Fingerprint{}
+			return input(w, mk(w, k, sp(2, 5)))
+		},
+		"a derived key without a second end": func() subgraph.Input {
+			k := derived("pair.shared_node", "x")
+			k.B = identity.Fingerprint{}
+			return input(w, mk(w, k, sp(2, 5)))
+		},
+		"a derived key of a rule outside the table": func() subgraph.Input {
+			return input(w, mk(w, derived("pair.shared_galaxy", "x"), sp(2, 5)))
+		},
+		"a derived key of the rule of an edge": func() subgraph.Input {
+			return input(w, mk(w, derived("same_as", "x"), sp(2, 5)))
 		},
 		"an edge key with a rule": func() subgraph.Input {
 			k := sched(pod(1), node(1))
