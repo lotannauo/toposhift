@@ -8,6 +8,9 @@
 // computed with package interval. Nothing is written back, and the package has
 // no write path.
 //
+// [Walker.Around] is the same walk from a pod's side: it finds the substrates a
+// pod was on, and walks from each over the pod's time there (see "Around").
+//
 // # Direction
 //
 // For a relation whose propagation is down or up, the failure of an edge's
@@ -109,4 +112,47 @@
 // from the start of the store's history, so on a store that keeps a long
 // history they grow with it. That lasts until the store has an interval read
 // of its own.
+//
+// # Around
+//
+// [Walker.Around] takes a pod and a window and answers, for each substrate the
+// pod was on, what that substrate's failure reaches while the pod was on it.
+//
+// The substrates come from an upward walk: from the pod, hop by hop, along the
+// edges read forward whose relation propagates failure, at the one token, each
+// leg read with the cascade. The single-claim table is the walk's own: a node
+// counts as on a host, and a host as in a rack or in a zone, only at the
+// instants it claims no other target of that relation and type, a claim of a
+// quarantined target included, and the instants it loses while it is reached
+// are listed in [AroundResult].Unattributed. The rule is not applied to
+// scheduled_on: a pod scheduled on two nodes at once is on both. The claims are
+// in the same forward read, so the upward walk needs no claims call, and it
+// makes a call at a depth only if some entity of its frontier has a forward
+// edge layer. An edge with a quarantined endpoint is never followed, so a
+// quarantined pod has no substrate. [Substrate].On is the pod's time on the
+// substrate: the union, over chains of at most MaxDepth hops, of the
+// intersection of the legs' effective spans, and [Substrate].Depth the fewest
+// hops. [Substrate].Vias are the upward legs into it.
+//
+// Each substrate is then walked as Impact walks it, at the same token, but
+// started over the pod's time on it in place of the whole window, so a member's
+// reach lies within that time; entities whose reach misses it are never
+// expanded, and MaxFrontier ranks and cuts the restricted reach. The pod is
+// neither a member nor expanded: no leg from it is followed, so its own
+// containers and instances, reached only through it, are absent. Each
+// [Substrate].Impact is labelled with the substrate, its Seed.
+//
+// Only a node and a host are walked by default. Every other substrate, a rack
+// or a zone today and any type the catalog later places above a host, is found,
+// listed and given its time and legs, but is walked only if
+// [Options].ExpandFabric is set, because a walk from one reaches every host in
+// it. Otherwise its Impact is the zero Result and [Substrate].Expanded is
+// false. [Options].ExpandFabric is ignored by Impact. MaxFrontier bounds the
+// number of substrates, and Around's cost is the sum over the substrates it
+// expands.
+//
+// The reads of an Around are the upward walk's plus each walked substrate's,
+// and the budget is fixed in [BudgetAroundDate] and the constants beside it.
+// The rules of Around are new in version 1 of the policy: no answer of Impact
+// changes.
 package blastradius

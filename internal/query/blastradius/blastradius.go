@@ -45,6 +45,31 @@ const (
 	BudgetReferenceWindows   = 256
 )
 
+// The read budget of Around, fixed on 2026-10-15 before anything was measured.
+// It changes only by a new dated comment beside this one, never by editing the
+// date or a number in place. Its shape is the walk's, above: Around's reads are
+// its upward walk's plus every expanded substrate's walk, each counted as
+// before; the upward walk's calls are one per upward depth with a frontier
+// entity that has a forward edge layer, and it needs no claims call, because a
+// forward read of an entity returns its claims.
+//
+// At the reference cell, a host with one node, BudgetReferencePods live pods on
+// it with one container each, a one-hour window ending at the newest instant, a
+// 30-day store, and the host in one rack and one zone, an Around from one of
+// the pods makes at most BudgetAroundExistence existence reads and
+// BudgetAroundWindows Window reads when racks and zones are listed and not
+// expanded (the default), and at most BudgetAroundExpandedExistence and
+// BudgetAroundExpandedWindows when Options.ExpandFabric expands them. A cell
+// over budget is reported as a finding, never fixed by raising a constant.
+// Walks from a rack or a zone over more than one host are not budgeted.
+const (
+	BudgetAroundDate              = "2026-10-15"
+	BudgetAroundExistence         = 1024
+	BudgetAroundWindows           = 512
+	BudgetAroundExpandedExistence = 2048
+	BudgetAroundExpandedWindows   = 1024
+)
+
 // Policy is the derivation policy of a walk.
 type Policy struct {
 	// MaxDepth is the most hops a path may have. Members reached at MaxDepth
@@ -69,6 +94,11 @@ type Options struct {
 	// Policy is the derivation policy. The zero Policy means DefaultPolicy();
 	// any other is validated as given.
 	Policy Policy
+	// ExpandFabric makes Around walk from every substrate of a pod, not only
+	// from its nodes and hosts: racks, zones and any other entity above them
+	// are listed and not walked unless it is set. It is off by default, and
+	// Impact ignores it.
+	ExpandFabric bool
 }
 
 // singleClaim is the single-claim table of version 1: the relations a from
@@ -91,7 +121,8 @@ type Arrival struct {
 	// cascade: its pieces carry their end sources and producers.
 	Leg interval.Element
 	// Spans is the intersection of the parent's reach by paths shorter than
-	// MaxDepth (the whole window for the seed) with the leg's effective spans:
+	// MaxDepth (the whole window for the seed, or in an Around the seed's time
+	// on the substrate) with the leg's effective spans:
 	// its own, less the instants the member claims another target of a
 	// single-claim relation. Ascending, disjoint, never touching, never empty.
 	// The parent's reach counts only as far as it was expanded: the new reach of
