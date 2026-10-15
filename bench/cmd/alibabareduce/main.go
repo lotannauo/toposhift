@@ -23,9 +23,16 @@
 // and REDUCTION.md. Everything is local and informational: nothing in it is
 // published, and nothing derived from the trace belongs in the repository.
 //
-// Memory: tokens are interned to 32-bit ids, placement rows are held as 16-byte
-// tuples one archive at a time, and call archives are reduced one at a time, in
-// order. Run it with GOMEMLIMIT=2GiB.
+// Memory: tokens are interned to 32-bit ids, and the placement rows of one archive
+// are held as 12-byte tuples, grouped by minute as they are read and dropped as
+// each minute is reduced. The two placement cadences are reduced one after the
+// other, each from its own read of the archives, and a stream lets go of its
+// coalescer when it is finished, so only one coalescer of the placement is alive.
+// A coalescer is split into parts along the order of its subjects and flushed a
+// part and a deadline at a time, so that flushing every run of a stream at once
+// does not build a list as long as the stream. Call archives are reduced one at a
+// time, in order. Unless GOGC is set, the command lets the heap grow 40 percent
+// over its live data between collections, not 100. Run it with GOMEMLIMIT=2GiB.
 package main
 
 import (
@@ -33,10 +40,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 )
 
+// gcPercent is how far the heap may grow before a collection, when GOGC does not
+// say: 40 percent of the live data, where the Go default is 100. A run holds most
+// of a gigabyte of live data in a coalescer, and the default lets the heap reach
+// twice that between collections.
+const gcPercent = 40
+
+// tuneGC sets the collector's growth to gcPercent unless GOGC is set.
+func tuneGC() {
+	if _, set := os.LookupEnv("GOGC"); !set {
+		debug.SetGCPercent(gcPercent)
+	}
+}
+
 func main() {
+	tuneGC()
 	cfg := defaultConfig()
 	home, _ := os.UserHomeDir()
 	flag.StringVar(&cfg.InDir, "in", filepath.Join(home, "datasets", "alibaba-v2022"), "the directory with MSMetricsUpdate/, CallGraph/ and SHA256SUMS (read only)")

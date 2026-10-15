@@ -85,6 +85,8 @@ func (t *ivTracker) closeAll() {
 // finish closes what is open and returns every interval ordered by key, then start.
 func (t *ivTracker) finish() []interval {
 	t.closeAll()
+	// clear keeps the table's memory; a finished tracker has no use for it.
+	t.state = make(map[uint64]ivState)
 	slices.SortFunc(t.done, func(a, b interval) int {
 		return cmp.Or(cmp.Compare(a.key, b.key), cmp.Compare(a.start, b.start))
 	})
