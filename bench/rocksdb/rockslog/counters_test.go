@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/lotannauo/toposhift/bench/rocksdb/rockslog"
+	"github.com/lotannauo/toposhift/bench/rocksdb/rulejudge"
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 	"github.com/lotannauo/toposhift/bench/spike/runner"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
@@ -54,31 +55,12 @@ func build(t *testing.T, p *runner.Plan, v candidates.Variant, g runner.Guards) 
 	return dir, m, r
 }
 
-// comparable is whether a counter is one both engines define the same way: the
-// layout's own counters, and the reads, seeks and steps of each kind of read. What
-// Pebble counts inside its iterator, the cold and allocation counters derived from
-// it and the engine's timings are not; nor are RL's own diagnostics (rocks.*).
-func comparable(name string) bool {
-	switch name {
-	case runner.CounterBlockLoads, runner.CounterColdBlockBytes, runner.CounterColdCacheBytes, runner.CounterAllocs, runner.CounterAllocBytes:
-		return false
-	}
-	if strings.HasSuffix(name, "_ns") {
-		return false
-	}
-	if rest, ok := strings.CutPrefix(name, "read."); ok {
-		// read.<op>.<stat> is one kind of read's; read.<name> is the layout's own.
-		if _, stat, ok := strings.Cut(rest, "."); ok {
-			return stat == "reads" || stat == "seeks" || stat == "steps"
-		}
-	}
-	return true
-}
-
+// comparableOf is the counters of m that both engines define the same way, by the
+// rule the judge compares them by ([rulejudge.Comparable]).
 func comparableOf(m map[string]int64) map[string]int64 {
 	out := map[string]int64{}
 	for k, v := range m {
-		if comparable(k) {
+		if rulejudge.Comparable(k) {
 			out[k] = v
 		}
 	}
@@ -90,11 +72,22 @@ func comparableOf(m map[string]int64) map[string]int64 {
 // (records stepped, checkpoints met and used, entries decoded), from a build whose
 // own counters (records written, checkpoints written, invalidated and loaded, the
 // work of each retention) are the same too. A difference is a defect of the port.
+// RL4, whose files differ from RL's and nothing else, gives the same.
 func TestCountersAreLayoutLsOnPebble(t *testing.T) {
 	t.Parallel()
+	for _, prefix := range []string{rockslog.NamePrefix, rockslog.NamePrefix4} {
+		t.Run(prefix, func(t *testing.T) {
+			t.Parallel()
+			countersAreLayoutLs(t, prefix)
+		})
+	}
+}
+
+func countersAreLayoutLs(t *testing.T, prefix string) {
+	t.Helper()
 	p := plan(t)
 	const policy = "k64a2l5m"
-	rl, err := rockslog.Variant(rockslog.NamePrefix+policy, false)
+	rl, err := rockslog.Variant(prefix+policy, false)
 	if err != nil {
 		t.Fatal(err)
 	}

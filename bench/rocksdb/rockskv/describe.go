@@ -1,12 +1,17 @@
 package rockskv
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // The descriptions a runner reads as the bench module's Pebble database gives them,
@@ -17,6 +22,11 @@ const (
 	ComparerName = "leveldb.BytewiseComparator"
 	// grocksdbPath is the module path of the Go binding.
 	grocksdbPath = "github.com/linxGnu/grocksdb"
+	// StampKey and StampSHA256Key are the keys of the description that record the
+	// build stamp of the library the binary links (see [Stamp]): its text and the
+	// text's sha256, each "none" for a library without one.
+	StampKey       = "rocksdb_build_stamp"
+	StampSHA256Key = "rocksdb_build_stamp_sha256"
 )
 
 // Describe says how the database is set up, in what a measurement records next to
@@ -32,11 +42,15 @@ const (
 //   - rocksdb_version, from the options file the database last wrote, and
 //     rocksdb_options, that file's whole text (the options of the last writable
 //     opening: a read-only opening writes none);
-//   - grocksdb_version, cgo_cflags, cgo_ldflags, cc_version and rocksdb_portable
-//     (the environment's ROCKSDB_PORTABLE, "unknown" when it is not set): what the
-//     binary and its native library were built with;
+//   - grocksdb_version, cgo_cflags, cgo_ldflags and cc_version: what the binary
+//     was built with; rocksdb_build_stamp and rocksdb_build_stamp_sha256, the build
+//     stamp of the library it links and its sha256 (see [LibraryStamp]; "none" for a
+//     library without one, which is recorded and not refused here), and
+//     rocksdb_portable, the stamp's portable ("unknown" without one): what the
+//     native library was built with;
 //   - compression_per_level, index_type, metadata_block_bytes,
-//     level0_stop_writes_trigger, target_file_size_base, target_file_multiplier,
+//     level0_stop_writes_trigger, target_file_size_base (see
+//     [Config].BaseFileFactor), target_file_multiplier,
 //     target_file_bytes_by_level_from_base (the target size of the files of each
 //     level from the base level down), max_background_jobs, block_cache_capacity,
 //     memtables_charged_to_cache;
@@ -56,6 +70,11 @@ func (k *KV) Describe() (map[string]string, error) {
 	if cfg.Perf {
 		perf = "enable_count"
 	}
+	stamp, err := libraryStamp()
+	if err != nil {
+		return nil, err
+	}
+	base := cfg.baseFileBytes()
 	out := map[string]string{
 		"comparer":                ComparerName,
 		"block_bytes":             fmt.Sprint(t.BlockSize),
@@ -83,9 +102,9 @@ func (k *KV) Describe() (map[string]string, error) {
 		"index_type":                           "two_level_index_search",
 		"metadata_block_bytes":                 fmt.Sprint(t.BlockSize),
 		"level0_stop_writes_trigger":           fmt.Sprint(l0StopWrites),
-		"target_file_size_base":                fmt.Sprint(2 * t.TargetFileSize),
+		"target_file_size_base":                fmt.Sprint(base),
 		"target_file_multiplier":               fmt.Sprint(targetFileMultiplier),
-		"target_file_bytes_by_level_from_base": joinInts(targetFileBytesFromBase(t)),
+		"target_file_bytes_by_level_from_base": joinInts(targetFileBytesFromBase(base)),
 		"memtable_delay_at":                    fmt.Sprint(memtableDelayAt),
 		"max_open_files":                       fmt.Sprint(maxOpenFiles),
 		"pin_top_level_index":                  fmt.Sprint(pinTopLevelIndex),
@@ -95,9 +114,12 @@ func (k *KV) Describe() (map[string]string, error) {
 		"cc_version":                           ccVersion(),
 		"cpu_model":                            cpuModel(),
 		"rocksdb_portable":                     "unknown",
+		StampKey:                               "none",
+		StampSHA256Key:                         "none",
 	}
-	if p := os.Getenv("ROCKSDB_PORTABLE"); p != "" {
-		out["rocksdb_portable"] = p
+	if stamp.Found {
+		out[StampKey], out[StampSHA256Key] = stamp.Text, stamp.SHA256
+		out["rocksdb_portable"] = optionValue(stamp.Text, "portable")
 	}
 	out["grocksdb_version"], out["cgo_cflags"], out["cgo_ldflags"] = "unknown", "", ""
 	if bi, ok := debug.ReadBuildInfo(); ok {
@@ -122,6 +144,84 @@ func (k *KV) Describe() (map[string]string, error) {
 	out["rocksdb_options"] = text
 	out["rocksdb_version"] = optionValue(text, "rocksdb_version")
 	return out, nil
+}
+
+// StampFile is the file build-rocksdb.sh writes beside the static library it
+// builds: how the library was built, one key=value per line, with no time in it.
+const StampFile = "rocksdb-build.stamp"
+
+// Stamp is the build stamp of the RocksDB library a binary links.
+type Stamp struct {
+	// Dir is the library's directory: the first directory named by a -L flag of the
+	// CGO_LDFLAGS the binary records that holds a librocksdb, as the linker searched
+	// them; "" when none does (no flags recorded, or the library is gone).
+	Dir string
+	// Found says Dir holds a stamp: Text is its text, and SHA256 the sha256 of the
+	// text in hexadecimal.
+	Found        bool
+	Text, SHA256 string
+}
+
+// LibraryStamp is the build stamp of the library the running binary links, read the
+// first time it is asked for. A library without one (Homebrew's, or one built by
+// hand) gives a Stamp that is not Found and no error: a build is refused for it only
+// where a result is asked for (rocksbench build without -untimed), and judged void
+// by the rule, never refused here. Only a stamp that is there and cannot be read is
+// an error.
+func LibraryStamp() (Stamp, error) { return libraryStamp() }
+
+// libraryStamp gives LibraryStamp; a test replaces it.
+var libraryStamp = sync.OnceValues(func() (Stamp, error) {
+	var ldflags string
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "CGO_LDFLAGS" {
+				ldflags = s.Value
+			}
+		}
+	}
+	return stampOf(ldflags)
+})
+
+// stampOf is the stamp of the library that the link flags ldflags link: the first
+// directory of a -L flag (-Ldir or -L dir) that holds librocksdb, static or shared,
+// and the stamp in it, if there is one.
+func stampOf(ldflags string) (Stamp, error) {
+	fields := strings.Fields(ldflags)
+	for i := 0; i < len(fields); i++ {
+		dir, ok := strings.CutPrefix(fields[i], "-L")
+		if !ok {
+			continue
+		}
+		if dir == "" && i+1 < len(fields) {
+			i++
+			dir = fields[i]
+		}
+		if !holdsLibrary(dir) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, StampFile))
+		if errors.Is(err, fs.ErrNotExist) {
+			return Stamp{Dir: dir}, nil
+		}
+		if err != nil {
+			return Stamp{}, fmt.Errorf("rockskv: the build stamp of the RocksDB library: %w", err)
+		}
+		sum := sha256.Sum256(b)
+		return Stamp{Dir: dir, Found: true, Text: string(b), SHA256: hex.EncodeToString(sum[:])}, nil
+	}
+	return Stamp{}, nil
+}
+
+// holdsLibrary is whether dir holds a RocksDB library the linker would take for
+// -lrocksdb.
+func holdsLibrary(dir string) bool {
+	for _, name := range []string{"librocksdb.a", "librocksdb.so", "librocksdb.dylib"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // optionsText is the text of the newest options file in the database's directory,
@@ -152,8 +252,8 @@ func (k *KV) optionsText() (string, error) {
 	return string(b), err
 }
 
-// optionValue is the value of the first "name=value" line of an options file, or
-// "unknown".
+// optionValue is the value of the first "name=value" line of an options file or a
+// build stamp, or "unknown".
 func optionValue(text, name string) string {
 	for line := range strings.SplitSeq(text, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), name+"="); ok {

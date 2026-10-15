@@ -59,7 +59,9 @@ var fullPolicies = map[string]rockslog.CheckpointOptions{
 // beside writes, the random and fixed workloads and the scripted checks) on disk
 // with the tiny tuning, for each policy of fullPolicies, and the part for a
 // configuration that is not the primary ([conformance.RunPartial]) with no
-// checkpoints.
+// checkpoints. RL4, whose base-level files are four times the target file size
+// where RL's are twice it, passes the whole test on the policy the comparison
+// times: its files differ from RL's, and its answers must not.
 func TestConforms(t *testing.T) {
 	t.Parallel()
 	for name, cp := range fullPolicies {
@@ -71,6 +73,12 @@ func TestConforms(t *testing.T) {
 	t.Run("off", func(t *testing.T) {
 		t.Parallel()
 		conformance.RunPartial(t, onDisk(tiny(rockslog.CheckpointOptions{})))
+	})
+	t.Run("RL4 k64a2l5m", func(t *testing.T) {
+		t.Parallel()
+		opts := tiny(fullPolicies["k64a2l5m"])
+		opts.BaseFileFactor = 4
+		conformance.Run(t, onDisk(opts))
 	})
 }
 

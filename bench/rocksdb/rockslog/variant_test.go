@@ -1,6 +1,9 @@
 package rockslog_test
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,7 +15,8 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
 )
 
-// The RL names are RL/off and RL/ with a policy written as layout L writes it; the
+// The RL names are RL/off and RL/ with a policy written as layout L writes it, and
+// the RL4 names likewise with RL4/; the
 // candidates are external, of layout L, and declare cgo; and none can be taken for
 // a candidate of the bench module.
 func TestVariantNames(t *testing.T) {
@@ -24,6 +28,8 @@ func TestVariantNames(t *testing.T) {
 		"RL/k64a2l1ns":     {On: true, KMin: 64, Alpha: 2, Lag: time.Nanosecond},
 		"RL/k64a2l1h30m":   {On: true, KMin: 64, Alpha: 2, Lag: 90 * time.Minute},
 		"RL/k32a0.5l1nsr4": {On: true, KMin: 32, Alpha: 0.5, Lag: time.Nanosecond, Replace: 4},
+		"RL4/off":          {},
+		"RL4/k64a2l5m":     {On: true, KMin: 64, Alpha: 2, Lag: 5 * time.Minute},
 	} {
 		v, err := rockslog.Variant(name, false)
 		if err != nil {
@@ -46,8 +52,9 @@ func TestVariantNames(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		l, _ := candidates.Lookup("L/" + name[len("RL/"):])
-		if name == "RL/off" {
+		_, policy, _ := strings.Cut(name, "/")
+		l, _ := candidates.Lookup("L/" + policy)
+		if policy == "off" {
 			l = candidates.LNoCheckpoints()
 		}
 		le, err := l.Open("db", candidates.Options{Tuning: pebblekv.TinyTuning(), FS: vfs.NewMem()})
@@ -63,7 +70,7 @@ func TestVariantNames(t *testing.T) {
 			t.Errorf("%s: checkpoints %q, layout L's %q; layout %q (want %+v)", name, d["checkpoints"], ld["checkpoints"], d["layout"], want)
 		}
 	}
-	for _, name := range []string{"", "RL/", "RL/on", "RL/k64a2l5m0s", "RL/k0a1", "RL/k8", "L/off", "M/crdb1", "Lroot/off", "rl/off"} {
+	for _, name := range []string{"", "RL/", "RL/on", "RL/k64a2l5m0s", "RL/k0a1", "RL/k8", "L/off", "M/crdb1", "Lroot/off", "rl/off", "RL4/", "RL4/on", "rl4/off", "RL2/off"} {
 		if _, err := rockslog.Variant(name, false); err == nil {
 			t.Errorf("%q is accepted", name)
 		}
@@ -111,20 +118,45 @@ func TestVariantRefusesWhatItCannotHonour(t *testing.T) {
 	}
 }
 
-// RL's Go memory limit is Pebble's less the cache and the four memtables, which
-// Pebble holds on the Go heap and RocksDB does not; no limit stays none.
-func TestGoMemoryLimit(t *testing.T) {
+// RL4 writes base-level files of four times the tuning's target file size, where RL
+// writes twice it, and says so in its description and its options file; the rest of
+// the description is RL's.
+func TestRL4DescribesItsBaseFiles(t *testing.T) {
 	t.Parallel()
-	bench := pebblekv.BenchTuning()
-	bench.CacheBytes = 64 << 20
-	got, err := rockslog.GoMemoryLimit(11<<30, bench)
-	if err != nil || got != 11<<30-320<<20 {
-		t.Errorf("GoMemoryLimit(11 GiB) = %d, %v; want 11 GiB less 320 MiB", got, err)
+	tiny := pebblekv.TinyTuning()
+	describe := func(name string) map[string]string {
+		v, err := rockslog.Variant(name, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := v.Open(t.TempDir(), candidates.Options{Tuning: tiny})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = e.Close() }()
+		d, err := e.(engine.Describer).Describe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
 	}
-	if got, err := rockslog.GoMemoryLimit(0, bench); got != 0 || err != nil {
-		t.Errorf("no limit gives %d, %v", got, err)
+	rl, rl4 := describe("RL/k64a2l5m"), describe("RL4/k64a2l5m")
+	for _, c := range []struct {
+		name   string
+		d      map[string]string
+		factor int64
+	}{{"RL", rl, 2}, {"RL4", rl4, 4}} {
+		base := strconv.FormatInt(c.factor*tiny.TargetFileSize, 10)
+		if c.d["target_file_size_base"] != base || !strings.Contains(c.d["rocksdb_options"], "target_file_size_base="+base+"\n") {
+			t.Errorf("%s: target_file_size_base %q, want %s, in the description and the options file", c.name, c.d["target_file_size_base"], base)
+		}
 	}
-	if _, err := rockslog.GoMemoryLimit(100<<20, bench); err == nil {
-		t.Error("a limit below the charge is accepted")
+	if got, want := rl4["target_file_bytes_by_level_from_base"], fmt.Sprintf("%d,%d,%d", 4*tiny.TargetFileSize, 4*tiny.TargetFileSize, 8*tiny.TargetFileSize); !strings.HasPrefix(got, want+",") {
+		t.Errorf("RL4's file sizes from the base level: %q, want them to begin %s", got, want)
+	}
+	for _, k := range []string{"checkpoints", "target_file_bytes", "block_bytes", "memtable_bytes", "l_base_max_bytes", "cache_bytes", "sync"} {
+		if rl[k] != rl4[k] {
+			t.Errorf("described %s: RL %q, RL4 %q", k, rl[k], rl4[k])
+		}
 	}
 }
