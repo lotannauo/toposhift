@@ -15,24 +15,27 @@ import (
 // PolicyVersion is the version of the derivation policy: the keyframe rule, the
 // order of deltas, the labels and the tables of this package. A cache of
 // subgraphs keys on it, and a change to any of them raises it.
-const PolicyVersion = 1
+const PolicyVersion = 2
 
 // Key names one element: an entity, an edge, or a derived subject. It is
 // comparable, and no two elements of a subgraph have the same key.
 type Key struct {
 	Kind Kind
-	// A is the entity, or the edge's source. Zero for a derived subject.
+	// A is the entity, the edge's source, or a derived subject's first end: the
+	// seed of a co-resident or a reach, the member of a pair.
 	A identity.Fingerprint
-	// B is the edge's target. Zero otherwise.
+	// B is the edge's target, or a derived subject's second end: the peer of a
+	// co-resident or a pair, the member a reach reaches. Zero for an entity.
 	B identity.Fingerprint
 	// Relation is the edge's relation. Empty otherwise.
 	Relation catalog.RelationType
-	// Rule names the rule that derives a derived subject, as the wire's derived
-	// kinds do. Empty otherwise.
+	// Rule names the rule that derives a derived subject, one of the strings of
+	// the derived-kind table ([DerivedKinds]). Empty otherwise.
 	Rule string
-	// Detail is the rest of a derived subject's identity within its rule, a
-	// canonical string the adapter that derives the subject defines. Empty
-	// otherwise.
+	// Detail is the rest of a derived subject's identity within its rule and
+	// ends, a canonical string the adapter that derives the subject defines. The
+	// two ends are dictionary references through A and B and are not in it.
+	// Empty otherwise.
 	Detail string
 }
 
@@ -82,7 +85,7 @@ func (k Key) String() string {
 	case KindEdge:
 		return fmt.Sprintf("edge %s -[%s]-> %s", k.A, k.Relation, k.B)
 	case KindDerived:
-		return fmt.Sprintf("derived %s %q", k.Rule, k.Detail)
+		return fmt.Sprintf("derived %s %s -> %s %q", k.Rule, k.A, k.B, k.Detail)
 	}
 	return fmt.Sprintf("key of %s", k.Kind)
 }
@@ -99,6 +102,11 @@ type Source struct {
 	// computes both from the pieces and refuses a claim that differs.
 	Class       Class
 	Transitions int
+	// Paths are the legs of a derived subject: the edges whose intersection is
+	// its span, one list per way it holds (a co-resident has one, a pair one for
+	// each contribution, a reach one for each arrival). Each leg is the key of an
+	// edge that is an element of the input. Empty for any other subject.
+	Paths [][]Key
 	// Quarantine is set for an entity the store has quarantined. Pieces is then
 	// empty and Class is [ClassNone].
 	Quarantine *store.QuarantineError
@@ -116,8 +124,22 @@ type SourcePiece struct {
 	// window's To, because nothing after To is reported.
 	EndReason EndReason
 	// Producers lists, sorted and once each, the producers whose reference was
-	// live at some instant of the piece.
+	// live at some instant of the piece. A derived subject has none.
 	Producers []lifecycle.Producer
+	// Ends lists, for a derived subject whose rule names them, the legs that end
+	// where the piece does, ascending by path and leg: it is empty exactly when
+	// the piece reaches To, and for a rule that names no leg ends (a reach).
+	Ends []LegEnd
+}
+
+// LegEnd is one leg of a derived subject that ends where a piece of the subject
+// ends.
+type LegEnd struct {
+	// Path and Leg index [Source].Paths and the path's legs.
+	Path, Leg int
+	// Reason is the leg's own end: a lifecycle reason, or [EndReasonUnattributed]
+	// when the leg goes on but its placement or mapping became ambiguous.
+	Reason EndReason
 }
 
 // Input is what a builder takes: the one token the elements were read at, the
@@ -131,6 +153,9 @@ type Input struct {
 	// nor an element, nor quarantined is a boundary. An entity listed here that no
 	// key names is not in the dictionary.
 	Read []identity.Fingerprint
+	// Sections are what the query reports that is not an element. They are in the
+	// shape of the output, with times in nanoseconds after From.
+	Sections Sections
 }
 
 // Subgraph is a temporal subgraph: the elements present in a window, as
@@ -160,15 +185,18 @@ type Subgraph struct {
 	// Quarantine is the static section: quarantined entities, and uncascaded
 	// edges, which no keyframe or delta holds.
 	Quarantine Quarantine
+	// Sections are what the query reported that is not an element, carried whole.
+	Sections Sections
 }
 
 // Entity is a dictionary entry.
 type Entity struct {
 	Fingerprint identity.Fingerprint
-	// Boundary says the entity is named by an edge and was not read, was not
-	// found quarantined, and has no element: the far end of a scope's edge is. An
-	// entity that was read and found absent from the window is not a boundary,
-	// and neither is a quarantined one, which has an entry in the static section.
+	// Boundary says the entity is named by a key, a leg or a section and was not
+	// read, was not found quarantined, and has no element: the far end of a
+	// scope's edge is. An entity that was read and found absent from the window
+	// is not a boundary, and neither is a quarantined one, which has an entry in
+	// the static section.
 	Boundary bool
 }
 
@@ -182,7 +210,10 @@ type Element struct {
 	Rule        string
 	Class       Class
 	Transitions int
-	Pieces      []Piece
+	// Paths are the legs of a derived subject, as element ids of edges, in the
+	// order of the input's paths. Empty for any other subject.
+	Paths  [][]uint32
+	Pieces []Piece
 }
 
 // Piece is one interval of an element, in nanoseconds after From.
@@ -193,6 +224,8 @@ type Piece struct {
 	// window's end.
 	EndReason EndReason
 	Producers []lifecycle.Producer
+	// Ends are the legs of a derived subject that end where the piece does.
+	Ends []LegEnd
 }
 
 // State is whether an element is present. When it is not, Reason says why.

@@ -2,6 +2,7 @@ package subgraph_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sort"
 	"testing"
@@ -49,8 +50,9 @@ func sched(p, n identity.Fingerprint) subgraph.Key {
 
 func runsOn(n, h identity.Fingerprint) subgraph.Key { return subgraph.EdgeKey(n, h, catalog.RunsOn) }
 
+// derived is a derived key between pod 900 and pod 901.
 func derived(rule, detail string) subgraph.Key {
-	return subgraph.Key{Kind: subgraph.KindDerived, Rule: rule, Detail: detail}
+	return subgraph.Key{Kind: subgraph.KindDerived, A: pod(900), B: pod(901), Rule: rule, Detail: detail}
 }
 
 // at is the instant sec seconds after base.
@@ -457,3 +459,5 @@ func expectEqual[T comparable](t *testing.T, what string, got, want []T) {
 		t.Errorf("%s:\ngot:  %v\nwant: %v", what, got, want)
 	}
 }
+
+func fmtSections(s subgraph.Sections) string { return fmt.Sprintf("%+v", s) }
