@@ -2,6 +2,7 @@
 //
 //	toposhift serve     run the ingest and query service (boots with no config)
 //	toposhift query     ask a store that replay filled a question, as JSON lines
+//	toposhift mcp       serve the read-only topology tools over stdio from such a store
 //	toposhift replay    replay an activity file into a store
 //	toposhift version   print build information
 package main
@@ -74,6 +75,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		return serve(ctx, args[1:], getenv, stderr)
 	case "query":
 		return queryCmd(ctx, args[1:], stdout, stderr)
+	case "mcp":
+		return mcpCmd(ctx, args[1:], mcpStdin, stdout, stderr)
 	case "replay":
 		return replayCmd(ctx, args[1:], stdout, stderr)
 	case "version":
@@ -272,6 +275,7 @@ func usage(w io.Writer) {
 Commands:
   serve     run the ingest and query service (no configuration required)
   query     ask a store that replay filled a question (run: toposhift query help)
+  mcp       serve the read-only topology tools over stdio from such a store (run: toposhift mcp help)
   replay    replay an activity file into a store (run: toposhift replay help)
   version   print build information
 `)

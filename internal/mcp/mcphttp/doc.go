@@ -1,8 +1,9 @@
 // Package mcphttp serves the tools of internal/mcp to MCP clients over
-// streamable HTTP. It is the only package of toposhift that imports the MCP
-// SDK: the tools, their input and output types and every rule an answer follows
-// live in internal/mcp, which knows nothing of the protocol, and this package
-// registers them as they are.
+// streamable HTTP, and, for a store no other process holds, over stdio. It is
+// the only package of toposhift that imports the MCP SDK: the tools, their
+// input and output types and every rule an answer follows live in internal/mcp,
+// which knows nothing of the protocol, and this package registers them as they
+// are.
 //
 // # What it serves
 //
@@ -11,7 +12,17 @@
 // (asof) and every answer names it. It offers each tool of the core and nothing
 // else: no prompts, no resources, no subscriptions.
 //
-// # Where it may be reached
+// # Over stdio
+//
+// [Server.ServeStdio] serves one client over a pair of streams, one JSON-RPC
+// message per line, and [Server.Run] does the same over any transport the SDK
+// has. The tools, the gate and the drain are the ones HTTP has. Nothing is
+// listened on; nothing but protocol frames is written to the output. The session
+// ends when the client closes the input or the context is done, and does not
+// return until the calls that were running have, so the store may be closed
+// after it and a [Server.Drain].
+//
+// # Where the HTTP handler may be reached
 //
 // The handler is meant for a loopback listener, and it does not rely on the
 // listener alone. A request is refused with 403 when:

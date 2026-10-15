@@ -186,7 +186,7 @@ func isLockHeld(err error) bool {
 
 // lockHeld is the sentence for a directory another open holds.
 func lockHeld(dir string) error {
-	return fmt.Errorf("another toposhift process has %s open (a replay or a query); try again when it finishes", dir)
+	return fmt.Errorf("another toposhift process has %s open (a replay, a query, a serve or an mcp); try again when it finishes", dir)
 }
 
 // openPebble opens the store in dir, read-only or not, with a plain sentence for
