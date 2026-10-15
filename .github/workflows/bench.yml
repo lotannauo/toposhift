@@ -12,6 +12,22 @@ name: bench
 # cut into one job per (runner, window, candidate, repetition): the longest job is
 # then one 30-day build, well inside the six hours a job may run. Larger runners
 # cost money and are not used.
+#
+# Layout L on RocksDB (the RL/ and RL4/ candidates, bench/rocksdb) is built and read
+# by rocksbench, with cgo, against the RocksDB library rocksdb.yml builds and caches
+# from main. A job here only restores that library, under rocksdb.yml's key and path,
+# and fails when it is not cached (run rocksdb.yml on main first): the library has
+# one writer, and no timed job spends its time compiling it. With the read input,
+# repetition 1 of every candidate also reads its build afterwards, for the answers
+# and counters that rocksbench judge, the RocksDB rule's judge, compares between the
+# engines; the build alone is timed.
+#
+# A dispatch waits at its setup job for approval: that job runs in the environment
+# bench-approval, which a maintainer creates beforehand (Settings, Environments) with
+# the maintainer as the required reviewer and "prevent self-review" off. The
+# environment must exist first: GitHub creates a missing one on first use, with no
+# reviewer, and the run then starts unapproved. Nothing else of a run starts until
+# its setup job has been approved.
 
 on:
   workflow_dispatch:
@@ -72,6 +88,10 @@ on:
         description: The 40-hexadecimal-digit commit the dispatch must run (the tag's or main's). Required for background; when left empty for sync, the run's own commit.
         type: string
         default: ""
+      read:
+        description: After the build of repetition 1 of each candidate, read it (spikebench read, or rocksbench read for RL/ and RL4/) and keep its results.json. Required for a dispatch of both engines.
+        type: boolean
+        default: false
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -79,6 +99,8 @@ on:
       - .github/workflows/bench.yml
       - bench/**
       - mise.toml
+      # It names the RocksDB library as rocksdb.yml does, which the dry run checks.
+      - .github/workflows/rocksdb.yml
 
 permissions: {}
 
@@ -103,6 +125,8 @@ jobs:
     name: bench setup
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    # Approval: see the top of this file.
+    environment: bench-approval
     timeout-minutes: 5
     permissions:
       contents: read
@@ -115,6 +139,8 @@ jobs:
       sync: ${{ steps.matrix.outputs.sync }}
       metrics_every: ${{ steps.matrix.outputs.metrics_every }}
       go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
+      pebble_memory_limit: ${{ steps.matrix.outputs.pebble_memory_limit }}
+      read: ${{ steps.matrix.outputs.read }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       retention_mode: ${{ steps.matrix.outputs.retention_mode }}
       pace: ${{ steps.matrix.outputs.pace }}
@@ -171,6 +197,7 @@ jobs:
           RETENTION_MODE: ${{ inputs.retention_mode }}
           RETAIN_FLUSH_DELS: ${{ inputs.retain_flush_dels }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          READ: ${{ inputs.read }}
         run: bash bench/scripts/gate-dispatch-check.sh
 
   # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
@@ -314,8 +341,9 @@ jobs:
           overwrite: true
           retention-days: 90
 
-  # One spikebench build per job, so the longest job is one 30-day build. Every
-  # job gets its own runner, and so its own disk and its own memory.
+  # One build per job, by spikebench or, for RL/ and RL4/, by rocksbench, so the
+  # longest job is one 30-day build and, with the read input, its read. Every job
+  # gets its own runner, and so its own disk and its own memory.
   build:
     name: "bench build (${{ matrix.os }} R${{ matrix.window }} ${{ matrix.candidate }} rep ${{ matrix.rep }})"
     if: github.event_name == 'workflow_dispatch'
@@ -390,10 +418,58 @@ jobs:
           fi
           /usr/bin/time --version
 
+      # As in rocksdb.yml, from Ubuntu's own archive: the compiler cgo needs, and the
+      # compression libraries the RocksDB library links (named by
+      # bench/rocksdb/scripts/cgoenv.sh). The versions are recorded in job.json.
+      - name: Install the compiler and the libraries RocksDB links
+        if: matrix.engine == 'rocksdb'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev
+          dpkg-query --show build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev g++
+
+      # The library's key and path, exactly as rocksdb.yml names them: a cache's
+      # path is part of its identity, so a path that differs by a byte misses even
+      # under the same key. The dry run checks that the two workflows agree.
+      - name: Name the RocksDB build
+        if: matrix.engine == 'rocksdb'
+        id: rocks
+        env:
+          OS_LABEL: ${{ matrix.os }}
+        run: |
+          script=bench/rocksdb/scripts/build-rocksdb.sh
+          version="$("$script" --version)"
+          hash="$(sha256sum "$script" | cut -d' ' -f1)"
+          {
+            echo "key=rocksdb-v1-${OS_LABEL}-${RUNNER_ARCH}-${version}-${hash}"
+            echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Only restored, never built or saved here: rocksdb.yml on main is the one
+      # writer. A miss fails the job in minutes, not after a build of tens.
+      - name: Restore the RocksDB build
+        if: matrix.engine == 'rocksdb'
+        id: rockscache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.rocks.outputs.prefix }}
+          key: ${{ steps.rocks.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Show how the library was built
+        if: matrix.engine == 'rocksdb'
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          cat "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp"
+          ls -l "$ROCKSDB_PREFIX/lib/librocksdb.a"
+
       # A timed build refuses a binary from a tree with uncommitted or untracked
       # changes. The check is the last thing before go build, and the binary and
       # everything after it are written outside the checkout.
       - name: Build spikebench
+        if: matrix.engine == 'pebble'
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain)" ]; then
@@ -403,6 +479,26 @@ jobs:
           fi
           cd bench
           CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench
+
+      # The same check, then a build with cgo against the restored library, with the
+      # module's tags. Not -trimpath: with it, go leaves CGO_LDFLAGS out of the
+      # binary's build settings, and the engine finds its library's build stamp,
+      # which the rule requires and a timed build refuses to run without, by the -L
+      # directory recorded there. The paths the binary then records are the
+      # runner's, alike on every job of one image.
+      - name: Build rocksbench
+        if: matrix.engine == 'rocksdb'
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          cd bench/rocksdb
+          ./scripts/cgoenv.sh go build -tags grocksdb_no_link,pebblegozstd -o "$RUNNER_TEMP/rocksbench" ./cmd/rocksbench
 
       # A build wants plan.json in its output directory, and nothing else there but
       # other candidates.
@@ -446,47 +542,93 @@ jobs:
 
       # Timed: no -untimed, no -rest-after-retention and no -canonical-layout, so
       # the numbers are those of a build as it ingests. Its own step with a timeout
-      # shorter than the job's, so that an overrun still reaches the upload.
+      # shorter than the job's, so that an overrun still reaches the upload; shorter
+      # still when a read follows it, which has a timeout of its own.
       - name: Build the candidate
-        timeout-minutes: 340
+        timeout-minutes: ${{ needs.setup.outputs.read == 'true' && matrix.rep == 1 && 280 || 340 }}
         env:
           WINDOW: ${{ matrix.window }}
           CANDIDATE: ${{ matrix.candidate }}
+          ENGINE: ${{ matrix.engine }}
           SYNC: ${{ needs.setup.outputs.sync }}
           METRICS_EVERY: ${{ needs.setup.outputs.metrics_every }}
           GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          PEBBLE_MEMORY_LIMIT: ${{ needs.setup.outputs.pebble_memory_limit }}
           RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
           PACE: ${{ needs.setup.outputs.pace }}
           RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
-          extra=(-retention-mode "$RETENTION_MODE")
+          if [ "$ENGINE" = rocksdb ]; then
+            # rocksbench has the synchronous retention only and samples no metrics
+            # (the setup refuses a dispatch that asks for either). Its Go memory
+            # limit is not GOMEMLIMIT but the Pebble builds' limit, in bytes or
+            # none, less the plan's cache and four memtables, which RocksDB holds
+            # outside the Go heap; the manifest records the limit it ran under.
+            bin="$RUNNER_TEMP/rocksbench"
+            extra=(-pebble-memory-limit "$PEBBLE_MEMORY_LIMIT")
+          else
+            bin="$RUNNER_TEMP/spikebench"
+            extra=(-retention-mode "$RETENTION_MODE")
+            if [ -n "$METRICS_EVERY" ]; then
+              extra+=(-metrics-every "$METRICS_EVERY")
+            fi
+            # The pace follows from the retention mode (0 for sync), and the
+            # threshold is passed only when the dispatch named a rung.
+            if [ "$PACE" != 0 ]; then
+              extra+=(-pace "$PACE")
+            fi
+            if [ "$RETAIN_FLUSH_DELS" != default ]; then
+              extra+=(-retain-flush-dels "$RETAIN_FLUSH_DELS")
+            fi
+            # Explicit, so that an empty input leaves the variable unset.
+            if [ -n "$GO_MEM_LIMIT" ]; then
+              export GOMEMLIMIT="$GO_MEM_LIMIT"
+            fi
+          fi
           if [ "$SYNC" = true ]; then
             extra+=(-sync)
           fi
-          if [ -n "$METRICS_EVERY" ]; then
-            extra+=(-metrics-every "$METRICS_EVERY")
-          fi
-          # The pace follows from the retention mode (0 for sync), and the threshold
-          # is passed only when the dispatch named a rung.
-          if [ "$PACE" != 0 ]; then
-            extra+=(-pace "$PACE")
-          fi
-          if [ "$RETAIN_FLUSH_DELS" != default ]; then
-            extra+=(-retain-flush-dels "$RETAIN_FLUSH_DELS")
-          fi
-          # Explicit, so that an empty input leaves the variable unset.
-          if [ -n "$GO_MEM_LIMIT" ]; then
-            export GOMEMLIMIT="$GO_MEM_LIMIT"
-          fi
           /usr/bin/time -v -o "$RUNNER_TEMP/logs/time.txt" \
-            "$RUNNER_TEMP/spikebench" build -out "$WORK" -candidate "$CANDIDATE" "${extra[@]}" \
+            "$bin" build -out "$WORK" -candidate "$CANDIDATE" "${extra[@]}" \
             2>&1 | tee "$RUNNER_TEMP/logs/build.log"
+
+      # Untimed, after the build: the queries of the plan, for the answers and the
+      # counters of repetition 1 (never -perf, which makes every query that loads a
+      # block unstable). spikebench reads under the GOMEMLIMIT its build had;
+      # rocksbench's read takes no limit and runs with none. Its peak memory goes
+      # to a file of its own, so time.txt stays the build's.
+      - name: Read the candidate
+        if: needs.setup.outputs.read == 'true' && matrix.rep == 1
+        timeout-minutes: 60
+        env:
+          WINDOW: ${{ matrix.window }}
+          CANDIDATE: ${{ matrix.candidate }}
+          ENGINE: ${{ matrix.engine }}
+          GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          if [ "$ENGINE" = rocksdb ]; then
+            bin="$RUNNER_TEMP/rocksbench"
+          else
+            bin="$RUNNER_TEMP/spikebench"
+            if [ -n "$GO_MEM_LIMIT" ]; then
+              export GOMEMLIMIT="$GO_MEM_LIMIT"
+            fi
+          fi
+          /usr/bin/time -v -o "$RUNNER_TEMP/logs/read.time.txt" \
+            "$bin" read -out "$WORK" -candidate "$CANDIDATE" \
+            2>&1 | tee "$RUNNER_TEMP/logs/read.log"
 
       - name: Collect the manifest and the logs
         if: always()
         env:
+          ENGINE: ${{ matrix.engine }}
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+          ROCKSDB_CACHE_KEY: ${{ steps.rocks.outputs.key }}
+          ROCKSDB_CACHE_HIT: ${{ steps.rockscache.outputs.cache-hit }}
           FAMILY: ${{ needs.setup.outputs.family }}
           PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
           SYNC: ${{ needs.setup.outputs.sync }}
@@ -512,12 +654,17 @@ jobs:
           LOGS="$RUNNER_TEMP/logs"
           mkdir -p "$OUT"
 
-          # Only the manifest and the metrics, never db/: the database is
-          # gigabytes.
+          # Only the manifest, the results of a read and the metrics, never db/:
+          # the database is gigabytes.
           manifest=no
           if [ -f "$WORK/$SLUG/manifest.json" ]; then
             cp "$WORK/$SLUG/manifest.json" "$OUT/manifest.json"
             manifest=yes
+          fi
+          results=no
+          if [ -f "$WORK/$SLUG/results.json" ]; then
+            cp "$WORK/$SLUG/results.json" "$OUT/results.json"
+            results=yes
           fi
           if [ -f "$WORK/$SLUG/metrics.jsonl" ]; then
             cp "$WORK/$SLUG/metrics.jsonl" "$OUT/metrics.jsonl"
@@ -538,8 +685,37 @@ jobs:
           image_version="${ImageVersion:-unknown}"
           runner_name="${RUNNER_NAME:-unknown}"
           # The binary this job built and ran, to tell builds of one commit apart.
-          binary_sha256="$(sha256sum "$RUNNER_TEMP/spikebench" 2>/dev/null | cut -d' ' -f1)"
+          if [ "$ENGINE" = rocksdb ]; then
+            bin="$RUNNER_TEMP/rocksbench"
+          else
+            bin="$RUNNER_TEMP/spikebench"
+          fi
+          binary_sha256="$(sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)"
           binary_sha256="${binary_sha256:-unknown}"
+          # The peak resident set of the build process and of the read, in KiB, as
+          # GNU time reports them; 0 where there is none (the RocksDB rule's judge
+          # refuses a set with a manifest and no max_rss_kb). A build killed for
+          # memory still has one, and no manifest.
+          max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/time.txt" 2>/dev/null)"
+          [[ $max_rss_kb =~ ^[0-9]+$ ]] || max_rss_kb=0
+          read_max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/read.time.txt" 2>/dev/null)"
+          [[ $read_max_rss_kb =~ ^[0-9]+$ ]] || read_max_rss_kb=0
+          # Which RocksDB library the binary linked: its build stamp's sha256 (the
+          # stamp itself is in the manifest's description), the cache entry it came
+          # from, and the Ubuntu packages of the libraries it links and the compiler
+          # cgo used. Empty for a Pebble build.
+          stamp_sha256=""
+          libraries=""
+          if [ "$ENGINE" = rocksdb ]; then
+            stamp_sha256="$(sha256sum "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp" 2>/dev/null | cut -d' ' -f1)"
+            libraries="$(dpkg-query --show liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev libstdc++6 g++ 2>/dev/null | tr '\t' '=' | paste -sd' ' -)"
+          fi
+          # go_mem_limit is the dispatch's for both engines: a RocksDB build ran
+          # under that less the plan's cache and four memtables, which its manifest
+          # records as go_memory_limit. The job file is two objects joined: the
+          # runner's job (runner.Job), then what the RocksDB rule's judge adds to it
+          # (rulejudge.Job); a test in each package requires its own fields here,
+          # in order.
           jq -n \
             --arg sha "$SHA" --arg os "$OS" --arg arch "$(uname -m)" \
             --arg family "$FAMILY" --argjson window "$WINDOW" --arg candidate "$CANDIDATE" \
@@ -553,12 +729,16 @@ jobs:
             --arg runner_name "$runner_name" --arg kernel "$kernel" \
             --arg run_id "$RUN_ID" --arg run_attempt "$RUN_ATTEMPT" \
             --arg binary_sha256 "$binary_sha256" \
-            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, retention_mode: $retention_mode, pace: $pace, retain_flush_dels: $retain_flush_dels, ref: $ref, expected_sha: $expected_sha, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256}' \
+            --arg engine "$ENGINE" --argjson max_rss_kb "$max_rss_kb" --argjson read_max_rss_kb "$read_max_rss_kb" \
+            --arg rocksdb_stamp_sha256 "$stamp_sha256" --arg rocksdb_cache_key "${ROCKSDB_CACHE_KEY:-}" \
+            --arg rocksdb_cache_hit "${ROCKSDB_CACHE_HIT:-}" --arg rocksdb_libraries "$libraries" \
+            '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, retention_mode: $retention_mode, pace: $pace, retain_flush_dels: $retain_flush_dels, ref: $ref, expected_sha: $expected_sha, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256} + {engine: $engine, max_rss_kb: $max_rss_kb, read_max_rss_kb: $read_max_rss_kb, rocksdb_stamp_sha256: $rocksdb_stamp_sha256, rocksdb_cache_key: $rocksdb_cache_key, rocksdb_cache_hit: $rocksdb_cache_hit, rocksdb_libraries: $rocksdb_libraries}' \
             >"$OUT/job.json"
 
           cp -r "$LOGS" "$OUT/logs"
 
           rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/time.txt" 2>/dev/null)"
+          read_rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/read.time.txt" 2>/dev/null)"
           elapsed="$(awk '/Elapsed \(wall clock\)/ { print $NF }' "$LOGS/time.txt" 2>/dev/null)"
           # The data line after each df header, by the section the sampler wrote
           # it under: the used 1K-blocks of the root filesystem, of /mnt and of
@@ -575,14 +755,19 @@ jobs:
           {
             echo "### $CANDIDATE, $WINDOW days, $OS, repetition $REP"
             echo
-            echo "- manifest written: $manifest"
-            echo "- peak memory: ${rss:-unknown}"
+            echo "- engine: $ENGINE"
+            echo "- manifest written: $manifest; results of a read written: $results"
+            echo "- peak memory: ${rss:-unknown}; of the read: ${read_rss:-none}"
             echo "- elapsed time (h:mm:ss or m:ss): ${elapsed:-unknown}"
             echo "- most disk used, sampled each minute (root, mnt and the work directory's filesystem): ${disk:-unknown}"
             echo "- hardware: $cpu, $cpus CPUs, $((mem_kb / 1024)) MiB memory, kernel $kernel"
             echo "- runner: $runner_name, image $image_os $image_version, run $RUN_ID attempt $RUN_ATTEMPT"
             echo "- retention mode: $RETENTION_MODE, pace $PACE, retention flush threshold $RETAIN_FLUSH_DELS"
             echo "- binary sha256: \`$binary_sha256\`"
+            if [ "$ENGINE" = rocksdb ]; then
+              echo "- RocksDB library: cache entry \`${ROCKSDB_CACHE_KEY:-none}\` (restored: ${ROCKSDB_CACHE_HIT:-no}), build stamp sha256 \`${stamp_sha256:-none}\`"
+              echo "- packages: ${libraries:-unknown}"
+            fi
           } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Keep the manifest and the logs
@@ -733,3 +918,212 @@ jobs:
           cat "$D/pool.txt"
           [ "$code" = 3 ] || fail "a set of two thresholds ended with status $code, want 3"
           grep -q "different retain_flush_dels" "$D/pool.txt" || fail "the refusal does not name the threshold"
+
+  # On a pull request, the chain of layout L on RocksDB at the tiny preset, beside the
+  # dry run above: the RocksDB library under the timed jobs' key and path, rocksbench
+  # built as they build it, L/off and RL/off each built under GNU time and read, each
+  # recorded with the fields of a timed job's job.json that the RocksDB rule's judge
+  # reads, and rocksbench judge run on the two. One repetition each is too few for the
+  # rule, so the judge must refuse the set with status 3 for that reason alone, having
+  # read every build, its read and its peak resident set, and having found every
+  # build a result: that proves the chain without a verdict. A pull request cannot
+  # save a cache, and this job never tries: on a miss (a pull request that changes
+  # the build script, or before rocksdb.yml has saved the library on main) it builds
+  # the library itself. It uploads nothing.
+  dry-run-rocksdb:
+    name: bench dry run, RocksDB (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    # A RocksDB build on a cache miss takes up to an hour.
+    timeout-minutes: 100
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The timed jobs restore the library rocksdb.yml saves, by its key and path, so
+      # the lines that name them must be the same in both workflows (twice here).
+      - name: Check that both workflows name the RocksDB build alike
+        run: |
+          set -euo pipefail
+          for what in key prefix; do
+            lines="$(grep -hF "echo \"$what=" .github/workflows/rocksdb.yml .github/workflows/bench.yml | sed 's/^ *//' | sort | uniq -c)"
+            echo "$lines"
+            # One line, written three times.
+            if [ "$(awk '{ print $1 }' <<<"$lines")" != 3 ]; then
+              echo "::error::rocksdb.yml and bench.yml do not name the RocksDB build's $what alike" >&2
+              exit 1
+            fi
+          done
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      - name: Check that GNU time is present
+        run: |
+          if [ ! -x /usr/bin/time ]; then
+            sudo apt-get update && sudo apt-get install --yes time
+          fi
+          /usr/bin/time --version
+
+      - name: Install the compiler and the libraries RocksDB links
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev
+          dpkg-query --show build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev g++
+
+      - name: Name the RocksDB build
+        id: rocks
+        env:
+          OS_LABEL: ${{ matrix.os }}
+        run: |
+          script=bench/rocksdb/scripts/build-rocksdb.sh
+          version="$("$script" --version)"
+          hash="$(sha256sum "$script" | cut -d' ' -f1)"
+          {
+            echo "key=rocksdb-v1-${OS_LABEL}-${RUNNER_ARCH}-${version}-${hash}"
+            echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore the RocksDB build
+        id: rockscache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.rocks.outputs.prefix }}
+          key: ${{ steps.rocks.outputs.key }}
+
+      # A timed job would fail here instead: say so, without failing a pull request
+      # that has a reason to miss.
+      - name: Build RocksDB
+        if: steps.rockscache.outputs.cache-hit != 'true'
+        timeout-minutes: 60
+        env:
+          CMAKE: /usr/bin/cmake
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          echo "::warning::no RocksDB library is cached under this key: a timed job would fail until rocksdb.yml on main has saved one"
+          bench/rocksdb/scripts/build-rocksdb.sh "$ROCKSDB_PREFIX"
+
+      - name: Show how the library was built
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          cat "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp"
+          ls -l "$ROCKSDB_PREFIX/lib/librocksdb.a"
+
+      # Both binaries as the timed jobs build them, after the same check.
+      - name: Build spikebench and rocksbench
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the checkout has uncommitted or untracked changes, so a timed build would refuse the binary:" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+          (cd bench && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench)
+          cd bench/rocksdb
+          ./scripts/cgoenv.sh go build -tags grocksdb_no_link,pebblegozstd -o "$RUNNER_TEMP/rocksbench" ./cmd/rocksbench
+
+      - name: Make the pins and the plan
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry"
+          "$RUNNER_TEMP/spikebench" pins -out "$D" -preset tiny -events-per-second 0.05 -batch 40 -window 1
+          "$RUNNER_TEMP/spikebench" plan -out "$D/R1" -preset tiny -events-per-second 0.05 -batch 40 -window 1 -pins "$D/pins.json" -full
+
+      # Timed builds, as a dispatch without a Go memory limit runs them, each read
+      # afterwards, each step under GNU time with a report of its own.
+      - name: Build and read layout L on both engines
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry/R1"
+          L="$RUNNER_TEMP/dry/logs"
+          mkdir -p "$L"
+          /usr/bin/time -v -o "$L/L_off.time.txt" "$RUNNER_TEMP/spikebench" build -out "$D" -candidate L/off -retention-mode sync
+          /usr/bin/time -v -o "$L/L_off.read.time.txt" "$RUNNER_TEMP/spikebench" read -out "$D" -candidate L/off
+          /usr/bin/time -v -o "$L/RL_off.time.txt" "$RUNNER_TEMP/rocksbench" build -out "$D" -candidate RL/off -pebble-memory-limit none
+          /usr/bin/time -v -o "$L/RL_off.read.time.txt" "$RUNNER_TEMP/rocksbench" read -out "$D" -candidate RL/off
+
+      # Laid out as the artifacts of a dispatch: one directory per job with its
+      # manifest, results and job.json, and the plan. The judge reads, of job.json,
+      # the fields written here, which the timed jobs write the same way.
+      - name: Record the builds as the timed jobs do
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/dry/R1"
+          L="$RUNNER_TEMP/dry/logs"
+          A="$RUNNER_TEMP/artifacts"
+          mkdir -p "$A/plans/R1"
+          cp "$D/plan.json" "$A/plans/R1/plan.json"
+          sha="$(git rev-parse HEAD)"
+          cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }')"
+          cpu="${cpu:-unknown}"
+          for c in L/off RL/off; do
+            slug="${c//\//_}"
+            case "$c" in
+              RL/*) engine=rocksdb bin="$RUNNER_TEMP/rocksbench" ;;
+              *) engine=pebble bin="$RUNNER_TEMP/spikebench" ;;
+            esac
+            out="$A/$slug"
+            mkdir -p "$out"
+            cp "$D/$slug/manifest.json" "$D/$slug/results.json" "$out/"
+            max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$L/$slug.time.txt" 2>/dev/null)"
+            [[ $max_rss_kb =~ ^[0-9]+$ ]] || max_rss_kb=0
+            read_max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$L/$slug.read.time.txt" 2>/dev/null)"
+            [[ $read_max_rss_kb =~ ^[0-9]+$ ]] || read_max_rss_kb=0
+            binary_sha256="$(sha256sum "$bin" | cut -d' ' -f1)"
+            jq -n \
+              --arg sha "$sha" --arg os "$OS" --arg arch "$(uname -m)" --argjson window 1 --arg candidate "$c" \
+              --argjson rep 1 --arg cpu_model "$cpu" --arg binary_sha256 "$binary_sha256" --arg engine "$engine" \
+              --argjson max_rss_kb "$max_rss_kb" --argjson read_max_rss_kb "$read_max_rss_kb" \
+              '{sha: $sha, os: $os, arch: $arch, window: $window, candidate: $candidate, rep: $rep, cpu_model: $cpu_model, binary_sha256: $binary_sha256, engine: $engine, max_rss_kb: $max_rss_kb, read_max_rss_kb: $read_max_rss_kb}' \
+              >"$out/job.json"
+            cat "$out/job.json"
+          done
+
+      # Status 3, every reason for it the single repetitions, no build that is not a
+      # result, and a peak resident set for each of the two builds.
+      - name: Judge the two, and refuse them for their repetitions alone
+        run: |
+          set -uo pipefail
+          R="$RUNNER_TEMP/judge.txt"
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+          code=0
+          "$RUNNER_TEMP/rocksbench" judge "$RUNNER_TEMP/artifacts" >"$R" 2>"$RUNNER_TEMP/judge.err" || code=$?
+          cat "$R" "$RUNNER_TEMP/judge.err"
+          [ "$code" = 3 ] || fail "the judge ended with status $code, want 3 for single repetitions"
+          refused="$(awk '/^REFUSED:/ { on = 1; next } on && /^$/ { exit } on' "$R")"
+          [ -n "$refused" ] || fail "the report gives no reason for the refusal"
+          if grep -vF "has 1 repetitions, fewer than 3" <<<"$refused"; then
+            fail "the set is refused for more than its repetitions (the reasons above)"
+          fi
+          if grep -q "^NOT RESULTS" "$R"; then
+            fail "a build is not a result (the report above)"
+          fi
+          builds="$(awk '/^BUILDS:/ { on = 1; getline; next } on && NF' "$R")"
+          [ "$(grep -c . <<<"$builds")" = 2 ] || fail "the report does not list the two builds"
+          [ "$(grep -c " MiB" <<<"$builds")" = 2 ] || fail "a build has no peak resident set in the report"

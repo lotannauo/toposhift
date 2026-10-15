@@ -56,7 +56,7 @@ func dispatch(r repo) map[string]string {
 		"REF": "refs/tags/gate-freeze-20261012", "SHA": r.onMain, "RUN_ID": "100", "RUN_ATTEMPT": "1",
 		"FAMILY": "rmae", "WINDOWS": "7", "CANDIDATES": "Lroot/off,Lroot/k64a2l1ns", "REPS": "3", "ARCHES": "both",
 		"PINS_WINDOW": "2", "SYNC": "true", "METRICS_EVERY": "10s", "GO_MEM_LIMIT": "11GiB", "MAX_PARALLEL": "12",
-		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain,
+		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain, "READ": "false",
 	}
 }
 
@@ -116,7 +116,8 @@ func TestADispatchIsTakenFromMainOrAFreezeTagOnMain(t *testing.T) {
 	for _, want := range []string{
 		"retention_mode=background\n", "pace=4500\n", "retain_flush_dels=24576\n", "expected_sha=" + r.onMain + "\n",
 		"sync=true\n", "metrics_every=10s\n", "max_parallel=12\n", "plans_key=bench-plans-100-1\n",
-		`matrix={"include":[{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/off","slug":"Lroot_off","rep":1},`,
+		"go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "read=false\n",
+		`matrix={"include":[{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/off","slug":"Lroot_off","engine":"pebble","rep":1},`,
 	} {
 		if !strings.Contains(got.output, want) {
 			t.Errorf("the outputs lack %q:\n%s", want, got.output)
@@ -143,6 +144,65 @@ func TestADispatchIsTakenFromMainOrAFreezeTagOnMain(t *testing.T) {
 	for _, want := range []string{"retention_mode=sync\n", "pace=0\n", "retain_flush_dels=default\n", "expected_sha=" + r.offMain + "\n"} {
 		if !strings.Contains(got.output, want) {
 			t.Errorf("a synchronous dispatch: the outputs lack %q:\n%s", want, got.output)
+		}
+	}
+}
+
+// rocksDispatch is the environment of the RocksDB rule's 30-day dispatch from main:
+// layout L on Pebble and on RocksDB, both policies, the file-size variant, five
+// repetitions on both architectures, repetition 1 read.
+func rocksDispatch(r repo) map[string]string {
+	env := dispatch(r)
+	env["REF"], env["SHA"], env["EXPECTED_SHA"] = "refs/heads/main", r.offMain, r.offMain
+	env["WINDOWS"], env["CANDIDATES"], env["REPS"] = "30", "L/off,L/k64a2l5m,RL/off,RL/k64a2l5m,RL4/k64a2l5m", "5"
+	env["SYNC"], env["METRICS_EVERY"], env["RETENTION_MODE"], env["RETAIN_FLUSH_DELS"], env["READ"] = "false", "", "sync", "default", "true"
+	return env
+}
+
+// A dispatch of layout L on both engines: every job is marked with the engine that
+// builds it, RL/ and RL4/ with rocksdb and the rest with pebble, and the Go memory
+// limit is also given in bytes, which rocksbench takes as the Pebble builds' limit.
+func TestADispatchOfBothEnginesMarksEachJob(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	got := run(t, r, rocksDispatch(r))
+	if got.code != 0 {
+		t.Fatalf("the RocksDB rule's dispatch: exit %d\n%s", got.code, got.stderr)
+	}
+	for _, want := range []string{
+		"read=true\n", "go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "retention_mode=sync\n",
+		`{"os":"ubuntu-24.04","window":30,"candidate":"L/off","slug":"L_off","engine":"pebble","rep":1}`,
+		`{"os":"ubuntu-24.04","window":30,"candidate":"RL/k64a2l5m","slug":"RL_k64a2l5m","engine":"rocksdb","rep":5}`,
+		`{"os":"ubuntu-24.04-arm","window":30,"candidate":"RL4/k64a2l5m","slug":"RL4_k64a2l5m","engine":"rocksdb","rep":1}`,
+	} {
+		if !strings.Contains(got.output, want) {
+			t.Errorf("the outputs lack %q:\n%s", want, got.output)
+		}
+	}
+	if n, rocks := strings.Count(got.output, `"rep":`), strings.Count(got.output, `"engine":"rocksdb"`); n != 50 || rocks != 30 {
+		t.Errorf("%d jobs, %d of them RocksDB; want 2 architectures x 5 candidates x 5 repetitions, 3 of the candidates RocksDB", n, rocks)
+	}
+	for _, want := range []string{"### Planned jobs: 50", "| ubuntu-24.04-arm | 30 | `RL4/k64a2l5m` | rocksdb | 5 |", "| ubuntu-24.04 | 30 | `L/off` | pebble | 1 |", "read repetition 1 after its build: `true`", "`-pebble-memory-limit 11811160064`"} {
+		if !strings.Contains(got.summary, want) {
+			t.Errorf("the summary lacks %q:\n%s", want, got.summary)
+		}
+	}
+
+	// The limit in MiB, and none; and RocksDB alone (the pilot) need not read.
+	for _, c := range []struct{ limit, bytes, cands, read string }{
+		{"512MiB", "536870912", "RL/k64a2l5m", "false"},
+		{"", "none", "RL/off,RL/k64a2l5m", "true"},
+		{"999999GiB", "1073740750258176", "L/off", "false"},
+	} {
+		env := rocksDispatch(r)
+		env["GO_MEM_LIMIT"], env["CANDIDATES"], env["READ"] = c.limit, c.cands, c.read
+		got := run(t, r, env)
+		if got.code != 0 {
+			t.Fatalf("limit %q, candidates %s, read %s: exit %d\n%s", c.limit, c.cands, c.read, got.code, got.stderr)
+		}
+		if want := "pebble_memory_limit=" + c.bytes + "\n"; !strings.Contains(got.output, want) {
+			t.Errorf("limit %q: the outputs lack %q:\n%s", c.limit, want, got.output)
 		}
 	}
 }
@@ -193,6 +253,15 @@ func TestADispatchRefusesEveryMalformedInput(t *testing.T) {
 		{"commits not synced, background", map[string]string{"SYNC": "false"}, "sync: a background dispatch syncs every commit"},
 		{"no metrics, background", map[string]string{"METRICS_EVERY": ""}, "metrics_every: a background dispatch samples its metrics"},
 		{"a candidate not through the root store, background", map[string]string{"RETAIN_FLUSH_DELS": "default", "CANDIDATES": "Lroot/off,L/off"}, "candidates: a background dispatch builds the candidates through the root store"},
+
+		{"an input as read", map[string]string{"READ": evil}, "read:"},
+		{"read as a word", map[string]string{"READ": "yes"}, "read:"},
+
+		{"RocksDB with a background retention", map[string]string{"CANDIDATES": "Lroot/off,RL/off", "RETAIN_FLUSH_DELS": "default"}, "retention_mode: the RocksDB candidates"},
+		{"RocksDB with a threshold", map[string]string{"CANDIDATES": "RL4/off", "RETENTION_MODE": "sync", "SYNC": "false", "METRICS_EVERY": ""}, "retain_flush_dels: the RocksDB candidates"},
+		{"RocksDB with metrics", map[string]string{"CANDIDATES": "RL/off", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default"}, "metrics_every: rocksbench samples no metrics"},
+		{"both engines without a read", map[string]string{"CANDIDATES": "L/off,RL/off", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default", "METRICS_EVERY": ""}, "read: a dispatch of both engines"},
+		{"both engines, RL4 first, without a read", map[string]string{"CANDIDATES": "RL4/k64a2l5m,L/k64a2l5m", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default", "METRICS_EVERY": ""}, "read: a dispatch of both engines"},
 
 		{"a family", map[string]string{"FAMILY": evil}, "family:"},
 		{"the architectures", map[string]string{"ARCHES": evil}, "arches:"},

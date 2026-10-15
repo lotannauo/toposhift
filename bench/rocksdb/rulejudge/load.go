@@ -18,11 +18,20 @@ import (
 // Job is a job file of the bench workflow, with what the rule reads beyond the
 // runner's [runner.Job]: the engine the job built with ("rocksdb" or "pebble"; empty
 // in a job file made before it was recorded) and the peak resident set of the build
-// process in KiB, from GNU time's report (0 when it was not read).
+// process in KiB, from GNU time's report (0 when it was not read). The other fields
+// are recorded by the workflow and not judged: the peak resident set of the read
+// that followed the build (0 for none), and, for a RocksDB build, the sha256 of its
+// library's build stamp, the cache entry the library came from, whether it was
+// restored, and the Ubuntu packages of the libraries it links.
 type Job struct {
 	runner.Job
-	Engine   string `json:"engine"`
-	MaxRSSKB int64  `json:"max_rss_kb"`
+	Engine             string `json:"engine"`
+	MaxRSSKB           int64  `json:"max_rss_kb"`
+	ReadMaxRSSKB       int64  `json:"read_max_rss_kb"`
+	RocksDBStampSHA256 string `json:"rocksdb_stamp_sha256"`
+	RocksDBCacheKey    string `json:"rocksdb_cache_key"`
+	RocksDBCacheHit    string `json:"rocksdb_cache_hit"`
+	RocksDBLibraries   string `json:"rocksdb_libraries"`
 }
 
 // Build is one job of the bench workflow: its job file, its manifest, nil when the
