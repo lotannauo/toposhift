@@ -14,7 +14,7 @@ mise run test       # go test -race
 mise run hooks      # install git hooks
 ```
 
-`check` and `ci` reuse a package's test result unless its test binary or an input the test read changed, so they rerun only what an edit reaches. A comment-only change that moves no line leaves every binary the same and reruns no test; one that adds or removes a line changes the line numbers compiled into its package and reruns the packages that import it. `ci:deep` always reruns everything. CI runs `ci` as four shards (`ci:static`, `ci:bench`, `ci:race` for the root module's race tests, `ci:benchrace` for the bench module's); add a new check to a shard, never to `ci` itself (`check:ci-shards` fails otherwise).
+`check` and `ci` reuse a package's test result unless its test binary or an input the test read changed, so they rerun only what an edit reaches. A comment-only change that moves no line leaves every binary the same and reruns no test; one that adds or removes a line changes the line numbers compiled into its package and reruns the packages that import it. `ci:deep` always reruns everything. CI runs `ci` as four shards (`ci:static`, `ci:bench`, `ci:race` for the root module's race tests, `ci:benchrace` for the bench module's); add a new check to a shard, never to `ci` itself (`check:ci-shards` fails otherwise). `rocksdb.yml` is the one exception: it builds the pinned RocksDB and runs the cgo module `bench/rocksdb`'s lint, vulnerability scan and tests (`mise run bench:rocksdb:*`, which need RocksDB installed), outside the shards and not as a required check, because those checks need cgo and a native library that no shard has; `mise run ci` does not run them.
 
 ## Rules most likely to be broken by a locally sensible change
 
@@ -24,7 +24,7 @@ mise run hooks      # install git hooks
 - Prefer "unattributed" over "guessed" in identity and IP ownership. Exact identity matching only. Clone collisions are loud errors.
 - Late events are diffed against the record just before them in event time, never against current state, and invalidate later checkpoints.
 - Both time axes (event time and ingest time) on every record. Checkpoints carry the fold-logic version and the ingest sequence number they were built through.
-- `toposhift` stays pure Go and boots with zero config. CGO (RocksDB) and GPL (Raphtory) code lives only in separate benchmark builds.
+- `toposhift` stays pure Go and boots with zero config. CGO (RocksDB) and GPL (Raphtory) code lives only in separate benchmark builds (RocksDB in the nested module `bench/rocksdb`, never in `go.mod` or `bench/go.mod`).
 - Identity encoding changes require updated golden vectors and an ADR.
 - Published performance numbers come only from CI hardware, never from the Oracle Cloud VM, whose terms forbid publishing benchmarks.
 
