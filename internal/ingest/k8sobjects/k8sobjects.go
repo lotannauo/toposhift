@@ -18,8 +18,13 @@
 // edge to its pod; it takes [Config.EntityTTL] and is re-asserted with each record
 // of its pod, so that it lapses with the pod. A container with no runtime id (the
 // fake containers of a simulated cluster have none) is not an entity, and each time
-// one is seen it is counted as a skip. A pod that names a node has a scheduled_on edge to it, stored
-// on the pod side.
+// one is seen it is counted as a skip. The containers of a pod are those of its
+// containerStatuses and its native sidecars: an init container whose spec entry has
+// restartPolicy Always, which runs for the life of the pod, and whose status is in
+// initContainerStatuses. The pod's description lists a sidecar with native_sidecar
+// set. A classic init container has finished before the pod's containers run and is
+// neither a container nor in the description. A pod that names a node has a
+// scheduled_on edge to it, stored on the pod side.
 //
 // An edge takes the TTL of the entity it is stored on, and with a TTL it is
 // re-asserted with each record of that entity (both part_of and scheduled_on, with

@@ -33,6 +33,10 @@ type ctrView struct {
 	// or empty. It is not part of the payload; it only decides which containers
 	// are entities.
 	ID string
+	// Sidecar is set for a native sidecar: an init container whose spec entry has
+	// restartPolicy Always, which runs for the life of the pod. It is part of the
+	// payload, and it does not change how the container is treated otherwise.
+	Sidecar bool
 }
 
 type podView struct {
@@ -79,22 +83,25 @@ func parsePod(o object, ns string) podView {
 		Conds:     conditions(o),
 	}
 	for _, c := range list(o, "status", "containerStatuses") {
-		cv := ctrView{
-			Name:     str(c, "name"),
-			Restarts: integer(c, "restartCount"),
-			ID:       str(c, "containerID"),
+		v.Ctrs = append(v.Ctrs, ctrOf(c, false))
+	}
+	// A native sidecar is an init container whose spec entry has restartPolicy
+	// Always. Its status carries no restart policy, so it is matched to the spec by
+	// name (container names are unique across a pod's containers and init
+	// containers). The pod's own restartPolicy is a different field and never
+	// counts. A classic init container has finished before the pod's containers
+	// run, yet its status keeps a runtime id for the pod's whole life; it is not
+	// read.
+	always := map[string]bool{}
+	for _, c := range list(o, "spec", "initContainers") {
+		if str(c, "restartPolicy") == "Always" {
+			always[str(c, "name")] = true
 		}
-		// Only the current state is read. lastState describes an earlier run of the
-		// container, and its times are not this object's.
-		for _, kind := range []string{"running", "waiting", "terminated"} {
-			if s := obj(c, "state", kind); s != nil {
-				cv.State = kind
-				cv.Started = str(s, "startedAt")
-				cv.Finished = str(s, "finishedAt")
-				break
-			}
+	}
+	for _, c := range list(o, "status", "initContainerStatuses") {
+		if always[str(c, "name")] {
+			v.Ctrs = append(v.Ctrs, ctrOf(c, true))
 		}
-		v.Ctrs = append(v.Ctrs, cv)
 	}
 	slices.SortStableFunc(v.Ctrs, func(a, b ctrView) int { return strings.Compare(a.Name, b.Name) })
 
@@ -130,6 +137,9 @@ func parsePod(o object, ns string) podView {
 		var a []any
 		for _, c := range v.Ctrs {
 			e := object{"name": c.Name, "restart_count": c.Restarts}
+			if c.Sidecar {
+				e["native_sidecar"] = true
+			}
 			put(e, "state", c.State)
 			put(e, "started_at", c.Started)
 			put(e, "finished_at", c.Finished)
@@ -139,6 +149,27 @@ func parsePod(o object, ns string) podView {
 	}
 	v.payload = canonical(m)
 	return v
+}
+
+// ctrOf reads one container status of a pod.
+func ctrOf(c object, sidecar bool) ctrView {
+	cv := ctrView{
+		Name:     str(c, "name"),
+		Restarts: integer(c, "restartCount"),
+		ID:       str(c, "containerID"),
+		Sidecar:  sidecar,
+	}
+	// Only the current state is read. lastState describes an earlier run of the
+	// container, and its times are not this object's.
+	for _, kind := range []string{"running", "waiting", "terminated"} {
+		if s := obj(c, "state", kind); s != nil {
+			cv.State = kind
+			cv.Started = str(s, "startedAt")
+			cv.Finished = str(s, "finishedAt")
+			break
+		}
+	}
+	return cv
 }
 
 func parseNode(o object) nodeView {
@@ -245,7 +276,7 @@ func canonical(m object) []byte {
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(m); err != nil {
-		// Only strings, integers, slices and maps of them are put in m.
+		// Only strings, integers, booleans, slices and maps of them are put in m.
 		panic("k8sobjects: encoding a description: " + err.Error())
 	}
 	return bytes.TrimRight(b.Bytes(), "\n")
