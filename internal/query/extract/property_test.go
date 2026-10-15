@@ -463,18 +463,82 @@ func pairSpans(ps []extract.Pair) map[pairKey][]interval.Span {
 	return out
 }
 
-// TestQ5SplitWindow splits an exploratory window at m. Membership is read over
-// each window, so the property holds where the members, with their roles, are
-// the same in the whole window and both halves; other cases are skipped. The
-// halves' spans join back to the whole's. At the seam, wherever a contribution
-// of the whole crosses m, the left half's span ends at m with no Ends and the
-// right half's starts at m with Before, as co-residency's split joins. The
-// converse does not hold: two contributions that only touch at m (one pod
-// leaves a node as another of the same service arrives) are one span of the
-// whole but no contribution crosses m, so the right half's span starts at m
-// without Before.
+// checkSplit is Q5 for one split: it splits w at m and, for each service as an
+// exploratory seed, checks the property where the members, with their roles,
+// are the same in the whole window and both halves; the other seeds are
+// skipped. It returns how many seeds it compared and how many pairs it checked
+// at the seam, for a caller whose world is fixed to assert on.
+//
+// The halves' spans join back to the whole's. At the seam, wherever a
+// contribution of the whole crosses m, the left half's span ends at m with no
+// Ends and the right half's starts at m with Before, as co-residency's split
+// joins. The converse does not hold: two contributions that only touch at m
+// (one pod leaves a node as another of the same service arrives) are one span
+// of the whole but no contribution crosses m, so the right half's span starts
+// at m without Before.
+func checkSplit(t tb, st store.Store, services []identity.Fingerprint, w interval.Window, m time.Time, o extract.Options) (compared, seams int) {
+	t.Helper()
+	left, right := w, w
+	left.To, right.From = m, m
+	for _, s := range services {
+		seed := extract.Exploratory{Service: s}
+		whole, l, r := mustExtract(t, st, seed, w, o), mustExtract(t, st, seed, left, o), mustExtract(t, st, seed, right, o)
+		ms := func(res extract.Result) string {
+			var out []string
+			for _, m := range res.Members {
+				out = append(out, fmt.Sprintf("%s %s", m.Service, m.Role))
+			}
+			return fmt.Sprint(out)
+		}
+		if ms(whole) != ms(l) || ms(whole) != ms(r) {
+			continue
+		}
+		compared++
+		lps, rps := map[pairKey]extract.Pair{}, map[pairKey]extract.Pair{}
+		for _, p := range l.Pairs {
+			lps[keyOf(p)] = p
+		}
+		for _, p := range r.Pairs {
+			rps[keyOf(p)] = p
+		}
+		for _, p := range whole.Pairs {
+			crosses := slices.ContainsFunc(p.Contributions, func(k extract.Contribution) bool {
+				return slices.ContainsFunc(k.Spans, func(sp interval.Span) bool { return sp.Start.Before(m) && sp.End.After(m) })
+			})
+			if !crosses {
+				continue
+			}
+			seams++
+			lp, rp := lps[keyOf(p)], rps[keyOf(p)]
+			if len(lp.Spans) == 0 || len(rp.Spans) == 0 {
+				t.Fatalf("service %s %v crosses %s but a half has no span", s, keyOf(p), ts(m))
+			}
+			last, first := lp.Spans[len(lp.Spans)-1], rp.Spans[0]
+			if !last.End.Equal(m) || len(last.Ends) != 0 || !first.Start.Equal(m) || !first.Before {
+				t.Fatalf("service %s %v at the seam %s: left ends %s with %d ends, right starts %s before=%t", s, keyOf(p), ts(m), ts(last.End), len(last.Ends), ts(first.Start), first.Before)
+			}
+		}
+		wp, lp, rp := pairSpans(whole.Pairs), pairSpans(l.Pairs), pairSpans(r.Pairs)
+		keys := map[pairKey]bool{}
+		for _, mp := range []map[pairKey][]interval.Span{wp, lp, rp} {
+			for k := range mp {
+				keys[k] = true
+			}
+		}
+		for k := range keys {
+			if joined := testUnion(lp[k], rp[k]); !sameSpans(joined, wp[k]) {
+				t.Fatalf("service %s %v split at %s: joined %s, whole %s", s, k, ts(m), spansString(joined), spansString(wp[k]))
+			}
+		}
+	}
+	return compared, seams
+}
+
+// TestQ5SplitWindow is Q5 on drawn worlds, split at a drawn instant. How many
+// draws reach a seam is up to the draws, so the test asserts nothing about it:
+// the cases that must cross one are the fixed worlds of
+// TestQ5SplitWindowFixedWorlds.
 func TestQ5SplitWindow(t *testing.T) {
-	compared, seams := 0, 0
 	rapid.Check(t, func(t *rapid.T) {
 		c := drawCase(t)
 		mid := c.w.From.Add(c.w.To.Sub(c.w.From) / 2)
@@ -488,64 +552,45 @@ func TestQ5SplitWindow(t *testing.T) {
 		}
 		m := rapid.SampledFrom(cands).Draw(t, "split")
 		c.w.AsOf = clampToken(c.w.AsOf, c.st.LastSeq())
-		left, right := c.w, c.w
-		left.To, right.From = m, m
-		o := extract.Options{NodeOnly: c.nodeOnly, Policy: wide()}
-		for _, s := range c.g.services {
-			seed := extract.Exploratory{Service: s}
-			whole, l, r := mustExtract(t, c.st, seed, c.w, o), mustExtract(t, c.st, seed, left, o), mustExtract(t, c.st, seed, right, o)
-			ms := func(res extract.Result) string {
-				var out []string
-				for _, m := range res.Members {
-					out = append(out, fmt.Sprintf("%s %s", m.Service, m.Role))
+		checkSplit(t, c.st, c.g.services, c.w, m, extract.Options{NodeOnly: c.nodeOnly, Policy: wide()})
+	})
+}
+
+// TestQ5SplitWindowFixedWorlds is Q5 on worlds written to cross a seam, so the
+// property is checked, not skipped, whatever a random draw gives. The first
+// world is split at its one seam and the counts of what was compared are
+// exact; the second is swept over many splits, and some of them must cross.
+func TestQ5SplitWindowFixedWorlds(t *testing.T) {
+	o := extract.Options{Policy: wide()}
+	t.Run("a pod co-resident from 10:10 to 10:20, split at 10:15", func(t *testing.T) {
+		st, _ := scenarioQA(t, memstore.Options{})
+		compared, seams := checkSplit(t, st, []identity.Fingerprint{S, T, C, K}, w30, hm(10, 15), o)
+		if compared != 4 || seams != 4 {
+			t.Errorf("compared %d seeds and checked %d seams, want 4 and 4", compared, seams)
+		}
+	})
+	t.Run("the scripted cluster, split at each minute and a nanosecond either side of each change", func(t *testing.T) {
+		st, _, _ := scriptedCluster(t)
+		services := []identity.Fingerprint{S, svc(2), svc(3), svc(4), svc(5)}
+		changes := []int{5, 8, 9, 10, 12, 15, 16, 18, 20, 22, 25}
+		compared, seams := 0, 0
+		for _, no := range []bool{false, true} {
+			for k := 1; k < 30; k++ {
+				ds := []time.Duration{0}
+				if slices.Contains(changes, k) {
+					ds = []time.Duration{-1, 0, 1}
 				}
-				return fmt.Sprint(out)
-			}
-			if ms(whole) != ms(l) || ms(whole) != ms(r) {
-				continue
-			}
-			compared++
-			lps, rps := map[pairKey]extract.Pair{}, map[pairKey]extract.Pair{}
-			for _, p := range l.Pairs {
-				lps[keyOf(p)] = p
-			}
-			for _, p := range r.Pairs {
-				rps[keyOf(p)] = p
-			}
-			for _, p := range whole.Pairs {
-				crosses := slices.ContainsFunc(p.Contributions, func(k extract.Contribution) bool {
-					return slices.ContainsFunc(k.Spans, func(sp interval.Span) bool { return sp.Start.Before(m) && sp.End.After(m) })
-				})
-				if !crosses {
-					continue
-				}
-				seams++
-				lp, rp := lps[keyOf(p)], rps[keyOf(p)]
-				if len(lp.Spans) == 0 || len(rp.Spans) == 0 {
-					t.Fatalf("service %s %v crosses %s but a half has no span", s, keyOf(p), ts(m))
-				}
-				last, first := lp.Spans[len(lp.Spans)-1], rp.Spans[0]
-				if !last.End.Equal(m) || len(last.Ends) != 0 || !first.Start.Equal(m) || !first.Before {
-					t.Fatalf("service %s %v at the seam %s: left ends %s with %d ends, right starts %s before=%t", s, keyOf(p), ts(m), ts(last.End), len(last.Ends), ts(first.Start), first.Before)
-				}
-			}
-			wp, lp, rp := pairSpans(whole.Pairs), pairSpans(l.Pairs), pairSpans(r.Pairs)
-			keys := map[pairKey]bool{}
-			for _, mp := range []map[pairKey][]interval.Span{wp, lp, rp} {
-				for k := range mp {
-					keys[k] = true
-				}
-			}
-			for k := range keys {
-				if joined := testUnion(lp[k], rp[k]); !sameSpans(joined, wp[k]) {
-					t.Fatalf("service %s %v split at %s: joined %s, whole %s", s, k, ts(m), spansString(joined), spansString(wp[k]))
+				for _, d := range ds {
+					c, s := checkSplit(t, st, services, w30, hm(10, k).Add(d), extract.Options{NodeOnly: no, Policy: wide()})
+					compared, seams = compared+c, seams+s
 				}
 			}
 		}
+		t.Logf("compared %d seeds, checked %d seams", compared, seams)
+		if compared == 0 || seams == 0 {
+			t.Errorf("compared %d seeds and checked %d seams in a fixed world: none to check", compared, seams)
+		}
 	})
-	if compared == 0 || seams == 0 {
-		t.Errorf("%d cases had the same members in both halves, %d seams crossed: none to check", compared, seams)
-	}
 }
 
 func TestQ6ArrivalOrderAndRecordsAfterTo(t *testing.T) {
