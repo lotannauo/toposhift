@@ -1,0 +1,4 @@
+# The fixtures are bytes. Nothing may rewrite their line endings or diff them as text.
+fixtures/*.arrow binary
+fixtures/*.tsgf binary
+fixtures/*.json text eol=lf
