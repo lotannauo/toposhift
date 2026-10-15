@@ -64,6 +64,23 @@ type Config struct {
 	// for a counters run only: it locks each read to its thread and counts in
 	// RocksDB's hot paths, so a timed run never has it on.
 	Perf bool
+	// BaseFileFactor is target_file_size_base, the target size of the files of the
+	// base level, in multiples of the tuning's target file size T. Zero is 2: 2T,
+	// Pebble's own size at the base level (the RL candidates), and below it RL's files
+	// are half of Pebble's. 4 is Pebble's size at the level below the base, so that
+	// from there down RL's files are Pebble's and at the base twice them (the RL4
+	// candidates). Below zero is refused. See [targetFileBytesFromBase].
+	BaseFileFactor int
+}
+
+// baseFileBytes is target_file_size_base for the config's tuning (see
+// [Config].BaseFileFactor).
+func (c Config) baseFileBytes() int64 {
+	f := c.BaseFileFactor
+	if f == 0 {
+		f = defaultBaseFileFactor
+	}
+	return int64(f) * c.Tuning.TargetFileSize
 }
 
 // The mirrored settings that do not come from the tuning: Pebble's values as the
@@ -89,6 +106,9 @@ const (
 	// the next below the base level. RocksDB applies it from the second level below
 	// the base on (see [targetFileBytesFromBase]).
 	targetFileMultiplier = 2
+	// defaultBaseFileFactor is [Config].BaseFileFactor's zero: Pebble's base-level
+	// files, twice the tuning's target file size.
+	defaultBaseFileFactor = 2
 )
 
 // What RocksDB does, with these options, that Pebble does not, recorded by
@@ -107,17 +127,19 @@ const (
 )
 
 // targetFileBytesFromBase is the target size of the files RocksDB writes at each
-// level from the base level down, for the levels below level 0: with dynamic level
-// sizes it indexes its sizes from the base level, and the first two are both
-// target_file_size_base, so they are 2T, 2T, 4T, 8T, ... for the tuning's target
-// file size T. Pebble's, at the same levels, are 2T, 4T, 8T, ...: below the base
-// level RL's files are half of Pebble's.
-func targetFileBytesFromBase(t pebblekv.Tuning) []int64 {
+// level from the base level down, for the levels below level 0, given its
+// target_file_size_base: with dynamic level sizes it indexes its sizes from the base
+// level, and the first two are both target_file_size_base. For a base of 2T, the
+// tuning's target file size T doubled, they are 2T, 2T, 4T, 8T, ...; Pebble's, at
+// the same levels, are 2T, 4T, 8T, ..., so below the base level RL's files are half
+// of Pebble's. For a base of 4T (RL4) they are 4T, 4T, 8T, ...: Pebble's from the
+// level below the base down, and twice Pebble's at the base.
+func targetFileBytesFromBase(base int64) []int64 {
 	out := make([]int64, numLevels-1)
 	for i := range out {
 		switch i {
 		case 0, 1:
-			out[i] = 2 * t.TargetFileSize
+			out[i] = base
 		default:
 			out[i] = out[i-1] * targetFileMultiplier
 		}
@@ -184,7 +206,8 @@ type WriteOptions struct {
 //   - the level base of the tuning, and the base level's files twice the tuning's
 //     target file size, as Pebble's; below it the sizes double from the second
 //     level on, so RL's files there are half of Pebble's (see
-//     [targetFileBytesFromBase]: which level to match is a choice of the comparison);
+//     [targetFileBytesFromBase]: which level to match is a choice of the comparison,
+//     and [Config].BaseFileFactor matches the level below the base instead);
 //   - blocks and index partitions of the tuning's block size, a two-level index,
 //     index blocks in the cache, no filter, Snappy at every level;
 //   - one flush and one compaction at a time, and Pebble's sync sizes.
@@ -202,6 +225,9 @@ func Open(dir string, cfg Config) (*KV, error) {
 	}
 	if t.CacheBytes <= 0 {
 		return nil, fmt.Errorf("rockskv: a block cache of %d bytes", t.CacheBytes)
+	}
+	if cfg.BaseFileFactor < 0 {
+		return nil, fmt.Errorf("rockskv: a base file factor of %d", cfg.BaseFileFactor)
 	}
 	k := &KV{cfg: cfg, tuning: name, dir: dir}
 	memtable := max(t.MemTableSize, minWriteBuffer)
@@ -239,7 +265,7 @@ func Open(dir string, cfg Config) (*KV, error) {
 	o.SetHardPendingCompactionBytesLimit(0)
 	o.SetNumLevels(numLevels)
 	o.SetMaxBytesForLevelBase(uint64(t.LBaseMaxBytes))
-	o.SetTargetFileSizeBase(uint64(2 * t.TargetFileSize))
+	o.SetTargetFileSizeBase(uint64(cfg.baseFileBytes()))
 	o.SetTargetFileSizeMultiplier(targetFileMultiplier)
 	o.SetCompression(grocksdb.SnappyCompression)
 	o.SetCompressionPerLevel(slices.Repeat([]grocksdb.CompressionType{grocksdb.SnappyCompression}, numLevels))

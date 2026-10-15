@@ -3,8 +3,12 @@ package rockskv
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -345,6 +349,7 @@ func TestStatsAndDescription(t *testing.T) {
 		"target_file_bytes", "l_base_max_bytes", "l0_compaction_threshold", "cache_bytes", "sync", "settle_tombstones", "settle_deadline",
 		"engine", "rocksdb_version", "grocksdb_version", "cc_version", "cgo_cflags", "cgo_ldflags", "rocksdb_portable",
 		"rocksdb_options", "compression_per_level", "perf_level", "statistics_level", "cpu_model", "recovered_bytes_note",
+		StampKey, StampSHA256Key,
 	} {
 		if _, ok := built[name]; !ok {
 			t.Errorf("the description has no %s", name)
@@ -561,12 +566,95 @@ func TestPerfContextIsTheReadsOwn(t *testing.T) {
 
 // The target file sizes RocksDB writes from the base level down are the base
 // level's twice, then doubling: for the bench tuning 128, 128, 256 MiB and so on,
-// where Pebble writes 128, 256, 512 MiB.
+// where Pebble writes 128, 256, 512 MiB; with the base files of RL4, 256, 256, 512
+// MiB, Pebble's from the level below the base down.
 func TestTargetFileBytesFromBase(t *testing.T) {
 	t.Parallel()
-	got := targetFileBytesFromBase(pebblekv.BenchTuning())
+	bench := Config{Tuning: pebblekv.BenchTuning()}
+	got := targetFileBytesFromBase(bench.baseFileBytes())
 	want := []int64{128 << 20, 128 << 20, 256 << 20, 512 << 20, 1 << 30, 2 << 30}
 	if !slices.Equal(got, want) {
 		t.Errorf("targetFileBytesFromBase(bench) = %v, want %v", got, want)
+	}
+	bench.BaseFileFactor = 4
+	got = targetFileBytesFromBase(bench.baseFileBytes())
+	want = []int64{256 << 20, 256 << 20, 512 << 20, 1 << 30, 2 << 30, 4 << 30}
+	if !slices.Equal(got, want) {
+		t.Errorf("targetFileBytesFromBase(bench, base factor 4) = %v, want %v", got, want)
+	}
+	if _, err := Open(t.TempDir(), Config{Tuning: pebblekv.TinyTuning(), BaseFileFactor: -1}); err == nil {
+		t.Error("a negative base file factor is accepted")
+	}
+}
+
+// The stamp of a library is in the first directory of the link flags that holds a
+// librocksdb, as the linker finds it: a stamp in a later directory is not that
+// library's, and a library without a stamp has none. A stamp that cannot be read is
+// an error.
+func TestStampOf(t *testing.T) {
+	t.Parallel()
+	write := func(path, text string) {
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty, homebrew, built := t.TempDir(), t.TempDir(), t.TempDir()
+	write(filepath.Join(homebrew, "librocksdb.dylib"), "")
+	write(filepath.Join(built, "librocksdb.a"), "")
+	const text = "rocksdb_version=11.8.1\nportable=1\nmalloc_usable_size=off\n"
+	write(filepath.Join(built, StampFile), text)
+	sum := sha256.Sum256([]byte(text))
+	for _, c := range []struct {
+		ldflags string
+		want    Stamp
+	}{
+		{"-L" + empty + " -L" + built + " -lrocksdb -lstdc++", Stamp{Dir: built, Found: true, Text: text, SHA256: hex.EncodeToString(sum[:])}},
+		{"-L " + built + " -lrocksdb", Stamp{Dir: built, Found: true, Text: text, SHA256: hex.EncodeToString(sum[:])}},
+		{"-L" + homebrew + " -L" + built + " -lrocksdb", Stamp{Dir: homebrew}},
+		{"-lrocksdb", Stamp{}},
+		{"", Stamp{}},
+	} {
+		got, err := stampOf(c.ldflags)
+		if err != nil || got != c.want {
+			t.Errorf("stampOf(%q) = %+v, %v; want %+v", c.ldflags, got, err, c.want)
+		}
+	}
+	broken := t.TempDir()
+	write(filepath.Join(broken, "librocksdb.a"), "")
+	if err := os.Mkdir(filepath.Join(broken, StampFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stampOf("-L" + broken); err == nil {
+		t.Error("a stamp that cannot be read gives no error")
+	}
+}
+
+// The description records the build stamp of the library the binary links, and
+// "none" for a library without one, which it does not refuse; rocksdb_portable is
+// the stamp's. Not parallel: it replaces the stamp every description reads, and
+// puts it back after.
+func TestDescribeRecordsTheStamp(t *testing.T) {
+	old := libraryStamp
+	t.Cleanup(func() { libraryStamp = old })
+	k := openKV(t, t.TempDir(), tinyConfig())
+	libraryStamp = func() (Stamp, error) { return Stamp{Dir: "/opt/homebrew/lib"}, nil }
+	d, err := k.Describe()
+	if err != nil {
+		t.Fatalf("a library without a stamp: %v", err)
+	}
+	if d[StampKey] != "none" || d[StampSHA256Key] != "none" || d["rocksdb_portable"] != "unknown" {
+		t.Errorf("a library without a stamp: stamp %q, sha256 %q, portable %q", d[StampKey], d[StampSHA256Key], d["rocksdb_portable"])
+	}
+	const text = "rocksdb_version=11.8.1\nportable=1\nmalloc_usable_size=off\n"
+	libraryStamp = func() (Stamp, error) { return Stamp{Dir: "/p/lib", Found: true, Text: text, SHA256: "s"}, nil }
+	if d, err = k.Describe(); err != nil {
+		t.Fatal(err)
+	}
+	if d[StampKey] != text || d[StampSHA256Key] != "s" || d["rocksdb_portable"] != "1" {
+		t.Errorf("a stamped library: stamp %q, sha256 %q, portable %q", d[StampKey], d[StampSHA256Key], d["rocksdb_portable"])
+	}
+	libraryStamp = func() (Stamp, error) { return Stamp{}, errors.New("unreadable") }
+	if _, err := k.Describe(); err == nil {
+		t.Error("a stamp that cannot be read is not an error")
 	}
 }
