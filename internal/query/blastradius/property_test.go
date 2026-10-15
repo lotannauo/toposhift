@@ -633,4 +633,9 @@ func TestNamesAndDefaults(t *testing.T) {
 	if got != "2026-10-14 1.5 110 512 256" {
 		t.Errorf("the budget is %s", got)
 	}
+	got = fmt.Sprintf("%s %d %d %d %d", blastradius.BudgetAroundDate, blastradius.BudgetAroundExistence, blastradius.BudgetAroundWindows,
+		blastradius.BudgetAroundExpandedExistence, blastradius.BudgetAroundExpandedWindows)
+	if got != "2026-10-15 1024 512 2048 1024" {
+		t.Errorf("the Around budget is %s", got)
+	}
 }

@@ -79,18 +79,39 @@ func (w *Walker) Impact(ctx context.Context, seed identity.Fingerprint, win inte
 		return fail(err)
 	}
 	cnt := &counting{Store: w.st}
-	q := &walk{
-		ctx: ctx, r: interval.NewReader(cnt, interval.Options{}), cat: cat, seed: seed, w: win, pol: pol,
-		from: win.From.UTC(), to: win.To.UTC(),
-		members: map[identity.Fingerprint]*member{}, claims: map[identity.Fingerprint][]interval.Element{},
-		unattr: map[unattrKey][]interval.Span{}, quarantined: map[store.Subject]interval.Element{},
-	}
+	q := newWalk(ctx, cnt, walkPlan{seed: seed, win: win, pol: pol})
 	if err := q.run(); err != nil {
 		return fail(err)
 	}
 	q.res.Reads = cnt.reads
 	q.res.Reads.Calls = q.calls
 	return q.res, nil
+}
+
+// walkPlan is what one walk is told: its seed and window, its policy, and the
+// three things Impact leaves at their defaults and Around sets.
+type walkPlan struct {
+	seed identity.Fingerprint
+	win  interval.Window
+	pol  Policy
+	// up walks forward from the seed to the entities it is placed on, instead
+	// of in reverse to the entities placed on it.
+	up bool
+	// start is the seed's own reach: the instants of the window the walk starts
+	// from. Nil means the whole window.
+	start []interval.Span
+	// exclude is an entity no leg from which is followed, so it is never a
+	// member, a claimant or in a frontier. The zero fingerprint excludes none.
+	exclude identity.Fingerprint
+}
+
+func newWalk(ctx context.Context, cnt *counting, p walkPlan) *walk {
+	return &walk{
+		ctx: ctx, r: interval.NewReader(cnt, interval.Options{}), cat: catalog.Default(), seed: p.seed, w: p.win, pol: p.pol,
+		from: p.win.From.UTC(), to: p.win.To.UTC(), up: p.up, start: p.start, exclude: p.exclude,
+		members: map[identity.Fingerprint]*member{}, claims: map[identity.Fingerprint][]interval.Element{},
+		unattr: map[unattrKey][]interval.Span{}, quarantined: map[store.Subject]interval.Element{},
+	}
 }
 
 // walk is one Impact in progress.
@@ -104,6 +125,10 @@ type walk struct {
 	pol      Policy
 	calls    int
 	res      Result
+
+	up      bool
+	start   []interval.Span
+	exclude identity.Fingerprint
 
 	members     map[identity.Fingerprint]*member
 	claims      map[identity.Fingerprint][]interval.Element // each claimant's forward edges, from its claims call
@@ -158,22 +183,44 @@ func propagates(rel catalog.Relation) bool {
 	return rel.Propagation() == catalog.PropagateDown || rel.Propagation() == catalog.PropagateUp
 }
 
-// expandable reports whether edges can lead into fp: its type has a reverse
-// edge layer.
+// expandable reports whether edges can lead into fp, or from it in an upward
+// walk: its type has a reverse (forward) edge layer.
 func (q *walk) expandable(fp identity.Fingerprint) bool {
-	return len(interval.EdgeLayers(q.cat, fp.Type(), store.Reverse)) > 0
+	dir := store.Reverse
+	if q.up {
+		dir = store.Forward
+	}
+	return len(interval.EdgeLayers(q.cat, fp.Type(), dir)) > 0
+}
+
+// memberOf is the entity a followed leg leads the walk to: the from entity of
+// an edge read in reverse, and the to entity of one read forward.
+func (q *walk) memberOf(l leg) identity.Fingerprint {
+	if q.up {
+		return l.el.Subject.B
+	}
+	return l.el.Subject.A
 }
 
 func (q *walk) run() error {
 	q.res = Result{From: q.from, To: q.to, Seed: q.seed, PolicyVersion: PolicyVersion, IntervalPolicy: interval.PolicyVersion}
 	frontier := []identity.Fingerprint{q.seed}
-	delta := map[identity.Fingerprint][]interval.Span{q.seed: {{Start: q.from, End: q.to}}}
+	start := q.start
+	if start == nil {
+		start = []interval.Span{{Start: q.from, End: q.to}}
+	}
+	delta := map[identity.Fingerprint][]interval.Span{q.seed: start}
 	for d := 1; d <= q.pol.MaxDepth && len(frontier) > 0; d++ {
-		legs, err := q.reverse(frontier)
-		if err != nil {
-			return err
+		var legs []leg
+		var err error
+		if q.up {
+			legs, err = q.forward(frontier)
+		} else {
+			if legs, err = q.reverse(frontier); err == nil {
+				err = q.readClaims(legs)
+			}
 		}
-		if err := q.readClaims(legs); err != nil {
+		if err != nil {
 			return err
 		}
 		frontier, delta = q.propagate(d, legs, delta)
@@ -182,10 +229,39 @@ func (q *walk) run() error {
 	return nil
 }
 
+// forward reads the frontier's edges forward, in one call, for an upward walk,
+// and keeps those whose relation propagates failure. One with a quarantined
+// endpoint is never followed, and is put aside. The same read gives each
+// frontier entity's claims, so there is no claims call: a claim of a
+// quarantined target is put aside too, and still counts as a claim.
+func (q *walk) forward(frontier []identity.Fingerprint) ([]leg, error) {
+	out, err := q.edges(frontier, store.Forward)
+	if err != nil {
+		return nil, err
+	}
+	var legs []leg
+	for i, x := range frontier {
+		q.claims[x] = out[i]
+		for _, el := range out[i] {
+			rel, ok := q.cat.Relation(el.Subject.Relation)
+			if !ok || !propagates(rel) {
+				continue
+			}
+			if el.Uncascaded != nil {
+				q.quarantine(el)
+				continue
+			}
+			legs = append(legs, leg{x: x, el: el, rel: rel})
+		}
+	}
+	return legs, nil
+}
+
 // reverse reads the frontier's edges in reverse and keeps those whose relation
 // propagates failure. One with a quarantined endpoint is never followed, and is
 // put aside. One from the seed, which a cycle returns to, is never followed
-// either, so the seed is never a member and never a claimant.
+// either, so the seed is never a member and never a claimant. Nor is one from
+// the excluded entity.
 func (q *walk) reverse(frontier []identity.Fingerprint) ([]leg, error) {
 	out, err := q.edges(frontier, store.Reverse)
 	if err != nil {
@@ -202,7 +278,7 @@ func (q *walk) reverse(frontier []identity.Fingerprint) ([]leg, error) {
 				q.quarantine(el)
 				continue
 			}
-			if el.Subject.A == q.seed {
+			if el.Subject.A == q.seed || (!q.exclude.IsZero() && el.Subject.A == q.exclude) {
 				continue
 			}
 			legs = append(legs, leg{x: x, el: el, rel: rel})
@@ -274,7 +350,7 @@ func (q *walk) propagate(d int, legs []leg, delta map[identity.Fingerprint][]int
 	var ys []identity.Fingerprint
 	for _, l := range legs {
 		s := interval.Intersect(delta[l.x], q.effective(l, delta[l.x]))
-		y := l.el.Subject.A
+		y := q.memberOf(l)
 		if len(s) == 0 {
 			continue
 		}
@@ -331,8 +407,17 @@ func (q *walk) propagate(d int, legs []leg, delta map[identity.Fingerprint][]int
 	return reached, next
 }
 
-// finish derives the members, applies MaxMembers, and orders everything.
+// finish derives the members and orders everything.
 func (q *walk) finish() {
+	if !q.up {
+		q.finishMembers()
+	}
+	slices.SortFunc(q.res.Truncated.Depth, store.CompareFingerprints)
+	q.finishPlacements()
+}
+
+// finishMembers derives the members and applies MaxMembers.
+func (q *walk) finishMembers() {
 	for y, m := range q.members {
 		mem := Member{Entity: y, Depth: m.depth, Reach: m.reach, Duration: interval.Duration(m.reach)}
 		mem.Class, mem.Transitions = classOf(m.reach, q.from, q.to)
@@ -352,8 +437,11 @@ func (q *walk) finish() {
 		q.res.Truncated.Members = n
 		q.res.Members = q.res.Members[:q.pol.MaxMembers]
 	}
-	slices.SortFunc(q.res.Truncated.Depth, store.CompareFingerprints)
+}
 
+// finishPlacements orders the unattributed placements and the quarantined
+// edges.
+func (q *walk) finishPlacements() {
 	for k, spans := range q.unattr {
 		u := Unattributed{Subject: k.subject, Relation: k.rel, Target: k.target, Spans: spans}
 		for _, c := range q.claims[k.subject] {

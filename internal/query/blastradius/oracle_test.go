@@ -325,15 +325,16 @@ func (o *oracle) follow(e store.Subject, i int) bool {
 }
 
 // bfs is the walk at instant i: the least hops from seed to every entity it
-// reaches within maxDepth, the seed at 0 and never entered again.
-func (o *oracle) bfs(seed identity.Fingerprint, maxDepth, i int) map[identity.Fingerprint]int {
+// reaches within maxDepth, the seed at 0 and never entered again, and the
+// excluded entity (the zero fingerprint excludes none) never entered.
+func (o *oracle) bfs(seed, exclude identity.Fingerprint, maxDepth, i int) map[identity.Fingerprint]int {
 	depth := map[identity.Fingerprint]int{seed: 0}
 	level := []identity.Fingerprint{seed}
 	for d := 1; d <= maxDepth && len(level) > 0; d++ {
 		var next []identity.Fingerprint
 		for _, x := range level {
 			for _, e := range o.in[x] {
-				if !o.follow(e, i) {
+				if !o.follow(e, i) || e.A == exclude {
 					continue
 				}
 				if _, seen := depth[e.A]; !seen {
@@ -441,6 +442,41 @@ type oracleUnattr struct {
 // impact is what Impact must answer for seed with caps that cut nothing, and
 // the reads it must make by the budget's formula.
 func (o *oracle) impact(seed identity.Fingerprint, maxDepth int) (blastradius.Result, blastradius.Reads) {
+	return o.impactRestricted(seed, maxDepth, nil, identity.Fingerprint{})
+}
+
+// countCall adds one interval call over fps to reads, by the budget's formula:
+// one Window per edge layer of each, and per distinct endpoint of the edges
+// with an interval of their own in the window, one Alive and, unless it is
+// quarantined, one EntityWindow. Quarantined propagating edges are put in
+// quarantined.
+func (o *oracle) countCall(reads *blastradius.Reads, quarantined map[store.Subject]bool, fps []identity.Fingerprint, m map[identity.Fingerprint][]store.Subject, layers func(identity.Fingerprint) int) {
+	reads.Calls++
+	ends := map[identity.Fingerprint]bool{}
+	for _, fp := range fps {
+		reads.Windows += layers(fp)
+		for _, e := range m[fp] {
+			if !o.hasOwn(e) {
+				continue
+			}
+			ends[e.A], ends[e.B] = true, true
+			if propagatesRel(e.Relation) && o.uncascaded(e) != nil {
+				quarantined[e] = true
+			}
+		}
+	}
+	for e := range ends {
+		reads.Alive++
+		if o.q[e] == nil {
+			reads.EntityWindows++
+		}
+	}
+}
+
+// impactRestricted is impact started over the critical instants flagged in
+// start (all of them if nil), never entering exclude (the zero fingerprint
+// excludes none).
+func (o *oracle) impactRestricted(seed identity.Fingerprint, maxDepth int, start []bool, exclude identity.Fingerprint) (blastradius.Result, blastradius.Reads) {
 	res := blastradius.Result{Seed: seed, From: o.from, To: o.to, PolicyVersion: blastradius.PolicyVersion, IntervalPolicy: interval.PolicyVersion}
 	n := len(o.crit)
 	flags := func(m map[identity.Fingerprint][]bool, k identity.Fingerprint) []bool {
@@ -460,7 +496,10 @@ func (o *oracle) impact(seed identity.Fingerprint, maxDepth int) (blastradius.Re
 	}
 	levels[0][seed] = true
 	for i := range o.crit {
-		depth := o.bfs(seed, maxDepth, i)
+		if start != nil && !start[i] {
+			continue
+		}
+		depth := o.bfs(seed, exclude, maxDepth, i)
 		for y, d := range depth {
 			if y == seed {
 				continue
@@ -476,9 +515,10 @@ func (o *oracle) impact(seed identity.Fingerprint, maxDepth int) (blastradius.Re
 				continue
 			}
 			for _, e := range o.in[x] {
-				if e.A == seed {
+				if e.A == seed || (!exclude.IsZero() && e.A == exclude) {
 					// An edge from the seed back into the walk is never followed,
-					// so the seed is never a claimant either.
+					// so the seed is never a claimant either, and nor is the
+					// excluded entity.
 					continue
 				}
 				if o.follow(e, i) {
@@ -557,26 +597,7 @@ func (o *oracle) impact(seed identity.Fingerprint, maxDepth int) (blastradius.Re
 	var reads blastradius.Reads
 	quarantined := map[store.Subject]bool{}
 	call := func(fps []identity.Fingerprint, m map[identity.Fingerprint][]store.Subject, layers func(identity.Fingerprint) int) {
-		reads.Calls++
-		ends := map[identity.Fingerprint]bool{}
-		for _, fp := range fps {
-			reads.Windows += layers(fp)
-			for _, e := range m[fp] {
-				if !o.hasOwn(e) {
-					continue
-				}
-				ends[e.A], ends[e.B] = true, true
-				if propagatesRel(e.Relation) && o.uncascaded(e) != nil {
-					quarantined[e] = true
-				}
-			}
-		}
-		for e := range ends {
-			reads.Alive++
-			if o.q[e] == nil {
-				reads.EntityWindows++
-			}
-		}
+		o.countCall(&reads, quarantined, fps, m, layers)
 	}
 	expandable := func(set map[identity.Fingerprint]bool) []identity.Fingerprint {
 		var out []identity.Fingerprint
@@ -593,7 +614,7 @@ func (o *oracle) impact(seed identity.Fingerprint, maxDepth int) (blastradius.Re
 		var claimants []identity.Fingerprint
 		for _, x := range frontier {
 			for _, e := range o.in[x] {
-				if singleClaimRel(e.Relation) && o.returned(e) && e.A != seed {
+				if singleClaimRel(e.Relation) && o.returned(e) && e.A != seed && (exclude.IsZero() || e.A != exclude) {
 					claimants = append(claimants, e.A)
 				}
 			}
@@ -633,4 +654,183 @@ func (o *oracle) unionWalk(seed identity.Fingerprint, maxDepth int) map[identity
 		level = next
 	}
 	return out
+}
+
+// upBFS is the upward walk at instant i: the least hops from the pod to every
+// entity it is placed on within maxDepth, along the edges the walk follows, the
+// pod at 0.
+func (o *oracle) upBFS(pod identity.Fingerprint, maxDepth, i int) map[identity.Fingerprint]int {
+	depth := map[identity.Fingerprint]int{pod: 0}
+	level := []identity.Fingerprint{pod}
+	for d := 1; d <= maxDepth && len(level) > 0; d++ {
+		var next []identity.Fingerprint
+		for _, x := range level {
+			for _, e := range o.out[x] {
+				if !o.follow(e, i) {
+					continue
+				}
+				if _, seen := depth[e.B]; !seen {
+					depth[e.B] = d
+					next = append(next, e.B)
+				}
+			}
+		}
+		level = next
+	}
+	return depth
+}
+
+type oracleVia struct {
+	from, to identity.Fingerprint
+	rel      catalog.RelationType
+}
+
+// around is what Around must answer for pod with caps that cut nothing, racks
+// and zones expanded only if expandFabric (nodes and hosts always are), and the
+// reads it must make.
+func (o *oracle) around(pod identity.Fingerprint, maxDepth int, expandFabric bool) (blastradius.AroundResult, blastradius.Reads) {
+	res := blastradius.AroundResult{Seed: pod, From: o.from, To: o.to, PolicyVersion: blastradius.PolicyVersion, IntervalPolicy: interval.PolicyVersion}
+	n := len(o.crit)
+	onAt := map[identity.Fingerprint][]bool{}
+	least := map[identity.Fingerprint]int{}
+	viaAt := map[oracleVia][]bool{}
+	unAt := map[oracleUnattr][]bool{}
+	unCands := map[oracleUnattr][]identity.Fingerprint{}
+	levels := make([]map[identity.Fingerprint]bool, maxDepth+1)
+	for d := range levels {
+		levels[d] = map[identity.Fingerprint]bool{}
+	}
+	levels[0][pod] = true
+	for i := range o.crit {
+		depth := o.upBFS(pod, maxDepth, i)
+		for y, d := range depth {
+			if y == pod {
+				continue
+			}
+			if onAt[y] == nil {
+				onAt[y] = make([]bool, n)
+			}
+			onAt[y][i] = true
+			levels[d][y] = true
+			if l, ok := least[y]; !ok || d < l {
+				least[y] = d
+			}
+		}
+		for x, d := range depth {
+			if d >= maxDepth {
+				continue
+			}
+			for _, e := range o.out[x] {
+				if o.follow(e, i) {
+					k := oracleVia{e.A, e.B, e.Relation}
+					if viaAt[k] == nil {
+						viaAt[k] = make([]bool, n)
+					}
+					viaAt[k][i] = true
+					continue
+				}
+				if singleClaimRel(e.Relation) && o.livePropagating(e, i) {
+					k := oracleUnattr{e.A, e.Relation, e.B.Type()}
+					if unAt[k] == nil {
+						unAt[k] = make([]bool, n)
+					}
+					unAt[k][i] = true
+					unCands[k] = append(unCands[k], o.claims(e, i)...)
+				}
+			}
+		}
+	}
+
+	for y, at := range onAt {
+		s := blastradius.Substrate{Entity: y, Depth: least[y], On: o.probe(at)}
+		s.Duration = duration(s.On)
+		for k, at := range viaAt {
+			if k.to != y {
+				continue
+			}
+			e := store.EdgeSubject(k.from, k.to, k.rel)
+			rel, _ := catalog.Default().Relation(k.rel)
+			s.Vias = append(s.Vias, blastradius.Via{
+				From: k.from, Relation: k.rel,
+				Leg:   interval.Element{Subject: e, Layer: rel.Layer(), Pieces: o.legPieces(e)},
+				Spans: o.probe(at),
+			})
+		}
+		slices.SortFunc(s.Vias, func(a, b blastradius.Via) int {
+			if c := store.CompareFingerprints(a.From, b.From); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.Relation, b.Relation)
+		})
+		res.Substrates = append(res.Substrates, s)
+	}
+	slices.SortFunc(res.Substrates, func(a, b blastradius.Substrate) int {
+		if a.Depth != b.Depth {
+			return cmp.Compare(a.Depth, b.Depth)
+		}
+		if a.Duration != b.Duration {
+			return cmp.Compare(b.Duration, a.Duration)
+		}
+		return store.CompareFingerprints(a.Entity, b.Entity)
+	})
+	for k, at := range unAt {
+		res.Unattributed = append(res.Unattributed, blastradius.Unattributed{
+			Subject: k.y, Relation: k.rel, Target: k.target, Spans: o.probe(at), Candidates: sortedSet(unCands[k]),
+		})
+	}
+	slices.SortFunc(res.Unattributed, func(a, b blastradius.Unattributed) int {
+		if c := store.CompareFingerprints(a.Subject, b.Subject); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Relation, b.Relation); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Target, b.Target); c != 0 {
+			return c
+		}
+		return a.Spans[0].Start.Compare(b.Spans[0].Start)
+	})
+
+	// The upward walk's calls: one per depth with a frontier entity that has a
+	// forward edge layer, which every frontier entity has by construction.
+	var reads blastradius.Reads
+	quarantined := map[store.Subject]bool{}
+	expandable := func(set map[identity.Fingerprint]bool) []identity.Fingerprint {
+		var out []identity.Fingerprint
+		for fp := range set {
+			if forwardLayers(fp) > 0 {
+				out = append(out, fp)
+			}
+		}
+		return sortedSet(out)
+	}
+	frontier := []identity.Fingerprint{pod}
+	for d := 1; d <= maxDepth && len(frontier) > 0; d++ {
+		o.countCall(&reads, quarantined, frontier, o.out, forwardLayers)
+		if d < maxDepth {
+			frontier = expandable(levels[d])
+		}
+	}
+	res.Truncated.Depth = expandable(levels[maxDepth])
+	for e := range quarantined {
+		res.Quarantined = append(res.Quarantined, interval.Element{Subject: e})
+	}
+	slices.SortFunc(res.Quarantined, func(a, b interval.Element) int { return subjectOrder(a.Subject, b.Subject) })
+
+	// Each expanded substrate's walk, started over the pod's time on it and
+	// without the pod.
+	for i := range res.Substrates {
+		s := &res.Substrates[i]
+		if t := s.Entity.Type(); t != catalog.K8sNode && t != catalog.Host && !expandFabric {
+			continue
+		}
+		r, rr := o.impactRestricted(s.Entity, maxDepth, onAt[s.Entity], pod)
+		s.Expanded, s.Impact = true, r
+		s.Impact.Reads = rr
+		reads.Calls += rr.Calls
+		reads.Windows += rr.Windows
+		reads.Alive += rr.Alive
+		reads.EntityWindows += rr.EntityWindows
+	}
+	return res, reads
 }
