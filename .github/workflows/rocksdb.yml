@@ -25,6 +25,10 @@ on:
   # public repository; a push to main keeps it on.
   schedule:
     - cron: "43 5 * * *"
+  # By hand, by someone with write access: to warm the library cache on main
+  # or to run a branch. It has no inputs. Only a run on main saves the library
+  # cache, as a push does; no manual run saves the Go cache.
+  workflow_dispatch:
 
 permissions:
   contents: read

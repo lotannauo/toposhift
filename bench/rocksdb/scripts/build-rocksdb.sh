@@ -7,6 +7,9 @@
 #
 # usage: build-rocksdb.sh [--tarball FILE] [--jobs N] PREFIX
 #        build-rocksdb.sh --version     prints the pinned RocksDB version
+#        build-rocksdb.sh --check-library LIB
+#                                       runs the checks a build ends with on
+#                                       an existing static library (below)
 #
 #   PREFIX          where the library is installed. It must not exist yet, and its
 #                   parent directory must. Nothing is written there unless the
@@ -29,7 +32,7 @@
 # with no time in it, so two builds by this script of the same source with the
 # same compiler write the same stamp. Its keys are rocksdb_version,
 # source_sha256, script_sha256, build_type, portable, rtti, shared, compression,
-# bzip2, gflags, liburing, jemalloc, cxx, cmake and host.
+# bzip2, gflags, liburing, jemalloc, malloc_usable_size, cxx, cmake and host.
 #
 # Choices, each recorded in the stamp:
 #
@@ -50,6 +53,12 @@
 #   - gflags, io_uring and jemalloc are off: gflags serves only RocksDB's own
 #     tools, which are not built; io_uring and jemalloc would change the link line
 #     and the allocator, and the comparison uses the system allocator.
+#   - malloc_usable_size off: RocksDB charges its cache and arena by the bytes
+#     it asks for, as on macOS (whose C library has no such call), so a cache's
+#     charge does not depend on the allocator's history. With it on, glibc's
+#     usable size of a block depends on which free chunk served it, and the
+#     cache's usage after two identical cold reads can differ. The build fails if
+#     the library still calls it (checked with nm, which must be installed).
 #   - Static only, and position-independent, so cgo can link it into any binary.
 #   - Warnings are not errors, so a newer compiler's new warning does not stop a
 #     build. They do not change the code compiled.
@@ -80,6 +89,7 @@ die() {
 usage() {
   echo "usage: build-rocksdb.sh [--tarball FILE] [--jobs N] PREFIX" >&2
   echo "       build-rocksdb.sh --version" >&2
+  echo "       build-rocksdb.sh --check-library LIB" >&2
   exit 2
 }
 
@@ -91,6 +101,22 @@ sha256_of() {
   else
     die "neither sha256sum nor shasum is installed"
   fi
+}
+
+# check_library fails unless the static library $1 is RocksDB's and makes no
+# call to malloc_usable_size. nm prints C symbols with a leading underscore on
+# macOS and without one on Linux; both are matched. Its output is searched
+# through a here-string, not a pipe, so pipefail cannot hide a result.
+check_library() {
+  local lib="$1" syms
+  syms="$(nm -- "$lib" 2>/dev/null)" || die "nm could not read $lib"
+  if ! grep -Eq '[[:space:]]T[[:space:]]+_?rocksdb_open$' <<<"$syms"; then
+    die "nm shows no rocksdb_open defined in $lib, so its symbols cannot be checked"
+  fi
+  if grep -Eq '[[:space:]]U[[:space:]]+_?malloc_usable_size$' <<<"$syms"; then
+    die "$lib calls malloc_usable_size, so its cache charges would depend on the allocator"
+  fi
+  echo "build-rocksdb.sh: $lib defines rocksdb_open and does not call malloc_usable_size"
 }
 
 cores() {
@@ -127,6 +153,13 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || usage
       jobs="$2"
       shift 2
+      ;;
+    --check-library)
+      [ "$#" -eq 2 ] || usage
+      [ -f "$2" ] || die "the library $2 is not a file"
+      command -v nm >/dev/null 2>&1 || die "nm is not installed"
+      check_library "$2"
+      exit 0
       ;;
     -h | --help) usage ;;
     -*) echo "build-rocksdb.sh: unknown option $1" >&2; usage ;;
@@ -171,7 +204,7 @@ if [ -n "$tarball" ]; then
 fi
 
 cmake="${CMAKE:-cmake}"
-for tool in "$cmake" tar awk; do
+for tool in "$cmake" tar awk nm grep; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed"
 done
 if [ -z "$tarball" ]; then
@@ -231,6 +264,7 @@ tar -xzf "$archive" -C "$src" --strip-components=1
   -DWITH_GFLAGS=OFF \
   -DWITH_LIBURING=OFF \
   -DWITH_JEMALLOC=OFF \
+  -DHAVE_MALLOC_USABLE_SIZE=OFF \
   -DWITH_TESTS=OFF \
   -DWITH_BENCHMARK_TOOLS=OFF \
   -DWITH_TOOLS=OFF \
@@ -251,6 +285,7 @@ installed="$(awk '
   END { print major "." minor "." patch }
 ' "$out/include/rocksdb/version.h")"
 [ "$installed" = "$version" ] || die "the installed headers are RocksDB $installed, not $version"
+check_library "$out/lib/librocksdb.a"
 
 cxx="$(awk -F= '/^CMAKE_CXX_COMPILER:/ { print $2; exit }' "$build/CMakeCache.txt")"
 [ -n "$cxx" ] || die "CMake recorded no C++ compiler"
@@ -272,6 +307,7 @@ host_arch="$(uname -m)"
   echo "gflags=off"
   echo "liburing=off"
   echo "jemalloc=off"
+  echo "malloc_usable_size=off"
   echo "cxx=$cxx $cxx_version"
   echo "cmake=$cmake_version"
   echo "host=$host_os $host_arch"
