@@ -14,10 +14,11 @@ jq = "1.8.2"
 gotestsum = "1.13.0"
 
 [tasks.fmt]
-description = "Format Go code in place, including the bench module"
+description = "Format Go code in place, including the bench module and its RocksDB module"
 run = [
   "golangci-lint fmt",
   "cd bench && golangci-lint fmt",
+  "cd bench/rocksdb && golangci-lint fmt",
 ]
 
 [tasks."fmt:check"]
@@ -76,6 +77,41 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 description = "Scan the bench module's dependencies for known vulnerabilities"
 dir = "bench"
 run = "go tool govulncheck ./..."
+
+# The RocksDB baseline (layout L on RocksDB) is a module of its own, bench/rocksdb,
+# because it needs cgo and a native library, which the bench module's builds and
+# tests never have (./... in bench stops at its go.mod). Its formatting needs no
+# cgo and is checked in the static shard; its lint, vulnerability scan and tests
+# compile cgo against RocksDB, so they run where RocksDB is installed: the pinned
+# Homebrew library on a Mac (ROCKSDB_PREFIX, default /opt/homebrew), or wherever a CI
+# job built it (it sets CGO_CFLAGS and CGO_LDFLAGS). scripts/cgoenv.sh sets cgo up;
+# grocksdb_no_link leaves the link flags to it, and pebblegozstd keeps the cgo zstd
+# out of the Pebble that the module links for layout L's shared code.
+[tasks."bench:rocksdb:fmt:check"]
+description = "Fail if any Go file in the RocksDB module is not formatted"
+dir = "bench/rocksdb"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:rocksdb:lint"]
+description = "Lint the RocksDB module (needs RocksDB installed)"
+dir = "bench/rocksdb"
+run = "./scripts/cgoenv.sh golangci-lint run --allow-parallel-runners --build-tags grocksdb_no_link,pebblegozstd"
+
+[tasks."bench:rocksdb:vuln"]
+description = "Scan the RocksDB module's Go dependencies for known vulnerabilities (needs RocksDB installed; C and C++ code is not scanned)"
+dir = "bench"
+run = "rocksdb/scripts/cgoenv.sh go tool govulncheck -C rocksdb -tags grocksdb_no_link,pebblegozstd ./..."
+
+[tasks."bench:rocksdb:test"]
+description = "Run the RocksDB module's full tests (needs RocksDB installed)"
+dir = "bench/rocksdb"
+env = { TOPOSHIFT_RAPID_CHECKS = "40" }
+run = './scripts/cgoenv.sh gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-rocksdb-test.json"} -- -tags grocksdb_no_link,pebblegozstd -p 2 -timeout 25m ./...'
+
+[tasks."bench:rocksdb:test:race"]
+description = "Run the RocksDB module's trimmed tests with the race detector (needs RocksDB installed; the detector does not see C++)"
+dir = "bench/rocksdb"
+run = './scripts/cgoenv.sh gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-rocksdb-test-race.json"} -- -tags grocksdb_no_link,pebblegozstd -race -short -p 2 -timeout 25m ./...'
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the
@@ -172,11 +208,12 @@ done
 
 # What Pebble writes depends on its version, and the format of a database is
 # decided by the version that wrote it, so the root and bench modules must build
-# on one Pebble, the one the measurements were made on. A bump changes the bytes
+# (and the RocksDB module, which links layout L's shared code) on one Pebble, the
+# one the measurements were made on. A bump changes the bytes
 # and needs a new measurement; it is made in this task, in go.mod, in bench/go.mod
 # and in internal/store/pebblekv/pins_test.go together.
 [tasks."check:pebble-pin"]
-description = "Fail unless the root and bench modules both use the pinned Pebble version and the same compression libraries"
+description = "Fail unless the root, bench and RocksDB modules all use the pinned Pebble version and the same compression libraries"
 run = '''
 set -eu
 want=v2.1.7
@@ -184,8 +221,10 @@ want=v2.1.7
 version='if .Replace then "replaced" else .Version end'
 root="$(go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
 bench="$(cd bench && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
-if [ "$root" != "$want" ] || [ "$bench" != "$want" ]; then
-  echo "check:pebble-pin: Pebble is $root in the root module and $bench in bench, both must be $want" >&2
+# The RocksDB module links layout L's shared code, and through it Pebble.
+rocks="$(cd bench/rocksdb && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
+if [ "$root" != "$want" ] || [ "$bench" != "$want" ] || [ "$rocks" != "$want" ]; then
+  echo "check:pebble-pin: Pebble is $root in the root module, $bench in bench and $rocks in bench/rocksdb, all must be $want" >&2
   exit 1
 fi
 # The libraries that compress Pebble's blocks shape the bytes it writes as much as
@@ -197,14 +236,17 @@ mods() {
 }
 rootmods="$(mods)" || exit 1
 benchmods="$(cd bench && mods)" || exit 1
+rocksmods="$(cd bench/rocksdb && mods)" || exit 1
 version_in() { printf '%s\n' "$1" | awk -v m="$2" '$1 == m { print $2 }'; }
 for mod in github.com/golang/snappy github.com/klauspost/compress github.com/minio/minlz github.com/DataDog/zstd; do
   root="$(version_in "$rootmods" "$mod")"
   bench="$(version_in "$benchmods" "$mod")"
-  if [ "$root" != "$bench" ]; then
+  rocks="$(version_in "$rocksmods" "$mod")"
+  if [ "$root" != "$bench" ] || [ "$root" != "$rocks" ]; then
     root="${root:-absent}"
     bench="${bench:-absent}"
-    echo "check:pebble-pin: $mod is $root in the root module and $bench in bench, they must match" >&2
+    rocks="${rocks:-absent}"
+    echo "check:pebble-pin: $mod is $root in the root module, $bench in bench and $rocks in bench/rocksdb, they must match" >&2
     exit 1
   fi
 done
@@ -394,7 +436,7 @@ depends = ["ci:static", "ci:bench", "ci:race", "ci:benchrace"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows, secrets and the collector configuration"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets", "check:collector"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:rocksdb:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets", "check:collector"]
 
 [tasks."ci:bench"]
 description = "CI shard: the bench module's full tests and its cgo-free build"
