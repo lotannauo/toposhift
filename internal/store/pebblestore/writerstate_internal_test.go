@@ -370,8 +370,9 @@ func TestTheWriterStateEqualsAWholeRead(t *testing.T) {
 						delete(m, "checkpoint.loads")
 						delete(m, "checkpoint.load_keys")
 						delete(m, "checkpoint.lookups")
-						delete(m, "write.iterators")     // what they open to read the state
-						delete(m, "checkpoint.build_ns") // a time
+						delete(m, "write.iterators")         // what they open to read the state
+						delete(m, "checkpoint.build_ns")     // a time
+						delete(m, "checkpoint.shadow_bytes") // bytes of blocks that were not cached: the cache's
 					}
 					if !maps.Equal(ca, cb) {
 						t.Fatalf("step %d: the counts differ: %v and %v\n%v", step, ca, cb, log)

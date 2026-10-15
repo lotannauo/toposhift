@@ -118,7 +118,29 @@ type prefixState struct {
 	since      int   // records written since the last checkpoint was written
 	sinceBytes int
 	lastBytes  int // size of the last checkpoint written
+
+	// exact says that latest, lastBytes, the newest checkpoint and the pair
+	// (readSince, readSinceBytes) are what a read of the whole prefix finds now, which
+	// is what [Store.readPrefixState] returns. since and sinceBytes are the writer's
+	// own count, which drives where a checkpoint is placed: with a lag a checkpoint
+	// is placed behind the newest record, the writer's count restarts at zero, and a
+	// read counts the records after the checkpoint (the shadow count, made by the walk
+	// that builds it, see build). The read counts are meaningful only while exact is
+	// set. exact is set by a read, by a state a retention works out and by a prefix a
+	// complete map knows to be empty; a record at or after the newest known
+	// checkpoint adds to both pairs; and a record before it, a checkpoint placed
+	// where the shadow count cannot be had, one found to exist already, one the
+	// instrument places, and the cap on the count clear it. It changes no stored
+	// byte and no decision of the writer; it decides only whether the walk that builds
+	// a checkpoint also counts.
+	exact          bool
+	readSince      int
+	readSinceBytes int
 }
+
+// shadowCap is the most records the walk that builds a checkpoint counts for the
+// shadow count of a prefix, which it gives up on beyond, clearing exact.
+const shadowCap = 1024
 
 // empty says the state is what reading a prefix that holds no record and no
 // checkpoint finds.
@@ -180,6 +202,8 @@ func (f *stateFold) result() prefixState {
 		st.below = 0
 	}
 	slices.Reverse(st.ckpts) // the key order is newest first
+	// This is what a read finds, so the read counts are the counts of the fold.
+	st.exact, st.readSince, st.readSinceBytes = true, st.since, st.sinceBytes
 	return st
 }
 
@@ -266,8 +290,11 @@ func (s *Store) state(prefix []byte) (*prefixState, error) {
 	if st := s.states.get(string(prefix)); st != nil {
 		return st, nil
 	}
-	if !s.anyCkpt || (s.complete && !s.filterMaybe && !s.inFilterOrDelta(prefix)) {
-		return &prefixState{latest: -1}, nil
+	if !s.anyCkpt {
+		return &prefixState{latest: -1}, nil // not what a read finds: a read would find the records
+	}
+	if s.complete && !s.filterMaybe && !s.inFilterOrDelta(prefix) {
+		return &prefixState{latest: -1, exact: true}, nil
 	}
 	s.iterators++
 	res, keys, unreadable, err := s.readPrefixState(s.kv, prefix)
@@ -413,18 +440,44 @@ func (o CheckpointOptions) at(st *prefixState) (int64, bool) {
 	return c, c >= 1
 }
 
+// shadowCount is what a read of a prefix would count since the checkpoint built at
+// c, found by the walk that builds it: the records with an event time at or after c
+// and the bytes of their values, which are the records that sort before the
+// checkpoint. counted says the count is complete; it is not when the walk gave up
+// at shadowCap records, or met a key it did not expect.
+type shadowCount struct {
+	records, bytes int
+	counted        bool
+}
+
 // build is the checkpoint of prefix at c: it walks from the newest record
 // strictly before c toward older ones, deciding each reference by the newest
 // record, and stops at the nearest older checkpoint of this fold version or at
 // the baseline, whose entries it takes for the references nothing newer decided.
 func (s *Store) build(prefix []byte, c int64) ([]byte, error) {
+	val, _, err := s.buildCounting(prefix, c, false)
+	return val, err
+}
+
+// buildCounting is build, which with count set also counts what a read would find
+// since the checkpoint (see [prefixState.exact]). The count is made by the first
+// part of the walk, from the first key of the prefix to the first key before c, which
+// build would have skipped past; the keys the checkpoint is built from are the same
+// either way, and so are its bytes. The keys it counts are reported as
+// "checkpoint.shadow_records" and their blocks that were not in the cache as
+// "checkpoint.shadow_bytes", never as "checkpoint.build_records_walked". With more
+// than shadowCap records the count is given up ("checkpoint.shadow_capped") and the
+// walk seeks to c as it does without it. The caller asks for it only when the state
+// is exact and c is after its newest checkpoint, so no checkpoint is met on the way.
+func (s *Store) buildCounting(prefix []byte, c int64, count bool) ([]byte, shadowCount, error) {
+	var shadow shadowCount
 	started := s.now()
 	dir := prefix[prefixLen-1]
 	lo, hi := prefixBounds(prefix)
 	s.iterators++
 	it, err := s.kv.NewIter(&pebble.IterOptions{LowerBound: lo, UpperBound: hi})
 	if err != nil {
-		return nil, err
+		return nil, shadow, err
 	}
 	defer func() { _ = it.Close() }()
 	decided := map[string]struct{}{}
@@ -440,31 +493,44 @@ func (s *Store) build(prefix []byte, c int64) ([]byte, error) {
 			entries = append(entries, entryOf(ref, ns, v))
 		}
 	}
+	var ok bool
+	if count {
+		var reseek bool
+		ok, reseek, shadow, err = s.countSince(it, c)
+		if err != nil {
+			return nil, shadow, err
+		}
+		if reseek {
+			ok = it.SeekGE(seekKey(prefix, c-1))
+		}
+	} else {
+		ok = it.SeekGE(seekKey(prefix, c-1))
+	}
 walk:
-	for ok := it.SeekGE(seekKey(prefix, c-1)); ok; ok = it.Next() {
+	for ; ok; ok = it.Next() {
 		_, ns, seq, kind, err := parseKey(it.Key())
 		if err != nil {
-			return nil, err
+			return nil, shadow, err
 		}
 		switch kind {
 		case kindRecord:
 			walked++
 			ref, v, err := decodeRecordValue(dir, it.Value())
 			if err != nil {
-				return nil, err
+				return nil, shadow, err
 			}
 			if v.Seq != seq {
-				return nil, fmt.Errorf("pebblestore: a record's key has seq %d and its value %d", seq, v.Seq)
+				return nil, shadow, fmt.Errorf("pebblestore: a record's key has seq %d and its value %d", seq, v.Seq)
 			}
 			w = max(w, seq)
 			take(ref, ns, v)
 		case kindCheckpoint, kindBaseline:
 			st, err := decodeStamp(it.Value())
 			if err != nil {
-				return nil, err
+				return nil, shadow, err
 			}
 			if st.kind != kind {
-				return nil, fmt.Errorf("pebblestore: a key of kind %d holds a stamp of kind %d", kind, st.kind)
+				return nil, shadow, fmt.Errorf("pebblestore: a key of kind %d holds a stamp of kind %d", kind, st.kind)
 			}
 			if kind == kindCheckpoint && st.foldVersion != foldVersion {
 				continue // built by other logic: not a base
@@ -477,14 +543,53 @@ walk:
 		}
 	}
 	if err := it.Error(); err != nil {
-		return nil, err
+		return nil, shadow, err
 	}
 	s.rec.Count("checkpoint.build_records_walked", walked)
 	val, err := appendStamp(nil, stamp{kind: kindCheckpoint, foldVersion: foldVersion, through: s.lastSeq.Load(), w: w, entries: entries})
 	if s.timed {
 		s.rec.Count("checkpoint.build_ns", s.since(started))
 	}
-	return val, err
+	return val, shadow, err
+}
+
+// countSince counts, from the first key of the prefix, the records with an event
+// time at or after c and the bytes of their values. ok says the iterator is at the
+// first key before c, where the walk goes on; reseek says it is not, because the
+// count was given up or met a key that is not a record, and the walk must seek.
+func (s *Store) countSince(it *pebble.Iterator, c int64) (ok, reseek bool, shadow shadowCount, err error) {
+	var records, bytes int
+	counted := true
+	ok = it.First()
+	for ; ok; ok = it.Next() {
+		_, ns, _, kind, perr := parseKey(it.Key())
+		if perr != nil {
+			// A key that cannot be read, at or after c: the seek the walk makes without
+			// the count skips it, so the count is given up and the walk seeks.
+			counted, reseek = false, true
+			break
+		}
+		if ns < c {
+			break
+		}
+		if kind != kindRecord {
+			counted, reseek = false, true // not expected: a checkpoint or baseline at or after c
+			break
+		}
+		if records == shadowCap {
+			counted, reseek = false, true
+			s.rec.Count("checkpoint.shadow_capped", 1)
+			break
+		}
+		records++
+		bytes += len(it.Value())
+	}
+	if s.timed {
+		in := it.Stats().InternalStats
+		s.rec.Count("checkpoint.shadow_bytes", int64(in.BlockBytes-in.BlockBytesInCache))
+	}
+	s.rec.Count("checkpoint.shadow_records", int64(records))
+	return ok, reseek, shadowCount{records: records, bytes: bytes, counted: counted}, nil
 }
 
 // applyCheckpoints commits a batch of checkpoints, not synced whatever the
@@ -541,6 +646,7 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 		prefix string
 		c      int64
 		size   int
+		shadow shadowCount
 	}
 	var done []made
 	for _, k := range keys {
@@ -566,9 +672,18 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 		}
 		if _, exists := slices.BinarySearch(st.ckpts, c); exists {
 			st.since, st.sinceBytes = 0, 0 // already summarized to here, and still true
+			if st.exact {
+				// A read counts the records after the checkpoint that exists, which the
+				// writer has not counted.
+				st.exact = false
+				s.rec.Count("checkpoint.shadow_exists", 1)
+			}
 			continue
 		}
-		val, err := s.build([]byte(k), c)
+		// With a lag, the records after c are the ones a read would count, and the walk
+		// that builds the checkpoint counts them; without one there are none.
+		count := st.exact && s.ckpt.Lag > 0 && (len(st.ckpts) == 0 || c > st.ckpts[len(st.ckpts)-1])
+		val, shadow, err := s.buildCounting([]byte(k), c, count)
 		if err != nil {
 			s.rec.Count("checkpoint.errors", 1)
 			s.forget(k)
@@ -578,7 +693,7 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 			s.rec.Count("checkpoint.errors", 1)
 			continue
 		}
-		done = append(done, made{k, c, len(val)})
+		done = append(done, made{k, c, len(val), shadow})
 	}
 	if ph != nil {
 		ph.ckptBuild = s.since(buildStart)
@@ -602,8 +717,21 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 			continue
 		}
 		i, _ := slices.BinarySearch(st.ckpts, m.c)
+		newest := i == len(st.ckpts)
 		st.ckpts = slices.Insert(st.ckpts, i, m.c)
 		st.since, st.sinceBytes, st.lastBytes = 0, 0, m.size
+		if st.exact {
+			switch {
+			case !newest:
+				st.exact = false // the newest checkpoint, and the size the writer holds, are not the new one's
+			case s.ckpt.Lag == 0:
+				st.readSince, st.readSinceBytes = 0, 0 // c is after every record
+			case m.shadow.counted:
+				st.readSince, st.readSinceBytes = m.shadow.records, m.shadow.bytes
+			default:
+				st.exact = false
+			}
+		}
 	}
 	var bytes int64
 	for _, m := range done {
@@ -635,6 +763,7 @@ func (s *Store) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns i
 	s.rec.Count("checkpoint.invalidated", int64(len(st.ckpts)-i))
 	s.noteInvalidated(prefix, len(st.ckpts)-i)
 	st.ckpts = st.ckpts[:i]
+	st.exact = false // the newest checkpoint is an older one, and the records after it are not counted
 	return nil
 }
 
@@ -710,6 +839,7 @@ func (s *Store) checkpointAt(op string, prefix []byte, c time.Time) error {
 	}
 	i, _ := slices.BinarySearch(st.ckpts, cNs)
 	st.ckpts = slices.Insert(st.ckpts, i, cNs)
+	st.exact = false // placed by hand: the writer's counts and size do not follow it
 	s.rec.Count("checkpoint.written", 1)
 	s.rec.Count("checkpoint.bytes_written", int64(len(prefix)+suffixLen+len(val)))
 	return nil

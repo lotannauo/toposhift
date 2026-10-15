@@ -214,6 +214,10 @@ var onlyTheStore = map[string]bool{
 	"retain.flushes":                 true,
 	"retain.flush_errors":            true,
 	"retain.flush_deferred":          true,
+	"checkpoint.shadow_records":      true,
+	"checkpoint.shadow_bytes":        true,
+	"checkpoint.shadow_capped":       true,
+	"checkpoint.shadow_exists":       true,
 }
 
 func isOnlyTheStores(name string) bool {

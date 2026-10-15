@@ -199,6 +199,7 @@ var rootOnlyCounts = []string{
 	"checkpoint.build_ns", "write.iterators", "checkpoint.loads_cold",
 	"retain.chunk_prefixes", "retain.chunk_open_ns", "retain.unflushed_range_deletes", "retain.flushes",
 	"retain.flush_errors", "retain.flush_deferred",
+	"checkpoint.shadow_records", "checkpoint.shadow_bytes", "checkpoint.shadow_capped", "checkpoint.shadow_exists",
 }
 
 const rootOnlyPrefix = "writer_map."

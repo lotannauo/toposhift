@@ -50,6 +50,9 @@ func checkpointsFrom(ckpts []int64, below int64) []int64 {
 // caller holds e.mu: a scan of the stored prefixes installs its filter, the deltas
 // and completeness under it, from a goroutine of its own.
 func rememberedStateMismatch(e *Store) error {
+	if _, _, err := exactStatesMismatch(e); err != nil {
+		return err
+	}
 	probe := wholeReader(e)
 	for k, b := range e.states.all() {
 		a, err := probe.state([]byte(k))
@@ -858,8 +861,9 @@ func TestAHistoryNeedsNoStateReadsOnceItsRetentionsHaveWorkedItOut(t *testing.T)
 		delete(m, "checkpoint.loads")
 		delete(m, "checkpoint.load_keys")
 		delete(m, "checkpoint.lookups")
-		delete(m, "write.iterators")     // what they open to read the state
-		delete(m, "checkpoint.build_ns") // a time
+		delete(m, "write.iterators")         // what they open to read the state
+		delete(m, "checkpoint.build_ns")     // a time
+		delete(m, "checkpoint.shadow_bytes") // bytes of blocks that were not cached: the cache's
 		for n := range m {
 			if strings.HasPrefix(n, "writer_map.") {
 				delete(m, n) // only the store that works the state out has a filter and a budget
