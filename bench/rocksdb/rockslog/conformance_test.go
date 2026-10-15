@@ -77,7 +77,7 @@ func TestConforms(t *testing.T) {
 	t.Run("RL4 k64a2l5m", func(t *testing.T) {
 		t.Parallel()
 		opts := tiny(fullPolicies["k64a2l5m"])
-		opts.Config.BaseFileFactor = 4
+		opts.BaseFileFactor = 4
 		conformance.Run(t, onDisk(opts))
 	})
 }
