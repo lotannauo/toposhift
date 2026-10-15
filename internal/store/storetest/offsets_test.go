@@ -283,6 +283,16 @@ func (d *layerDouble) EntityWindow(ctx context.Context, fp identity.Fingerprint,
 	return d.inner.EntityWindow(ctx, fp, from, to, sc)
 }
 
+// WindowSince is judged by its layer's horizon like the other reads, and otherwise
+// answered by the inner store, whose horizons are zero: the layer checks ask it only
+// what the horizon refuses.
+func (d *layerDouble) WindowSince(ctx context.Context, fps []identity.Fingerprint, dir store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	if err := d.judge(sc.Layer, from, sc.AsOf); err != nil {
+		return nil, err
+	}
+	return d.inner.WindowSince(ctx, fps, dir, from, to, sc, o)
+}
+
 func (d *layerDouble) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

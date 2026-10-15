@@ -120,6 +120,25 @@ type broken struct {
 
 	// Damage to arguments.
 	acceptZeroFP, dirZeroIsForward, batchOthersOnZero, batchPartialError, fromGEToErr bool
+
+	// Damage to WindowSince, whose seeds the double works out itself from the
+	// records before from (see sinceOf).
+	sd sinceDamage
+}
+
+// sinceDamage breaks one rule of WindowSince each.
+type sinceDamage struct {
+	perSubject       bool          // one seed per subject, decided by its newest record of any producer
+	keepDead         bool          // a deciding record that does not hold is a seed all the same
+	liveAtFrom       bool          // a seed must hold at from, not just before it
+	noHorizonInstant bool          // at from == the horizon a seed must hold at from-1ns, as anywhere else
+	atFrom           bool          // the records at from are among those that decide
+	ignoreToken      bool          // the seeds are decided from every record, whatever the token
+	payloadBefore    bool          // a seed before the horizon keeps its payload
+	payloadAlways    bool          // a seed carries its payload even when none was asked for
+	unsorted         bool          // the seeds come in the order of their deciding records
+	windowFrom       time.Duration // the window part starts this much after from
+	misindex         bool          // the answers of the first two fingerprints are swapped
 }
 
 type snapKey struct{ asOf, lastSeq uint64 }
@@ -678,6 +697,103 @@ func (b *broken) EntityWindow(ctx context.Context, fp identity.Fingerprint, from
 	return b.patch(recs), err
 }
 
+// WindowSince gates like every read, takes the window from the inner store's
+// Window or EntityWindow, and works out the seeds itself from the records before
+// from, by the rule of the contract and the double's own horizon (the inner store
+// is never retained), unless sd damages it. With no damage it is a second
+// implementation of the rule, beside the reference's.
+func (b *broken) WindowSince(ctx context.Context, fps []identity.Fingerprint, dir store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	q := request{op: "WindowSince", fps: fps, dir: dir, hasDir: dir != 0, sc: sc, t: from}
+	r, err := b.gate(ctx, &q)
+	if err != nil {
+		return nil, err
+	}
+	if b.fromGEToErr && !from.Before(to) {
+		return nil, fmt.Errorf("broken: WindowSince: from is not before to: %w", store.ErrInvalid)
+	}
+	out := make([]store.Since, len(fps))
+	if !from.Before(to) || len(fps) == 0 {
+		return out, nil
+	}
+	sc = b.scoped(q.sc)
+	r, sc = b.snapshot(r, sc)
+	read := func(fp identity.Fingerprint, from, to time.Time, sc store.Scope) ([]store.Record, error) {
+		if fp.IsZero() {
+			return nil, nil
+		}
+		if q.dir == 0 {
+			return r.EntityWindow(bg, fp, from, to, sc)
+		}
+		return r.Window(bg, fp, q.dir, from, to, sc)
+	}
+	for i, fp := range fps {
+		if out[i].Window, err = read(fp, from.Add(b.sd.windowFrom), to, sc); err != nil {
+			return nil, err
+		}
+		hsc, until := sc, from
+		if b.sd.ignoreToken {
+			hsc.AsOf = store.Latest
+		}
+		if b.sd.atFrom {
+			until = from.Add(time.Nanosecond)
+		}
+		history, err := read(fp, store.MinEventTime, until, hsc)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Seeds = b.sinceOf(history, from, o)
+	}
+	if b.sd.misindex && len(out) > 1 {
+		out[0], out[1] = out[1], out[0]
+	}
+	return out, nil
+}
+
+// sinceOf works out the seeds from the records of one fingerprint before from,
+// which are in (EventTime, Seq) order.
+func (b *broken) sinceOf(history []store.Record, from time.Time, o store.SinceOptions) []store.Seed {
+	type ref struct {
+		subject  store.Subject
+		producer lifecycle.Producer
+	}
+	deciding := map[ref]int{}
+	var order []ref
+	for i, r := range history {
+		k := ref{r.Subject, r.Producer}
+		if b.sd.perSubject {
+			k.producer = ""
+		}
+		if _, ok := deciding[k]; !ok {
+			order = append(order, k)
+		}
+		deciding[k] = i // the order makes the last one the deciding one
+	}
+	live := from.Add(-time.Nanosecond)
+	if (b.sd.liveAtFrom || !b.hz.IsZero() && from.Equal(b.hz.Time)) && !b.sd.noHorizonInstant {
+		live = from
+	}
+	var out []store.Seed
+	for _, k := range order {
+		r := history[deciding[k]]
+		last, _ := store.LastOf(r.EventTime, r.Through)
+		holds := r.Kind == lifecycle.Observe && (r.TTL == 0 || live.Before(last.Add(r.TTL)))
+		if !holds && !b.sd.keepDead {
+			continue
+		}
+		known := o.Payloads && (b.hz.IsZero() || !r.EventTime.Before(b.hz.Time))
+		if !known && (!b.sd.payloadBefore || !o.Payloads) && !b.sd.payloadAlways {
+			r.Payload = nil
+		}
+		out = append(out, store.Seed{Record: r, PayloadKnown: known})
+	}
+	if !b.sd.unsorted {
+		store.SortSeeds(out)
+	}
+	return out
+}
+
 // snapshot answers a read of a token from the records whose Seq, cut to seqMask,
 // is at or below it, as a store that keeps a Seq in fewer bits would. A record whose
 // Seq wrapped is then seen by a token below its true Seq. The caller holds the read
@@ -844,6 +960,7 @@ var detectors = map[string]struct {
 	"extremes":       {storetest.CheckExtremes, lifecycle.Policy{}},
 	"entity window":  {storetest.CheckEntityWindow, lifecycle.Policy{}},
 	"quarantine":     {storetest.CheckQuarantine, storetest.QuarantinePolicy()},
+	"window since":   {storetest.CheckSinceContract, lifecycle.Policy{}},
 }
 
 func isQuarantineError(err error) bool {

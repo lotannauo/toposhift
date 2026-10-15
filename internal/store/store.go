@@ -1,9 +1,11 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
@@ -89,6 +91,65 @@ type Horizon struct {
 // IsZero reports whether no retention has been applied.
 func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 
+// SinceOptions tunes [Store.WindowSince].
+type SinceOptions struct {
+	// Payloads asks for the payload of every seed whose record is at or after the
+	// horizon of the scope's layer (see [Seed]). Without it no seed carries a
+	// payload, and a store may answer from summaries that keep none.
+	Payloads bool
+}
+
+// Seed is the assertion that decides one reference (a subject and a producer) just
+// before a window's from, for a reference live there. See [Store.WindowSince].
+type Seed struct {
+	// Record is the reference's deciding record: every field as it was written,
+	// the Seq, kind, TTL, Through, event-time basis and boot id included, and the
+	// payload only when PayloadKnown.
+	Record Record
+	// PayloadKnown is true exactly when the read asked for payloads and the
+	// record's event time is at or after the horizon of the scope's layer (always,
+	// while that horizon is zero). Before the horizon a store may hold the record
+	// only as a baseline entry, which keeps no payload, so the payload is not given
+	// there whether or not this store still has it: the answer does not depend on
+	// how far a retention has got.
+	PayloadKnown bool
+}
+
+// Since is one fingerprint's answer to [Store.WindowSince]: its seeds, and the
+// records of the window.
+type Since struct {
+	// Seeds are ordered by subject ([CompareSubjects]), then producer.
+	Seeds []Seed
+	// Window is exactly what [Store.Window] (or, for direction 0,
+	// [Store.EntityWindow]) returns for the same fingerprint, window and scope.
+	Window []Record
+}
+
+// CompareSubjects orders subjects by kind, then the first fingerprint, then the
+// second, then the relation, the fingerprints as [CompareFingerprints] orders them.
+func CompareSubjects(a, b Subject) int {
+	if c := cmp.Compare(a.Kind, b.Kind); c != 0 {
+		return c
+	}
+	if c := CompareFingerprints(a.A, b.A); c != 0 {
+		return c
+	}
+	if c := CompareFingerprints(a.B, b.B); c != 0 {
+		return c
+	}
+	return cmp.Compare(a.Relation, b.Relation)
+}
+
+// SortSeeds orders seeds by subject, then producer, the order [Since] promises.
+func SortSeeds(ss []Seed) {
+	slices.SortFunc(ss, func(a, b Seed) int {
+		if c := CompareSubjects(a.Record.Subject, b.Record.Subject); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Record.Producer, b.Record.Producer)
+	})
+}
+
 // Store is the contract every storage backend satisfies.
 //
 // Every read answers "as of" an instant in event time and a [Scope]: one layer,
@@ -96,7 +157,8 @@ func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 // the representable range or not: before [MinEventTime] nothing exists, and
 // after [MaxEventTime] the answer is the state after every record. The one
 // limit is the retention horizon of the layer the read names: a read whose
-// instant t (for [Store.Window] and [Store.EntityWindow], whose from) is before
+// instant t (for [Store.Window], [Store.EntityWindow] and [Store.WindowSince],
+// whose from) is before
 // the Time of [Store.LayerHorizon] of Scope.Layer, or whose AsOf is below that
 // horizon's Seq, is refused with an error wrapping [ErrBeforeHorizon], because
 // the history it asks about may be gone. An AsOf of [Latest] is never below the
@@ -114,13 +176,14 @@ func (h Horizon) IsZero() bool { return h.Time.IsZero() && h.Seq == 0 }
 // A read whose scope is not valid, whose direction is not [Forward] or
 // [Reverse], or whose fingerprint is the zero fingerprint (identity.Fingerprint
 // has IsZero) returns an error wrapping [ErrInvalid]; so does a
-// [Store.NeighborsBatch] with a zero fingerprint among its fps. These checks come
-// before the horizon check, and none of them depends on what is stored. For
-// [Store.Window] and [Store.EntityWindow], from >= to is not an error: the answer
-// is empty with a nil error (the horizon check still applies to from). An empty
-// fps for NeighborsBatch gives an empty result and a nil error once the scope and
-// direction are checked. An empty batch for [Store.Write] is a no-op that returns
-// nil.
+// [Store.NeighborsBatch] or a [Store.WindowSince] with a zero fingerprint among
+// its fps. (WindowSince also takes the direction 0, which reads the entities' own
+// existence.) These checks come before the horizon check, and none of them
+// depends on what is stored. For [Store.Window], [Store.EntityWindow] and
+// WindowSince, from >= to is not an error: the answer is empty with a nil error
+// (the horizon check still applies to from). An empty fps for NeighborsBatch or
+// WindowSince gives an empty result and a nil error once the scope and direction
+// are checked. An empty batch for [Store.Write] is a no-op that returns nil.
 //
 // # Contexts and failure
 //
@@ -250,6 +313,45 @@ type Store interface {
 	// [*QuarantineError]. From >= to gives an empty result and a nil error.
 	EntityWindow(ctx context.Context, fp identity.Fingerprint, from, to time.Time, s Scope) ([]Record, error)
 
+	// WindowSince reads, for each of fps, the records of the window [from, to) and
+	// what each reference was just before it: the facts a range read folds, without
+	// the history before from. dir is [Forward] or [Reverse] for the edges touching
+	// each fingerprint, as [Store.Window] reads them, or 0 for each entity's own
+	// existence, as [Store.EntityWindow] reads it. The result is parallel to fps:
+	// result[i] answers fps[i]; fps may be in any order and may repeat. The whole call
+	// is answered from one snapshot, and one failure fails it, with a nil result.
+	//
+	// The Window of an answer is byte for byte what Window or EntityWindow returns
+	// for that fingerprint over [from, to) in the scope.
+	//
+	// Its Seeds are the references (a subject and a producer) of that fingerprint in
+	// the scope's layer that are live just before from, one seed each, by the
+	// lifecycle rule. A reference's seed is its visible record (Seq <= s.AsOf) with
+	// the highest (EventTime, Seq) among those with an event time strictly before
+	// from, and it is a seed only if that record is an Observe that holds at the
+	// instant just before from: TTL zero, or the instant before its last
+	// observation (Through, if later than EventTime) plus TTL. That instant is
+	// from-1ns, except when from is exactly the Time of the non-zero horizon of
+	// s.Layer: the state just before the horizon is not kept, and the state at it
+	// stands for it, so the instant is from itself. A reference whose deadline is
+	// exactly the horizon is therefore not a seed of a window that starts there.
+	// Payloads are as [Seed] says.
+	//
+	// So folding a subject's seeds together with its window records by the
+	// lifecycle specification gives, at every instant of [from, to), the existence
+	// of the subject and of each producer's reference, and the end source of every
+	// interval that ends in the window, that folding every visible record of the
+	// subject before to from the start of retained history gives; and an interval
+	// that is alive at from starts before from in one exactly when it does in the
+	// other.
+	//
+	// It never folds endpoint existence and never returns a [*QuarantineError].
+	// The order of checks is the one every read has: closed, the arguments, the
+	// context, and the horizon (from, and the token), and then the empty cases:
+	// empty fps give an empty result, and from >= to gives one empty Since per
+	// fingerprint.
+	WindowSince(ctx context.Context, fps []identity.Fingerprint, dir Direction, from, to time.Time, s Scope, o SinceOptions) ([]Since, error)
+
 	// Retain lets the store discard history before the horizons it sets. Each
 	// layer l has a retention offset O_l, fixed when the store is opened, or is
 	// kept. Retain(horizon) sets the horizon of each retained layer to
@@ -258,7 +360,9 @@ type Store interface {
 	// whose horizon this Retain moved it must leave every answer in l unchanged
 	// for an instant at or after h_l and a token at or above L. That includes
 	// Window and EntityWindow: every record of layer l with an event time at or
-	// after h_l stays, so a window starting at or after it is unchanged. Only
+	// after h_l stays, so a window starting at or after it is unchanged; and
+	// WindowSince, whose seeds and payloads are defined so that they do not depend
+	// on whether the history before h_l is still there. Only
 	// records of layer l strictly before h_l may go, and the store may replace
 	// them with a baseline standing for the state they left (a baseline must
 	// preserve a quarantine, see [Store.Alive]). Answers for earlier instants, or
