@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -296,10 +297,17 @@ func TestColdStartEmptiesTheCache(t *testing.T) {
 // The statistics carry the names the runner reads, and the description every field
 // the comparison records; the descriptions that make a variant what it is are the
 // same when the database is opened read-only.
+//
+// Compactions are off, so the deletions are still in a table when the statistics
+// are read: a compaction into the last level drops them, and whether one runs
+// before the read depends on where the memtables were flushed, which differs
+// between builds of RocksDB.
 func TestStatsAndDescription(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	w := openKV(t, dir, tinyConfig())
+	cfg := tinyConfig()
+	cfg.DisableAutoCompactions = true
+	w := openKV(t, dir, cfg)
 	fill(t, w, 3000, 64)
 	b := w.NewBatch()
 	_ = b.DeleteRange(key(100), key(200), nil)
@@ -320,6 +328,9 @@ func TestStatsAndDescription(t *testing.T) {
 		if _, ok := s[name]; !ok {
 			t.Errorf("the statistics have no %s: %v", name, s)
 		}
+	}
+	if s["compactions"] != 0 {
+		t.Fatalf("a compaction ran with compactions off, so the deletions may be gone: %v", s)
 	}
 	if s["live_table_bytes"] <= 0 || s["bytes_in"] <= 0 || s["memtable_count"] < 1 || s["tombstones"] < 2 {
 		t.Errorf("statistics %v", s)
@@ -366,7 +377,7 @@ func TestStatsAndDescription(t *testing.T) {
 	delete(described, "rocksdb_options")
 	t.Logf("Describe (without the options text): %v", described)
 	_ = w.Close()
-	cfg := tinyConfig()
+	cfg = tinyConfig()
 	cfg.ReadOnly = true
 	read, err := openKV(t, dir, cfg).Describe()
 	if err != nil {
@@ -379,44 +390,117 @@ func TestStatsAndDescription(t *testing.T) {
 	}
 }
 
+// holdingFilter is a compaction filter that, once armed, holds every compaction
+// that reaches it until it is released: a compaction that runs for as long as a
+// test needs, whatever the machine's speed. Unarmed, it keeps every key.
+type holdingFilter struct {
+	armed   atomic.Bool
+	enter   sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (f *holdingFilter) Filter(int, []byte, []byte) (bool, []byte) {
+	if f.armed.Load() {
+		f.enter.Do(func() { close(f.entered) })
+		<-f.release
+	}
+	return false, nil
+}
+
+func (f *holdingFilter) Name() string            { return "rockskv.test.holding" }
+func (f *holdingFilter) SetIgnoreSnapshots(bool) {}
+func (f *holdingFilter) Destroy()                {}
+
 // A settle whose deadline passes while a compaction runs returns without error and
 // says the deadline was hit; one with time enough does not.
+//
+// The compaction is held open by a compaction filter until the first settle has
+// returned, so the test does not depend on how fast the machine compacts. A filter
+// can only be given when the database is opened, which Open does not offer, so the
+// database is opened here and given to a KV that has what the settle uses: the
+// database, its flush options and a configuration that is not read-only.
 func TestSettleDeadline(t *testing.T) {
 	t.Parallel()
-	cfg := tinyConfig()
-	cfg.DisableAutoCompactions = true
-	k := openKV(t, filepath.Join(t.TempDir(), "db"), cfg)
-	for range 10 {
-		fill(t, k, 3000, 256)
+	f := &holdingFilter{entered: make(chan struct{}), release: make(chan struct{})}
+	o := grocksdb.NewDefaultOptions()
+	o.SetCreateIfMissing(true)
+	o.SetDisableAutoCompactions(true)
+	o.SetCompactionFilter(f)
+	db, err := grocksdb.OpenDb(o, filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		o.Destroy()
+		t.Fatal(err)
 	}
+	k := &KV{db: db, opts: o, flushOpts: grocksdb.NewDefaultFlushOptions(), cfg: tinyConfig()}
+	t.Cleanup(func() {
+		db.Close()
+		k.flushOpts.Destroy()
+		o.Destroy()
+	})
+	wo := grocksdb.NewDefaultWriteOptions()
+	defer wo.Destroy()
+	// Two tables over the same keys, so the compaction merges them and calls the
+	// filter for every key.
+	for range 2 {
+		for i := range 100 {
+			if err := db.Put(wo, key(i), []byte("value")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := k.Flush(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f.armed.Store(true)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		o := grocksdb.NewCompactRangeOptions()
-		defer o.Destroy()
-		o.SetBottommostLevelCompaction(grocksdb.KForce)
-		k.db.CompactRangeOpt(grocksdb.Range{}, o)
+		co := grocksdb.NewCompactRangeOptions()
+		defer co.Destroy()
+		co.SetBottommostLevelCompaction(grocksdb.KForce)
+		db.CompactRangeOpt(grocksdb.Range{}, co)
 	}()
-	hit := false
-	for !hit {
-		select {
-		case <-done:
-			t.Fatal("the compaction ended before a settle could be timed out against it")
-		default:
-		}
-		if n, _ := k.db.GetIntProperty("rocksdb.num-running-compactions"); n == 0 {
-			continue
-		}
-		_, _, h, err := k.SettleAfterRetention(time.Microsecond)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hit = h
+	// Whatever happens below, the compaction is let go and has ended before the
+	// database is closed.
+	release := sync.OnceFunc(func() {
+		close(f.release)
+		<-done
+	})
+	defer release()
+	select {
+	case <-f.entered:
+	case <-done:
+		t.Fatal("the compaction ended without reaching its filter")
+	case <-time.After(time.Minute):
+		t.Fatal("the compaction did not reach its filter within a minute")
 	}
-	<-done
-	_, _, h, err := k.SettleAfterRetention(time.Minute)
-	if err != nil || h {
-		t.Fatalf("a settle with a minute: hit %v, %v", h, err)
+
+	// A settle that ignored its deadline would wait for the held compaction for
+	// ever; after a minute it is let go and the test fails.
+	type settled struct {
+		hit bool
+		err error
+	}
+	first := make(chan settled, 1)
+	go func() {
+		_, _, hit, err := k.SettleAfterRetention(time.Microsecond)
+		first <- settled{hit, err}
+	}()
+	select {
+	case r := <-first:
+		if r.err != nil || !r.hit {
+			t.Fatalf("a settle of a microsecond while a compaction runs: hit %v, %v", r.hit, r.err)
+		}
+	case <-time.After(time.Minute):
+		release()
+		<-first
+		t.Fatal("a settle of a microsecond did not return within a minute while a compaction ran")
+	}
+	release()
+	if _, _, hit, err := k.SettleAfterRetention(time.Minute); err != nil || hit {
+		t.Fatalf("a settle with a minute: hit %v, %v", hit, err)
 	}
 }
 

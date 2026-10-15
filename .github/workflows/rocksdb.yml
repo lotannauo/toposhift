@@ -1,0 +1,202 @@
+name: rocksdb
+
+# The RocksDB baseline (bench/rocksdb: layout L on RocksDB) is built with cgo
+# against a native RocksDB, which the four ci shards never have: they build and
+# test without cgo. This workflow builds the pinned RocksDB from source with
+# bench/rocksdb/scripts/build-rocksdb.sh and runs the module's lint,
+# vulnerability scan, tests and race-detector tests on both architectures. It is
+# not a required check, and it times nothing: the module's formatting check is
+# in the static shard, and timed builds are dispatched from bench.yml.
+
+on:
+  pull_request:
+    paths:
+      - "bench/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      # The tasks it runs and the pinned tools, and this file itself.
+      - "mise.toml"
+      - ".github/workflows/rocksdb.yml"
+  push:
+    branches: [main]
+  # Nightly on main, with new random workloads and that day's vulnerability
+  # database. GitHub turns a schedule off after 60 days without activity in a
+  # public repository; a push to main keeps it on.
+  schedule:
+    - cron: "43 5 * * *"
+  # By hand, by someone with write access: to warm the library cache on main
+  # or to run a branch. It has no inputs. Only a run on main saves the library
+  # cache, as a push does; no manual run saves the Go cache.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # As in ci.yml: a newer push to a pull request cancels its older run; runs on
+  # main are never cancelled.
+  group: rocksdb-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for
+    # an unnamed bash step does not set pipefail).
+    shell: bash
+
+env:
+  GO_CACHE_PATHS: |
+    ~/.cache/go-build
+    ~/go/pkg/mod
+    ~/.cache/golangci-lint
+
+jobs:
+  rocksdb:
+    name: rocksdb (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in ci.yml: go test reuses a result only when the files a test read
+      # look unchanged, and checkout gives every file the current time.
+      - name: Give checked-out files times derived from their content
+        run: python3 .github/scripts/stable-mtimes.py
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # From Ubuntu's own archive, no other source: the compiler, Ubuntu's cmake
+      # (not the runner image's newer one, which changes with the image), and
+      # the compression libraries RocksDB is built with and the module's Linux
+      # link line names (bench/rocksdb/scripts/cgoenv.sh). Needed on a cache hit
+      # too, because the tests link against them.
+      - name: Install the compiler and the libraries RocksDB links
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev
+          dpkg-query --show build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev g++
+
+      # The library is named by the RocksDB version, the build script's sha256
+      # and the runner: a library built by any other script, or for another
+      # runner, is never used. The install path carries the version and the
+      # script's hash too, so cgo's flags, and with them the Go build cache's
+      # keys, change whenever the library does. The stamp the script writes
+      # records the compiler and cmake it used; raise v1 to rebuild after a
+      # change of either that should not wait for the next edit of the script.
+      - name: Name the RocksDB build
+        id: rocks
+        env:
+          OS_LABEL: ${{ matrix.os }}
+        run: |
+          script=bench/rocksdb/scripts/build-rocksdb.sh
+          version="$("$script" --version)"
+          hash="$(sha256sum "$script" | cut -d' ' -f1)"
+          {
+            echo "key=rocksdb-v1-${OS_LABEL}-${RUNNER_ARCH}-${version}-${hash}"
+            echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Restored on every run, and saved only from main (below), never from a
+      # pull request: a pull request that changes the script builds its own
+      # library, under its own key, every time.
+      - name: Restore the RocksDB build
+        id: rockscache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.rocks.outputs.prefix }}
+          key: ${{ steps.rocks.outputs.key }}
+
+      - name: Build RocksDB
+        if: steps.rockscache.outputs.cache-hit != 'true'
+        timeout-minutes: 60
+        env:
+          CMAKE: /usr/bin/cmake
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: bench/rocksdb/scripts/build-rocksdb.sh "$ROCKSDB_PREFIX"
+
+      - name: Save the RocksDB build
+        if: steps.rockscache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.rocks.outputs.prefix }}
+          key: ${{ steps.rocks.outputs.key }}
+
+      - name: Show how the library was built
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          cat "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp"
+          ls -l "$ROCKSDB_PREFIX/lib/librocksdb.a"
+
+      # The Go build and module caches and the linter's cache for this module. A
+      # pull request and a push only restore; the nightly run saves, once a day,
+      # so this workflow does not crowd ci.yml's entries out of the repository's
+      # cache.
+      - name: Restore Go builds and modules
+        id: gocache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: go-rocksdb-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum', 'bench/rocksdb/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-rocksdb-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum', 'bench/rocksdb/go.sum') }}-
+            go-rocksdb-v1-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Lint
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: mise run bench:rocksdb:lint
+
+      - name: Scan the Go dependencies for known vulnerabilities
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: mise run bench:rocksdb:vuln
+
+      - name: Test
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+          # Nightly, every test runs again instead of reusing an earlier result.
+          GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
+        run: mise run bench:rocksdb:test
+
+      - name: Test with the race detector
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+          GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
+        run: mise run bench:rocksdb:test:race
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-rocksdb-${{ matrix.os }}
+          path: "bench/rocksdb/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Save Go builds and modules
+        if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: ${{ steps.gocache.outputs.cache-primary-key }}
