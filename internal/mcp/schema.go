@@ -238,6 +238,8 @@ var vocabulary = Vocabulary{
 		{"producer", "deleted by its producer"},
 		{"liveness_expiry", "its producer went silent past its TTL (not known to be gone)"},
 		{"cascade", "an endpoint ended"},
+		{"retention", "the retention horizon moved past it; history before the horizon is gone"},
+		{"operator", "purged by an operator"},
 		{"unattributed", "not known"},
 		{endReasonReachEnded, "a derived span ended where one of its legs did (see the legs' ends), or where an ambiguity did"},
 		{"null", "the span reaches the window's end; nothing after the window is reported"},

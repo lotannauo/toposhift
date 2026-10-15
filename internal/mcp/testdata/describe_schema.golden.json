@@ -480,6 +480,14 @@
         "meaning": "an endpoint ended"
       },
       {
+        "term": "retention",
+        "meaning": "the retention horizon moved past it; history before the horizon is gone"
+      },
+      {
+        "term": "operator",
+        "meaning": "purged by an operator"
+      },
+      {
         "term": "unattributed",
         "meaning": "not known"
       },
