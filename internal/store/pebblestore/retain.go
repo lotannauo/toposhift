@@ -95,7 +95,8 @@ import (
 // meanwhile; the lock is not released between chunks.
 //
 // What the writer remembers of each prefix (see checkpoint.go) is out of date once
-// a retention begins to rewrite, so it is not used from then on. Where the
+// a retention begins to rewrite, so it is not used from then on, but for a state the
+// retention cannot change, which a Background pass keeps (see [Store.keepLayers]). Where the
 // checkpoint policy is on and the database may hold a checkpoint, the retention
 // works out what a read of each prefix would find from the keys it leaves, and puts
 // it in the states the writer keeps of the prefixes it rewrites, so that the next
@@ -197,12 +198,6 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	if s.retention == Background {
 		publishedAt = s.stamp()
 	}
-	// What was remembered of each prefix of a layer about to be rewritten is out of
-	// date. It is worked out again below, for the prefixes the writer keeps, and
-	// stays unknown if the retention does not finish. What is remembered of the
-	// other layers is as true as it was.
-	s.forgetLayers(marker.layers)
-
 	// What the writer would find if it read each prefix after this retention, worked
 	// out as the retention goes by, so that the first write to a prefix need not
 	// read it. Not working it out is always correct (the prefix is then read when it
@@ -215,6 +210,21 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 	// keys at or after the horizon of each prefix, up to its newest checkpoint,
 	// counted as "retain.state_keys".
 	derive := s.ckpt.On && s.anyCkpt && !s.fullStateRead && allInside
+	// What was remembered of each prefix of a layer about to be rewritten is out of
+	// date. It is worked out again, for the prefixes the writer keeps, and stays
+	// unknown if the retention does not finish. What is remembered of the other
+	// layers is as true as it was. The one exception is in a Background pass that
+	// derives: a state the retention cannot change stays valid (see
+	// [Store.keepLayers]).
+	var kept map[string]struct{}
+	if s.retention == Background && derive {
+		kept = s.keepLayers(marker.layers)
+		if len(kept) > 0 {
+			s.rec.Count("retain.states_kept", int64(len(kept)))
+		}
+	} else {
+		s.forgetLayers(marker.layers)
+	}
 	if s.retention == Background {
 		// The rest is the retainer's. The publication is the work this call did.
 		workEnd = time.Now()
@@ -224,7 +234,7 @@ func (s *Store) Retain(ctx context.Context, horizon time.Time) error {
 		if s.pass != nil && s.pass.marker.phase == phaseRewrite {
 			replaced = s.pass.marker.generation
 		}
-		if err := s.startPass(*marker, derive); err != nil {
+		if err := s.startPass(*marker, derive, kept); err != nil {
 			return err
 		}
 		if o := s.observer; o != nil {
@@ -325,9 +335,22 @@ type retainPass struct {
 	// not reached: a prefix before it is rewritten. touched holds the prefixes at
 	// or after it that a write rewrote in its own batch, which the chunks skip.
 	// scanned says the scan that follows its rewriting has been started.
-	bg      bool
-	touched map[string]struct{}
-	scanned bool
+	//
+	// keep holds the prefixes whose state the publication left valid, because the
+	// retention cannot change what a read of them finds (see [Store.keepLayers]): only
+	// the states kept at the publication, exact ones with a checkpoint after the
+	// horizon, so on the order of the moved layers' prefixes that have one. It lives
+	// outside the state cache's budget. deferred holds those of them that a write has
+	// put records in and left to the pass (it is bounded as touched is): the pass
+	// rewrites a deferred prefix when it reaches it, and puts no worked-out state
+	// over the writer's (see [Store.stepMustRun] for when a write rewrites it after all).
+	// A deferred prefix is owed by the pass until it reaches it, but a write does not
+	// rewrite it.
+	bg       bool
+	touched  map[string]struct{}
+	keep     map[string]struct{}
+	deferred map[string]struct{}
+	scanned  bool
 
 	visited, replayed, records, baselines, deletes, seeks, maxPrefixRecords int64
 	// counted is how many of deletes the store's count of unflushed range deletions
@@ -472,8 +495,11 @@ func (p *retainPass) chunk() error {
 			lastPrefix = prefix
 			continue
 		}
+		// A prefix a write left to the pass is rewritten with nothing worked out of it: the
+		// writer's state of it is newer than any the pass could put.
+		_, left := p.deferred[string(prefix)]
 		var res rewriteResult
-		if res, err = p.rewritePrefix(it, prefix, p.b, p.derive); err != nil {
+		if res, err = p.rewritePrefix(it, prefix, p.b, p.derive && !left); err != nil {
 			return err
 		}
 		prefixes++
@@ -947,12 +973,12 @@ func (s *Store) carryOver(m *retainMarker, allInside bool) bool {
 // newBackgroundPass makes the pass the marker stands for, as the store's
 // background pass: nothing is touched yet, and nothing has dropped what the writer
 // remembers.
-func (s *Store) newBackgroundPass(m retainMarker, derive bool, stopAfter int) (*retainPass, error) {
+func (s *Store) newBackgroundPass(m retainMarker, derive bool, keep map[string]struct{}, stopAfter int) (*retainPass, error) {
 	p, err := s.newPass(s.ctx, m, derive, stopAfter)
 	if err != nil {
 		return nil, err
 	}
-	p.bg, p.touched = true, map[string]struct{}{}
+	p.bg, p.touched, p.keep, p.deferred = true, map[string]struct{}{}, keep, map[string]struct{}{}
 	return p, nil
 }
 
@@ -960,8 +986,8 @@ func (s *Store) newBackgroundPass(m retainMarker, derive bool, stopAfter int) (*
 // older one, and wakes the retainer. The pass starts from the marker's first key,
 // with no prefix touched: the prefixes the older pass or the writes rewrote are
 // rewritten again at the new horizons.
-func (s *Store) startPass(m retainMarker, derive bool) error {
-	p, err := s.newBackgroundPass(m, derive, s.stopAfter)
+func (s *Store) startPass(m retainMarker, derive bool, keep map[string]struct{}) error {
+	p, err := s.newBackgroundPass(m, derive, keep, s.stopAfter)
 	if err != nil {
 		// The marker of the new generation is stored, and the older pass must not go on
 		// to write its own marker over it.
@@ -988,7 +1014,7 @@ func (s *Store) resumeInBackground(m retainMarker) error {
 	s.last = retainPhases{}
 	s.forgetAll()
 	s.rec.Count("retain.resumed", 1)
-	p, err := s.newBackgroundPass(m, false, s.resumeStopAfter)
+	p, err := s.newBackgroundPass(m, false, nil, s.resumeStopAfter)
 	if err != nil {
 		return err
 	}
@@ -1363,6 +1389,28 @@ func (p *retainPass) owes(prefix []byte) bool {
 	}
 	_, done := p.touched[string(prefix)]
 	return !done
+}
+
+// leavesStep says a write to the prefix does not run the pass's step on it first:
+// the pass owes the prefix, and either an earlier write left it to the pass, or the
+// publication kept its state, which is still in the writer's memory and still exactly
+// what a read of the prefix finds (see [Store.keepLayers]). The step cannot change
+// what a read finds then, and writes the same keys whenever it is run, so the pass
+// runs it when it reaches the prefix, unless the write needs it first (see
+// [Store.stepMustRun]).
+func (p *retainPass) leavesStep(prefix []byte) bool {
+	if !p.owes(prefix) {
+		return false
+	}
+	k := string(prefix)
+	if _, ok := p.deferred[k]; ok {
+		return true
+	}
+	if _, ok := p.keep[k]; !ok {
+		return false
+	}
+	st := p.s.states.peek(k)
+	return st != nil && st.exact
 }
 
 // rewriteForWrite runs the pass's step for a prefix a write is about to put

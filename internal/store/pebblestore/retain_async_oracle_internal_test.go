@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand"
 	"slices"
 	"sync"
@@ -140,6 +141,10 @@ type asyncConfig struct {
 	// about to take a chunk.
 	yield       func(prefixes int64) bool
 	minPrefixes int
+	// noKeep makes the background store a build without the exception for kept states:
+	// every state of a moved layer goes stale at a publication, as it did before it
+	// was kept, and every write rewrites the prefixes the pass owes first.
+	noKeep bool
 }
 
 // asyncResult is what a run leaves for the tests that look further.
@@ -150,6 +155,8 @@ type asyncResult struct {
 	// touched is every prefix a write rewrote, as seen at the points the writes were
 	// made.
 	touched map[string]struct{}
+	// deferred is every prefix a write left to the pass, as seen at the same points.
+	deferred map[string]struct{}
 	// chunks is how many chunks the synchronous pass took.
 	chunks int
 	// before and after count the puts to a prefix the pass had not reached (so the
@@ -157,6 +164,9 @@ type asyncResult struct {
 	before, after int
 	// exact is how many writes went to the prefix the pass was to take next.
 	exact int
+	// digest is the SHA-256 of every key and value of the background store's data
+	// keyspace, once the pass is over.
+	digest string
 }
 
 // asyncErrs collects what the checks that run on the goroutine of the pass find,
@@ -221,7 +231,7 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 	recSyn, recBg := newMemRecorder(), newMemRecorder()
 	syn := open(Synchronous, recSyn, nil)
 
-	res := &asyncResult{syn: syn, ref: ref, rec: recBg, touched: map[string]struct{}{}}
+	res := &asyncResult{syn: syn, ref: ref, rec: recBg, touched: map[string]struct{}{}, deferred: map[string]struct{}{}}
 	errs := &asyncErrs{}
 	var bgs *Store
 	next, hooks := 0, 0
@@ -277,6 +287,9 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 			for k := range p.touched {
 				res.touched[k] = struct{}{}
 			}
+			for k := range p.deferred {
+				res.deferred[k] = struct{}{}
+			}
 		}
 	}
 	// writeExact writes a record to the prefix that begins exactly where the pass
@@ -330,6 +343,9 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 		}
 	}
 	before := func() {
+		if c.noKeep {
+			dropTheKept(bgs)
+		}
 		if c.yield != nil {
 			bgs.writersWaiting.Store(0) // the write that waited has taken the lock
 		}
@@ -399,13 +415,19 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 		}
 	}
 	res.bg = bgs
+	res.digest = dataDigest(t, bgs)
 
 	if m := readMarker(t, bgs); m != nil {
 		t.Errorf("the marker %+v is left", m)
 	}
-	// Each prefix is rewritten by a write once.
-	if n := recBg.counters["retain.touch_rewrites"]; n != int64(len(res.touched)) {
-		t.Errorf("the writes rewrote %d prefixes, and %d distinct ones were touched", n, len(res.touched))
+	// Each prefix a write put records in before the pass reached it is counted once: a
+	// write rewrote it, or left its rewriting to the pass (which a later write may
+	// have rewritten after all, still one prefix).
+	early := maps.Clone(res.touched)
+	maps.Copy(early, res.deferred)
+	if n := recBg.counters["retain.touch_rewrites"] + recBg.counters["retain.touch_deferred"]; n != int64(len(early)) {
+		t.Errorf("the writes rewrote %d prefixes and left %d to the pass, and %d distinct ones were written before the pass reached them",
+			recBg.counters["retain.touch_rewrites"], recBg.counters["retain.touch_deferred"], len(early))
 	}
 	// (a) and (b)
 	got, want := dataBytes(t, bgs), dataBytes(t, syn)
@@ -435,7 +457,7 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 	defer bgs.mu.Unlock()
 	syn.mu.Lock()
 	defer syn.mu.Unlock()
-	for k := range res.touched {
+	for k := range early {
 		a, b := bgs.states.peek(k), syn.states.peek(k)
 		aok, bok := a != nil, b != nil
 		if aok != bok {
@@ -446,6 +468,26 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 		}
 	}
 	return res
+}
+
+// dropTheKept makes the pass of the store a pass of a build without the exception
+// for kept states, before it has taken a chunk: the states the publication left valid
+// are stale, and no write leaves a prefix to the pass.
+func dropTheKept(s *Store) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.pass
+	if p == nil || len(p.keep) == 0 {
+		return
+	}
+	for k := range p.keep {
+		if e := s.states.m[k]; e != nil && e.st != nil {
+			e.st = nil
+			s.states.stale++
+			s.states.resize(e)
+		}
+	}
+	p.keep = nil
 }
 
 // asyncStateMismatch is rememberedStateMismatch for a moment after writes: with
@@ -686,7 +728,7 @@ func TestABackgroundPassIsTheSynchronousOneWhateverTheInterleaving(t *testing.T)
 	}
 	policies := []*CheckpointOptions{policy(CheckpointOptions{On: true, KMin: 1}), policy(CheckpointOptions{On: true, KMin: 2, Lag: 3}), off()}
 	var mu sync.Mutex
-	var touches, passed, chunks, wrote, exactly int64
+	var touches, passed, chunks, wrote, exactly, left, fellBack, kept int64
 	t.Run("seeds", func(t *testing.T) {
 		for seed := range seeds {
 			t.Run(fmt.Sprint(seed), func(t *testing.T) {
@@ -700,13 +742,20 @@ func TestABackgroundPassIsTheSynchronousOneWhateverTheInterleaving(t *testing.T)
 				chunks += int64(res.chunks)
 				wrote += res.rec.counters["retain.touch_rewrites"]
 				exactly += int64(res.exact)
+				left += res.rec.counters["retain.touch_deferred"]
+				fellBack += res.rec.counters["retain.touch_fallback"]
+				kept += res.rec.counters["retain.states_kept"]
 			})
 		}
 	})
 	if touches == 0 || passed == 0 || chunks == 0 || wrote == 0 || exactly == 0 {
 		t.Fatalf("the histories wrote to %d prefixes the pass had not reached and %d it had passed, over %d chunks, with %d rewrites by a write and %d writes to the prefix the pass was to take next: they do not exercise the pass", touches, passed, chunks, wrote, exactly)
 	}
-	t.Logf("%d puts to prefixes the pass had not reached, %d to prefixes it had passed, %d chunks, %d rewrites by a write, %d writes to the prefix the pass was to take next", touches, passed, chunks, wrote, exactly)
+	// (The race detector runs two seeds, which may not.)
+	if !raceEnabled && (kept == 0 || left == 0 || fellBack == 0) {
+		t.Fatalf("the publications kept %d states, the writes left %d prefixes to the pass and %d fell back to rewriting first: the histories do not exercise the exception", kept, left, fellBack)
+	}
+	t.Logf("%d puts to prefixes the pass had not reached, %d to prefixes it had passed, %d chunks, %d rewrites by a write, %d writes to the prefix the pass was to take next; %d states kept, %d prefixes left to the pass, %d of them rewritten first after all", touches, passed, chunks, wrote, exactly, kept, left, fellBack)
 }
 
 // The oracle again, with a write that waits at random prefixes of the background
