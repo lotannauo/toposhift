@@ -7,10 +7,26 @@ linters:
   default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
     - bodyclose
+    - depguard
     - errorlint
     - misspell
     - noctx
     - usestdlibvars
+  settings:
+    depguard:
+      rules:
+        # internal/mcp/mcphttp is the only package that imports the MCP SDK;
+        # cmd/toposhift/mcp_test.go is the one end-to-end test that drives it
+        # with an SDK client.
+        mcp-sdk:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/internal/mcp/mcphttp/*.go"
+            - "!**/cmd/toposhift/mcp_test.go"
+          deny:
+            - pkg: github.com/modelcontextprotocol/
+              desc: only internal/mcp/mcphttp imports the MCP SDK
   exclusions:
     presets:
       - comments
