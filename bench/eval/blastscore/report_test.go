@@ -3,6 +3,7 @@ package blastscore
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"strings"
@@ -349,12 +350,17 @@ func TestReportCarriesTheVersionsAndTheResolveNote(t *testing.T) {
 	}
 }
 
-// The results contract: the report holds pooled numbers and numbers keyed by
-// case id, and no name, uid, label text or timestamp. It is checked three ways:
-// by the type, which may hold no free string; by a report made from real runs,
-// whose JSON may hold no fingerprint and no date; and by the vocabulary of every
-// string in it.
+// The results contract: the report holds pooled numbers, numbers, booleans and
+// fixed words keyed by case id, and no entity, pod or node name, no uid, no label
+// text, no timestamp and no row of the dataset. It is checked three ways: by the
+// type, which may hold no free string and no value of an open type; by a report
+// made from real runs, whose JSON may hold no fingerprint and no date; and by the
+// vocabulary of every string in it. Schema 2 adds each case's trace coverage, a
+// boolean and a whole number of minutes, either of which may be unknown (null).
 func TestResultsContract(t *testing.T) {
+	if SchemaVersion != 2 {
+		t.Errorf("schema %d: the trace coverage fields are schema 2", SchemaVersion)
+	}
 	allowedStrings := map[reflect.Type]bool{
 		reflect.TypeFor[Level](): true, reflect.TypeFor[Class](): true, reflect.TypeFor[Predictor](): true,
 		reflect.TypeFor[Outcome](): true, reflect.TypeFor[Exclusion](): true, reflect.TypeFor[Reason](): true,
@@ -393,9 +399,20 @@ func TestResultsContract(t *testing.T) {
 				t.Errorf("%s has a map key that is not a case id", path)
 			}
 			walk(path, ty.Elem())
+		case reflect.Interface, reflect.Func, reflect.Chan, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
+			t.Errorf("%s is a %s, which the contract cannot bound", path, ty.Kind())
 		}
 	}
 	walk("Report", reflect.TypeFor[Report]())
+	// The coverage is a boolean and a whole number, each of which may be unknown.
+	for name, want := range map[string]reflect.Type{
+		"TraceCoversWindow": reflect.TypeFor[*bool](), "TraceOverlapMinutes": reflect.TypeFor[*int](),
+	} {
+		f, ok := reflect.TypeFor[Provenance]().FieldByName(name)
+		if !ok || f.Type != want {
+			t.Errorf("Provenance.%s is %v, want %v", name, f.Type, want)
+		}
+	}
 
 	// A report from real runs.
 	S, X, Y := svc(1), svc(2), svc(3)
@@ -413,6 +430,10 @@ func TestResultsContract(t *testing.T) {
 		c.SnapshotTime = hm(10, 5)
 		runs = append(runs, runCase(t, st, c, Config{}))
 	}
+	// The probe's three kinds of line: covered, not covered, not computed.
+	yes, no, seven, zero := true, false, 7, 0
+	runs[0].Diag.TraceCoversWindow, runs[0].Diag.TraceOverlapMinutes = &yes, &seven
+	runs[1].Diag.TraceCoversWindow, runs[1].Diag.TraceOverlapMinutes = &no, &zero
 	rep := evaluate(t, runs)
 	raw, err := rep.JSON()
 	if err != nil {
@@ -470,9 +491,37 @@ func TestResultsContract(t *testing.T) {
 		}
 	}
 	check(doc, "results")
+	// No row: the dataset's exports are tab-separated lines, and no string here
+	// holds a tab or a line break.
+	if strings.Contains(js, `\t`) || strings.Contains(js, `\n`) {
+		t.Error("the results hold a string with a tab or a line break")
+	}
+	if got := doc.(map[string]any)["schema"]; got != float64(SchemaVersion) {
+		t.Errorf("schema %v in the JSON, want %d", got, SchemaVersion)
+	}
 	cases := doc.(map[string]any)["cases"].(map[string]any)
 	if len(cases) != 3 {
 		t.Errorf("%d cases keyed by id, want 3", len(cases))
+	}
+	for id, want := range map[string][2]any{
+		"Scenario-1": {true, float64(7)}, "Scenario-2": {false, float64(0)}, "Scenario-3": {nil, nil},
+	} {
+		d := cases[id].(map[string]any)["diagnostics"].(map[string]any)
+		cov, hasCov := d["trace_covers_window"]
+		mins, hasMin := d["trace_overlap_minutes"]
+		if !hasCov || !hasMin {
+			t.Errorf("%s: the diagnostics lack the trace coverage: %v", id, d)
+			continue
+		}
+		if _, isBool := cov.(bool); cov != nil && !isBool {
+			t.Errorf("%s: trace_covers_window is %T, not a boolean", id, cov)
+		}
+		if m, isNum := mins.(float64); mins != nil && (!isNum || m != math.Trunc(m) || m < 0) {
+			t.Errorf("%s: trace_overlap_minutes is %v, not a whole number of minutes", id, mins)
+		}
+		if got := [2]any{cov, mins}; got != want {
+			t.Errorf("%s: trace coverage %v, want %v", id, got, want)
+		}
 	}
 	// An undefined number is null, not a NaN that cannot be written.
 	if !strings.Contains(js, "null") {

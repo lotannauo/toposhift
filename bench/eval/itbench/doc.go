@@ -98,4 +98,12 @@
 // carry instance ids their own SDKs make. The facts built from the pod uid are
 // labelled address-associated, an instance only where its id is the pod uid, and the
 // strata that depend on them (W->pod and C->svc) are read with that in mind.
+//
+// # Trace coverage
+//
+// Before the traces exports were fetched, the start and the end of each were read
+// to tell whether it can cover its case's window. [ReadProbe] reads what that probe
+// kept, a boolean and whole minutes a scenario and no time, and [Probe.Apply] puts
+// them on every case's diagnostics. The probe must name every scenario of the
+// dataset and nothing else. The results of a score are written as [ResultsFile].
 package itbench
