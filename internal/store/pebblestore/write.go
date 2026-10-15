@@ -211,6 +211,12 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 			st.latest = max(st.latest, p.ns)
 			st.since++
 			st.sinceBytes += len(p.value)
+			if st.exact {
+				// The record is at or after the newest checkpoint, or the invalidation
+				// above has cleared exact: a read counts it.
+				st.readSince++
+				st.readSinceBytes += len(p.value)
+			}
 			touched[string(p.prefix)] = struct{}{}
 		}
 		// The prefix is known to hold keys from before the commit, whatever the

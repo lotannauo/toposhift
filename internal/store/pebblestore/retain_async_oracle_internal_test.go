@@ -452,6 +452,11 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 // exact unset it leaves out the count of the records written since the last
 // checkpoint. The caller holds the store's lock.
 func asyncStateMismatch(e *Store, exact bool) error {
+	// With a lag the counts of the writer are not a read's, but a state that says it
+	// is exact has the count of one.
+	if _, _, err := exactStatesMismatch(e); err != nil {
+		return err
+	}
 	if exact && e.anyCkpt {
 		return rememberedStateMismatch(e)
 	}

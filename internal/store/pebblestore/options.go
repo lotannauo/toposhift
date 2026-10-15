@@ -28,8 +28,17 @@ import (
 //     those a complete map knows to be empty, nor the reads below),
 //     "checkpoint.loads_cold" (prefixes read before the first scan of the stored
 //     prefixes has installed a filter), "checkpoint.lookups",
-//     "checkpoint.load_keys" (the keys all of those read) and
-//     "checkpoint.build_records_walked".
+//     "checkpoint.load_keys" (the keys all of those read),
+//     "checkpoint.build_records_walked" and, for the count of what a read would find
+//     since a checkpoint placed with a lag (see prefixState.exact),
+//     "checkpoint.shadow_records" (the records that count walked, never in
+//     "checkpoint.build_records_walked"), "checkpoint.shadow_bytes" (the bytes of
+//     blocks it loaded that were not in the cache, when the store has a recorder; it
+//     includes blocks the walk that builds the checkpoint would read anyway, so it is
+//     an upper bound of the count's cost),
+//     "checkpoint.shadow_capped" (counts given up at 1,024 records) and
+//     "checkpoint.shadow_exists" (states that lost the count because the checkpoint
+//     already existed).
 //   - the writer's map (see the package comment): "writer_map.false_positive_reads"
 //     (prefixes a complete map read because its filter or a delta named them, and
 //     found to hold nothing), "writer_map.lru_evictions", "writer_map.scan_ns" (the
