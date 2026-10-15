@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lotannauo/toposhift/bench/eval/factload"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
@@ -57,7 +58,10 @@ func TestSmokeKubernetesObjectsFile(t *testing.T) {
 	if total != 784 || cl.Rows["pods"] != 177 || cl.Rows["nodes"] != 5 || len(cl.Nodes) != 5 || len(cl.Load) != 182 {
 		t.Errorf("%d rows, %d pods, %d nodes (%d read), %d records for the loader", total, cl.Rows["pods"], cl.Rows["nodes"], len(cl.Nodes), len(cl.Load))
 	}
-	// One snapshot: every row lies within one minute.
+	if cl.Pulls != 1 || cl.Interval != 0 || len(cl.Nodes) != 5 {
+		t.Errorf("%d pulls, interval %s, %d nodes; want one pull of 5 nodes", cl.Pulls, cl.Interval, len(cl.Nodes))
+	}
+	// One pull: every row lies within one minute.
 	var lo, hi uint64
 	for _, o := range cl.Load {
 		ts := uint64(o.Record.ObservedTimeUnixNano)
@@ -178,5 +182,27 @@ func TestSmokeGroundTruthFiles(t *testing.T) {
 	}
 	if len(rows) != 35 || unreadable != 1 || wrapped != 4 || filters != 217 || compiled != 216 {
 		t.Errorf("%d rows, %d unreadable, %d wrapped, %d filters, %d compile; want 35, 1, 4, 217, 216", len(rows), unreadable, wrapped, filters, compiled)
+	}
+}
+
+// Most objects exports are a series of pulls five minutes apart: an object listed in
+// each is one object, so the nodes are the cluster's five and not five for each pull.
+func TestSmokeObjectsSeries(t *testing.T) {
+	path := need(t, filepath.Join(dataDir(t), "Scenario-35", ObjectsFile))
+	cl, err := readCluster(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cl.Pulls < 2 || cl.Interval != 5*time.Minute || cl.Lifetime != 15*time.Minute || len(cl.Nodes) != 5 || cl.Rows["nodes"] != 5*cl.Pulls {
+		t.Fatalf("%d pulls, interval %s, lifetime %s, %d nodes from %d rows", cl.Pulls, cl.Interval, cl.Lifetime, len(cl.Nodes), cl.Rows["nodes"])
+	}
+	listedAgain := 0
+	for _, o := range cl.Objects {
+		if o.Kind == "Pod" && o.Last.After(o.First) {
+			listedAgain++
+		}
+	}
+	if listedAgain == 0 || cl.Rows["pods"] <= listedAgain {
+		t.Errorf("%d pods listed in more than one pull, from %d rows", listedAgain, cl.Rows["pods"])
 	}
 }

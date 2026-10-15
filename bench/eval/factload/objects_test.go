@@ -232,3 +232,95 @@ func TestBodyFromJSON(t *testing.T) {
 		}
 	}
 }
+
+// A series of pulls: the same objects listed six times, about five minutes apart, the
+// gaps being 300.4 s and 299.6 s. in gives the uids of the pods each pull lists.
+func series(t testing.TB, in func(pull int) []string) []Object {
+	t.Helper()
+	offsets := []time.Duration{0, 300400 * time.Millisecond, 600 * time.Second, 899600 * time.Millisecond, 1200200 * time.Millisecond, 1499800 * time.Millisecond}
+	base := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+	var out []Object
+	for i, off := range offsets {
+		for _, uid := range in(i) {
+			out = append(out, mustObject(t, "pods", podJSON(uid, "shop-"+uid, "shop", "node-a", "2026-03-04T08:00:00Z"), base.Add(off)))
+		}
+		out = append(out, mustObject(t, "nodes", nodeJSON("node-uid-a", "node-a", "2026-03-01T00:00:00Z"), base.Add(off)))
+	}
+	return out
+}
+
+func aliveAt(t testing.TB, st *spy, uid string, at time.Time) bool {
+	t.Helper()
+	ok, err := st.Alive(ctx, podFP(t, uid), at, store.Scope{Layer: catalog.L2, AsOf: store.Latest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ok
+}
+
+// Replayed as a series at its interval, an object listed in every pull has no gap
+// between two pulls, however the interval jitters; replayed as one pull with a
+// five-minute lifetime, it lapses a fraction of a second before a later pull.
+func TestASeriesIsReplayedAtItsInterval(t *testing.T) {
+	objs := series(t, func(int) []string { return []string{"pod-1"} })
+	base := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC)
+
+	st := newSpy(t)
+	if _, err := Load(ctx, st, Scenario{Objects: objs, PullInterval: 5 * time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	// Every instant from the creation to the last pull is covered, in particular the
+	// instants just before each pull.
+	for _, at := range []time.Duration{0, 299 * time.Second, 300399 * time.Millisecond, 300400 * time.Millisecond, 599999 * time.Millisecond, 899599 * time.Millisecond, 1200199 * time.Millisecond, 1499800 * time.Millisecond} {
+		if !aliveAt(t, st, "pod-1", base.Add(at)) {
+			t.Errorf("a series replayed at its interval has a gap at +%s", at)
+		}
+	}
+
+	// The lifetime after the last pull is the translator's default, three intervals.
+	last := base.Add(1499800 * time.Millisecond)
+	if !aliveAt(t, st, "pod-1", last.Add(15*time.Minute-time.Nanosecond)) || aliveAt(t, st, "pod-1", last.Add(15*time.Minute)) {
+		t.Error("the lifetime after the last pull is not three intervals")
+	}
+	if Lifetime(5*time.Minute) != 15*time.Minute || Lifetime(0) != ObjectTTL {
+		t.Error("Lifetime")
+	}
+
+	// As one pull, with the five-minute lifetime: a gap after the first pull.
+	single := newSpy(t)
+	if _, err := Load(ctx, single, Scenario{Objects: objs}); err != nil {
+		t.Fatal(err)
+	}
+	if aliveAt(t, single, "pod-1", base.Add(300200*time.Millisecond)) {
+		t.Error("a series replayed as one pull has no gap: this test would not catch the defect")
+	}
+}
+
+// An object missing from a pull lapses after the lifetime the translator gives from the
+// interval, not after five minutes.
+func TestAnObjectMissingFromAPullLapsAfterTheProductLifetime(t *testing.T) {
+	// pod-2 is listed in the first two pulls only.
+	objs := series(t, func(i int) []string {
+		if i < 2 {
+			return []string{"pod-1", "pod-2"}
+		}
+		return []string{"pod-1"}
+	})
+	st := newSpy(t)
+	if _, err := Load(ctx, st, Scenario{Objects: objs, PullInterval: 5 * time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	last := time.Date(2026, 3, 4, 10, 0, 0, 0, time.UTC).Add(300400 * time.Millisecond)
+	for _, c := range []struct {
+		at   time.Time
+		want bool
+	}{
+		{last.Add(5 * time.Minute), true}, // five minutes after the last listing: the single-pull lifetime would be over
+		{last.Add(15*time.Minute - time.Nanosecond), true},
+		{last.Add(15 * time.Minute), false},
+	} {
+		if got := aliveAt(t, st, "pod-2", c.at); got != c.want {
+			t.Errorf("pod-2 alive at last+%s = %t, want %t", c.at.Sub(last), got, c.want)
+		}
+	}
+}

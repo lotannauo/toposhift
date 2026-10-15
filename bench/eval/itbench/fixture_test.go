@@ -108,9 +108,23 @@ func configMapBody(uid, name string) string {
 // shopObjects is the snapshot: two nodes, and for each of five workloads a
 // controller chain down to its pods. The proxy's name starts with the front's.
 func shopObjects() string {
+	return tsvLine(objectColumns...) + shopPull(snapshot, nil)
+}
+
+// shopPull is the rows of one pull of the snapshot's objects, listed at ts, without
+// the objects whose uid is in skip.
+func shopPull(ts string, skip map[string]bool) string {
 	var b strings.Builder
-	b.WriteString(tsvLine(objectColumns...))
-	add := func(resource, body string) { b.WriteString(objectRow(resource, body, snapshot)) }
+	add := func(resource, body string) {
+		if strings.Contains(body, `"uid":"`) {
+			for uid := range skip {
+				if strings.Contains(body, `"uid":"`+uid+`"`) {
+					return
+				}
+			}
+		}
+		b.WriteString(objectRow(resource, body, ts))
+	}
 	add("nodes", nodeBody("node-uid-a", "node-a"))
 	add("nodes", nodeBody("node-uid-b", "node-b"))
 	type wl struct {

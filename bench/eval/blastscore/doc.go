@@ -84,7 +84,7 @@
 // ([CaseIDPattern]), the diagnostic counters, the policy versions and two plain
 // labels. It holds no entity or pod or node name, no uid, no label text and no
 // timestamp: a case carries fingerprints that are never printed, and the only
-// time a result keeps is the boolean "the snapshot lies in the window".
+// time a result keeps is the boolean "the pulls overlap the window".
 //
 // # What a loader reads: the ground-truth files
 //

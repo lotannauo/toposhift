@@ -206,7 +206,7 @@ func seedFrom(g Group, kind SeedKind, c *Cluster, t0 time.Time) Seed {
 	var alive []*Object
 	seen := map[*Object]bool{}
 	for _, p := range pods {
-		if !seen[p] && aliveAt(p, t0) {
+		if !seen[p] && c.aliveAt(p, t0) {
 			seen[p] = true
 			alive = append(alive, p)
 		}

@@ -118,11 +118,11 @@ func TestSeedOfAPodRootIsTheServiceAndTheUniquePod(t *testing.T) {
 		t.Errorf("before creation: %+v", s)
 	}
 	// And one listed more than the TTL ago is not alive either.
-	s = PlanSeed(row, cl, cl.Observed.Add(5*time.Minute))
+	s = PlanSeed(row, cl, cl.Last.Add(5*time.Minute))
 	if len(s.Pods) != 0 {
 		t.Errorf("after the snapshot's TTL: %+v", s)
 	}
-	s = PlanSeed(row, cl, cl.Observed.Add(5*time.Minute-time.Nanosecond))
+	s = PlanSeed(row, cl, cl.Last.Add(5*time.Minute-time.Nanosecond))
 	if len(s.Pods) != 1 {
 		t.Errorf("a nanosecond before the TTL: %+v", s)
 	}

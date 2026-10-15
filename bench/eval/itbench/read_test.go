@@ -97,8 +97,9 @@ func TestReadClusterReadsOneSnapshot(t *testing.T) {
 	if len(cl.Load) != 9 || len(cl.Nodes) != 2 {
 		t.Errorf("%d records for the loader, %d nodes; want 9, 2", len(cl.Load), len(cl.Nodes))
 	}
-	if want := time.Date(2026, 3, 4, 10, 12, 0, 250000000, time.UTC); !cl.Observed.Equal(want) {
-		t.Errorf("snapshot %s, want %s", cl.Observed, want)
+	// One pull: its time, no interval, and the loader's single-pull lifetime.
+	if want := time.Date(2026, 3, 4, 10, 12, 0, 250000000, time.UTC); !cl.First.Equal(want) || !cl.Last.Equal(want) || cl.Pulls != 1 || cl.Interval != 0 || cl.Lifetime != factload.ObjectTTL {
+		t.Errorf("first %s, last %s, %d pulls, interval %s, lifetime %s; want one pull at %s", cl.First, cl.Last, cl.Pulls, cl.Interval, cl.Lifetime, want)
 	}
 	// The record the loader gets is a pull-mode record: the observed time and the
 	// resource name.

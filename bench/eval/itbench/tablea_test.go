@@ -152,3 +152,27 @@ func TestTableAReadsLabelsAndAlertsOnly(t *testing.T) {
 		}
 	}
 }
+
+// Table A is frozen by its hash, so its text must not change with anything else in
+// this package: the text of the three invented scenarios is a golden file, and a
+// change to it is a change to table A.
+func TestTableAIsUnchanged(t *testing.T) {
+	rows, err := TableA(shop(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := FormatTableA(rows)
+	golden := filepath.Join("testdata", "table_a_three_scenarios.txt")
+	if *update {
+		if err := os.WriteFile(golden, []byte(got), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(want) != got {
+		t.Errorf("table A differs from %s: the truth stage's output must not change", golden)
+	}
+}

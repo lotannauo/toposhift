@@ -152,7 +152,7 @@ func RunScenario(ctx context.Context, dir string, pooled map[string]bool, cfg bl
 		return Result{}, err
 	}
 	defer st.Close()
-	res.Stats, err = factload.Load(ctx, st, factload.Scenario{Objects: cl.Load, Spans: spans, Source: Dataset})
+	res.Stats, err = factload.Load(ctx, st, factload.Scenario{Objects: cl.Load, PullInterval: cl.Interval, Spans: spans, Source: Dataset})
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %w", row.ID, err)
 	}
@@ -239,7 +239,7 @@ func BuildCase(row ARow, cl *Cluster, seed Seed, tr Truth, st factload.Stats, po
 
 	c := blastscore.Case{
 		ID: row.ID, Class: row.Class, From: row.Window.From, To: row.Window.To,
-		Nodes: len(cl.Nodes), SnapshotTime: cl.Observed,
+		Nodes: len(cl.Nodes), SnapshotTime: cl.First, SnapshotLast: cl.Last,
 	}
 	p := &c.Provenance
 	p.T0Proxy, p.T1Proxy = row.Window.T0Proxy, row.Window.T1Proxy
