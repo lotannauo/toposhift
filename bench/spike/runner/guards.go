@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+
+	"github.com/lotannauo/toposhift/bench/spike/candidates"
 )
 
 // BuildInfo is what the running binary was built with, as far as it changes what
@@ -126,6 +128,21 @@ func (g Guards) Check() error {
 		return nil
 	}
 	return fmt.Errorf("runner: this binary is not one a result may come from: %s (use -untimed for a validation run)", strings.Join(why, "; "))
+}
+
+// CheckFor is [Guards.Check] for the candidate v: the same, except that a binary built
+// with cgo is not refused when v was made by [candidates.External] and declares cgo.
+// That holds for a [candidates.Wrap] of such a candidate too, but only while its
+// name is still one [candidates.CheckExternalName] accepts: a wrapper or a copy named
+// as a candidate of the registry is checked as Check does, so cgo refuses it. Every
+// other reason still refuses, and a built-in candidate is refused for cgo as Check
+// does. The timed judge does not call it, so it keeps refusing cgo.
+func (g Guards) CheckFor(v candidates.Variant) error {
+	if !v.CGO() || candidates.CheckExternalName(v.Name) != nil {
+		return g.Check()
+	}
+	g.Info.CGO = false
+	return g.Check()
 }
 
 // ErrInsideWorktree is returned for an output directory under a git worktree: a

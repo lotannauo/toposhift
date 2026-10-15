@@ -734,6 +734,7 @@ func TestTimingLabels(t *testing.T) {
 		{"an untimed manifest", full(3).with(func(b fixtureBuild) bool {
 			return b.Window == 7 && b.Candidate == cOff && b.Rep == 1 && b.Arch == "aarch64"
 		}, func(b *fixtureBuild) { b.Untimed = true }), verified(), "L/off at 7 days on aarch64 was built by a binary a result may not come from", ""},
+		{"a build with cgo", full(3).with(every, func(b *fixtureBuild) { b.CGO = true }), verified(), "built with cgo", ""},
 		{"a build from a modified tree", full(3).with(every, func(b *fixtureBuild) { b.Modified = true }), verified(), "built from a tree with uncommitted changes", ""},
 		{"no build settled a retention", full(3).with(every, func(b *fixtureBuild) { b.Settle = "false" }), verified(), "these builds did not settle a retention's tombstones: rules 5 judge only builds that do", "did not settle"},
 		{"no build says it settled", full(3).with(every, func(b *fixtureBuild) { b.Settle = "-" }), verified(), "these builds did not settle a retention's tombstones", ""},
