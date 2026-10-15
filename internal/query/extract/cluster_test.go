@@ -82,7 +82,7 @@ func TestScriptedClusterOracleAndPointReads(t *testing.T) {
 	for _, sc := range seeds {
 		checkOracle(t, st, recs, all, sc.seed, w30, sc.o)
 		checkPointReads(t, st, sc.seed, []identity.Fingerprint{node(1), node(2), node(3), node(4)}, w30, sc.o, crit)
-		res := mustExtract(t, st, sc.seed, w30, sc.o)
+		res := checkMemo(t, st, sc.seed, w30, sc.o)
 		states[res.Anchor.String()]++
 		for _, p := range res.Pairs {
 			states[p.Mechanism.String()]++

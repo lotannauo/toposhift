@@ -109,4 +109,17 @@
 // is fixed in [BudgetDate] and the constants beside it. The Window reads are
 // not bounded by the window: they read every edge record from the start of the
 // store's history, until the store has an interval read of its own.
+//
+// An extraction keeps the answer of every Window, EntityWindow and Alive it has
+// made at its one token, and serves a repeat of the read (the same entity as an
+// endpoint of several hops, or of several Finds) from memory. The memo belongs
+// to one Extract call: it is built when the call starts, dropped when it
+// returns, and shared with no other extraction. It holds facts read at one
+// snapshot, never a derived result, so it changes no answer and no count in
+// [Result].Reads, which still counts every request, each Find's own included.
+// [Result].StoreReads counts the reads that reached the store. A read at
+// store.Latest, a read of a layer with a retention horizon, and a read past the
+// memo's size (about a million (2^20) units, each answer costing its records and one) are
+// answered by the store and not kept, so StoreReads is then larger and the
+// answers are the same.
 package extract

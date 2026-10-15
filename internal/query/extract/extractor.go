@@ -18,13 +18,20 @@ import (
 )
 
 // Extractor derives extractions from a store, which it only reads.
-type Extractor struct{ st store.Store }
+type Extractor struct {
+	st store.Store
+	// capacity is the size of the memo each Extract builds, in the units of
+	// memoCap; 0 keeps nothing.
+	capacity int
+}
 
 // NewExtractor returns an extractor over st.
-func NewExtractor(st store.Store) *Extractor { return &Extractor{st: st} }
+func NewExtractor(st store.Store) *Extractor { return &Extractor{st: st, capacity: memoCap} }
 
-// counting is the store an extraction reads through, its Finds included: it
-// counts the reads the budget is stated in, and never writes.
+// counting is a store an extraction reads through, its Finds included: it
+// counts the reads the budget is stated in, and never writes. An extraction has
+// two: one above its memo, which counts every read request, and one below it,
+// which counts the reads that reach the store.
 type counting struct {
 	store.Store
 	mu    sync.Mutex
@@ -66,11 +73,15 @@ func (e *Extractor) Extract(ctx context.Context, seed Seed, w interval.Window, o
 	if err := ctx.Err(); err != nil {
 		return fail(err)
 	}
-	cnt := &counting{Store: e.st}
+	// The reader and every Find read through cnt, which counts the requests;
+	// the memo answers the ones it has seen; storeCnt counts the rest.
+	storeCnt := &counting{Store: e.st}
+	cnt := &counting{Store: newMemo(storeCnt, e.capacity)}
 	x.r, x.f = interval.NewReader(cnt, interval.Options{}), coresidency.NewFinder(cnt)
 	if err := x.run(); err != nil {
 		return fail(err)
 	}
+	x.res.StoreReads = storeCnt.reads
 	x.res.Reads = cnt.reads
 	x.res.Reads.Calls = x.calls
 	for _, fr := range x.res.PodResults {
