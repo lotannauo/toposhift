@@ -29,6 +29,15 @@ comment-only change that moves no line leaves every binary the same and reruns
 nothing; a comment that adds or removes a line changes the line numbers compiled
 into its package, and so reruns it and everything that imports it.
 
+## eval
+
+- `eval/blastscore`: scores the blast-radius walk and the co-residency queries against
+  labelled fault cases, with baselines (every entity, one hop, the union graph) and an
+  acceptance rule fixed before anything is measured. It reads a store only, parses no
+  dataset, and its results hold pooled numbers and numbers keyed by case id, never an
+  entity name. Its package documentation records the schema of the labelled scenarios'
+  files and the rule itself. These are accuracy numbers: it reports no timing.
+
 ## spike
 
 - `spike/engine`: the narrow interface a storage candidate implements, and the

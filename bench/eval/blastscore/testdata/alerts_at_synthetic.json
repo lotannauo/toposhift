@@ -1,0 +1,9 @@
+[
+  {
+    "labels": {"alertname": "WebSlowness", "namespace": "shop", "service_name": "shop-web", "severity": "warning"},
+    "annotations": {"description": "shop-web answers slowly"},
+    "state": "firing",
+    "activeAt": "2026-01-01T10:04:02.000000001Z",
+    "value": "1.5e+03"
+  }
+]

@@ -1,0 +1,62 @@
+---
+metadata:
+  version: "v0"
+fault:
+  - entity:
+      name: shop-db
+      kind: Service
+      group_id: shop-db-service
+    condition: the database answers slowly
+    category: Resource Saturation
+    fault_mechanism: custom
+  - entity:
+      name: shop-config
+      kind: ConfigMap
+    changed:
+      element: "data.settings"
+      from: "mode: off"
+      to: "mode: on"
+    condition: a setting is switched on
+    category: Configuration Setting
+    fault_mechanism: custom
+alerts:
+  - id: WebFailureRatio
+    group_id: shop-web-service
+    metadata:
+      description: The web service fails more calls than allowed
+  - id: SpendDrift
+    text: Spend rose although use is low
+    group_id: shop-namespace
+groups:
+  - id: shop-db-service
+    kind: Service
+    filter:
+      - shop-db\b
+    namespace: shop
+    root_cause: true
+  - id: shop-db-pod
+    kind: Pod
+    filter:
+      - shop-db-.*
+    namespace: shop
+  - id: shop-web-service
+    kind: Service
+    filter:
+      - shop-web\b
+    namespace: shop
+  - id: shop-namespace
+    kind: Namespace
+    name: shop
+aliases:
+  - - shop-db-service
+    - shop-db-pod
+propagations:
+  - source: shop-db-service
+    target: shop-web-service
+    condition: the web service waits on the database
+    effect: the web service error rate is above threshold
+recommended_actions:
+  - solution:
+      id: add_a_replica_plan
+      actions:
+        - add a replica

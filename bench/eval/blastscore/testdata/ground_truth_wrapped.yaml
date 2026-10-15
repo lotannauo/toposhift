@@ -1,0 +1,44 @@
+---
+apiVersion: itbench.io/v1
+kind: GroundTruth
+metadata:
+  name: scenario-synthetic
+spec:
+  alerts:
+    - group_id: shop-web-service
+      id: WebSilent
+      metadata:
+        description: The web service is receiving nothing
+  aliases:
+    - - shop-web-service
+      - shop-web-pod
+  fault:
+    - category: Infrastructure
+      condition: a pod container fails to start
+      entity:
+        group_id: shop-web-pod
+        kind: Pod
+        name: shop-web-pod
+      fault_mechanism: bad_start_command
+  groups:
+    - filter:
+        - shop-web-.*
+      id: shop-web-pod
+      kind: Pod
+      namespace: shop
+      root_cause: true
+    - filter:
+        - shop-web\b
+      id: shop-web-service
+      kind: Service
+      namespace: shop
+  propagations:
+    - condition: a pod container fails to start
+      effect: the web service becomes unavailable
+      source: shop-web-pod
+      target: shop-web-service
+  recommended_actions:
+    - solution:
+        actions:
+          - fix the container command
+        id: repair_start_command
