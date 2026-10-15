@@ -10,6 +10,20 @@ It is a separate module because it carries a `replace` of the root module to
 based `internal/` visibility still lets it use the root module's `internal/`
 packages. There is no committed `go.work`.
 
+The RocksDB baseline, `rocksdb/`, is a module of its own inside this one, because it
+is built with cgo and a native RocksDB that this module's cgo-free builds and tests
+must never see (`./...` here stops at its `go.mod`). It is layout L on RocksDB:
+`rocksdb/rockslog` is `spike/pebblelog`'s code with each call it makes of Pebble made
+through `rocksdb/rockskv`, which gives RocksDB Pebble's shapes, so the keys and values
+are layout L's byte for byte. Its tests hold it to layout L's frozen store digests, to
+the conformance harness and to layout L's own counters on every query of a plan, and
+`rocksdb/cmd/rocksbench build` and `read` measure it on a plan made by `spikebench
+plan`. Its tasks (`mise run bench:rocksdb:test`, `bench:rocksdb:test:race`,
+`bench:rocksdb:lint`, `bench:rocksdb:vuln`) need RocksDB installed: the pinned
+Homebrew library on a Mac, or `ROCKSDB_PREFIX`, `CGO_CFLAGS` and `CGO_LDFLAGS` for one
+built elsewhere. Only its formatting check needs neither, and it runs in the static
+shard.
+
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
 mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
