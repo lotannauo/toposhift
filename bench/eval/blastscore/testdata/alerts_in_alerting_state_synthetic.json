@@ -1,0 +1,15 @@
+{
+  "data": {
+    "alerts": [
+      {
+        "labels": {"alertname": "WebFailureRatio", "namespace": "shop", "service_name": "shop-web", "severity": "critical"},
+        "annotations": {"description": "shop-web fails too many calls"},
+        "state": "firing",
+        "activeAt": "2026-01-01T10:06:18.000000001Z",
+        "value": "7.5e-01"
+      }
+    ]
+  },
+  "status": "success",
+  "timestamp": "2026-01-01T10:07:00Z"
+}
