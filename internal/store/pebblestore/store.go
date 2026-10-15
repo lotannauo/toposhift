@@ -72,6 +72,13 @@ type Store struct {
 	stopAfter         int
 	resumeStopAfter   int
 	afterRetainCommit func()
+	// chunkMinPrefixes is the least a background chunk rewrites before it ends for a
+	// waiting write, and writersWaiting how many writes have said they will take the
+	// lock and have not yet (see [retainPass.yields]). afterChunkPrefix is the test
+	// hook of the same name in Options.
+	chunkMinPrefixes int64
+	writersWaiting   atomic.Int32
+	afterChunkPrefix func(prefixes int64)
 	// retainFlushDels is the count of unflushed range deletions at which a pass
 	// flushes, none if it is not above zero (see flushBound); fl is the count,
 	// guarded by mu. chunkNow is the clock of a chunk's time, and afterChunkOpen,
@@ -223,6 +230,18 @@ const defaultRetainBatchBytes = 4 << 20
 // makes it.
 const defaultRetainChunkTime = 20 * time.Millisecond
 
+// defaultRetainMinPrefixes is how many prefixes a background chunk rewrites at
+// least before it may end for a waiting write (see [retainPass.yields]). The gate
+// reads the median of a chunk's prefixes at the bottom of its histogram bucket
+// (eight buckets to a doubling), where 100 is in the bucket from 96; 128 is the
+// lower edge of a bucket, above 104, so chunks of exactly the minimum are read at
+// the minimum.
+const defaultRetainMinPrefixes = 128
+
+// retainYieldSpins bounds how many times the retainer yields the processor, before
+// it takes the lock for its next chunk, to a write that is waiting for the lock.
+const retainYieldSpins = 64
+
 var errInjected = errors.New("pebblestore: injected failure")
 
 // retainPhases is how a call of Retain spent its time.
@@ -301,7 +320,7 @@ func Open(dir string, o Options) (*Store, error) {
 		retention: o.Retention, retainerExited: o.retainerExited, beforeRetainChunk: o.beforeRetainChunk,
 		betweenSettleRanges: o.betweenSettleRanges, observer: o.Observer,
 		scanHook: o.scanHook,
-		chunkNow: o.chunkNow, afterChunkOpen: o.afterChunkOpen, flushHook: o.flushHook,
+		chunkNow: o.chunkNow, afterChunkOpen: o.afterChunkOpen, afterChunkPrefix: o.afterChunkPrefix, flushHook: o.flushHook,
 		beforeFlushWait: o.beforeFlushWait, beforeApply: o.beforeApply, beforeKVClose: o.beforeKVClose,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
@@ -351,6 +370,10 @@ func Open(dir string, o Options) (*Store, error) {
 		s.retainFlushDels = defaultRetainFlushDels
 	case flushDels > 0:
 		s.retainFlushDels = int64(flushDels)
+	}
+	s.chunkMinPrefixes = int64(o.retainMinPrefixes)
+	if s.chunkMinPrefixes == 0 {
+		s.chunkMinPrefixes = defaultRetainMinPrefixes
 	}
 	if s.chunkTime == 0 {
 		s.chunkTime = defaultRetainChunkTime

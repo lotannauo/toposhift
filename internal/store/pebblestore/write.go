@@ -77,7 +77,11 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		}
 	}
 	ph.validate = s.since(validateStart)
+	// A background chunk of a retention ends early for a write that waits (see
+	// [retainPass.yields]); no other caller says it waits.
+	s.writersWaiting.Add(1)
 	s.mu.Lock()
+	s.writersWaiting.Add(-1)
 	defer s.mu.Unlock()
 	s.flushCounts()
 	if s.failed != nil {

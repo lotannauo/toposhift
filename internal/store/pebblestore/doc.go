@@ -109,6 +109,24 @@
 // goroutine takes the pass one chunk at a time, holding the lock for the chunk only
 // and yielding between chunks, so writers go on. Reads take no lock, as always.
 //
+// A chunk of the background pass also ends between prefixes when a write is waiting
+// for the lock: a Write says so just before it takes the lock (no other call does),
+// and the chunk ends at its next prefix boundary once it has rewritten at least 128
+// prefixes and has worked, since its iterator was positioned, at least as long as the
+// opening of that iterator was charged against the chunk's time. Both minimums keep
+// a pass's progress however often writers wait: the prefixes because the gate reads
+// the median of a chunk's prefixes at the bottom of its histogram bucket, and 100
+// falls in the bucket from 96, so the minimum is a bucket edge above it; the work
+// because opening an iterator can cost more than the prefixes of a short chunk. The
+// retainer then yields to the waiting write, a bounded number of times, before it
+// takes the lock for the next chunk. The bytes and the time still end a chunk, and
+// the synchronous pass, which holds the lock throughout, is unchanged. No stored byte
+// differs: chunk boundaries only move the marker's intermediate resume keys. A chunk
+// ended for a waiting write is a judged chunk like any other, so this reopens the
+// retention-chunk criteria (the opening time, the hold, the median of prefixes per
+// chunk, the write stalls and the flushes put off) with their limits unchanged; the
+// chunks it ends are counted as "retain.chunks_yielded", reported and not judged.
+//
 // A write to a prefix the pass has not reached (at or after the marker's resume
 // key, in a layer the pass rewrites, and not yet rewritten by a write) first runs
 // the pass's step on that prefix, in its own batch, before anything else the write
