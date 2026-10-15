@@ -140,6 +140,7 @@ type fixtureBuild struct {
 	Records                uint64
 	Untimed                bool
 	Modified               bool
+	CGO                    bool
 	WrongBeforeCompaction  bool
 }
 
@@ -286,7 +287,7 @@ func (b fixtureBuild) manifest() *runner.Manifest {
 		Candidate: b.Candidate, PlanDigest: b.planDigest(), Stream: stream,
 		Build: runner.BuildInfo{
 			GoVersion: b.GoVersion, GOOS: "linux", GOARCH: b.goarch(), Revision: b.Revision,
-			Executable: b.Executable, Modified: b.Modified,
+			Executable: b.Executable, Modified: b.Modified, CGO: b.CGO,
 		},
 		Untimed:        b.Untimed,
 		Describe:       describe,

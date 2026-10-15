@@ -65,7 +65,7 @@ var stable = []string{
 // the plan's, whose tables are not the ones the build left, or that works while it
 // is being read, is refused.
 func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress) (*Results, error) {
-	if err := g.Check(); err != nil {
+	if err := g.CheckFor(v); err != nil {
 		return nil, err
 	}
 	m, manifestDigest, err := readManifest(dir)

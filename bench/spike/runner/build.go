@@ -442,7 +442,7 @@ func Build(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g 
 // everything, and records what the database holds in dir's manifest. The
 // directory must be new and outside any git worktree.
 func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, opts BuildOptions, say Progress) (*Manifest, error) {
-	if err := g.Check(); err != nil {
+	if err := g.CheckFor(v); err != nil {
 		return nil, err
 	}
 	paceFrom, err := checkPace(plan, v, opts)

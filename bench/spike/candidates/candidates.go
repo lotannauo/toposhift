@@ -39,6 +39,7 @@
 package candidates
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -156,6 +157,9 @@ type Variant struct {
 	// root says the candidate is built through the root module's store, which has a
 	// retention mode ([Options.RetentionMode]).
 	root bool
+	// cgo says the candidate was made by [External] and declares that it needs a binary
+	// built with cgo. Nothing else sets it, so a built-in candidate never has it.
+	cgo  bool
 	open func(dir string, o Options) (engine.Engine, error)
 }
 
@@ -165,6 +169,54 @@ func (v Variant) Open(dir string, o Options) (engine.Engine, error) { return v.o
 // Root says whether the candidate is built through the root module's store, whose
 // retention has a mode.
 func (v Variant) Root() bool { return v.root }
+
+// CGO says whether the candidate was made by [External] and declares that it is built
+// with cgo, so that a binary built with cgo may be used for its results. No candidate
+// of [All] or [Lookup] does.
+func (v Variant) CGO() bool { return v.cgo }
+
+// reservedPrefixes are the starts of the names of the candidates this package makes.
+var reservedPrefixes = []string{"L/", "Lroot/", "M/"}
+
+// CheckExternalName returns why name is not one an external candidate may go by, or
+// nil: it is empty, [Lookup] resolves it, or it begins with L/, Lroot/ or M/, which are
+// the names of this package's candidates. An external candidate cannot then be taken
+// for one of them in a result.
+func CheckExternalName(name string) error {
+	if name == "" {
+		return errors.New("candidates: an external candidate needs a name")
+	}
+	if _, err := Lookup(name); err == nil {
+		return fmt.Errorf("candidates: %q is the name of a candidate of this package", name)
+	}
+	for _, p := range reservedPrefixes {
+		if strings.HasPrefix(name, p) {
+			return fmt.Errorf("candidates: %q begins with %q, which is for the candidates of this package", name, p)
+		}
+	}
+	return nil
+}
+
+// External is a candidate defined outside this package, by an engine this package does
+// not import: its layout is "M" or "L", and open opens it. cgo declares that it needs
+// a binary built with cgo (a native library), which a runner's guards then admit for
+// this candidate only. The name is the one results go by, and [CheckExternalName] says
+// which are refused.
+//
+// The declaration is trusted, not checked: the guards cannot tell what open builds.
+// They do check the name again ([Variant.Name] is exported, and [Wrap] gives another).
+func External(name, layout string, cgo bool, open func(dir string, o Options) (engine.Engine, error)) (Variant, error) {
+	if err := CheckExternalName(name); err != nil {
+		return Variant{}, err
+	}
+	if layout != "L" && layout != "M" {
+		return Variant{}, fmt.Errorf("candidates: external candidate %q: layout %q is not \"L\" or \"M\"", name, layout)
+	}
+	if open == nil {
+		return Variant{}, fmt.Errorf("candidates: external candidate %q has no open function", name)
+	}
+	return Variant{Name: name, Layout: layout, cgo: cgo, open: open}, nil
+}
 
 func layoutM(schema pebblekv.Schema, filter bool) Variant {
 	name := "M/" + schema.String()
@@ -261,7 +313,7 @@ func lagName(d time.Duration) string {
 // variant that is not a candidate, for a test of a runner that needs an engine
 // that misbehaves. It is not in [All] and [Lookup] does not find it.
 func Wrap(v Variant, name string, wrap func(engine.Engine, Options) (engine.Engine, error)) Variant {
-	return Variant{Name: name, Layout: v.Layout, root: v.root, open: func(dir string, o Options) (engine.Engine, error) {
+	return Variant{Name: name, Layout: v.Layout, root: v.root, cgo: v.cgo, open: func(dir string, o Options) (engine.Engine, error) {
 		e, err := v.open(dir, o)
 		if err != nil {
 			return nil, err

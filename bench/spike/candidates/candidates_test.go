@@ -581,3 +581,142 @@ type phaseLog func(what string)
 func (f phaseLog) Published(uint64, time.Time)    { f("published") }
 func (f phaseLog) RewriteEnded(uint64, time.Time) { f("rewrite") }
 func (f phaseLog) SettleEnded(uint64, time.Time)  { f("settle") }
+
+// External makes a candidate that is not in the registry, under a name that cannot be
+// taken for one that is.
+func TestExternalMakesACandidateOutsideTheRegistry(t *testing.T) {
+	t.Parallel()
+
+	base, err := candidates.Lookup("L/off")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen candidates.Options
+	opened := 0
+	open := func(dir string, o candidates.Options) (engine.Engine, error) {
+		seen = o
+		opened++
+		return base.Open(dir, o)
+	}
+
+	for _, cgo := range []bool{false, true} {
+		v, err := candidates.External("RL/off", "L", cgo, open)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Name != "RL/off" || v.Layout != "L" || v.Root() || v.CGO() != cgo {
+			t.Errorf("the candidate is %s (layout %s, root %v, cgo %v), want RL/off, L, false, %v", v.Name, v.Layout, v.Root(), v.CGO(), cgo)
+		}
+		e, err := v.Open("db", candidates.Options{FS: vfs.NewMem(), Sync: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !seen.Sync {
+			t.Error("the open function did not get the run's options")
+		}
+		if err := e.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if opened != 2 {
+		t.Errorf("the open function ran %d times, want 2", opened)
+	}
+	if _, err := candidates.Lookup("RL/off"); err == nil {
+		t.Error("an external candidate is in the registry")
+	}
+	if slices.Contains(candidates.Names(), "RL/off") {
+		t.Error("an external candidate is in the default set")
+	}
+
+	// A layout M candidate is allowed, and a name beside the reserved ones.
+	for _, c := range []struct{ name, layout string }{{"RL/k64a2l5m", "L"}, {"RM/crdb1", "M"}, {"Lx/off", "L"}, {"l/off", "L"}, {"ML/off", "L"}, {"Lroot", "L"}, {"M", "M"}} {
+		if _, err := candidates.External(c.name, c.layout, true, open); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+// The names of the registry cannot be used by an external candidate, whether
+// Lookup finds them or the prefix is only reserved, so that a result never names a
+// candidate that is not the one this package makes.
+func TestExternalRefusesTheNamesOfTheRegistry(t *testing.T) {
+	t.Parallel()
+
+	open := func(string, candidates.Options) (engine.Engine, error) { return nil, context.Canceled }
+	names := append(candidates.Names(), "L/k32a2", "L/k128a0.5l1ns", "L/k64a2l1nsr4", "Lroot/off", "Lroot/k64a2l1ns",
+		// Reserved by prefix though Lookup does not find them.
+		"L/", "L/rocks", "L/off ", "L/k64a2l1nsr4x", "Lroot/", "Lroot/rocks", "Lroot/k64a2l1nsr4", "M/", "M/rocks", "M/crdb2")
+	for _, name := range names {
+		for _, cgo := range []bool{false, true} {
+			if v, err := candidates.External(name, "L", cgo, open); err == nil {
+				t.Errorf("%q (cgo %v) was accepted as %+v", name, cgo, v)
+			}
+		}
+	}
+	// A name that Lookup resolves is refused for the reason that it resolves, a
+	// reserved one for its prefix.
+	if _, err := candidates.External("L/off", "L", true, open); err == nil || !strings.Contains(err.Error(), "L/off") {
+		t.Errorf("L/off: %v", err)
+	}
+	if _, err := candidates.External("M/rocks", "L", true, open); err == nil || !strings.Contains(err.Error(), "M/") {
+		t.Errorf("M/rocks: %v", err)
+	}
+
+	// Nothing else about the call may be left out.
+	for name, c := range map[string]struct {
+		name, layout string
+		open         func(string, candidates.Options) (engine.Engine, error)
+	}{
+		"no name":      {"", "L", open},
+		"no layout":    {"RL/off", "", open},
+		"another one":  {"RL/off", "N", open},
+		"lower case":   {"RL/off", "l", open},
+		"no open func": {"RL/off", "L", nil},
+	} {
+		if _, err := candidates.External(c.name, c.layout, true, c.open); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// Only External sets the declaration: no candidate of the registry has it, however
+// it is found.
+func TestNoCandidateOfTheRegistryDeclaresCgo(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range append(candidates.Names(), candidates.SweepGrid()...) {
+		v, err := candidates.Lookup(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.CGO() {
+			t.Errorf("%s declares cgo", name)
+		}
+	}
+	for _, v := range []candidates.Variant{candidates.LNoCheckpoints(), candidates.LCheckpoints(64, 4, 0), candidates.LCheckpointsReplacing(64, 4, 0, 2), candidates.LrootNoCheckpoints(), candidates.LrootCheckpoints(64, 4, 0), {}} {
+		if v.CGO() {
+			t.Errorf("%q declares cgo", v.Name)
+		}
+	}
+}
+
+// CheckExternalName is the rule External applies, for the guards to apply again to a
+// variant whose name changed after it was made.
+func TestCheckExternalNameIsExternalsRule(t *testing.T) {
+	t.Parallel()
+
+	open := func(string, candidates.Options) (engine.Engine, error) { return nil, context.Canceled }
+	for _, name := range append(candidates.Names(), "", "L/", "L/rocks", "Lroot/off", "M/crdb2", "L/k32a2") {
+		if err := candidates.CheckExternalName(name); err == nil {
+			t.Errorf("%q was accepted", name)
+		}
+		if _, err := candidates.External(name, "L", true, open); err == nil {
+			t.Errorf("External accepted %q", name)
+		}
+	}
+	for _, name := range []string{"RL/off", "RL/k64a2l5m", "X/wrapped", "Lx/off", "l/off", "M"} {
+		if err := candidates.CheckExternalName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+}
