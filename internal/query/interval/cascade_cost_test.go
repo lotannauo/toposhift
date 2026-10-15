@@ -75,22 +75,24 @@ func TestCascadeReadsOnlyTheEndpointsOfEdgesInTheWindow(t *testing.T) {
 // endpoint layer does not refuse it; an edge in the window still is refused
 // (scenario H).
 func TestCascadeOfAnEdgeOutsideTheWindowReadsNoEndpointLayer(t *testing.T) {
+	// A process, whose forward edges are stored in L1 only: a node's forward
+	// read also covers L2, which is retained here, and is refused up front.
 	st := openStore(t, memstore.Options{Keep: [4]bool{true, true, false, true}})
-	nodeA, h := mkfp(t, catalog.K8sNode, 1), mkfp(t, catalog.Host, 1)
-	e := edge(nodeA, h, catalog.RunsOn)
+	proc, h := mkfp(t, catalog.Process, 1), mkfp(t, catalog.Host, 1)
+	e := edge(proc, h, catalog.RunsOn)
 	newFeed(t, st).write(
-		observe(ent(nodeA), k8s, hm(9, 0), 0), observe(ent(h), k8s, hm(9, 0), 0),
+		observe(ent(proc), k8s, hm(9, 0), 0), observe(ent(h), k8s, hm(9, 0), 0),
 		observe(e, k8s, hm(9, 0), 0), deleted(e, k8s, hm(9, 30)),
 	)
 	if err := st.Retain(ctx, hm(10, 0)); err != nil {
 		t.Fatal(err)
 	}
 	w := win(hm(10, 0), hm(10, 30))
-	res, err := interval.NewReader(st, interval.Options{}).Edges(ctx, nodeA, store.Forward, w)
+	res, err := interval.NewReader(st, interval.Options{}).Edges(ctx, proc, store.Forward, w)
 	if err != nil || len(res.Elements) != 0 {
-		t.Errorf("Edges(N, Forward) = %v, %v; want an empty answer", describeAll(res.Elements), err)
+		t.Errorf("Edges(process, Forward) = %v, %v; want an empty answer", describeAll(res.Elements), err)
 	}
-	_, err = interval.ReadingEveryEndpoint(interval.NewReader(st, interval.Options{})).Edges(ctx, nodeA, store.Forward, w)
+	_, err = interval.ReadingEveryEndpoint(interval.NewReader(st, interval.Options{})).Edges(ctx, proc, store.Forward, w)
 	if !errors.Is(err, interval.ErrRetained) {
 		t.Errorf("reading every endpoint: %v, want ErrRetained", err)
 	}

@@ -557,16 +557,17 @@ func (o *oracle) find(seed identity.Fingerprint, nodeOnly bool) (coresidency.Res
 		return cmp.Compare(a.Subject.Relation, b.Subject.Relation)
 	})
 
-	// The reads, by the budget's formula: per call, the distinct endpoints of
-	// the edges with an interval of their own in the window.
+	// The reads, by the budget's formula: per call, one Window per fingerprint
+	// and layer read, and the distinct endpoints of the edges with an interval
+	// of their own in the window.
 	var reads coresidency.Reads
-	call := func(fps []identity.Fingerprint, m map[identity.Fingerprint][]store.Subject, layer catalog.Layer) {
+	call := func(fps []identity.Fingerprint, m map[identity.Fingerprint][]store.Subject, layers ...catalog.Layer) {
 		reads.Calls++
-		reads.Windows += len(fps)
+		reads.Windows += len(fps) * len(layers)
 		ends := map[identity.Fingerprint]bool{}
 		for _, fp := range fps {
 			for _, e := range m[fp] {
-				if layerOf(e) == layer && o.hasOwn(e) {
+				if slices.Contains(layers, layerOf(e)) && o.hasOwn(e) {
 					ends[e.A], ends[e.B] = true, true
 				}
 			}
@@ -582,15 +583,29 @@ func (o *oracle) find(seed identity.Fingerprint, nodeOnly bool) (coresidency.Res
 	if len(n1s) > 0 {
 		call(n1s, o.in, catalog.L2)
 		if !nodeOnly {
-			call(n1s, o.out, catalog.L1)
+			call(n1s, o.out, nodeForward()...)
 			if len(hs) > 0 {
 				call(hs, o.in, catalog.L1)
 				if len(n2s) > 0 {
-					call(n2s, o.out, catalog.L1)
+					call(n2s, o.out, nodeForward()...)
 					call(n2s, o.in, catalog.L2)
 				}
 			}
 		}
 	}
 	return res, reads
+}
+
+// nodeForward is the layers a node's forward edges are stored in, read from the
+// catalog: one Window each.
+func nodeForward() []catalog.Layer {
+	var out []catalog.Layer
+	for rel := range catalog.Default().Relations() {
+		for ep := range rel.Endpoints() {
+			if ep.From == catalog.K8sNode && !slices.Contains(out, rel.Layer()) {
+				out = append(out, rel.Layer())
+			}
+		}
+	}
+	return out
 }

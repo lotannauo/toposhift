@@ -544,11 +544,11 @@ func (o *oracle) find(seed identity.Fingerprint, nodeOnly bool) (coresidency.Res
 	if len(n1s) > 0 {
 		o.call(&reads, n1s, o.in, catalog.L2)
 		if !nodeOnly {
-			o.call(&reads, n1s, o.out, catalog.L1)
+			o.call(&reads, n1s, o.out, nodeForward()...)
 			if len(hs) > 0 {
 				o.call(&reads, hs, o.in, catalog.L1)
 				if len(n2s) > 0 {
-					o.call(&reads, n2s, o.out, catalog.L1)
+					o.call(&reads, n2s, o.out, nodeForward()...)
 					o.call(&reads, n2s, o.in, catalog.L2)
 				}
 			}
@@ -578,6 +578,20 @@ func (o *oracle) call(reads *coresidency.Reads, fps []identity.Fingerprint, m ma
 			reads.EntityWindows++
 		}
 	}
+}
+
+// nodeForward is the layers a node's forward edges are stored in, read from the
+// catalog: one Window each.
+func nodeForward() []catalog.Layer {
+	var out []catalog.Layer
+	for rel := range catalog.Default().Relations() {
+		for ep := range rel.Endpoints() {
+			if ep.From == catalog.K8sNode && !slices.Contains(out, rel.Layer()) {
+				out = append(out, rel.Layer())
+			}
+		}
+	}
+	return out
 }
 
 // The extraction, from the definitions.

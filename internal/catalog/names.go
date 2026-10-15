@@ -43,6 +43,7 @@ const (
 	Process         EntityType = "process"
 	ServiceInstance EntityType = "service.instance"
 	Service         EntityType = "service"
+	NetworkEndpoint EntityType = "topo.endpoint"
 )
 
 // Relation types in the shipped catalog.
@@ -54,6 +55,7 @@ const (
 	InstanceOf  RelationType = "instance_of"
 	DependsOn   RelationType = "depends_on"
 	SameAs      RelationType = "same_as"
+	HasAddress  RelationType = "has_address"
 )
 
 // Identifying attribute keys in the shipped catalog.
@@ -71,4 +73,6 @@ const (
 	ServiceNamespace    AttributeKey = "service.namespace"
 	ServiceName         AttributeKey = "service.name"
 	ServiceInstanceID   AttributeKey = "service.instance.id"
+	EndpointRealm       AttributeKey = "topo.endpoint.realm"
+	EndpointAddress     AttributeKey = "topo.endpoint.address"
 )

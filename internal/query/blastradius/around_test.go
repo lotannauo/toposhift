@@ -205,7 +205,7 @@ func TestARAWholeChain(t *testing.T) {
 		mline(P2, 2, mid, interval.ClassTransient, 2, arr{N1, catalog.ScheduledOn, mid}),
 		mline(C3, 3, whole, interval.ClassStable, 0, arr{P3, catalog.PartOf, whole}),
 		mline(C2, 3, mid, interval.ClassTransient, 2, arr{P2, catalog.PartOf, mid}))
-	expectReads(t, h.Reads, 4, 7, 15, 15)
+	expectReads(t, h.Reads, 4, 9, 15, 15)
 	for _, s := range res.Substrates {
 		if s.Expanded && (s.Impact.Token != res.Token || s.Impact.Seed != s.Entity) {
 			t.Errorf("%s: token %d, seed %s", s.Entity, s.Impact.Token, s.Impact.Seed)
@@ -218,7 +218,7 @@ func TestARAWholeChain(t *testing.T) {
 			t.Errorf("%s: expanded %t, impact %+v", fp, s.Expanded, s.Impact)
 		}
 	}
-	expectReads(t, res.Reads, 9, 12, 27, 27)
+	expectReads(t, res.Reads, 9, 15, 27, 27)
 
 	// The option walks them too, each as Impact walks it, over the whole window.
 	res = around(t, st, P1, w30, blastradius.Options{ExpandFabric: true})
@@ -237,9 +237,9 @@ func TestARAWholeChain(t *testing.T) {
 			mline(P2, 3, mid, interval.ClassTransient, 2, arr{N1, catalog.ScheduledOn, mid}),
 			mline(C3, 4, whole, interval.ClassStable, 0, arr{P3, catalog.PartOf, whole}),
 			mline(C2, 4, mid, interval.ClassTransient, 2, arr{P2, catalog.PartOf, mid}))
-		expectReads(t, s.Impact.Reads, 6, 9, 20, 20)
+		expectReads(t, s.Impact.Reads, 6, 11, 20, 20)
 	}
-	expectReads(t, res.Reads, 21, 30, 67, 67)
+	expectReads(t, res.Reads, 21, 37, 67, 67)
 
 	// Impact ignores the option.
 	if a, b := impact(t, st, H, w30, blastradius.Options{}), impact(t, st, H, w30, blastradius.Options{ExpandFabric: true}); sameResult(a, b) != "" || a.Reads != b.Reads {
@@ -272,7 +272,7 @@ func TestARBNodeOnTwoHosts(t *testing.T) {
 	expect(t, "Impact(H) unattributed", describeUnattributed(h.Unattributed))
 	// The upward walk reads P1 and N1; N1, H and H2; then H, R1 and Z1. The
 	// other host is no substrate, so it is not in the frontier.
-	expectReads(t, upwardReads(res), 3, 3, 8, 8)
+	expectReads(t, upwardReads(res), 3, 4, 8, 8)
 	for _, s := range res.Substrates {
 		if s.Entity == H2 {
 			t.Errorf("%s is a substrate", H2)
@@ -300,8 +300,8 @@ func TestARCPodOnTwoNodes(t *testing.T) {
 		mline(N2, 1, whole, interval.ClassStable, 0, arr{H, catalog.RunsOn, whole}))
 	expectReads(t, res.Substrates[0].Impact.Reads, 1, 1, 2, 2)
 	expectReads(t, res.Substrates[1].Impact.Reads, 1, 1, 2, 2)
-	expectReads(t, res.Substrates[2].Impact.Reads, 3, 5, 9, 9)
-	expectReads(t, res.Reads, 8, 11, 19, 19)
+	expectReads(t, res.Substrates[2].Impact.Reads, 3, 7, 9, 9)
+	expectReads(t, res.Reads, 8, 15, 19, 19)
 }
 
 // gone2 is a Delete of an edge by a given producer.
@@ -317,7 +317,7 @@ func TestARDNoLocatedIn(t *testing.T) {
 		sline(H, 2, whole, true, arr{N1, catalog.RunsOn, whole}))
 	// Three calls: the host has a forward edge layer, so its read is made, and
 	// it finds no edge. The pod and the node, then the node and the host.
-	expectReads(t, upwardReads(res), 3, 3, 4, 4)
+	expectReads(t, upwardReads(res), 3, 4, 4, 4)
 }
 
 func TestAREQuarantine(t *testing.T) {
@@ -343,7 +343,7 @@ func TestAREQuarantine(t *testing.T) {
 		expect(t, "quarantined", quarantinedSubjects(res.Quarantined), quarantinedSubjects([]interval.Element{{Subject: runsOn(N1, H2)}})...)
 		// The upward walk reads P1 and N1; then N1, H and H2, which is
 		// quarantined and has no EntityWindow; then the host's edges, none.
-		expectReads(t, upwardReads(res), 3, 3, 5, 4)
+		expectReads(t, upwardReads(res), 3, 4, 5, 4)
 		h := substrate(t, res, H).Impact
 		expect(t, "Impact(H)", briefs(h.Members),
 			mline(N1, 1, first, interval.ClassDisappeared, 1, arr{H, catalog.RunsOn, first}))
@@ -358,7 +358,7 @@ func TestAREQuarantine(t *testing.T) {
 		expect(t, "quarantined", quarantinedSubjects(res.Quarantined), quarantinedSubjects([]interval.Element{{Subject: runsOn(N1, H)}})...)
 		// P1 and N1, then N1 and H (H quarantined: no EntityWindow); the host is
 		// not reached, so its edges are not read: two calls.
-		expectReads(t, upwardReads(res), 2, 2, 4, 3)
+		expectReads(t, upwardReads(res), 2, 3, 4, 3)
 		n := substrate(t, res, N1).Impact
 		expect(t, "Impact(N1)", briefs(n.Members))
 		expectReads(t, n.Reads, 1, 1, 2, 2)
@@ -433,8 +433,8 @@ func TestARFTheRestriction(t *testing.T) {
 	// and its container: P3 has no Window of its own and its container is not
 	// read. A walk over the whole window cut afterwards would expand P3 too.
 	expectReads(t, n.Reads, 2, 2, 6, 6)
-	expectReads(t, h.Reads, 4, 4, 10, 10)
-	expectReads(t, res.Reads, 9, 9, 20, 20)
+	expectReads(t, h.Reads, 4, 5, 10, 10)
+	expectReads(t, res.Reads, 9, 11, 20, 20)
 }
 
 func TestARGNothing(t *testing.T) {
@@ -604,8 +604,8 @@ func TestARLTheReferenceCell(t *testing.T) {
 	// Listing the fabric is free, and the default reads are the upward walk's
 	// plus the node's and the host's.
 	expectReads(t, n.Reads, 2, 110, 329, 329)
-	expectReads(t, h.Reads, 4, 112, 333, 333)
-	expectReads(t, res.Reads, 9, 225, 669, 669)
+	expectReads(t, h.Reads, 4, 113, 333, 333)
+	expectReads(t, res.Reads, 9, 227, 669, 669)
 	if res.Reads.Alive > blastradius.BudgetAroundExistence || res.Reads.Windows > blastradius.BudgetAroundWindows {
 		t.Errorf("reads %+v over the budget", res.Reads)
 	}
@@ -615,15 +615,15 @@ func TestARLTheReferenceCell(t *testing.T) {
 
 	res = around(t, st, seed, w30, blastradius.Options{ExpandFabric: true})
 	for _, fp := range []identity.Fingerprint{R1, Z1} {
-		expectReads(t, substrate(t, res, fp).Impact.Reads, 6, 114, 338, 338)
+		expectReads(t, substrate(t, res, fp).Impact.Reads, 6, 115, 338, 338)
 	}
-	expectReads(t, res.Reads, 21, 453, 1345, 1345)
+	expectReads(t, res.Reads, 21, 457, 1345, 1345)
 	if res.Reads.Alive > blastradius.BudgetAroundExpandedExistence || res.Reads.Windows > blastradius.BudgetAroundExpandedWindows {
 		t.Errorf("reads %+v over the budget", res.Reads)
 	}
 
 	// Impact from the host is what scenario L fixes.
-	expectReads(t, impact(t, st, H, w30, blastradius.Options{}).Reads, 4, 113, 335, 335)
+	expectReads(t, impact(t, st, H, w30, blastradius.Options{}).Reads, 4, 114, 335, 335)
 }
 
 // checkAround checks an answer against the per-instant oracle: it equals the

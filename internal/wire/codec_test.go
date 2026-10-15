@@ -748,7 +748,7 @@ func TestCurrentPolicy(t *testing.T) {
 	if got, want := hex.EncodeToString(p.CatalogIDs[:]), hex.EncodeToString(h.Sum(nil)); got != want {
 		t.Errorf("the catalog digest is %s, the frozen ids file makes %s", got, want)
 	}
-	const pinned = "e0d82b47286993f7466a1507bb6980e72d21271373c7a61c22f7f013bb36894d"
+	const pinned = "f28d37014cb38aaad2b7bfa3bb73194e0db9c69e61ac95942517e82f964dfe70"
 	if got := hex.EncodeToString(p.CatalogIDs[:]); got != pinned {
 		t.Errorf("the catalog digest is %s, pinned %s", got, pinned)
 	}

@@ -179,8 +179,8 @@ func TestScenarioQAAnchoredMinimal(t *testing.T) {
 			}) {
 		t.Errorf("pod results %v", seedsOf(res))
 	}
-	expectReads(t, res.Reads, 10, 13, 29, 29)
-	expectStoreReads(t, res.StoreReads, 11, 10, 10)
+	expectReads(t, res.Reads, 10, 14, 29, 29)
+	expectStoreReads(t, res.StoreReads, 12, 10, 10)
 	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 	if res.Token != st.LastSeq() || res.PolicyVersion != 1 || res.CoResidencyPolicy != coresidency.PolicyVersion ||
 		res.IntervalPolicy != interval.PolicyVersion || res.Seed != (extract.Anchored{Service: S, Host: H, At: hm(10, 15)}) {
@@ -207,8 +207,8 @@ func TestScenarioQA2ANeighbourOnTheAnchor(t *testing.T) {
 			[]string{via(N, sp(hm(10, 0), hm(10, 30)))}, 2, ps{hm(10, 0), hm(10, 30), true, nil}),
 		qaPair(S),
 		qaPair(C))
-	expectReads(t, res.Reads, 14, 19, 46, 46)
-	expectStoreReads(t, res.StoreReads, 14, 12, 12)
+	expectReads(t, res.Reads, 14, 21, 46, 46)
+	expectStoreReads(t, res.StoreReads, 15, 12, 12)
 	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 }
 
@@ -225,8 +225,8 @@ func TestScenarioQA3TheAnchorsNodeOnTwoHosts(t *testing.T) {
 	if len(res.PodResults) != 1 || len(res.PodResults[0].SeedHosts) != 1 || !sameSpans(res.PodResults[0].SeedHosts[0].Spans, []interval.Span{sp(hm(10, 0), hm(10, 12))}) {
 		t.Errorf("pod results %+v", res.PodResults)
 	}
-	expectReads(t, res.Reads, 10, 13, 30, 30)
-	expectStoreReads(t, res.StoreReads, 11, 11, 11)
+	expectReads(t, res.Reads, 10, 14, 30, 30)
+	expectStoreReads(t, res.StoreReads, 12, 11, 11)
 	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 }
 
@@ -290,10 +290,11 @@ func TestScenarioQCNoUnionGraphAtTheServiceLevel(t *testing.T) {
 		ua(PS, N, "no_host", nil, sp(hm(10, 0), hm(10, 30))),
 		ua(PA, N, "no_host", nil, sp(hm(10, 0), hm(10, 5))),
 		ua(PB, N, "no_host", nil, sp(hm(10, 6), hm(10, 30))))
-	// S1 2/3, S2 1/2, X1 4/5, X2 3/9, three Finds 3/6 each (no runs_on: hop C
-	// reads nothing), M1 3/6 (the seed pods' sidecars), no M2.
-	expectReads(t, res.Reads, 14, 22, 43, 43)
-	expectStoreReads(t, res.StoreReads, 18, 10, 10)
+	// S1 2/3, S2 1/2, X1 4/5, X2 3/9, three Finds 4/6 each (no runs_on: hop C
+	// reads the node's two forward layers and finds nothing), M1 3/6 (the seed
+	// pods' sidecars), no M2.
+	expectReads(t, res.Reads, 14, 25, 43, 43)
+	expectStoreReads(t, res.StoreReads, 19, 10, 10)
 	checkMemo(t, st, extract.Exploratory{Service: S}, w30, extract.Options{})
 }
 

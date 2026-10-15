@@ -142,7 +142,7 @@ func TestScenarioATheBucketsAroundANode(t *testing.T) {
 		ts(hm(10, 12))+" appear "+subjectString(sched(D, N)),
 		ts(hm(10, 20))+" disappear "+subjectString(sched(C, N))+" producer",
 	)
-	expectReads(t, res.Reads, 3, 2, 7, 7)
+	expectReads(t, res.Reads, 3, 3, 7, 7)
 	if res.Token != 9+7 || res.PolicyVersion != 1 || res.IntervalPolicy != interval.PolicyVersion || !res.T1.Equal(T1) || !res.T2.Equal(T2) ||
 		fmt.Sprint(res.Scope) != fmt.Sprint([]identity.Fingerprint{N}) {
 		t.Errorf("header: token %d, versions %d %d, %s %s %v", res.Token, res.PolicyVersion, res.IntervalPolicy, ts(res.T1), ts(res.T2), res.Scope)
@@ -168,7 +168,7 @@ func TestScenarioBAbsenceVersusIgnorance(t *testing.T) {
 	)
 	expect(t, "created", entryStrings(res.Created))
 	expect(t, "transient", entryStrings(res.Transient))
-	expectReads(t, res.Reads, 3, 2, 4, 4)
+	expectReads(t, res.Reads, 3, 3, 4, 4)
 	if sp.writes != 0 {
 		t.Errorf("%d writes or retentions", sp.writes)
 	}
@@ -361,7 +361,7 @@ func TestScenarioFQuarantine(t *testing.T) {
 	if len(res.Created)+len(res.Deleted)+len(res.Changed)+len(res.Transient) != 0 || res.Counts != want {
 		t.Errorf("buckets %+v, counts %+v, want only %+v", res, res.Counts, want)
 	}
-	expectReads(t, res.Reads, 3, 4, 6, 3)
+	expectReads(t, res.Reads, 3, 5, 6, 3)
 }
 
 // The quarantined list is capped like the bucket lists, with its counts
@@ -419,7 +419,7 @@ func TestScenarioGBoundaries(t *testing.T) {
 	expect(t, "events", eventStrings(graphdiff.Events(res)),
 		ts(T2)+" appear "+subjectString(sched(X, N)),
 		ts(T2)+" disappear "+subjectString(sched(Y, N))+" producer")
-	expectReads(t, res.Reads, 3, 2, 5, 5)
+	expectReads(t, res.Reads, 3, 3, 5, 5)
 }
 
 func TestScenarioHFlapThenDeletion(t *testing.T) {
@@ -453,7 +453,7 @@ func TestScenarioIOneEdgeSeenFromBothEnds(t *testing.T) {
 	if fmt.Sprint(res.Scope) != fmt.Sprint([]identity.Fingerprint{N, P}) {
 		t.Errorf("scope %v, want [%s %s]", res.Scope, N, P)
 	}
-	expectReads(t, res.Reads, 3, 4, 6, 6)
+	expectReads(t, res.Reads, 3, 5, 6, 6)
 }
 
 func TestScenarioJTheTokenIsPinnedOnce(t *testing.T) {
@@ -596,9 +596,9 @@ func TestScenarioMAHotNode(t *testing.T) {
 	}
 	res := diff30(t, st, graphdiff.Options{}, N)
 	expectEmpty(t, res)
-	expectReads(t, res.Reads, 3, 2, 114, 114)
+	expectReads(t, res.Reads, 3, 3, 114, 114)
 	if res.Reads.Alive > 3+110+1 || res.Reads.Alive > graphdiff.BudgetReferenceExistence {
-		t.Errorf("%d existence reads, over 3 + D + C = 114 or the budget of %d", res.Reads.Alive, graphdiff.BudgetReferenceExistence)
+		t.Errorf("%d existence reads, over 3 + D + C + A = 114 or the budget of %d", res.Reads.Alive, graphdiff.BudgetReferenceExistence)
 	}
 }
 

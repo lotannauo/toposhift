@@ -1,5 +1,6 @@
 {
   "depends_on": 4,
+  "has_address": 3,
   "instance_of": 3,
   "located_in": 2,
   "part_of": 3,

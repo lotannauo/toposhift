@@ -348,7 +348,7 @@ func TestScenarioGQuarantine(t *testing.T) {
 	st.reset()
 	res = mustEdges(t, r, n, store.Forward, w)
 	check(t, "Edges(N, Forward)", res.Elements, []interval.Element{want})
-	wantLog := []string{"Window k8s.node L1", "Alive k8s.node L2", "EntityWindow k8s.node L2", "Alive host L1"}
+	wantLog := []string{"Window k8s.node L1", "Alive k8s.node L2", "EntityWindow k8s.node L2", "Alive host L1", "Window k8s.node L2"}
 	if !slices.Equal(st.log, wantLog) {
 		t.Errorf("reads %q, want %q", st.log, wantLog)
 	}
@@ -394,12 +394,24 @@ func TestScenarioG2WriterDriftIsLoud(t *testing.T) {
 	}
 	t.Run("relation stored in another layer", func(t *testing.T) {
 		// A runs_on edge written in L2 is invisible to a read of L1, its
-		// relation's layer, and no read can see it in the wrong layer. The
-		// writers' tests against the catalog keep it from arising.
+		// relation's layer: a process's forward read covers L1 only, so it does
+		// not see it. A node's forward read also covers L2 (has_address), finds
+		// the edge there, and fails loudly. The writers' tests against the
+		// catalog keep either from arising.
+		proc := mkfp(t, catalog.Process, 1)
 		st := openStore(t, memstore.Options{})
-		newFeed(t, st).write(inLayer(observe(edge(n, h, catalog.RunsOn), k8s, hm(9, 0), 0), catalog.L2))
-		res := mustEdges(t, interval.NewReader(st, interval.Options{Raw: true}), n, store.Forward, w)
-		check(t, "Edges(N, Forward)", res.Elements, nil)
+		newFeed(t, st).write(
+			inLayer(observe(edge(proc, h, catalog.RunsOn), k8s, hm(9, 0), 0), catalog.L2),
+			inLayer(observe(edge(n, h, catalog.RunsOn), k8s, hm(9, 0), 0), catalog.L2),
+		)
+		res := mustEdges(t, interval.NewReader(st, interval.Options{Raw: true}), proc, store.Forward, w)
+		check(t, "Edges(process, Forward)", res.Elements, nil)
+		for _, raw := range []bool{true, false} {
+			_, err := interval.NewReader(st, interval.Options{Raw: raw}).Edges(ctx, n, store.Forward, w)
+			if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), n.String()) || !strings.Contains(err.Error(), "layer L1") {
+				t.Errorf("raw %t: Edges(N, Forward) = %v, want ErrInvalid naming the edge and L1", raw, err)
+			}
+		}
 	})
 }
 
@@ -471,15 +483,21 @@ func TestScenarioHRetention(t *testing.T) {
 	})
 	t.Run("only L2 retained", func(t *testing.T) {
 		st := open(t, [4]bool{true, true, false, true})
-		res := mustEdges(t, interval.NewReader(st, interval.Options{Raw: true}), n, store.Forward, w)
-		if len(res.Elements) != 1 {
-			t.Errorf("raw Edges(N, Forward) = %v", describeAll(res.Elements))
+		// A node's forward edges are stored in L1 and L2 (has_address), so even
+		// a raw read of them is refused.
+		_, err := interval.NewReader(st, interval.Options{Raw: true}).Edges(ctx, n, store.Forward, w)
+		retained(t, err)
+		if !strings.Contains(err.Error(), "L2") {
+			t.Errorf("raw: %v does not name L2", err)
 		}
 		st.reset()
-		_, err := interval.NewReader(st, interval.Options{}).Edges(ctx, n, store.Forward, w)
+		_, err = interval.NewReader(st, interval.Options{}).Edges(ctx, n, store.Forward, w)
 		retained(t, err)
-		if !strings.Contains(err.Error(), "L2") || !slices.Equal(st.log, []string{"Window k8s.node L1"}) {
-			t.Errorf("%v after reads %q; want the refusal at N's existence in L2", err, st.log)
+		if !strings.Contains(err.Error(), "L2") {
+			t.Errorf("%v does not name L2", err)
+		}
+		if reads, _ := st.counts(); reads != 0 {
+			t.Errorf("%d reads before the refusal: %q", reads, st.log)
 		}
 	})
 }
