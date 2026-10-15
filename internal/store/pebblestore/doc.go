@@ -137,6 +137,27 @@
 // pass. What the writer remembers of such a prefix is what a read of it finds once
 // the batch is applied.
 //
+// There is one exception, for a prefix whose remembered state the publication left
+// valid. A state is kept when it is exactly what a read of the whole prefix finds
+// (see prefixState.exact), its newest checkpoint is after the layer's horizon and
+// its newest record is at or after it: a read of the prefix then reads only keys at
+// or after the horizon, and the step, which removes the keys before it and the
+// checkpoint at it and writes a baseline at it, changes none of what a read counts,
+// so the state is what a read finds after the step too. A write to such a prefix
+// does not run the step first, and reads nothing: it puts its records beside the
+// keys the step has yet to remove, and the pass runs the step when it reaches the
+// prefix, to the same bytes, and puts no worked-out state over the writer's. The
+// step still runs first, in the write's batch, when the write would otherwise change
+// what it leaves: a record before the state's newest checkpoint, which deletes it,
+// or records that make the prefix due for a checkpoint with none known between the
+// horizon and it, whose build would walk on into the keys the step removes. A
+// checkpoint placed by the instrument on such a prefix runs the step first, in a
+// commit of its own. A state is not kept for an entity prefix under a boot key, nor
+// when the fold of a state changes (the version of the fold is pinned by a test).
+// No stored byte and no answer differs from those of a write that runs the step
+// first. A key before the horizon that cannot be read is then met by the pass, whose
+// error stops the store, and not by the write that touches the prefix.
+//
 // A second Retain while a pass is pending starts a pass again from the first key at
 // the new horizons, keeping the layers of the older pass that it does not move. Close
 // stops the pass at a chunk boundary and waits for the goroutine; a store opened over
