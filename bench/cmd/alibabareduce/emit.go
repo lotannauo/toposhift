@@ -80,13 +80,14 @@ type sink struct {
 	f    *os.File
 	cw   *countWriter
 	w    *activity.Writer
-	co   *coalesce.Coalescer
+	co   *shardedCoalescer
 
 	seq      uint64
 	buf      []store.Record
 	started  bool
 	next     time.Time // the next scheduled flush
 	last     time.Time // the ingest time of the latest assertion
+	maxTTL   time.Duration
 	res      sinkResult
 	capture  bool
 	raw      []rawAssertion
@@ -97,7 +98,7 @@ type sink struct {
 // newSink starts a stream. If write is false the records are counted and not
 // written. If capture is set the raw assertions are kept in memory for a check.
 func newSink(name, path string, write bool, maxBytes int64, capture bool) (*sink, error) {
-	co, err := coalesce.New(coalesceConfig())
+	co, err := newShardedCoalescer(coalesceConfig())
 	if err != nil {
 		return nil, err
 	}
@@ -131,22 +132,33 @@ func (s *sink) assert(r store.Record) error {
 		s.next = ingest.Add(coalesce.FlushPeriod)
 	}
 	for s.next.Before(ingest) {
-		if err := s.write(s.co.Flush(s.next, s.buf[:0])); err != nil {
+		if err := s.co.flush(s.next, s.emit); err != nil {
 			return err
 		}
 		s.next = s.next.Add(coalesce.FlushPeriod)
 	}
 	s.last = ingest
+	s.maxTTL = max(s.maxTTL, r.TTL)
 	s.res.Assertions++
 	if s.capture {
 		s.raw = append(s.raw, rawAssertion{r.Subject, r.Layer, r.EventTime, r.TTL})
 	}
-	return s.write(s.co.Add(r, s.buf[:0]))
+	recs, err := s.co.add(r, s.buf[:0])
+	if err != nil {
+		s.err = fmt.Errorf("%s: %w", s.name, err)
+		return s.err
+	}
+	return s.write(recs)
 }
 
 // write numbers the records the coalescer returned and writes them.
 func (s *sink) write(recs []store.Record) error {
 	s.buf = recs[:0]
+	return s.emit(recs)
+}
+
+// emit numbers and writes records. It does not keep the slice.
+func (s *sink) emit(recs []store.Record) error {
 	for _, r := range recs {
 		s.seq++
 		r.Seq = s.seq
@@ -192,15 +204,18 @@ func (s *sink) finish() (sinkResult, error) {
 	}
 	if s.started {
 		for !s.next.After(s.last) {
-			if err := s.write(s.co.Flush(s.next, s.buf[:0])); err != nil {
+			if err := s.co.flush(s.next, s.emit); err != nil {
 				return s.res, err
 			}
 			s.next = s.next.Add(coalesce.FlushPeriod)
 		}
-		if err := s.write(s.co.FlushAll(s.buf[:0])); err != nil {
-			return s.res, err
+		if err := s.co.flushAll(s.last, s.maxTTL, s.emit); err != nil {
+			s.err = fmt.Errorf("%s: %w", s.name, err)
+			return s.res, s.err
 		}
 	}
+	// The coalescer holds a run for every subject of the stream, and is not used again.
+	s.co, s.buf = nil, nil
 	if s.w == nil {
 		return s.res, nil
 	}

@@ -46,7 +46,8 @@ func LoadCandidate(dir string) (*Candidate, error) {
 // reference engine's, or, among the candidates built through the root store, with
 // different retention flush thresholds. A validation run is never a result, so it is always one
 // reason; allowUntimed leaves that one out, for a caller who is asking whether the
-// run was valid and not whether it can be compared.
+// run was valid and not whether it can be compared. A set built or read by a binary
+// built with cgo is refused on the same terms, unless allowUntimed is true.
 func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 	planDigest, err := plan.Digest()
 	if err != nil {
@@ -63,6 +64,9 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 		}
 		if !allowUntimed && (c.Results.Untimed || c.Manifest.Untimed) {
 			out = append(out, name+": built or read by a binary a result may not come from (an untimed validation run)")
+		}
+		if !allowUntimed && (c.Results.Build.CGO || c.Manifest.Build.CGO) {
+			out = append(out, name+": built or read by a binary built with cgo, which these gates do not judge (a candidate that declares cgo is judged by a rule of its own)")
 		}
 		if n := len(c.Results.Mismatches); n > 0 {
 			out = append(out, fmt.Sprintf("%s: %d answers differ from the reference engine's, first: %s", name, n, c.Results.Mismatches[0]))

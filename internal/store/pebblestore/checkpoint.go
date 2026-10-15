@@ -63,7 +63,9 @@ import (
 // range of instants, a key that cannot be read, a store that always reads whole
 // prefixes (tests), and a retention that stops or fails. A layer a retention leaves
 // alone keeps what is remembered of it. A retention that changes nothing (a horizon
-// before the first instant a record can have) forgets nothing. That read stops at the newest checkpoint (and the newest
+// before the first instant a record can have) forgets nothing. A Background pass that
+// works the states out also leaves valid the state of a prefix that it cannot change
+// (see keepLayers). That read stops at the newest checkpoint (and the newest
 // record, if it is older): it is as long as the tail the policy lets grow, not
 // the prefix's history. The older checkpoints are looked up only when something
 // needs them, by reading back from the oldest instant known down to the one
@@ -230,6 +232,62 @@ func (s *Store) forgetLayers(ls []retainLayer) {
 		return slices.ContainsFunc(ls, func(l retainLayer) bool { return layerOfPrefix([]byte(k)) == l.layer })
 	})
 	s.lose()
+}
+
+// keepLayers is forgetLayers for a Background pass that works the states out: it
+// leaves valid, instead of stale, the state of a prefix of the layers that the
+// retention cannot change, and returns the prefixes it kept. A state is kept when it
+// is exact (what a read of the whole prefix finds, see [prefixState.exact]) and
+// stands above the horizon of its layer, the horizon in the marker: its newest
+// checkpoint is after the horizon (not at it, for the step deletes a checkpoint
+// there) and its newest record is at or after it. A read of the prefix stops at that
+// checkpoint, or at that record if it is older, and so reads only keys at or after the
+// horizon, which the step leaves; it deletes the keys before the horizon and the
+// checkpoint at it, and writes a baseline at it, none of which a read reaches or
+// counts. So the state is what a read finds after the step too, and it needs no
+// read. It is not kept for an entity prefix under a boot key, whose checkpoints no
+// read uses and whose step folds the prefix's boots.
+//
+// A kept state takes the counts a read would find since its newest checkpoint as its
+// own, which is what the read the step is followed by finds (with a lag the writer's
+// own count is behind it, see [prefixState.exact]), and forgets the older checkpoints
+// it knew of, which the step may delete: the checkpoint it stands on is the only one
+// it keeps. It ends completeness, as any forgetting does.
+//
+// The caller derives (the policy is on, a checkpoint may exist, a read stops at the
+// tail, and every horizon is inside the range).
+func (s *Store) keepLayers(ls []retainLayer) map[string]struct{} {
+	var hNs [layers]int64
+	var moved [layers]bool
+	for _, l := range ls {
+		i := int(l.layer) - int(catalog.L0)
+		if i < 0 || i >= layers {
+			continue
+		}
+		ns, where := pebblekv.Locate(l.horizon.UTC())
+		moved[i], hNs[i] = true, ns
+		if where != pebblekv.Inside {
+			hNs[i] = math.MaxInt64 // nothing stands above it
+		}
+	}
+	layerIndex := func(k string) int { return int(layerOfPrefix([]byte(k))) - int(catalog.L0) }
+	kept := s.states.staleUnlessKept(
+		func(k string) bool { i := layerIndex(k); return i >= 0 && i < layers && moved[i] },
+		func(k string, st *prefixState) bool {
+			if !st.exact || len(st.ckpts) == 0 || (s.policy.BootKey != "" && k[prefixLen-1] == dirEntity) {
+				return false
+			}
+			h := hNs[layerIndex(k)]
+			newest := st.ckpts[len(st.ckpts)-1]
+			if newest <= h || st.latest < h {
+				return false
+			}
+			st.ckpts, st.below = []int64{newest}, newest
+			st.since, st.sinceBytes = st.readSince, st.readSinceBytes
+			return true
+		})
+	s.lose()
+	return kept
 }
 
 // lose says the map is not complete, until a scan that begins after it installs its
@@ -767,6 +825,24 @@ func (s *Store) invalidate(b *pebble.Batch, prefix []byte, st *prefixState, ns i
 	return nil
 }
 
+// runLeftStep runs the pass's step on a prefix a write left to it, in a commit of
+// its own, not synced, as the pass commits its chunks, and marks the prefix as
+// rewritten. The commit's outcome is uncertain if it reports an error. The caller
+// holds s.mu.
+func (s *Store) runLeftStep(op string, prefix []byte) error {
+	b := s.kv.NewBatch()
+	defer func() { _ = b.Close() }()
+	if err := s.touchPrefix(b, prefix); err != nil {
+		return err
+	}
+	if err := s.kv.Apply(b, pebble.NoSync); err != nil {
+		s.forgetAll()
+		return s.uncertainCommit(op, err)
+	}
+	s.pass.touched[string(prefix)] = struct{}{}
+	return nil
+}
+
 // CheckpointEdges writes the checkpoint of an entity's edges in one direction at
 // c, if there is none there already, as the policy would have. It refuses an
 // instant it cannot place: one at or below the layer's horizon, or outside the
@@ -817,6 +893,15 @@ func (s *Store) checkpointAt(op string, prefix []byte, c time.Time) error {
 	s.states.pin(string(prefix), st)
 	defer s.states.unpinAll()
 	s.written(prefix)
+	if p := s.pass; p != nil {
+		if _, left := p.deferred[string(prefix)]; left && p.owes(prefix) {
+			// A write left the pass's step on this prefix to the pass. A checkpoint is built
+			// from the keys the step leaves, so the step runs first, in a commit of its own.
+			if err := s.runLeftStep(op, prefix); err != nil {
+				return err
+			}
+		}
+	}
 	if err := s.know(prefix, st, cNs); err != nil {
 		s.forget(string(prefix))
 		return err

@@ -270,6 +270,29 @@ func (c *stateCache) staleWhere(pick func(string) bool) {
 	}
 }
 
+// staleUnlessKept makes stale every entry whose prefix pick picks, but those for
+// which keep says the state stays valid; keep may change the state it is given. It
+// returns the prefixes kept.
+func (c *stateCache) staleUnlessKept(pick func(string) bool, keep func(string, *prefixState) bool) map[string]struct{} {
+	var kept map[string]struct{}
+	for k, e := range c.m {
+		if e.st == nil || !pick(k) {
+			continue
+		}
+		if keep(k, e.st) {
+			if kept == nil {
+				kept = map[string]struct{}{}
+			}
+			kept[k] = struct{}{}
+		} else {
+			e.st = nil
+			c.stale++
+		}
+		c.resize(e)
+	}
+	return kept
+}
+
 // dropStale drops the stale entries.
 func (c *stateCache) dropStale() {
 	if c.stale == 0 {

@@ -51,6 +51,24 @@ into its package, and so reruns it and everything that imports it.
   dataset, and its results hold pooled numbers and numbers keyed by case id, never an
   entity name. Its package documentation records the schema of the labelled scenarios'
   files and the rule itself. These are accuracy numbers: it reports no timing.
+- `eval/factload`: writes one scenario's facts into a store. Pods, nodes and containers
+  go through the product's Kubernetes objects translator and the resume step. The
+  product's service writers (`internal/ingest/svcgraph`, `internal/ingest/spancount`) read
+  the service graph and span count connectors' metrics; the dataset holds spans and none of
+  those metrics, so this loader pairs the spans itself, as the service graph connector
+  does, with a TTL of its own (an evaluation parameter; the product's expiry is
+  configuration). Feeding those writers with connector output computed from the spans is
+  not done here.
+- `eval/itbench`: reads ITBench-Lite (IBM Research, Apache-2.0, revision d0916b0) and
+  turns each labelled scenario into a case and its facts. It reads the fetched files and
+  copies nothing from them. Its one added dependency is `go.yaml.in/yaml/v3` (Apache-2.0
+  and MIT, pure Go), which reads the labels.
+- `cmd/evalblast`: runs the evaluation in stages with no default: `-stage truth`
+  prints the table made from the labels alone, `-stage map` the table made from the
+  Kubernetes objects, `-stage pool` the set of service names with a span in the trace data
+  read, and `-stage score` scores. The first three print a sha256, and score
+  needs the sha256 of both tables and of the pooled set. Its output names entities of the dataset and is written outside the
+  repository.
 
 ## spike
 

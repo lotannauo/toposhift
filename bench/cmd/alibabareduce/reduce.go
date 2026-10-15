@@ -99,27 +99,48 @@ func reduce(cfg Config) (*results, error) {
 	res.place = pr
 	res.cads[0].edges.onGap = func(missed int32) { pr.gaps[int64(missed)]++ }
 	fx := newFixture(&cfg)
-	for _, a := range parch {
-		cfg.logf("placement: %s", a.Rel)
-		rep, first, byMinute, err := pr.readPlacement(&cfg, a, sums)
-		if err != nil {
-			return nil, err
-		}
-		res.files = append(res.files, rep)
-		pr.ensure()
-		if cfg.mut == mutSplitAtFileBoundary && a.Index > 0 {
-			pr.splitAll()
-		}
-		for i, rows := range byMinute {
-			m := first + int32(i)
-			if err := pr.minute(m, int32(a.Index), rows); err != nil {
+	// The cadences are reduced one after the other, each from its own read of the
+	// archives, so the coalescer of one cadence is gone before the next one's
+	// starts. The first pass also counts the statistics of the grid and keeps the
+	// fixture's rows; the later passes take the samples again and count nothing.
+	for pass, c := range res.cads {
+		pr.restart([]*cadence{c}, pass == 0)
+		for _, a := range parch {
+			cfg.logf("placement %s: %s", c.spec.name, a.Rel)
+			rep, first, byMinute, err := pr.readPlacement(&cfg, a, sums)
+			if err != nil {
 				return nil, err
 			}
-			fx.retain(m, rows)
+			if pass == 0 {
+				res.files = append(res.files, rep)
+			}
+			pr.ensure()
+			if cfg.mut == mutSplitAtFileBoundary && a.Index > 0 {
+				pr.splitAll()
+			}
+			for i, rows := range byMinute {
+				m := first + int32(i)
+				if err := pr.minute(m, int32(a.Index), rows); err != nil {
+					return nil, err
+				}
+				if pass == 0 {
+					fx.retain(m, rows)
+				}
+				byMinute[i] = nil
+			}
+			cfg.logf("placement %s: %s: %d rows, %d used", c.spec.name, a.Rel, rep.Rows, rep.Used)
 		}
-		cfg.logf("placement: %s: %d rows, %d used", a.Rel, rep.Rows, rep.Used)
-	}
-	for _, c := range res.cads {
+		if pass == 0 {
+			// Every node of the hour is known, and the later passes meet no new token:
+			// the fixture's rows are cut down now, not when the last pass is done.
+			fx.selectRows(d.pods, d.nodes, d.names)
+			res.fixtureNodeRows = map[string]int{}
+			for _, rows := range fx.rows {
+				for _, w := range rows {
+					res.fixtureNodeRows[d.nodes.name(w.node)]++
+				}
+			}
+		}
 		r, err := c.sink.finish()
 		if err != nil {
 			return nil, err
@@ -129,13 +150,7 @@ func reduce(cfg Config) (*results, error) {
 		res.nodeIvs[c.spec.name] = c.nodes.finish()
 		res.edgeIvs[c.spec.name] = c.edges.finish()
 	}
-	fx.selectRows(d.pods, d.nodes, d.names)
-	res.fixtureNodeRows = map[string]int{}
-	for _, rows := range fx.rows {
-		for _, w := range rows {
-			res.fixtureNodeRows[d.nodes.name(w.node)]++
-		}
-	}
+	pr.cads, pr.statistics = res.cads, true
 
 	// Calls.
 	callSink, err := newSink("calls", filepath.Join(o.out, "calls.parquet"), true, cfg.MaxFileBytes, cfg.VerifyStreams)

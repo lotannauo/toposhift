@@ -86,8 +86,18 @@ import (
 //     (which this version of Pebble does only for a database opened read-only):
 //     both are tried again after the pass's next chunk; and, in a Background store,
 //     "retain.touch_rewrites" (the prefixes a write rewrote in its own batch because
-//     the pass had not reached them); and, when Open finishes a retention that
-//     an earlier process left, "retain.resumed", counted once before that retention
+//     the pass had not reached them), "retain.states_kept" (the states a publication
+//     left valid, because each is what a read of its prefix finds and the retention
+//     cannot change that; counted when the retention is published),
+//     "retain.touch_deferred" (the prefixes of those that a write put records in and
+//     left to the pass, which rewrites them when it reaches them) and
+//     "retain.touch_fallback" (the prefixes kept or deferred whose rewriting a write
+//     ran first after all, because its records would otherwise change what the
+//     rewriting leaves, or what the checkpoint they make due is built from; each is
+//     also counted in "retain.touch_rewrites", or in "retain.touch_deferred" if it
+//     was deferred before, so that a prefix a write put records in before the pass
+//     reached it is counted once in those two); and, when Open finishes a retention
+//     that an earlier process left, "retain.resumed", counted once before that retention
 //     reports as any other does; "retain.superseded", counted when Open removes a
 //     marker that the stored horizons have all moved past; and, when
 //     Config.SettleRetention is on, "retain.flush_ns", "retain.settle_ns" and
@@ -106,7 +116,8 @@ const (
 	// Background makes Retain publish the horizons and return, and leaves the
 	// rewriting to a goroutine of the store that works in chunks and lets writers
 	// through between them; a write to a prefix the pass has not reached rewrites
-	// that prefix first, in its own batch. See the package comment. With
+	// that prefix first, in its own batch, but for a prefix whose state the
+	// publication kept. See the package comment. With
 	// Config.SettleRetention the pass ends by settling: a flush, then a compaction of
 	// the key ranges of each layer it moved, one range after another, with no lock
 	// held and no iterator open, so that writers go on while it runs (see

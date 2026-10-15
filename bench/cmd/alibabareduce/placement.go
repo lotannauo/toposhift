@@ -12,11 +12,48 @@ import (
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
-// prow is one used placement sample, 16 bytes: the minute as the file has it,
-// and the interned instance, node and msname.
+// prow is one used placement sample, 12 bytes: the interned instance, node and
+// msname. The minute is where the row is kept, in the rows of its minute.
 type prow struct {
-	min              uint32
 	inst, node, name uint32
+}
+
+// minuteRows are the used rows of one minute of an archive, in the order the
+// archive had them.
+type minuteRows struct {
+	min  uint32 // the minute as the archive has it
+	rows []prow
+}
+
+// minuteBuckets groups the rows of an archive by minute as they are read, so
+// that no second copy of the archive's rows is needed to sort them. An archive
+// that holds more minutes than it should is not tiled: its rows past the limit
+// are dropped, and the layout check that follows refuses the archive.
+type minuteBuckets struct {
+	list []minuteRows
+	cur  int
+	max  int
+}
+
+func (b *minuteBuckets) add(min uint32, w prow) {
+	if b.cur >= len(b.list) || b.list[b.cur].min != min {
+		b.cur = -1
+		for i := range b.list {
+			if b.list[i].min == min {
+				b.cur = i
+				break
+			}
+		}
+		if b.cur < 0 {
+			if len(b.list) >= b.max {
+				b.cur = 0
+				return
+			}
+			b.list = append(b.list, minuteRows{min: min})
+			b.cur = len(b.list) - 1
+		}
+	}
+	b.list[b.cur].rows = append(b.list[b.cur].rows, w)
 }
 
 // minuteRow is one line of placement_minutes: what the C60 grid says of a minute.
@@ -131,6 +168,17 @@ func (r *placeRun) payload(name uint32) []byte {
 	return b
 }
 
+// restart readies the run for another pass over the same samples, with its own
+// cadences and, if statistics is not set, without counting what the first pass
+// counted. The scratch that marks the minute a pod or a node was last seen is
+// cleared, because minute 0 comes again.
+func (r *placeRun) restart(cads []*cadence, statistics bool) {
+	r.cads, r.statistics = cads, statistics
+	clear(r.podStamp)
+	clear(r.nodeStamp)
+	r.prevList = r.prevList[:0]
+}
+
 func (r *placeRun) at(m int32) time.Time {
 	return r.epoch.Add(time.Duration(m) * sampleInterval)
 }
@@ -161,7 +209,7 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 			pods = append(pods, inst)
 			edges = append(edges, pair(inst, w.node))
 		} else {
-			if w.name != r.podNameLast[inst] && r.dirt != nil {
+			if w.name != r.podNameLast[inst] && r.statistics {
 				r.dirt.add(dirtCase{dirtMSNameChange, r.pods.name(inst), m, r.names.name(r.podNameLast[inst]), r.names.name(w.name)})
 			}
 			r.podNameLast[inst] = w.name
@@ -172,7 +220,7 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 			} else {
 				r.extra[pair(inst, w.node)] = struct{}{}
 				edges = append(edges, pair(inst, w.node))
-				if r.dirt != nil {
+				if r.statistics {
 					r.dirt.add(dirtCase{dirtDoublePlacement, r.pods.name(inst), m, r.nodes.name(w.node), ""})
 				}
 			}
@@ -193,11 +241,9 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 				}
 				if r.podPrevNode[inst] != r.podNode1[inst] {
 					moves++
-					if r.dirt != nil {
-						r.dirt.add(dirtCase{dirtMove, r.pods.name(inst), m, r.nodes.name(r.podPrevNode[inst]), r.nodes.name(r.podNode1[inst])})
-					}
+					r.dirt.add(dirtCase{dirtMove, r.pods.name(inst), m, r.nodes.name(r.podPrevNode[inst]), r.nodes.name(r.podNode1[inst])})
 				}
-				if r.podPrevName[inst] != r.podName1[inst] && r.dirt != nil {
+				if r.podPrevName[inst] != r.podName1[inst] {
 					r.dirt.add(dirtCase{dirtMSNameChange, r.pods.name(inst), m, r.names.name(r.podPrevName[inst]), r.names.name(r.podName1[inst])})
 				}
 			} else {
@@ -280,8 +326,8 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 }
 
 func (r *placeRun) duplicate(m int32, inst, node uint32) {
-	r.dupRows++
-	if r.dirt != nil {
+	if r.statistics {
+		r.dupRows++
 		r.dirt.add(dirtCase{dirtDuplicate, r.pods.name(inst), m, r.nodes.name(node), ""})
 	}
 }
@@ -310,10 +356,12 @@ func placementLayout(cfg *Config, idx int, rep *fileReport) (int32, error) {
 // readPlacement streams one archive into compact rows, checks the accounting,
 // the digest and the layout, and returns the rows grouped by minute: the result's
 // element i holds the rows of minute first+i of the hour, in the order the archive
-// had them.
+// had them. The rows are grouped as they are read, so the archive's rows are held
+// once; the caller drops a minute's slice when it is done with it.
 func (r *placeRun) readPlacement(cfg *Config, a archive, sums map[string]string) (rep *fileReport, first int32, byMinute [][]prow, err error) {
 	rep = &fileReport{Table: a.Table, Name: a.Rel, Index: a.Index}
-	var raw []prow
+	// An archive that tiles its half hour has one bucket for each of its minutes.
+	buckets := minuteBuckets{max: cfg.PlacementFileMinutes}
 	var layoutErr error
 	sha, err := scanArchive(a.Path, placementHeader, func(f []string, bad bool) error {
 		rep.Rows++
@@ -342,7 +390,7 @@ func (r *placeRun) readPlacement(cfg *Config, a archive, sums map[string]string)
 		case mutServiceFromToken:
 			name, _, _ = strings.Cut(f[2], "_POD_")
 		}
-		raw = append(raw, prow{uint32(ts / 60000), r.pods.id(f[2]), r.nodes.id(f[3]), r.names.id(name)})
+		buckets.add(uint32(ts/60000), prow{r.pods.id(f[2]), r.nodes.id(f[3]), r.names.id(name)})
 		return nil
 	})
 	if err != nil {
@@ -364,32 +412,18 @@ func (r *placeRun) readPlacement(cfg *Config, a archive, sums map[string]string)
 	}
 	span := int32(cfg.PlacementFileMinutes)
 	first = int32(a.Index) * span
-	// Counting sort by minute, keeping the archive's row order within a minute.
-	start := make([]int, span+1)
-	for _, w := range raw {
-		i := int32(w.min) + off - first
-		if i < 0 || i >= span {
-			return nil, 0, nil, fmt.Errorf("%s: minute %d is outside its half hour", a.Rel, int32(w.min)+off)
-		}
-		start[i+1]++
-	}
-	for i := int32(0); i < span; i++ {
-		if start[i+1] == 0 {
-			return nil, 0, nil, fmt.Errorf("%s: no sample at minute %d: the archives do not tile the hour", a.Rel, first+i)
-		}
-		start[i+1] += start[i]
-	}
-	sorted := make([]prow, len(raw))
-	next := slices.Clone(start[:span])
-	for _, w := range raw {
-		i := int32(w.min) + off - first
-		sorted[next[i]] = w
-		next[i]++
-	}
-	raw = nil
 	byMinute = make([][]prow, span)
-	for i := range byMinute {
-		byMinute[i] = sorted[start[i]:start[i+1]]
+	for _, b := range buckets.list {
+		j := int32(b.min) + off - first
+		if j < 0 || j >= span {
+			return nil, 0, nil, fmt.Errorf("%s: minute %d is outside its half hour", a.Rel, int32(b.min)+off)
+		}
+		byMinute[j] = b.rows
+	}
+	for i, rows := range byMinute {
+		if len(rows) == 0 {
+			return nil, 0, nil, fmt.Errorf("%s: no sample at minute %d: the archives do not tile the hour", a.Rel, first+int32(i))
+		}
 	}
 	return rep, first, byMinute, nil
 }

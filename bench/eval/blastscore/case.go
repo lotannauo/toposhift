@@ -108,6 +108,12 @@ const (
 	// ExcludedNoWindow is a case whose start or end time cannot be found, or
 	// whose start is not before its end.
 	ExcludedNoWindow Exclusion = "no_window"
+	// ExcludedUnreadableLabels is a scenario whose labels are missing or do not
+	// parse, so that it has no seed, and ExcludedMissingObjects one with no
+	// Kubernetes objects to map its labels through. Like an unmappable root, each
+	// stays in the dataset's count and is not a load failure.
+	ExcludedUnreadableLabels Exclusion = "unreadable_labels"
+	ExcludedMissingObjects   Exclusion = "missing_objects"
 )
 
 // Provenance is what the loader knows about a case that the facts do not show.

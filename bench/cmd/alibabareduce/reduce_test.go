@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -109,6 +112,10 @@ func TestDirtIsCountedAndKept(t *testing.T) {
 	)}
 	res, cfg := run(t, d, nil)
 
+	// The duplicate row is counted once, however many times the samples are read.
+	if res.place.dupRows != 1 {
+		t.Errorf("%d duplicate rows counted, want 1", res.place.dupRows)
+	}
 	counts := res.place.dirt.counts
 	want := map[string]int64{dirtDuplicate: 1, dirtDoublePlacement: 1, dirtMove: 1, dirtMSNameChange: 1}
 	for k, n := range want {
@@ -504,8 +511,8 @@ func TestNodeSamplingIsDeterministic(t *testing.T) {
 }
 
 func TestMemoryPlanBehaviours(t *testing.T) {
-	if got := unsafe.Sizeof(prow{}); got != 16 {
-		t.Errorf("a placement row is %d bytes, want 16", got)
+	if got := unsafe.Sizeof(prow{}); got != 12 {
+		t.Errorf("a placement row is %d bytes, want 12", got)
 	}
 	// Tokens are interned: the same token is the same id, and a clone is held.
 	in := newInterner()
@@ -517,6 +524,22 @@ func TestMemoryPlanBehaviours(t *testing.T) {
 	res, _ := run(t, callsData(), nil)
 	if len(res.calls.files) != hourLen/callSpan {
 		t.Errorf("%d call archives read", len(res.calls.files))
+	}
+	// Every archive is listed once, however many passes read it.
+	if want := 2 + len(res.calls.files); len(res.files) != want {
+		t.Errorf("%d archives listed, want %d", len(res.files), want)
+	}
+	// A finished stream lets go of its coalescer and its flush buffer.
+	for _, c := range res.cads {
+		if c.sink.co != nil || c.sink.buf != nil {
+			t.Errorf("%s keeps its coalescer or its buffer after it finished", c.sink.name)
+		}
+	}
+	// A finished tracker keeps its intervals and none of its open state.
+	for _, c := range res.cads {
+		if c.pods.open() != 0 || c.nodes.open() != 0 || c.edges.open() != 0 {
+			t.Errorf("%s: a finished tracker has open intervals", c.spec.name)
+		}
 	}
 	// The stream numbers records from 1.
 	for _, s := range res.sinks {
@@ -707,5 +730,252 @@ func TestStoreCheckCanFail(t *testing.T) {
 	}
 	if _, err := verifyStream(path, raw); err == nil {
 		t.Fatal("a stream that says more than its samples was accepted")
+	}
+}
+
+// TestMinuteBucketsKeepTheArchivesOrder checks that rows are grouped by minute in
+// the order the archive had them, and that an archive with more minutes than it
+// may have keeps the minutes it met first and drops the rest.
+func TestMinuteBucketsKeepTheArchivesOrder(t *testing.T) {
+	b := minuteBuckets{max: 2}
+	for _, c := range []struct {
+		min  uint32
+		inst uint32
+	}{{7, 1}, {7, 2}, {9, 3}, {7, 4}, {8, 5}, {9, 6}, {8, 7}} {
+		b.add(c.min, prow{c.inst, 1, 1})
+	}
+	var got [][]uint32
+	for _, m := range b.list {
+		got = append(got, []uint32{m.min})
+		for _, w := range m.rows {
+			got[len(got)-1] = append(got[len(got)-1], w.inst)
+		}
+	}
+	if want := [][]uint32{{7, 1, 2, 4}, {9, 3, 6}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buckets = %v, want %v", got, want)
+	}
+}
+
+// TestEveryCadencePassStartsAtMinuteZero checks that a pod seen only in the hour's
+// first minute is in the stream of each cadence, which the reduction reads in turn.
+func TestEveryCadencePassStartsAtMinuteZero(t *testing.T) {
+	res, cfg := run(t, dataset{placement: series("MS_O", "MS_O_POD_0", "NODE_O", 0)}, nil)
+	node := uint64(res.ids.nodes.id("NODE_O"))
+	for cadence, want := range map[string]string{"c60": "NODE_O:0-3", "c300": "NODE_O:0-15"} {
+		if got := intervalsOf(t, cfg, cadence, "MS_O_POD_0"); !slices.Equal(got, []string{want}) {
+			t.Errorf("%s intervals of the pod = %v, want %s", cadence, got, want)
+		}
+		// The node is seen too, not only the pod on it.
+		if !slices.ContainsFunc(res.nodeIvs[cadence], func(iv interval) bool { return iv.key == node }) {
+			t.Errorf("%s has no interval for the node", cadence)
+		}
+	}
+}
+
+// flushed1 is what the split coalescer writes for a flush at now.
+func flushed1(t *testing.T, c *shardedCoalescer, now time.Time) []store.Record {
+	t.Helper()
+	var out []store.Record
+	if err := c.flush(now, func(recs []store.Record) error {
+		out = append(out, recs...)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// TestShardedCoalescerIsTheWhole drives the coalescer and its split with the same
+// stream of records, flushed on the same clock, and requires the same records from
+// every call, in the same order. The stream has pods, nodes and edges, two
+// producers (some subjects have both), TTLs of three, nine and fifteen minutes,
+// subjects that stop, return after a gap and change what they say, and deletes.
+func TestShardedCoalescerIsTheWhole(t *testing.T) {
+	start := time.Date(2022, 1, 1, 0, 0, 7, 0, time.UTC)
+	var subjects []store.Subject
+	nodes := make([]identity.Fingerprint, 6)
+	for i := range nodes {
+		nodes[i] = fingerprintOf(catalog.K8sNode, catalog.K8sNodeUID, "N"+itoa(int64(i)))
+	}
+	for i := 0; i < 150; i++ {
+		pod := fingerprintOf(catalog.K8sPod, catalog.K8sPodUID, "P"+itoa(int64(i)))
+		subjects = append(subjects, store.EntitySubject(pod), store.EdgeSubject(pod, nodes[i%len(nodes)], catalog.ScheduledOn))
+	}
+	// Nodes are a second entity type, so the parts of a stream are cut by type too.
+	for _, n := range nodes {
+		subjects = append(subjects, store.EntitySubject(n))
+	}
+	ttls := [...]time.Duration{3, 9, 15}
+	for seed := uint64(1); seed <= 12; seed++ {
+		rng := rand.New(rand.NewPCG(seed, 99))
+		whole, err := coalesce.New(coalesceConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		split, err := newShardedCoalescer(coalesceConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		same := func(what string, a, b []store.Record) {
+			t.Helper()
+			if len(a) != len(b) || !slices.EqualFunc(a, b, func(x, y store.Record) bool { return reflect.DeepEqual(x, y) }) {
+				t.Fatalf("seed %d, %s: the whole wrote %d records, the split %d, or they differ", seed, what, len(a), len(b))
+			}
+		}
+		next := start.Add(time.Second).Add(coalesce.FlushPeriod)
+		var last time.Time
+		var maxTTL time.Duration
+		var flushed int
+		for m := 0; m < 100; m++ {
+			at := start.Add(time.Duration(m) * time.Minute)
+			for i, subj := range subjects {
+				period, first, final := 1+i%3, i%17, 70+(i*7)%30
+				if m < first || m > final || (m-first)%period != 0 || (i%5 == 0 && m%11 < 4) {
+					continue
+				}
+				// Every fifth subject is asserted by both producers: the producer breaks the
+				// tie between two runs of one subject.
+				producers := []lifecycle.Producer{[...]lifecycle.Producer{placementProducer, callsProducer}[i%2]}
+				if i%5 == 0 {
+					producers = []lifecycle.Producer{placementProducer, callsProducer}
+				}
+				for _, prod := range producers {
+					r := store.Record{
+						Layer: catalog.L2, Subject: subj, Producer: prod,
+						EventTime: at, Kind: lifecycle.Observe, TTL: ttls[i%3] * time.Minute,
+					}
+					if i%7 == 0 && m > 30 {
+						r.Payload = []byte(`{"msname":"changed"}`)
+					}
+					if rng.IntN(200) == 0 {
+						r.Kind, r.TTL = lifecycle.Delete, 0
+					}
+					ingest := at.Add(time.Second)
+					for next.Before(ingest) {
+						a := whole.Flush(next, nil)
+						flushed += len(a)
+						same("flush", a, flushed1(t, split, next))
+						next = next.Add(coalesce.FlushPeriod)
+					}
+					last, maxTTL = ingest, max(maxTTL, r.TTL)
+					b, err := split.add(r, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					same("add", whole.Add(r, nil), b)
+				}
+			}
+		}
+		for !next.After(last) {
+			same("flush", whole.Flush(next, nil), flushed1(t, split, next))
+			next = next.Add(coalesce.FlushPeriod)
+		}
+		a := whole.FlushAll(nil)
+		var b []store.Record
+		if err := split.flushAll(last, maxTTL, func(recs []store.Record) error {
+			b = append(b, recs...)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		same("final flush", a, b)
+		if flushed == 0 || len(a) < 30 {
+			t.Fatalf("seed %d: %d records flushed on the clock and %d at the end: the stream does not exercise the flush", seed, flushed, len(a))
+		}
+	}
+}
+
+// TestShardedCoalescerRefusesWhatItCannotOrder checks that a record off the minute
+// grid of its stream, or before the stream's first, is refused and not misplaced.
+func TestShardedCoalescerRefusesWhatItCannotOrder(t *testing.T) {
+	start := time.Date(2022, 1, 1, 0, 0, 0, 0, time.UTC)
+	fp := fingerprintOf(catalog.K8sPod, catalog.K8sPodUID, "P")
+	rec := func(at time.Time, ttl time.Duration) store.Record {
+		return store.Record{
+			Layer: catalog.L2, Subject: store.EntitySubject(fp), Producer: placementProducer,
+			EventTime: at, Kind: lifecycle.Observe, TTL: ttl,
+		}
+	}
+	c, err := newShardedCoalescer(coalesceConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.add(rec(start, 3*time.Minute), nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, r := range map[string]store.Record{
+		"event time off the grid": rec(start.Add(90*time.Second), 3*time.Minute),
+		"TTL off the grid":        rec(start.Add(time.Minute), 150*time.Second),
+		"before the first":        rec(start.Add(-time.Minute), 3*time.Minute),
+		"TTL too short to flush":  rec(start.Add(time.Minute), 2*time.Minute),
+	} {
+		if _, err := c.add(r, nil); err == nil {
+			t.Errorf("%s was taken", name)
+		}
+	}
+	// The margin is the TTL minus the extension interval as well as the interval: with
+	// runs extended after nine tenths of the TTL, a ten-minute TTL leaves one minute.
+	late, err := newShardedCoalescer(coalesce.Config{ExtendTTLFraction: 0.9, RunAgeFromTTL: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := late.add(rec(start, 10*time.Minute), nil); err == nil {
+		t.Error("a TTL with a short margin after the extension interval was taken")
+	}
+	if _, err := late.add(rec(start, 20*time.Minute), nil); err != nil {
+		t.Errorf("a TTL with a margin of two minutes was refused: %v", err)
+	}
+	// A delete keeps no run, so its time and TTL do not matter to the order.
+	del := rec(start.Add(90*time.Second), 0)
+	del.Kind = lifecycle.Delete
+	if _, err := c.add(del, nil); err != nil {
+		t.Errorf("a delete was refused: %v", err)
+	}
+	// A refresh inside the extension interval is absorbed. A final flush that stops
+	// short of its deadline leaves it behind, and that is an error; one that goes
+	// as far as the deadline writes it and leaves nothing.
+	absorbed := func() *shardedCoalescer {
+		c, err := newShardedCoalescer(coalesceConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, at := range []time.Time{start, start.Add(time.Minute)} {
+			if _, err := c.add(rec(at, 3*time.Minute), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return c
+	}
+	var written int
+	count := func(recs []store.Record) error { written += len(recs); return nil }
+	if err := absorbed().flushAll(start, 0, count); err == nil {
+		t.Error("a final flush that stopped before a deadline left a refresh behind without an error")
+	}
+	written = 0
+	if err := absorbed().flushAll(start.Add(time.Minute), 3*time.Minute, count); err != nil || written != 1 {
+		t.Errorf("final flush: %d records, %v; want 1 and no error", written, err)
+	}
+}
+
+// TestGCPercentIsSetUnlessGOGCSaysOtherwise checks that the command lowers the
+// collector's growth on its own, and leaves it alone when the environment sets it.
+func TestGCPercentIsSetUnlessGOGCSaysOtherwise(t *testing.T) {
+	defer debug.SetGCPercent(debug.SetGCPercent(100))
+
+	t.Setenv("GOGC", "200") // registers the restore of the variable
+	if err := os.Unsetenv("GOGC"); err != nil {
+		t.Fatal(err)
+	}
+	debug.SetGCPercent(100)
+	tuneGC()
+	if got := debug.SetGCPercent(100); got != gcPercent {
+		t.Errorf("without GOGC the percent is %d, want %d", got, gcPercent)
+	}
+
+	t.Setenv("GOGC", "200")
+	debug.SetGCPercent(100)
+	tuneGC()
+	if got := debug.SetGCPercent(100); got != 100 {
+		t.Errorf("with GOGC set the percent was changed to %d", got)
 	}
 }

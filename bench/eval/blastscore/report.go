@@ -81,6 +81,8 @@ type DatasetCheck struct {
 	QuarantinedSeeds           int `json:"quarantined_seeds"`
 	UnmappableRoots            int `json:"unmappable_roots"`
 	NoWindow                   int `json:"no_window"`
+	UnreadableLabels           int `json:"unreadable_labels"`
+	MissingObjects             int `json:"missing_objects"`
 	// Pass is false when more than a quarter of the counted cases failed to load.
 	Pass bool `json:"pass"`
 }
@@ -258,6 +260,10 @@ func datasetCheck(runs []CaseRun) DatasetCheck {
 			d.UnmappableRoots++
 		case r.Exclusion == ExcludedNoWindow:
 			d.NoWindow++
+		case r.Exclusion == ExcludedUnreadableLabels:
+			d.UnreadableLabels++
+		case r.Exclusion == ExcludedMissingObjects:
+			d.MissingObjects++
 		}
 	}
 	d.Pass = d.Counted > 0 && d.LoadFailures*LoadFailureDen <= d.Counted*LoadFailureNum
@@ -432,8 +438,8 @@ func (rep Report) Text() string {
 	d := rep.Dataset
 	fmt.Fprintf(&b, "load check: %d cases, %d uninstrumented seeds excluded, %d counted, %d failed to load (rule: pass if at most %d/%d): pass=%t\n",
 		d.Cases, d.ExcludedUninstrumentedSeed, d.Counted, d.LoadFailures, LoadFailureNum, LoadFailureDen, d.Pass)
-	fmt.Fprintf(&b, "reported, not in the rule: %d quarantined seeds, %d unmappable roots, %d without a window\n",
-		d.QuarantinedSeeds, d.UnmappableRoots, d.NoWindow)
+	fmt.Fprintf(&b, "reported, not in the rule: %d quarantined seeds, %d unmappable roots, %d without a window, %d with unreadable labels, %d without objects\n",
+		d.QuarantinedSeeds, d.UnmappableRoots, d.NoWindow, d.UnreadableLabels, d.MissingObjects)
 	fmt.Fprintf(&b, "%s\n", ResolveNote)
 	for _, s := range rep.Strata {
 		mark := ""

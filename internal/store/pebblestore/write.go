@@ -3,6 +3,7 @@ package pebblestore
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/cockroachdb/pebble/v2"
 
@@ -38,7 +39,9 @@ import (
 // prefix the pass has not yet reached come with the pass's rewrite of that prefix,
 // in the same commit, so that the prefix is as the pass would leave it (see
 // [Store.Retain]). A Write that fails before its commit leaves the prefix to the
-// pass.
+// pass. The exception is a prefix whose state the publication kept, because the
+// retention cannot change it: its records come beside the keys the step has yet to
+// remove, and the pass runs the step (see the package comment).
 //
 // A subject stored in a layer other than the one a record names is not detected
 // when the other layer was written by an earlier batch: the contract leaves that
@@ -141,14 +144,36 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	// the batch is made, because the step reads the prefix through the batch, which
 	// must then be indexed. A value of true says the prefix has been rewritten in
 	// this batch (two puts of one prefix rewrite it once).
+	//
+	// The exception is a prefix whose state the publication kept, because it is exactly
+	// what a read finds and the retention cannot change it (see [Store.keepLayers]):
+	// the step is left to the pass, unless the write would make the step needed first
+	// (see [Store.stepMustRun]). Such a prefix is read for nothing, its state is the one
+	// kept, and the write puts its records beside keys the step has yet to remove.
+	track := s.ckpt.On || s.anyCkpt
 	var rewrite map[string]bool
+	var leave map[string]*putSpan
 	if s.pass != nil {
 		for _, p := range puts {
-			if s.pass.owes(p.prefix) {
+			k := string(p.prefix)
+			if sp := leave[k]; sp != nil {
+				sp.add(p.ns, len(p.value))
+				continue
+			}
+			if _, done := rewrite[k]; done {
+				continue
+			}
+			switch {
+			case track && s.pass.leavesStep(p.prefix):
+				if leave == nil {
+					leave = map[string]*putSpan{}
+				}
+				leave[k] = newPutSpan(p.ns, len(p.value))
+			case s.pass.owes(p.prefix):
 				if rewrite == nil {
 					rewrite = map[string]bool{}
 				}
-				rewrite[string(p.prefix)] = false
+				rewrite[k] = false
 			}
 		}
 	}
@@ -178,12 +203,12 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	s.invalidated = s.invalidated[:0]
 	// Nothing is remembered, and nothing can need invalidating, in a database that
 	// has no checkpoints and is not writing any.
-	track := s.ckpt.On || s.anyCkpt
 	if !track {
 		s.lose() // records are about to be stored that the map will not know of
 	}
 	touched := map[string]struct{}{}
 	rewrites := 0
+	var deferred, fallbacks map[string]struct{}
 	for _, p := range puts {
 		if done, owed := rewrite[string(p.prefix)]; owed && !done {
 			// Before anything else is done to the prefix: the state, the checkpoints to
@@ -202,6 +227,29 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 				return fmt.Errorf("pebblestore: Write: %w", err)
 			}
 			s.states.pin(string(p.prefix), st)
+			if sp := leave[string(p.prefix)]; sp != nil && !sp.decided {
+				sp.decided = true
+				// The step runs first, before anything else is done to the prefix, if it must;
+				// else it is left to the pass.
+				_, was := s.pass.deferred[string(p.prefix)]
+				if s.stepMustRun(p.prefix, st, sp) {
+					if err := s.touchPrefix(b, p.prefix); err != nil {
+						return fmt.Errorf("pebblestore: Write: %w", err)
+					}
+					if fallbacks == nil {
+						fallbacks = map[string]struct{}{}
+					}
+					fallbacks[string(p.prefix)] = struct{}{}
+					if !was {
+						rewrites++ // written before the pass reached it, as a rewrite
+					}
+				} else if !was {
+					if deferred == nil {
+						deferred = map[string]struct{}{}
+					}
+					deferred[string(p.prefix)] = struct{}{}
+				}
+			}
 			started = s.now()
 			err = s.invalidate(b, p.prefix, st, p.ns)
 			ph.invalidate += s.since(started)
@@ -253,8 +301,20 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 	for k := range rewrite {
 		s.pass.touched[k] = struct{}{}
 	}
+	for k := range fallbacks {
+		s.pass.touched[k] = struct{}{}
+	}
+	for k := range deferred {
+		s.pass.deferred[k] = struct{}{}
+	}
 	if rewrites > 0 {
 		s.rec.Count("retain.touch_rewrites", int64(rewrites))
+	}
+	if len(deferred) > 0 {
+		s.rec.Count("retain.touch_deferred", int64(len(deferred)))
+	}
+	if len(fallbacks) > 0 {
+		s.rec.Count("retain.touch_fallback", int64(len(fallbacks)))
 	}
 	finished = true
 	if s.iterators > 0 {
@@ -269,6 +329,68 @@ func (s *Store) Write(ctx context.Context, batch []store.Record) error {
 		s.rec.Sample("write.phase_ns.ckpt_commit", ph.ckptCommit)
 	}
 	return nil
+}
+
+// putSpan is what one Write puts in a prefix a write may leave to the pass: the
+// earliest and latest event time, how many records and the bytes of their values.
+// decided says the Write has settled whether to run the step first.
+type putSpan struct {
+	min, max int64
+	n, bytes int
+	decided  bool
+}
+
+func newPutSpan(ns int64, valueLen int) *putSpan {
+	return &putSpan{min: ns, max: ns, n: 1, bytes: valueLen}
+}
+
+func (sp *putSpan) add(ns int64, valueLen int) {
+	sp.min, sp.max = min(sp.min, ns), max(sp.max, ns)
+	sp.n++
+	sp.bytes += valueLen
+}
+
+// stepMustRun says the pass's step must run on a prefix whose state is kept or left
+// to the pass before this Write puts its records in it, because the records would
+// change what the step leaves, or what a checkpoint built after them reads. st is the
+// writer's state of the prefix, and sp what the Write puts in it. The step runs when:
+//
+//   - a record is before the newest checkpoint known: the write deletes that
+//     checkpoint, and the state then no longer stands on a checkpoint above the
+//     horizon, which is what makes the step no change to what a read finds;
+//   - or the records leave the prefix due for a checkpoint that is not already there,
+//     with none known between the horizon and it: the walk that builds it would go on
+//     into the keys the step removes, and the checkpoint would hold what it finds
+//     there, where the step's baseline stands in the synchronous store.
+//
+// A state with no checkpoint known has nothing to stand on, and the step runs.
+func (s *Store) stepMustRun(prefix []byte, st *prefixState, sp *putSpan) bool {
+	n := len(st.ckpts)
+	if n == 0 || sp.min < st.ckpts[n-1] {
+		return true
+	}
+	after := *st
+	after.latest = max(after.latest, sp.max)
+	after.since += sp.n
+	after.sinceBytes += sp.bytes
+	if !s.ckpt.due(&after) {
+		return false
+	}
+	c, ok := s.ckpt.at(&after)
+	layer := layerOfPrefix(prefix)
+	if !ok || !s.placeable(layer, c) {
+		return false
+	}
+	if _, exists := slices.BinarySearch(st.ckpts, c); exists {
+		return false // nothing is built
+	}
+	hNs := s.pass.lay[int(layer)-int(catalog.L0)].hNs
+	for _, k := range st.ckpts {
+		if k > hNs && k < c {
+			return false // the build stops at a checkpoint above the horizon
+		}
+	}
+	return true
 }
 
 // writePhases is where the time of one Write went, in nanoseconds; see [Recorder].
