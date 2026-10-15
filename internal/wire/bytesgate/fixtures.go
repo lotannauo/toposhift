@@ -34,6 +34,20 @@ type Scale struct {
 	// SmallScope and LargeScope are the elements in the union of fixtures d and
 	// e: a pod is two, its entity and its edge to its node.
 	SmallScope, LargeScope int
+	// The three fields below are zero in [Reference]: they change a fixture into a
+	// variant of it, which the report shows beside the fixture and which decides
+	// nothing.
+	//
+	// FillerServices, when not zero, is the number of services with a pod on each
+	// node of fixtures b and c, more than 7: the seven services of the cell keep
+	// their one pod, and the pods after the first seven are mapped to the other
+	// services in turn, where otherwise they are mapped to none.
+	FillerServices int
+	// Containers gives each pod of d and e 1, 2 or 3 containers, each with its
+	// part_of edge to the pod, in the proportions 69.7, 24.2 and 6.1 in 100.
+	Containers bool
+	// StableScopes makes every pod of d and e present for the whole window.
+	StableScopes bool
 }
 
 // Reference is the scale of the gate: coresidency's reference node, extract's two
@@ -47,7 +61,7 @@ func Reference() Scale {
 
 func (s Scale) validate() error {
 	switch {
-	case s.Pods < 7, s.Hosts < 1, s.ReplaceEvery <= 0, s.ReplaceEvery >= window, s.SmallScope < 2, s.LargeScope < 2:
+	case s.Pods < 7, s.Hosts < 1, s.FillerServices != 0 && s.FillerServices <= 7, s.ReplaceEvery <= 0, s.ReplaceEvery >= window, s.SmallScope < 2, s.LargeScope < 2:
 		return fmt.Errorf("bytesgate: the scale %+v needs at least 7 pods, 1 host, a replacement period inside the window and a scope of 2 elements: %w", s, store.ErrInvalid)
 	}
 	return nil
@@ -162,10 +176,14 @@ type cell struct {
 // newCell writes the services and their dependency edges, and for each of hosts
 // hosts one node with Pods pods, each with an instance. The first seven pods of a
 // node are those of the seven services, one each; the instance of any other pod
-// is mapped to no service.
+// is mapped to no service, unless the scale has FillerServices.
 func newCell(w *world, g *ids, s Scale, hosts int) cell {
 	var c cell
-	svcs := make([]identity.Fingerprint, 7)
+	nsvc := 7
+	if s.FillerServices > 0 {
+		nsvc = s.FillerServices
+	}
+	svcs := make([]identity.Fingerprint, nsvc)
 	for i := range svcs {
 		svcs[i] = g.next(catalog.Service)
 		w.obs(entity(svcs[i]), base())
@@ -174,7 +192,7 @@ func newCell(w *world, g *ids, s Scale, hosts int) cell {
 	for _, caller := range svcs[1:4] {
 		w.obs(dependsOn(caller, c.seed), base())
 	}
-	for _, callee := range svcs[4:] {
+	for _, callee := range svcs[4:7] {
 		w.obs(dependsOn(c.seed, callee), base())
 	}
 	for range hosts {
@@ -185,8 +203,11 @@ func newCell(w *world, g *ids, s Scale, hosts int) cell {
 		w.obs(runsOn(n.node, h), base())
 		for i := range s.Pods {
 			var svc identity.Fingerprint
-			if i < len(svcs) {
+			switch {
+			case i < 7:
 				svc = svcs[i]
+			case s.FillerServices > 0:
+				svc = svcs[7+(i-7)%(nsvc-7)]
 			}
 			g.placePod(w, n, base(), true, svc)
 		}
@@ -261,6 +282,7 @@ const scopeNodePods = 110
 // those edges and are boundary entries. Of the pods, 70 in 100 are there for the
 // whole window, 15 appear at an instant of it, 10 disappear at one, and 5 go and
 // come back, so the union is exactly the elements asked for and there are deltas.
+// The scale's Containers and StableScopes change that, and the union with them.
 func scope(ctx context.Context, s Scale, elements int, salt uint64) (wire.Document, error) {
 	if err := s.validate(); err != nil {
 		return wire.Document{}, err
@@ -280,13 +302,45 @@ func scope(ctx context.Context, s Scale, elements int, salt uint64) (wire.Docume
 	inWindow := func() time.Time {
 		return from.Add(time.Duration(1+r.intn(int(window/time.Second)-2)) * time.Second)
 	}
+	// A container's draw has a generator of its own, so that giving the pods
+	// containers leaves the pods themselves as they were.
+	cr := newRNG(s.Seed + salt + 1000)
+	type span struct{ begin, end time.Time }
+	containers := func(pod identity.Fingerprint, spans ...span) {
+		if !s.Containers {
+			return
+		}
+		count := 1
+		switch u := cr.intn(1000); {
+		case u >= 939:
+			count = 3
+		case u >= 697:
+			count = 2
+		}
+		for range count {
+			c := g.next(catalog.Container)
+			edge := partOf(c, pod)
+			for _, sp := range spans {
+				w.obs(entity(c), sp.begin)
+				w.obs(edge, sp.begin)
+				if !sp.end.IsZero() {
+					w.del(edge, sp.end)
+					w.del(entity(c), sp.end)
+				}
+			}
+		}
+	}
 	var scopeFPs []identity.Fingerprint
 	for i := range pods {
 		pod, n := g.next(catalog.K8sPod), nodes[i%len(nodes)]
 		scopeFPs = append(scopeFPs, pod)
 		edge := scheduledOn(pod, n)
 		begin := base()
-		switch k := r.intn(100); {
+		k := 0
+		if !s.StableScopes {
+			k = r.intn(100)
+		}
+		switch {
 		case k >= 70 && k < 85:
 			begin = inWindow()
 		case k >= 85 && k < 95:
@@ -295,6 +349,7 @@ func scope(ctx context.Context, s Scale, elements int, salt uint64) (wire.Docume
 			w.obs(edge, base())
 			w.del(edge, end)
 			w.del(entity(pod), end)
+			containers(pod, span{base(), end})
 			continue
 		case k >= 95:
 			a := inWindow()
@@ -305,10 +360,12 @@ func scope(ctx context.Context, s Scale, elements int, salt uint64) (wire.Docume
 			w.del(entity(pod), a)
 			w.obs(entity(pod), b)
 			w.obs(edge, b)
+			containers(pod, span{base(), a}, span{b, time.Time{}})
 			continue
 		}
 		w.obs(entity(pod), begin)
 		w.obs(edge, begin)
+		containers(pod, span{begin, time.Time{}})
 	}
 	if err := w.commit(ctx); err != nil {
 		return wire.Document{}, err
