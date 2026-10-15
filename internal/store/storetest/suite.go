@@ -161,6 +161,11 @@ func Run(t *testing.T, f Factory) {
 					t.Fatal(err)
 				}
 			})
+			sub(t, fmt.Sprintf("window since: workload %s retain %v", w.Name, retain), func(t *testing.T) {
+				if err := CheckSince(openStore(t, f, w.Policy), w, Options{RetainAt: retain, Entities: 6, Probes: 4}); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
 	}
 	for _, c := range []struct {
@@ -181,6 +186,7 @@ func Run(t *testing.T, f Factory) {
 		{"extremes", lifecycle.Policy{}, CheckExtremes},
 		{"entity window", lifecycle.Policy{}, CheckEntityWindow},
 		{"quarantine", QuarantinePolicy(), CheckQuarantine},
+		{"window since", lifecycle.Policy{}, CheckSinceContract},
 	} {
 		sub(t, c.name, func(t *testing.T) {
 			if err := c.check(openStore(t, f, c.policy)); err != nil {
@@ -230,4 +236,62 @@ func Run(t *testing.T, f Factory) {
 			}
 		})
 	})
+	sub(t, "window since: random worlds", func(t *testing.T) {
+		if Trimmed() {
+			t.Skip("trimmed run: the random worlds run in the full tier")
+		}
+		rapid.Check(t, func(rt *rapid.T) {
+			w, opts := drawSinceWorld(rt)
+			dir, err := os.MkdirTemp("", "storetest")
+			if err != nil {
+				rt.Fatal(err)
+			}
+			defer func() { _ = os.RemoveAll(dir) }()
+			cand, err := f.Open(dir, w.Policy)
+			if err != nil {
+				rt.Fatal(err)
+			}
+			defer func() { _ = cand.Close() }()
+			if err := CheckSince(cand, w, opts); err != nil {
+				rt.Fatal(err)
+			}
+		})
+	})
+}
+
+// drawSinceWorld draws a random world for the WindowSince checks: a workload with
+// lateness, runs, confirmations, heartbeats or watch mode, sometimes reboots and
+// clones under the quarantining policy, and up to three retentions at random
+// horizons.
+func drawSinceWorld(rt *rapid.T) (Workload, Options) {
+	cfg := Tiny()
+	cfg.Seed = rapid.Uint64Range(1, 1<<40).Draw(rt, "seed")
+	cfg.Duration = time.Duration(rapid.IntRange(5, 15).Draw(rt, "minutes")) * time.Minute
+	cfg.ChurnPerMinute = rapid.Float64Range(5, 120).Draw(rt, "churn")
+	cfg.LateProbability = rapid.Float64Range(0, 0.5).Draw(rt, "late")
+	cfg.ConfirmProbability = rapid.SampledFrom([]float64{0, 0.3, 0.8}).Draw(rt, "confirm")
+	cfg.Runs = rapid.Bool().Draw(rt, "runs")
+	cfg.HeartbeatInterval = rapid.SampledFrom([]time.Duration{0, 30 * time.Second, time.Minute}).Draw(rt, "heartbeat")
+	cfg.FirstSeq = rapid.SampledFrom([]uint64{1, 1<<32 - 300, 1<<63 - 300}).Draw(rt, "firstSeq")
+	policy := lifecycle.Policy{}
+	if cfg.HeartbeatInterval > 0 && rapid.Bool().Draw(rt, "reboots") {
+		cfg.RebootProbability = rapid.SampledFrom([]float64{0.1, 0.3}).Draw(rt, "reboot")
+		cfg.CloneProbability = rapid.SampledFrom([]float64{0.3, 0.8}).Draw(rt, "clone")
+		if rapid.Bool().Draw(rt, "quarantine") {
+			policy = QuarantinePolicy()
+		}
+	}
+	var retain []float64
+	for range rapid.IntRange(0, 3).Draw(rt, "retentions") {
+		lo := 0.05
+		if n := len(retain); n > 0 {
+			lo = retain[n-1] + 0.01
+		}
+		if lo >= 0.95 {
+			break
+		}
+		retain = append(retain, rapid.Float64Range(lo, 0.95).Draw(rt, "horizon"))
+	}
+	opts := Options{RetainAt: retain, CheckEvery: 10, Entities: 4, Probes: 3}
+	return Workload{Name: "random", Config: cfg, Policy: policy}, opts
 }

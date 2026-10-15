@@ -123,16 +123,18 @@ func (r *reader) close() {
 	_ = r.it.Close()
 }
 
-// decide walks the prefix from the newest record at or before the instant toward
-// older ones and calls fn once for each reference, with the record (or baseline
-// entry) that decides it: the newest one the token sees. It stops when fn returns
-// false, and at the retention baseline, which stands for everything older.
-func (r *reader) decide(prefix []byte, tNs int64, asOf uint64, fn func(ref []byte, ns int64, v pebblekv.Value) (bool, error)) error {
+// decide walks the prefix from the key start toward older ones and calls fn once
+// for each reference, with the record (or checkpoint or baseline entry) that
+// decides it: the newest one the token sees. start is seekKey(prefix, t) to decide
+// at the instant t. It stops when fn returns false, and at the retention baseline,
+// which stands for everything older. fn is called with the iterator on the key it
+// is called for.
+func (r *reader) decide(prefix, start []byte, asOf uint64, fn func(ref []byte, ns int64, v pebblekv.Value) (bool, error)) error {
 	dir := prefix[prefixLen-1]
 	lo, hi := prefixBounds(prefix)
 	r.it.SetBounds(lo, hi)
 	decided := map[string]struct{}{}
-	for ok := r.it.SeekGE(seekKey(prefix, tNs)); ok; ok = r.it.Next() {
+	for ok := r.it.SeekGE(start); ok; ok = r.it.Next() {
 		_, ns, seq, kind, err := parseKey(r.it.Key())
 		if err != nil {
 			return err
@@ -219,7 +221,7 @@ func (r *reader) neighbors(fp identity.Fingerprint, dir store.Direction, tNs int
 		return nil, nil
 	}
 	alive := map[string]struct{}{} // subjects with a live reference
-	err := r.decide(prefix, tNs, sc.AsOf, func(ref []byte, ns int64, v pebblekv.Value) (bool, error) {
+	err := r.decide(prefix, seekKey(prefix, tNs), sc.AsOf, func(ref []byte, ns int64, v pebblekv.Value) (bool, error) {
 		if v.Holds(ns, tNs) {
 			alive[string(ref[:subjectLen])] = struct{}{}
 		}
@@ -335,7 +337,7 @@ func (s *Store) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time,
 		return false, nil
 	}
 	alive := false
-	err = r.decide(prefix, tNs, sc.AsOf, func(_ []byte, ns int64, v pebblekv.Value) (bool, error) {
+	err = r.decide(prefix, seekKey(prefix, tNs), sc.AsOf, func(_ []byte, ns int64, v pebblekv.Value) (bool, error) {
 		if v.Holds(ns, tNs) {
 			alive = true
 			return false, nil // one producer's live reference is enough

@@ -205,6 +205,9 @@ func CheckConcurrentReads(s store.Store) error {
 // against the reference at the boundaries it could have seen, or at the token it
 // was pinned to.
 func (c *concurrent) read(rng *rand.Rand) error {
+	if rng.IntN(6) == 0 {
+		return c.readSince(rng) // a batched WindowSince, in seeded.go
+	}
 	// Most reads are about workload placement (L2), where the churn is, and about
 	// the entities one batch changes together: a reschedule deletes a pod's old
 	// edge and observes its new one in one batch, which changes the pod's forward

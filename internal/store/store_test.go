@@ -41,6 +41,10 @@ func (*stubStore) Window(context.Context, identity.Fingerprint, store.Direction,
 func (*stubStore) EntityWindow(context.Context, identity.Fingerprint, time.Time, time.Time, store.Scope) ([]store.Record, error) {
 	return nil, store.ErrClosed
 }
+
+func (*stubStore) WindowSince(context.Context, []identity.Fingerprint, store.Direction, time.Time, time.Time, store.Scope, store.SinceOptions) ([]store.Since, error) {
+	return nil, store.ErrClosed
+}
 func (*stubStore) Retain(context.Context, time.Time) error { return store.ErrClosed }
 func (*stubStore) Close() error                            { return nil }
 
