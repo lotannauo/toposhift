@@ -81,7 +81,11 @@ func FormatTableB(r ARow, cl *Cluster) string {
 		b.WriteString("  no Kubernetes objects\n")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "  cluster:  %d nodes, snapshot %s\n", len(cl.Nodes), stamp(cl.Observed, false))
+	pulls := fmt.Sprintf("%d pull(s), %s .. %s", cl.Pulls, stamp(cl.First, false), stamp(cl.Last, false))
+	if cl.Pulls > 1 {
+		pulls += fmt.Sprintf(", %s apart", cl.Interval)
+	}
+	fmt.Fprintf(&b, "  cluster:  %d nodes, %s\n", len(cl.Nodes), pulls)
 	if !r.Window.OK() {
 		b.WriteString("  no window: not mapped\n")
 		return b.String()

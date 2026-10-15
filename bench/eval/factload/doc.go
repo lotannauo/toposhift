@@ -11,7 +11,7 @@
 //
 // One scenario is two inputs, written to one empty store and never kept:
 //
-//   - Kubernetes objects, a snapshot. Pods, nodes and containers go through the
+//   - Kubernetes objects, from one pull or a series of pulls. Pods, nodes and containers go through the
 //     product's translator and nothing else: each object is translated, its
 //     backdated records are resumed from the store with resume.Apply and
 //     Translator.Resumed, and the records the translator and the resume step
@@ -22,16 +22,28 @@
 //     services and the bridge from an instance to its pod come from an evaluation
 //     writer working on the spans, under the producer [ProducerTraces].
 //
-// # The snapshot
+// # The pulls
 //
-// One file of objects is one list, pulled once. The translator is built with no
-// pull interval, because one generation says nothing about an interval, and with
-// an explicit TTL, [ObjectTTL], an evaluation parameter and not a property of the
-// snapshot. An object is asserted from its creation (a first sighting is
-// backdated to it) through the time it was observed, and lapses a TTL after
-// that. An object created or deleted between the start of a window and the
-// snapshot is invisible, and so is one created after it. The claim that there
-// are no late events covers the evaluation's own writer below, not this part:
+// An objects file is one pull of the collector, or a series of pulls at a fixed
+// interval. The translator replays them as the collector's pulls.
+//
+// For one pull (a zero [Scenario.PullInterval]) the translator is built with no
+// pull interval, because one generation says nothing about an interval, and with an
+// explicit TTL, [ObjectTTL], an evaluation parameter and not a property of the pull.
+// An object is asserted from its creation (a first sighting is backdated to it)
+// through the time it was observed, and lapses a TTL after that.
+//
+// For a series the translator is built with the interval and its own default
+// lifetime, three intervals ([Lifetime]). An object listed in each pull has no gap
+// between two of them, however the interval jitters, which a lifetime of the
+// interval itself would not give: pulls a fraction of a second more than five
+// minutes apart would lapse every object a fraction of a second before its next
+// listing. An object missing from a pull lapses three intervals after the last
+// pull that listed it.
+//
+// An object created or deleted between pulls, or before the first, is invisible
+// until a pull lists it, and so is one created after the last. The claim that
+// there are no late events covers the evaluation's own writer below, not this part:
 // the translator backdates, and resume.Apply times those records.
 //
 // # The service writer

@@ -159,9 +159,11 @@ type Case struct {
 	// Nodes is the number of nodes of the cluster, 0 if unknown. A cluster of one
 	// node leaves co-residency naming everything, so it is not scored there.
 	Nodes int
-	// SnapshotTime is when the one Kubernetes snapshot was taken, or zero if the
-	// facts are not a snapshot. Outside the window, pod-level facts cannot say.
-	SnapshotTime time.Time
+	// SnapshotTime is when the first Kubernetes pull was taken, and SnapshotLast when
+	// the last was (zero if there is one pull). SnapshotTime is zero if the facts are
+	// not pulls. If the span of the pulls does not overlap the window, pod-level facts
+	// cannot say.
+	SnapshotTime, SnapshotLast time.Time
 	// Exclusion, if not empty, leaves the case out before any fact is read.
 	Exclusion Exclusion
 	// Provenance is what the loader reports about the case.

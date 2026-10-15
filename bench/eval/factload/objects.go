@@ -13,7 +13,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
 
-// Object is one Kubernetes object of a snapshot as the collector's objects
+// Object is one listing of a Kubernetes object in a pull as the collector's objects
 // receiver emits it in pull mode: a log record whose body is the object, with the
 // resource it was listed from named in an attribute, and whose observed time is
 // when it was listed.

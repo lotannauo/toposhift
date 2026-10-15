@@ -88,8 +88,8 @@ type Diagnostics struct {
 	// levels.
 	Unmappable int `json:"unmappable"`
 	Unplaced   int `json:"unplaced"`
-	// SnapshotKnown says the facts are one snapshot, and SnapshotInWindow that it
-	// was taken inside the window. The time itself is not a result.
+	// SnapshotKnown says the facts are Kubernetes pulls, and SnapshotInWindow that the
+	// span of the pulls overlaps the window. The times themselves are not a result.
 	SnapshotKnown    bool `json:"snapshot_known"`
 	SnapshotInWindow bool `json:"snapshot_in_window"`
 	// Nodes is the number of nodes of the cluster, 0 if unknown.
@@ -204,7 +204,13 @@ func (x *runner) run0() error {
 	snapshotOK := true
 	if !c.SnapshotTime.IsZero() {
 		x.run.Diag.SnapshotKnown = true
-		x.run.Diag.SnapshotInWindow = !c.SnapshotTime.Before(c.From) && c.SnapshotTime.Before(c.To)
+		// The pulls overlap the window: the first is before its end and the last is not
+		// before its start. For one pull, it is in the window.
+		last := c.SnapshotLast
+		if last.Before(c.SnapshotTime) {
+			last = c.SnapshotTime
+		}
+		x.run.Diag.SnapshotInWindow = c.SnapshotTime.Before(c.To) && !last.Before(c.From)
 		snapshotOK = x.run.Diag.SnapshotInWindow
 	}
 	singleNode := c.Nodes == 1
@@ -398,7 +404,7 @@ func (x *runner) podLevel(walked blastradius.Result, service, snapshotOK, single
 	x.run.Diag.QuarantinedMiss += len(quarantined)
 
 	if !snapshotOK {
-		// The facts are one snapshot outside the window: nothing at the pod level
+		// The Kubernetes pulls do not overlap the window: nothing at the pod level
 		// says anything about it.
 		if service {
 			x.skip(LevelPod, PredictorWPod, ReasonSnapshotOutside, c.Pod, c.Seed)

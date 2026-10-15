@@ -22,17 +22,27 @@ const Version = "factload-1"
 
 // The producers of the two parts of a scenario. Both pass store.WritableProducer.
 const (
-	// ProducerObjects asserts the pods, nodes and containers of the snapshot.
+	// ProducerObjects asserts the pods, nodes and containers of the pulls.
 	ProducerObjects lifecycle.Producer = "k8sobjects/eval"
 	// ProducerTraces asserts services, instances and dependencies. It is the
 	// evaluation's writer: no other producer writes those facts here.
 	ProducerTraces lifecycle.Producer = "eval.traces"
 )
 
-// ObjectTTL is the TTL of every observation of the snapshot's objects. It is an
-// evaluation parameter, not a property of the snapshot, whose own pull
-// configuration is unknown.
+// ObjectTTL is the TTL of every observation of the objects of a single pull. It is
+// an evaluation parameter, not a property of the pull, whose own configuration is
+// unknown.
 const ObjectTTL = 5 * time.Minute
+
+// Lifetime is how long an object lasts after the last pull that listed it: ObjectTTL
+// for a single pull (interval zero), and for a series of pulls at an interval the
+// translator's own default, a few intervals.
+func Lifetime(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return ObjectTTL
+	}
+	return k8sobjects.DefaultTTLMultiple * interval
+}
 
 // ServiceTTL is the TTL of every observation of the service writer, a
 // placeholder for the rollups' own expiry, fixed now.
@@ -43,8 +53,13 @@ const batchSize = 10000
 
 // Scenario is what is loaded for one case.
 type Scenario struct {
-	// Objects are the snapshot's pods and nodes, in the order they are listed.
+	// Objects are the pods and nodes of the pulls, in the order they were listed.
 	Objects []Object
+	// PullInterval is the interval between the pulls the objects come from, if they
+	// are a series of two or more: the translator is then built with it and sets the
+	// lifetime of an object itself, so that an object listed in each pull has no gap
+	// between them. Zero is a single pull, whose objects last ObjectTTL.
+	PullInterval time.Duration
 	// Spans are the scenario's spans, in any order.
 	Spans []Span
 	// Source names the dataset and revision, for the label an address-associated
@@ -94,7 +109,7 @@ type Stats struct {
 	Messaging    map[PairKey]struct{}
 }
 
-// Load writes a scenario into an empty store. The snapshot's objects go first,
+// Load writes a scenario into an empty store. The objects of the pulls go first,
 // through the product's translator and the resume step; then the spans' records
 // are written in event time order.
 func Load(ctx context.Context, st Target, sc Scenario) (Stats, error) {
@@ -108,7 +123,7 @@ func Load(ctx context.Context, st Target, sc Scenario) (Stats, error) {
 	}
 	stats := Stats{Skipped: map[string]int{}, Notes: map[string]int{}}
 	w := &writer{st: st}
-	if err := loadObjects(ctx, st, w, sc.Objects, &stats); err != nil {
+	if err := loadObjects(ctx, st, w, sc.Objects, sc.PullInterval, &stats); err != nil {
 		return Stats{}, err
 	}
 	if err := loadSpans(ctx, w, sc, &stats); err != nil {
@@ -144,14 +159,20 @@ func (w *writer) write(ctx context.Context, rs []store.Record) error {
 // loadObjects takes each listed object through the translator, the resume step
 // and Translator.Resumed, in that order, and writes what is left. It builds no
 // record of its own.
-func loadObjects(ctx context.Context, st Target, w *writer, objs []Object, stats *Stats) error {
-	tr, err := k8sobjects.New(k8sobjects.Config{
-		Producer:  ProducerObjects,
-		Resolver:  identity.NewResolver(catalog.Default()),
+func loadObjects(ctx context.Context, st Target, w *writer, objs []Object, pullInterval time.Duration, stats *Stats) error {
+	cfg := k8sobjects.Config{
+		Producer: ProducerObjects,
+		Resolver: identity.NewResolver(catalog.Default()),
+		// A single pull says nothing about an interval, and its objects last an
+		// explicit TTL.
 		EntityTTL: ObjectTTL,
-		// One snapshot is one generation: it says nothing about an interval.
-		PullInterval: 0,
-	})
+	}
+	if pullInterval > 0 {
+		// A series of pulls: the interval is the translator's, and so is the lifetime
+		// it gives from it.
+		cfg.EntityTTL, cfg.PullInterval = 0, pullInterval
+	}
+	tr, err := k8sobjects.New(cfg)
 	if err != nil {
 		return err
 	}

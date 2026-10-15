@@ -13,7 +13,9 @@
 // with double quotes, and a map in a field is the repr of a Python dictionary. The
 // objects export is a series of log records of the collector's objects receiver,
 // the object as JSON in Body and the resource it was listed from in LogAttributes.
-// It is one snapshot: every row was listed within a minute. The traces export has a
+// It is one pull of the collector, or a series of pulls at a fixed interval, each
+// object listed once in each pull: rows within a minute of each other are one pull,
+// and the rows of one kind and uid are one object, with its first and last listing. The traces export has a
 // row a span, with the resource attributes of the process in ResourceAttributes.
 // The package reads files and nothing else, and copies nothing from them.
 //
@@ -66,7 +68,7 @@
 // services after mapping (a Deployment and its Pod that map to one service count
 // once, and the seed's service is not truth), and the pods of the chain's groups of
 // pods. A group that maps to nothing is counted as unmappable truth. Only the groups
-// of pods are expanded into pods. A pod whose node is not in the snapshot is
+// of pods are expanded into pods. A pod whose node is not among the objects is
 // unplaced and counted, never given a node.
 //
 // A ground_truth.yaml that does not parse is listed as unreadable, and is never

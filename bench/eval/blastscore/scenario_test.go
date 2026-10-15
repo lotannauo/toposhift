@@ -461,3 +461,34 @@ func TestNoWriteAfterLoad(t *testing.T) {
 		t.Errorf("token moved from %d to %d (run read at %d)", before, st.LastSeq(), run.Token)
 	}
 }
+
+// The facts of a series of Kubernetes pulls say something about the window if the span
+// of the pulls overlaps it. For one pull that is: the pull is in the window.
+func TestPullsOverlapTheWindow(t *testing.T) {
+	S, X := svc(1), svc(2)
+	st, f := world(t, memstore.Options{}, S, X)
+	f.write(obs(dependsOn(X, S), hm(9, 0)))
+	for _, c := range []struct {
+		name        string
+		first, last time.Time
+		want        bool
+	}{
+		{"one pull in the window", hm(10, 5), time.Time{}, true},
+		{"one pull at the start", w30From, time.Time{}, true},
+		{"one pull at the end", w30To, time.Time{}, false},
+		{"one pull before", hm(9, 59), time.Time{}, false},
+		{"pulls from before to inside", hm(9, 30), hm(10, 10), true},
+		{"pulls spanning the window", hm(9, 30), hm(11, 0), true},
+		{"the last pull at the start", hm(9, 30), w30From, true},
+		{"the last pull just before the start", hm(9, 30), w30From.Add(-time.Nanosecond), false},
+		{"the first pull just before the end", hm(10, 29), hm(11, 0), true},
+		{"all after", hm(10, 30), hm(11, 0), false},
+	} {
+		c0 := svcCase("Scenario-1", S, []identity.Fingerprint{S, X}, X)
+		c0.SnapshotTime, c0.SnapshotLast = c.first, c.last
+		run := runCase(t, st, c0, Config{})
+		if !run.Diag.SnapshotKnown || run.Diag.SnapshotInWindow != c.want {
+			t.Errorf("%s: known %t, in window %t, want %t", c.name, run.Diag.SnapshotKnown, run.Diag.SnapshotInWindow, c.want)
+		}
+	}
+}

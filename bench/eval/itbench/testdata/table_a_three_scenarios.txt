@@ -1,0 +1,30 @@
+Table A: from ground_truth.yaml and the alerts only
+
+Scenario-1
+  fault:    Pod "pay-pods" (group "pay-pods"), category "Change", mechanism "custom"
+  root:     pay-pods [Pod in shop filter ["shop-pay-.*"]]
+  seed:     pod
+  class:    call-graph (no resource category or mechanism)
+  window:   [2026-03-04T10:05:00Z (proxy), 2026-03-04T10:15:00Z)
+  truth:    cart-svc [Service in shop filter ["shop-cart\\b"]]
+  truth:    front-svc [Service in shop filter ["shop-front\\b"]]
+  truth:    front-pods [Pod in shop filter ["shop-front-r1-.*"]]
+
+Scenario-2
+  fault:    ConfigMap "shop-flags" (group ""), category "Configuration Setting", mechanism "custom"
+  root:     flags [ConfigMap in shop name "shop-flags"]
+  seed:     moved (candidates, in order: cart-svc, front-svc, pay-svc)
+  class:    call-graph (no resource category or mechanism)
+  window:   [2026-03-04T10:05:00Z (proxy), 2026-03-04T10:15:00Z)
+  truth:    cart-svc [Service in shop filter ["shop-cart\\b"]]
+  truth:    front-svc [Service in shop filter ["shop-front\\b"]]
+  truth:    pay-svc [Service in shop filter ["shop-pay\\b"]]
+
+Scenario-3
+  fault:    Pod "cart-pods" (group "cart-pods"), category "Resource", mechanism "memory_stress"
+  root:     cart-pods [Pod in shop filter ["shop-cart-r1-.*"]]
+  seed:     pod
+  class:    co-residency (category=Resource)
+  window:   [2026-03-04T10:05:00Z (proxy), 2026-03-04T10:15:00Z)
+  truth:    front-pod [Pod in shop filter ["shop-front-r1-p1"]]
+  truth:    proxy-pods [Pod in shop filter ["shop-front-proxy-.*"]]

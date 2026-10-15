@@ -146,6 +146,10 @@ func TestStagesWriteTheirTablesOutsideTheRepository(t *testing.T) {
 		t.Errorf("table A:\n%s", stdout)
 	}
 	sumA := hashOf(t, stdout, "A")
+	// Table A is frozen by its hash: nothing else may change the truth stage's output.
+	if sumA != "0bea45e62e3f131418e09a7c265497fc6f590a3dfea7be8c4710cfd370072e4e" {
+		t.Errorf("table A of the invented scenarios has sha256 %s", sumA)
+	}
 	if sum(string(a)) != sumA {
 		t.Error("the sha256 printed is not that of the file")
 	}

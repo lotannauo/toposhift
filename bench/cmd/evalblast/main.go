@@ -218,7 +218,7 @@ func score(ctx context.Context, data, out string, pooled map[string]bool, poolTe
 
 	var b strings.Builder
 	b.WriteString(rep.Text())
-	fmt.Fprintf(&b, "\nevaluation parameters: snapshot TTL %s, service TTL %s, minute buckets; pod links from spans are address-associated\n",
+	fmt.Fprintf(&b, "\nevaluation parameters: lifetime of an object in a single pull %s (a series of pulls: three intervals), service TTL %s, minute buckets; pod links from spans are address-associated\n",
 		factload.ObjectTTL, factload.ServiceTTL)
 	fmt.Fprintf(&b, "service names with a span in the trace data read: %d (sha256 %s)\n", len(pooled), sum(poolText))
 	fmt.Fprintf(&b, "scenarios in the count: %d; not fully loaded: %d\n", len(runs), len(notes))
