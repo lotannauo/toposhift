@@ -213,6 +213,15 @@ func TestReport(t *testing.T) {
 	if err := rep.WriteTable(os.Stdout); err != nil {
 		t.Fatal(err)
 	}
+	// The variants follow in a block of their own. They are measured after the
+	// registered fixtures and enter nothing above.
+	variants, err := bytesgate.RunVariants(ctx, bytesgate.Reference(), rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bytesgate.WriteVariants(os.Stdout, bytesgate.Reference(), variants); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The custom-only mode measures the format's own bytes and nothing else: no

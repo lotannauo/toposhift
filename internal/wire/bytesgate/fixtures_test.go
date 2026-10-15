@@ -136,6 +136,8 @@ func TestScaleIsValidated(t *testing.T) {
 		with(func(s *bytesgate.Scale) { s.Pods = 6 }),
 		with(func(s *bytesgate.Scale) { s.ReplaceEvery = time.Hour }),
 		with(func(s *bytesgate.Scale) { s.Hosts = 0 }),
+		with(func(s *bytesgate.Scale) { s.FillerServices = 3 }),
+		with(func(s *bytesgate.Scale) { s.FillerServices = 7 }),
 	} {
 		for _, f := range bytesgate.Fixtures(s) {
 			if _, err := f.Build(ctx); !errors.Is(err, store.ErrInvalid) {
@@ -145,9 +147,9 @@ func TestScaleIsValidated(t *testing.T) {
 	}
 }
 
-// TestReferenceFixturesBuild builds the five fixtures at the reference scale,
-// without measuring them: it says whether the adapters take the full cells, and
-// logs their shape. It is skipped unless TOPOSHIFT_BYTES_GATE is set, like
+// TestReferenceFixturesBuild builds the five fixtures at the reference scale and
+// the fixtures of the four variants, without measuring them: it says whether the
+// adapters take the full cells, and logs their shape. It is skipped unless TOPOSHIFT_BYTES_GATE is set, like
 // TestReport, because the cells are large.
 func TestReferenceFixturesBuild(t *testing.T) {
 	if os.Getenv("TOPOSHIFT_BYTES_GATE") == "" {
@@ -172,6 +174,20 @@ func TestReferenceFixturesBuild(t *testing.T) {
 			if len(sg.Elements) != s.LargeScope {
 				t.Errorf("fixture e: a union of %d elements, not %d", len(sg.Elements), s.LargeScope)
 			}
+		}
+	}
+	for _, v := range bytesgate.Variants(s) {
+		for _, f := range bytesgate.Fixtures(v.Scale) {
+			if !slices.Contains(v.Fixtures, f.Name) {
+				continue
+			}
+			d, err := f.Build(ctx)
+			if err != nil {
+				t.Fatalf("variant %s, fixture %s: %v", v.Name, f.Name, err)
+			}
+			sg := d.Subgraph
+			t.Logf("variant %s, fixture %s: %d entities, %d elements, %d keyframes, %d deltas",
+				v.Name, f.Name, len(sg.Entities), len(sg.Elements), len(sg.Keyframes), len(sg.Deltas))
 		}
 	}
 }

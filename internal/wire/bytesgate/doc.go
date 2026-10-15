@@ -58,6 +58,25 @@
 //
 //	TOPOSHIFT_BYTES_GATE=1 go test -count=1 -v -timeout 30m -run '^TestReport$' ./internal/wire/bytesgate
 //
+// # The variants
+//
+// After the table, [Run]'s report is followed by a block of four sensitivity
+// variants, labelled informational. Each is a registered fixture with one thing
+// changed, built and measured the same way, with its r printed beside the
+// registered fixture's:
+//
+//	i    churn ten times lower: a pod replaced every 300 s, in a, b and c
+//	ii   filler pods mapped to the 16 services besides the cell's seven, 23 services
+//	     on a node, the seven keeping their one pod, in b and c
+//	iii  1, 2 or 3 containers on each pod (69.7, 24.2 and 6.1 in 100, drawn from a
+//	     generator of their own) with a part_of edge each, in d and e
+//	iv   scopes fully stable: no pod appears, disappears or flaps, in d and e
+//
+// They enter no mean and no largest ratio, and nothing is computed over them or
+// said of them: they show how far the registered fixtures' ratios move when one
+// assumption does. The registered fixtures are the same documents with or without
+// them.
+//
 // The size of the format's own bytes alone, with no Arrow encoding, no JSON and no
 // ratio, is read with [RunCustomOnly] and [WriteCustomTable]:
 //
