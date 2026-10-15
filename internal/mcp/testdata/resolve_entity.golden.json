@@ -1,0 +1,28 @@
+{
+  "token": "33",
+  "derived": true,
+  "policy": {
+    "interval": 1,
+    "rank": "253c746577b09aba",
+    "names": 1
+  },
+  "entity": {
+    "id": "host:3c95ddc202c9c9179f85015702e4853b",
+    "type": "host",
+    "name": null
+  },
+  "attributes": {
+    "host.id": "HOST-ID-DISTINCT-7f3a"
+  },
+  "existence": {
+    "at": "2026-01-01T10:00:00Z",
+    "status": "alive",
+    "sentence": "alive at 2026-01-01T10:00:00Z at token 33",
+    "subject": "asserted",
+    "basis": "derived",
+    "rule": "existence"
+  },
+  "notes": [
+    "Pass asof=33 to see the same world, until the next retention (at most a day) or a restart with other ranks."
+  ]
+}

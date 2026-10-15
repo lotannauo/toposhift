@@ -1,0 +1,534 @@
+{
+  "token": "33",
+  "derived": true,
+  "policy": {
+    "interval": 1,
+    "blastradius": 1,
+    "rank": "253c746577b09aba",
+    "names": 1
+  },
+  "seed": {
+    "id": "host:3c95ddc202c9c9179f85015702e4853b",
+    "type": "host",
+    "name": null
+  },
+  "window": {
+    "from": "2026-01-01T10:00:00Z",
+    "to": "2026-01-01T10:30:00Z"
+  },
+  "depth_limit": 6,
+  "members": [
+    {
+      "entity": {
+        "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+        "type": "k8s.node",
+        "name": "worker-1",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 1,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "via": [
+        {
+          "parent": {
+            "id": "host:3c95ddc202c9c9179f85015702e4853b",
+            "type": "host",
+            "name": null
+          },
+          "relation": "runs_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "nodeagent/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "began_before_window": true,
+              "asserted_by": [
+                "nodeagent/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.node:3f38469ab44e6cd3f1604878b93fae01",
+        "type": "k8s.node",
+        "name": "worker-2",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 1,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "via": [
+        {
+          "parent": {
+            "id": "host:3c95ddc202c9c9179f85015702e4853b",
+            "type": "host",
+            "name": null
+          },
+          "relation": "runs_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "nodeagent/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "began_before_window": true,
+              "asserted_by": [
+                "nodeagent/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:4342ed7ec929e8edd76c57aaae45c05c",
+        "type": "k8s.pod",
+        "name": "web-6",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:3f38469ab44e6cd3f1604878b93fae01",
+            "type": "k8s.node",
+            "name": "worker-2",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "began_before_window": true,
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:b408e4c76f5a3033e7a43664b8980832",
+        "type": "k8s.pod",
+        "name": "web-0",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+            "type": "k8s.node",
+            "name": "worker-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "began_before_window": true,
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:816a5b8355b23fa798419330d404ba6f",
+        "type": "k8s.pod",
+        "name": "web-2",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:06:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "24m0s",
+      "class": "appeared",
+      "transitions": 1,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+            "type": "k8s.node",
+            "name": "worker-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:06:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:4226c8ed8a6a4f04744f44bfe88615e3",
+        "type": "k8s.pod",
+        "name": "web-3",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:10:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "reach ended; see the legs' ends"
+        },
+        {
+          "start": "2026-01-01T10:20:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "20m0s",
+      "class": "flapping",
+      "transitions": 2,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+            "type": "k8s.node",
+            "name": "worker-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:10:00Z",
+              "end_reason": "producer",
+              "end_sentence": "deleted by its producer",
+              "began_before_window": true,
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            },
+            {
+              "start": "2026-01-01T10:20:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:029145e57e9a1658836a04cec8fcf25c",
+        "type": "k8s.pod",
+        "name": "web-5",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:10:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "reach ended; see the legs' ends"
+        }
+      ],
+      "duration": "10m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+            "type": "k8s.node",
+            "name": "worker-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:10:00Z",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)",
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "k8s.pod:10288957dec290c085ba8f970c50ae38",
+        "type": "k8s.pod",
+        "name": "web-1",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 2,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:05:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "reach ended; see the legs' ends"
+        }
+      ],
+      "duration": "5m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+            "type": "k8s.node",
+            "name": "worker-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "scheduled_on",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:05:00Z",
+              "end_reason": "cascade",
+              "end_sentence": "an endpoint ended",
+              "began_before_window": true,
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "entity": {
+        "id": "container:fb8eaf7d71a23cd6ee1d4271a5060dc7",
+        "type": "container",
+        "name": "nginx",
+        "name_from": "k8sobjects/c1"
+      },
+      "depth": 3,
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "blast_radius.reach",
+      "reach": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "via": [
+        {
+          "parent": {
+            "id": "k8s.pod:b408e4c76f5a3033e7a43664b8980832",
+            "type": "k8s.pod",
+            "name": "web-0",
+            "namespace": "shop",
+            "name_from": "k8sobjects/c1"
+          },
+          "relation": "part_of",
+          "propagation": "down",
+          "subject": "asserted",
+          "basis": "derived",
+          "rule": "existence",
+          "asserted_by": [
+            "k8sobjects/c1"
+          ],
+          "leg": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end",
+              "began_before_window": true,
+              "asserted_by": [
+                "k8sobjects/c1"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "unattributed": [],
+  "quarantined": [],
+  "counts": {
+    "members": 9,
+    "members_shown": 9,
+    "unattributed": 0,
+    "quarantined": 0
+  },
+  "truncation": {
+    "incomplete": false,
+    "depth_cut": 0,
+    "frontier_cuts": [],
+    "members_unlisted": 0
+  },
+  "notes": [
+    "Pass asof=33 to see the same world, until the next retention (at most a day) or a restart with other ranks."
+  ]
+}

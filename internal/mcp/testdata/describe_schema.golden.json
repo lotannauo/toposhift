@@ -1,0 +1,523 @@
+{
+  "range_reads": true,
+  "policy": {
+    "interval": 1,
+    "blastradius": 1,
+    "graphdiff": 1,
+    "coresidency": 1,
+    "names": 1,
+    "payload": 1
+  },
+  "entities": [
+    {
+      "type": "topo.rack",
+      "layer": "L0",
+      "layer_meaning": "the physical fabric: racks, switches, ports; churn in weeks",
+      "identifying_keys": [
+        {
+          "name": "topo.rack.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "topo.switch",
+      "layer": "L0",
+      "layer_meaning": "the physical fabric: racks, switches, ports; churn in weeks",
+      "identifying_keys": [
+        {
+          "name": "topo.switch.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "topo.port",
+      "layer": "L0",
+      "layer_meaning": "the physical fabric: racks, switches, ports; churn in weeks",
+      "identifying_keys": [
+        {
+          "name": "topo.port.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "host",
+      "layer": "L1",
+      "layer_meaning": "host placement: hosts and zones; churn in hours",
+      "identifying_keys": [
+        {
+          "name": "host.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "topo.zone",
+      "layer": "L1",
+      "layer_meaning": "host placement: hosts and zones; churn in hours",
+      "identifying_keys": [
+        {
+          "name": "topo.zone.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "k8s.node",
+      "layer": "L2",
+      "layer_meaning": "workload placement: nodes, pods, containers, processes; churn in seconds",
+      "identifying_keys": [
+        {
+          "name": "k8s.node.uid",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": true
+    },
+    {
+      "type": "k8s.pod",
+      "layer": "L2",
+      "layer_meaning": "workload placement: nodes, pods, containers, processes; churn in seconds",
+      "identifying_keys": [
+        {
+          "name": "k8s.pod.uid",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": true
+    },
+    {
+      "type": "container",
+      "layer": "L2",
+      "layer_meaning": "workload placement: nodes, pods, containers, processes; churn in seconds",
+      "identifying_keys": [
+        {
+          "name": "container.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": true
+    },
+    {
+      "type": "process",
+      "layer": "L2",
+      "layer_meaning": "workload placement: nodes, pods, containers, processes; churn in seconds",
+      "identifying_keys": [
+        {
+          "name": "host.id",
+          "kind": "string",
+          "optional": false
+        },
+        {
+          "name": "process.pid",
+          "kind": "int",
+          "optional": false
+        },
+        {
+          "name": "process.creation.time",
+          "kind": "time",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "service.instance",
+      "layer": "L2",
+      "layer_meaning": "workload placement: nodes, pods, containers, processes; churn in seconds",
+      "identifying_keys": [
+        {
+          "name": "service.namespace",
+          "kind": "string",
+          "optional": true
+        },
+        {
+          "name": "service.name",
+          "kind": "string",
+          "optional": false
+        },
+        {
+          "name": "service.instance.id",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    },
+    {
+      "type": "service",
+      "layer": "L3",
+      "layer_meaning": "logical dependency between services",
+      "identifying_keys": [
+        {
+          "name": "service.namespace",
+          "kind": "string",
+          "optional": true
+        },
+        {
+          "name": "service.name",
+          "kind": "string",
+          "optional": false
+        }
+      ],
+      "named": false
+    }
+  ],
+  "relations": [
+    {
+      "type": "part_of",
+      "endpoints": [
+        {
+          "from": "container",
+          "to": "k8s.pod"
+        },
+        {
+          "from": "service.instance",
+          "to": "k8s.pod"
+        }
+      ],
+      "propagation": "down",
+      "propagation_meaning": "the failure of the to side degrades the from side: a substrate failing under what runs on it",
+      "layer": "L2",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "scheduled_on",
+      "endpoints": [
+        {
+          "from": "k8s.pod",
+          "to": "k8s.node"
+        }
+      ],
+      "propagation": "down",
+      "propagation_meaning": "the failure of the to side degrades the from side: a substrate failing under what runs on it",
+      "layer": "L2",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "runs_on",
+      "endpoints": [
+        {
+          "from": "k8s.node",
+          "to": "host"
+        },
+        {
+          "from": "process",
+          "to": "host"
+        }
+      ],
+      "propagation": "down",
+      "propagation_meaning": "the failure of the to side degrades the from side: a substrate failing under what runs on it",
+      "layer": "L1",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "located_in",
+      "endpoints": [
+        {
+          "from": "host",
+          "to": "topo.rack"
+        },
+        {
+          "from": "host",
+          "to": "topo.zone"
+        }
+      ],
+      "propagation": "down",
+      "propagation_meaning": "the failure of the to side degrades the from side: a substrate failing under what runs on it",
+      "layer": "L1",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "instance_of",
+      "endpoints": [
+        {
+          "from": "service.instance",
+          "to": "service"
+        }
+      ],
+      "propagation": "none",
+      "propagation_meaning": "failure does not travel along it: the relation is structural or an aggregation",
+      "layer": "L2",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "depends_on",
+      "endpoints": [
+        {
+          "from": "service",
+          "to": "service"
+        }
+      ],
+      "propagation": "up",
+      "propagation_meaning": "the failure of the to side degrades the from side: a callee failing under its callers",
+      "layer": "L3",
+      "derived": false,
+      "subject": "asserted"
+    },
+    {
+      "type": "same_as",
+      "endpoints": [],
+      "propagation": "none",
+      "propagation_meaning": "failure does not travel along it: the relation is structural or an aggregation",
+      "layer": null,
+      "derived": true,
+      "subject": "derived"
+    }
+  ],
+  "names": {
+    "version": 1,
+    "keys": [
+      {
+        "type": "k8s.node",
+        "name": [
+          "name",
+          "k8s.node.name"
+        ],
+        "namespace": []
+      },
+      {
+        "type": "k8s.pod",
+        "name": [
+          "name",
+          "k8s.pod.name"
+        ],
+        "namespace": [
+          "namespace",
+          "k8s.namespace.name"
+        ]
+      },
+      {
+        "type": "container",
+        "name": [
+          "name",
+          "k8s.container.name"
+        ],
+        "namespace": [
+          "k8s.namespace.name"
+        ]
+      }
+    ],
+    "how": "A name is read from the description of the producer that wins under the store's ranks, at the last instant of the answer's window, else at its first, from a top-level JSON string under the first of these keys. It is never taken from an identity attribute, from a losing producer or from a peer.",
+    "unnamed_types": [
+      "topo.rack",
+      "topo.switch",
+      "topo.port",
+      "host",
+      "topo.zone",
+      "process",
+      "service.instance",
+      "service"
+    ],
+    "note": "A type not listed has no name."
+  },
+  "payload": {
+    "version": 1,
+    "types": [
+      {
+        "type": "host",
+        "allowed": [
+          "host.arch",
+          "host.type",
+          "os.type",
+          "host.cpu.model.name",
+          "cloud.provider",
+          "cloud.platform",
+          "cloud.region",
+          "cloud.availability_zone"
+        ],
+        "withheld": [
+          "cloud.resource_id"
+        ]
+      },
+      {
+        "type": "k8s.node",
+        "allowed": [
+          "name",
+          "labels",
+          "conditions",
+          "k8s.node.name",
+          "node.creation_timestamp",
+          "k8s.node.condition_ready",
+          "k8s.node.condition_memory_pressure",
+          "k8s.node.condition_disk_pressure",
+          "k8s.node.condition_pid_pressure",
+          "k8s.node.condition_network_unavailable"
+        ],
+        "withheld": [
+          "addresses",
+          "provider_id",
+          "node_info"
+        ]
+      },
+      {
+        "type": "k8s.pod",
+        "allowed": [
+          "name",
+          "namespace",
+          "node_name",
+          "phase",
+          "reason",
+          "deletion_timestamp",
+          "owner",
+          "conditions",
+          "containers",
+          "k8s.pod.name",
+          "k8s.namespace.name",
+          "k8s.node.name",
+          "k8s.pod.phase",
+          "k8s.pod.status_reason",
+          "k8s.workload.kind",
+          "k8s.workload.name",
+          "k8s.deployment.name",
+          "k8s.replicaset.name",
+          "k8s.statefulset.name",
+          "pod.creation_timestamp"
+        ],
+        "withheld": [
+          "host_ip",
+          "pod_ips"
+        ]
+      },
+      {
+        "type": "container",
+        "allowed": [
+          "name",
+          "pod_uid",
+          "k8s.container.name",
+          "k8s.pod.name",
+          "k8s.namespace.name",
+          "k8s.node.name",
+          "container.image.name",
+          "container.image.tag",
+          "container.status",
+          "container.status.reason",
+          "container.creation_timestamp"
+        ],
+        "withheld": []
+      }
+    ],
+    "how": "A description is printed only through this table of top-level keys. A key that is not allowed is withheld, and the answer names it; a payload that is not a JSON object is withheld whole."
+  },
+  "vocabulary": {
+    "basis": [
+      {
+        "term": "fact",
+        "meaning": "a stored record, returned as stored"
+      },
+      {
+        "term": "derived",
+        "meaning": "computed from records at a token under a policy version"
+      }
+    ],
+    "subject": [
+      {
+        "term": "asserted",
+        "meaning": "an entity or a stored relation that a producer asserted"
+      },
+      {
+        "term": "derived",
+        "meaning": "anything no producer asserted: a reach, a co-resident, a pair"
+      }
+    ],
+    "rules": [
+      {
+        "term": "existence",
+        "meaning": "an entity's or an edge's existence, folded from its records; asserted_by lists the producers"
+      },
+      {
+        "term": "blast_radius.reach",
+        "meaning": "an entity a failing seed reaches over a chain of edges that all exist at once"
+      },
+      {
+        "term": "co_residency.shared_node",
+        "meaning": "two pods scheduled on one node at once"
+      },
+      {
+        "term": "co_residency.shared_host",
+        "meaning": "two pods on two nodes at once, each node placed on one host by an asserted runs_on"
+      },
+      {
+        "term": "unattributed.\u003creason\u003e",
+        "meaning": "a placement the server refuses to guess; the reason says why"
+      },
+      {
+        "term": "diff.\u003cbucket\u003e",
+        "meaning": "an element of a diff bucket: created, deleted, changed, transient, or event"
+      }
+    ],
+    "end_reasons": [
+      {
+        "term": "producer",
+        "meaning": "deleted by its producer"
+      },
+      {
+        "term": "liveness_expiry",
+        "meaning": "its producer went silent past its TTL (not known to be gone)"
+      },
+      {
+        "term": "cascade",
+        "meaning": "an endpoint ended"
+      },
+      {
+        "term": "unattributed",
+        "meaning": "not known"
+      },
+      {
+        "term": "reach_ended",
+        "meaning": "a derived span ended where one of its legs did (see the legs' ends), or where an ambiguity did"
+      },
+      {
+        "term": "null",
+        "meaning": "the span reaches the window's end; nothing after the window is reported"
+      }
+    ],
+    "classes": [
+      {
+        "term": "stable",
+        "meaning": "one span covering the whole window"
+      },
+      {
+        "term": "appeared",
+        "meaning": "one span that starts after the window's start and reaches its end"
+      },
+      {
+        "term": "disappeared",
+        "meaning": "one span that starts at the window's start and ends before its end"
+      },
+      {
+        "term": "transient",
+        "meaning": "one span that starts after the window's start and ends before its end"
+      },
+      {
+        "term": "flapping",
+        "meaning": "two spans or more"
+      }
+    ]
+  },
+  "notes": [
+    "Every id is an entity type, a colon, and 32 lowercase hex digits: a hash of the exact identifying attributes. Use resolve_entity to compute one.",
+    "Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
+    "Every range answer is read at one token, named in the answer; pass it as asof to read the same world again."
+  ]
+}
