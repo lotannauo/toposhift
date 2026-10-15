@@ -98,6 +98,30 @@ type Config struct {
 	// PayloadMin and PayloadMax bound the length of random payloads:
 	// 1 <= PayloadMin <= PayloadMax <= 256. Every Observe carries one.
 	PayloadMin, PayloadMax int
+
+	// Refresh makes the watch-mode producers refresh, and bounds the age of a run.
+	// Its zero value changes nothing: a stream is the same, record for record and
+	// draw for draw, as one generated before the field existed.
+	Refresh RefreshConfig
+}
+
+// RefreshConfig is the refreshing mode of a stream.
+type RefreshConfig struct {
+	// On gives k8sobjects (pods, containers, part_of and scheduled_on) and fabric
+	// (racks and located_in) the heartbeat's TTL, TTLFactor times
+	// HeartbeatInterval, instead of none, and has both re-assert, at every
+	// heartbeat, everything they currently assert, with the payload it was
+	// created with. It needs HeartbeatInterval above 0. The re-assertions are
+	// never coalesced into runs: a late delete inside a run would change what the
+	// run answers. The kubelet is unchanged: it asserts a placement once, with
+	// ConfirmTTL. Nothing in this mode draws from the random source.
+	On bool
+	// RunMaxAge bounds the age of a run, with Runs: a refresh at or past
+	// RunMaxAge after its run's first event time starts a new run at its own
+	// instant instead of extending the old one, as serve's coalescer bounds a run's
+	// age (at half its TTL there).
+	// Zero means unbounded. It is in whole seconds, and has no effect without Runs.
+	RunMaxAge time.Duration
 }
 
 // Tiny is the default small workload for tests: twenty minutes of a handful of
@@ -164,6 +188,10 @@ func (c Config) Validate() error {
 		return bad("CloneProbability must be in [0, 1], and needs RebootProbability above 0")
 	case c.PayloadMin < 1 || c.PayloadMax < c.PayloadMin || c.PayloadMax > 256:
 		return bad("payload bounds are %d to %d: want 1 <= PayloadMin <= PayloadMax <= 256", c.PayloadMin, c.PayloadMax)
+	case c.Refresh.On && c.HeartbeatInterval == 0:
+		return bad("Refresh.On needs HeartbeatInterval above 0")
+	case c.Refresh.RunMaxAge < 0 || !wholeSeconds(c.Refresh.RunMaxAge):
+		return bad("Refresh.RunMaxAge must be at least 0, in whole seconds")
 	}
 	longest := max(time.Hour, c.heartbeatTTL(), c.ConfirmTTL)
 	if c.CloneProbability > 0 {
@@ -183,6 +211,15 @@ func (c Config) heartbeatTTL() time.Duration {
 		return 0
 	}
 	return time.Duration(c.TTLFactor) * c.HeartbeatInterval
+}
+
+// watchTTL is the TTL of what k8sobjects and fabric assert: none, unless they
+// refresh.
+func (c Config) watchTTL() time.Duration {
+	if !c.Refresh.On {
+		return 0
+	}
+	return c.heartbeatTTL()
 }
 
 // origin says where in the model an item came from, for the tests that count
@@ -251,11 +288,27 @@ func (g *Generator) Next() (store.Record, bool) {
 	}
 	it := g.items[g.next]
 	g.next++
+	g.boundRun(it)
 	rec := g.coalesce(it)
 	g.seq++
 	rec.Seq = g.seq
 	rec.Payload = slices.Clone(rec.Payload) // the generator keeps its own
 	return rec, true
+}
+
+// boundRun ends the run a refresh would extend when Config.Refresh.RunMaxAge
+// bounds a run's age and the refresh is at or past it, so that the coalescer
+// starts a new run at the refresh's own instant. The old run's deadline is not
+// before that instant, so existence stays continuous. It draws nothing.
+func (g *Generator) boundRun(it item) {
+	limit := g.cfg.Refresh.RunMaxAge
+	if limit <= 0 || !g.cfg.Runs || !it.refresh {
+		return
+	}
+	key := runKey{it.rec.Subject, it.rec.Producer}
+	if st := g.runs[key]; st != nil && it.rec.EventTime.Sub(st.start) >= limit {
+		delete(g.runs, key)
+	}
 }
 
 // Batch returns up to n records, fewer at the end of the stream.
@@ -326,9 +379,14 @@ type builder struct {
 	racks, hosts, nodes, services, pods, containers []identity.Fingerprint
 	hostPayload, nodePayload, runsOnPayload         [][]byte
 	servicePayload, dependsPayload                  [][]byte
-	boot                                            []int  // the boot number of each host
-	podNode                                         []int  // the node of each pod, or -1 while it does not exist
-	confirmed                                       []bool // the kubelet also asserts the pod's placement
+	// The payloads fabric and k8sobjects asserted last, which a refresh repeats.
+	// They are kept whatever the mode, and keeping them draws nothing.
+	rackPayload, locatedPayload                 [][]byte
+	podPayload, containerPayload, partOfPayload [][]byte
+	placePayload                                [][]byte
+	boot                                        []int  // the boot number of each host
+	podNode                                     []int  // the node of each pod, or -1 while it does not exist
+	confirmed                                   []bool // the kubelet also asserts the pod's placement
 
 	confirmEnds int
 }
@@ -379,6 +437,12 @@ func (b *builder) buildCluster() {
 		b.podNode[i] = -1
 	}
 	b.confirmed = make([]bool, c.Pods)
+	b.rackPayload = make([][]byte, c.Racks)
+	b.locatedPayload = make([][]byte, c.Hosts)
+	b.podPayload = make([][]byte, c.Pods)
+	b.containerPayload = make([][]byte, c.Pods)
+	b.partOfPayload = make([][]byte, c.Pods)
+	b.placePayload = make([][]byte, c.Pods)
 }
 
 func (b *builder) entities() []identity.Fingerprint {
@@ -499,12 +563,14 @@ func isRefresh(p lifecycle.Producer, kind lifecycle.Kind, ttl time.Duration) boo
 
 // emitStart asserts the whole cluster at Start, as an initial list would.
 func (b *builder) emitStart() {
-	at, ttl := b.cfg.Start, b.cfg.heartbeatTTL()
-	for _, r := range b.racks {
-		b.entityRecord(at, originStart, ProducerFabric, r, lifecycle.Observe, 0, b.payload())
+	at, ttl, watch := b.cfg.Start, b.cfg.heartbeatTTL(), b.cfg.watchTTL()
+	for i, r := range b.racks {
+		b.rackPayload[i] = b.payload()
+		b.entityRecord(at, originStart, ProducerFabric, r, lifecycle.Observe, watch, b.rackPayload[i])
 	}
 	for i := range b.hosts {
-		b.edgeRecord(at, originStart, ProducerFabric, b.hosts[i], b.racks[i%len(b.racks)], catalog.LocatedIn, lifecycle.Observe, 0, b.payload())
+		b.locatedPayload[i] = b.payload()
+		b.edgeRecord(at, originStart, ProducerFabric, b.hosts[i], b.racks[i%len(b.racks)], catalog.LocatedIn, lifecycle.Observe, watch, b.locatedPayload[i])
 		b.hostBeat(at, originStart, i, ttl)
 	}
 	for j := range b.services {
@@ -587,6 +653,30 @@ func (b *builder) heartbeat(at time.Time) {
 	for j := range b.services {
 		b.serviceBeat(at, originHeartbeat, j, ttl)
 	}
+	if c.Refresh.On {
+		b.refreshWatched(at, ttl)
+	}
+}
+
+// refreshWatched has fabric and k8sobjects re-assert, at the heartbeat at,
+// everything they currently assert, with the payloads they asserted it with. It
+// draws nothing from the random source.
+func (b *builder) refreshWatched(at time.Time, ttl time.Duration) {
+	for i, r := range b.racks {
+		b.entityRecord(at, originHeartbeat, ProducerFabric, r, lifecycle.Observe, ttl, b.rackPayload[i])
+	}
+	for i := range b.hosts {
+		b.edgeRecord(at, originHeartbeat, ProducerFabric, b.hosts[i], b.racks[i%len(b.racks)], catalog.LocatedIn, lifecycle.Observe, ttl, b.locatedPayload[i])
+	}
+	for p, node := range b.podNode {
+		if node < 0 {
+			continue
+		}
+		b.entityRecord(at, originHeartbeat, ProducerK8sObjects, b.pods[p], lifecycle.Observe, ttl, b.podPayload[p])
+		b.entityRecord(at, originHeartbeat, ProducerK8sObjects, b.containers[p], lifecycle.Observe, ttl, b.containerPayload[p])
+		b.edgeRecord(at, originHeartbeat, ProducerK8sObjects, b.containers[p], b.pods[p], catalog.PartOf, lifecycle.Observe, ttl, b.partOfPayload[p])
+		b.edgeRecord(at, originHeartbeat, ProducerK8sObjects, b.pods[p], b.nodes[node], catalog.ScheduledOn, lifecycle.Observe, ttl, b.placePayload[p])
+	}
 }
 
 // createPod asserts a pod, its container, their relation and the pod's
@@ -594,9 +684,13 @@ func (b *builder) heartbeat(at time.Time) {
 func (b *builder) createPod(at time.Time, o origin, p int) {
 	node := b.rng.IntN(len(b.nodes))
 	b.podNode[p] = node
-	b.entityRecord(at, o, ProducerK8sObjects, b.pods[p], lifecycle.Observe, 0, b.payload())
-	b.entityRecord(at, o, ProducerK8sObjects, b.containers[p], lifecycle.Observe, 0, b.payload())
-	b.edgeRecord(at, o, ProducerK8sObjects, b.containers[p], b.pods[p], catalog.PartOf, lifecycle.Observe, 0, b.payload())
+	ttl := b.cfg.watchTTL()
+	b.podPayload[p] = b.payload()
+	b.entityRecord(at, o, ProducerK8sObjects, b.pods[p], lifecycle.Observe, ttl, b.podPayload[p])
+	b.containerPayload[p] = b.payload()
+	b.entityRecord(at, o, ProducerK8sObjects, b.containers[p], lifecycle.Observe, ttl, b.containerPayload[p])
+	b.partOfPayload[p] = b.payload()
+	b.edgeRecord(at, o, ProducerK8sObjects, b.containers[p], b.pods[p], catalog.PartOf, lifecycle.Observe, ttl, b.partOfPayload[p])
 	b.place(at, o, p, node)
 }
 
@@ -604,7 +698,8 @@ func (b *builder) createPod(at time.Time, o origin, p int) {
 // ConfirmProbability, assert it too. The kubelet's draw is made only if the
 // probability is above zero.
 func (b *builder) place(at time.Time, o origin, p, node int) {
-	b.edgeRecord(at, o, ProducerK8sObjects, b.pods[p], b.nodes[node], catalog.ScheduledOn, lifecycle.Observe, 0, b.payload())
+	b.placePayload[p] = b.payload()
+	b.edgeRecord(at, o, ProducerK8sObjects, b.pods[p], b.nodes[node], catalog.ScheduledOn, lifecycle.Observe, b.cfg.watchTTL(), b.placePayload[p])
 	if b.cfg.ConfirmProbability <= 0 || b.rng.Float64() >= b.cfg.ConfirmProbability {
 		return
 	}
