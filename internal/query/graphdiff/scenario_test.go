@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -483,23 +484,32 @@ func TestScenarioJTheTokenIsPinnedOnce(t *testing.T) {
 	}
 }
 
+// TestScenarioKRetention: a diff of a retained layer answers as on a store that
+// kept everything while every description it gives was asserted at or after the
+// horizon. One it must give that was asserted before the horizon, whose payload
+// is not kept, is refused with ErrRetained (and ErrUnsupported), never guessed;
+// and a T1 before the horizon is refused by the store, with ErrBeforeHorizon.
+// Either refusal has a zero result.
 func TestScenarioKRetention(t *testing.T) {
-	retained := func(t *testing.T, res graphdiff.Result, err error) {
+	zero := func(t *testing.T, res graphdiff.Result, err error, target error) {
 		t.Helper()
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || res.Token != 0 || res.Scope != nil || res.Reads != (graphdiff.Reads{}) {
-			t.Fatalf("%v, %+v; want ErrRetained with a zero result", err, res)
+		if !errors.Is(err, target) || res.Token != 0 || res.Scope != nil || res.Reads != (graphdiff.Reads{}) {
+			t.Fatalf("%v, %+v; want %v with a zero result", err, res, target)
 		}
 	}
 	t.Run("L1 retained", func(t *testing.T) {
+		twin := scenarioA(t, memstore.Options{})
 		st := scenarioA(t, memstore.Options{Keep: [4]bool{true, false, true, true}})
 		if err := st.Retain(ctx, hm(10, 0)); err != nil {
 			t.Fatal(err)
 		}
-		res, err := graphdiff.NewDiffer(st).Diff(ctx, []identity.Fingerprint{N}, T1, T2, store.Latest, graphdiff.Options{})
-		retained(t, res, err)
-		ok := diff30(t, st, graphdiff.Options{}, S)
-		expectEmpty(t, ok)
-		expectReads(t, ok.Reads, 3, 2, 3, 3)
+		for _, scope := range []identity.Fingerprint{N, S} {
+			if got, want := diff30(t, st, graphdiff.Options{}, scope), diff30(t, twin, graphdiff.Options{}, scope); sameResult(got, want) != "" || got.Reads != want.Reads {
+				t.Errorf("Diff(%s) after the retention: %s", scope, sameResult(got, want))
+			}
+		}
+		res, err := graphdiff.NewDiffer(st).Diff(ctx, []identity.Fingerprint{N}, hm(9, 59), T2, store.Latest, graphdiff.Options{})
+		zero(t, res, err, store.ErrBeforeHorizon)
 	})
 	t.Run("L2 retained", func(t *testing.T) {
 		inner := scenarioA(t, memstore.Options{Keep: [4]bool{true, true, false, true}})
@@ -507,11 +517,15 @@ func TestScenarioKRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		st := &spy{Store: inner}
+		// The node's own existence, asserted before the horizon, is described at
+		// T1 and T2 (and so is S's placement, asserted at 9:00).
 		res, err := graphdiff.NewDiffer(st).Diff(ctx, []identity.Fingerprint{N}, T1, T2, store.Latest, graphdiff.Options{})
-		retained(t, res, err)
-		if len(st.tokens) != 0 {
-			t.Errorf("%d reads before the refusal", len(st.tokens))
+		zero(t, res, err, interval.ErrRetained)
+		if !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), N.String()) {
+			t.Errorf("%v does not name %s", err, N)
 		}
+		res, err = graphdiff.NewDiffer(st).Diff(ctx, []identity.Fingerprint{N}, hm(9, 59), T2, store.Latest, graphdiff.Options{})
+		zero(t, res, err, store.ErrBeforeHorizon)
 	})
 }
 

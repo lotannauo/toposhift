@@ -96,9 +96,9 @@
 // Find uses it; [Result].Token names it. Edges with a quarantined endpoint are
 // left out of every derivation and listed in [Result].Quarantined (each Find's
 // in its own result). Arguments are checked before any store call. After that
-// any error fails the whole extraction, with no partial answer; a retained
-// layer gives an error wrapping interval.ErrRetained. L3 is always read, and
-// L1 unless [Options].NodeOnly.
+// any error fails the whole extraction, with no partial answer; a window that
+// starts before a layer's retention horizon gives an error wrapping
+// store.ErrBeforeHorizon. L3 is always read, and L1 unless [Options].NodeOnly.
 //
 // # Reads
 //
@@ -106,12 +106,13 @@
 // Find's included: one Window per entity and layer read, and one existence read
 // (an Alive and, unless quarantined, an EntityWindow) per distinct endpoint of
 // an edge with an interval of its own in the window, per call. The read budget
-// is fixed in [BudgetDate] and the constants beside it. The Window reads are
-// not bounded by the window: they read every edge record from the start of the
-// store's history, until the store has an interval read of its own.
+// is fixed in [BudgetDate] and the constants beside it. Each layer is read in
+// one batched store read (store.Store.WindowSince), counted as one Window or
+// EntityWindow per entity, which returns the window's records and each
+// reference's seed just before From, never the history before it.
 //
 // An extraction keeps the answer of every Window, EntityWindow and Alive it has
-// made at its one token, and serves a repeat of the read (the same entity as an
+// made at its one token, and each entity's answer of every WindowSince, and serves a repeat of the read (the same entity as an
 // endpoint of several hops, or of several Finds) from memory. The memo belongs
 // to one Extract call: it is built when the call starts, dropped when it
 // returns, and shared with no other extraction. It holds facts read at one

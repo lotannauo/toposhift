@@ -28,8 +28,8 @@ import (
 // Package blastradius's Around result is not carried: its substrates are
 // walked from a pod, and are a different shape.
 //
-// Everything in it is derived. Any error, a retained layer included, fails the
-// whole call, with no partial answer.
+// Everything in it is derived. Any error, a refusal for retention included,
+// fails the whole call, with no partial answer.
 func FromBlastRadius(ctx context.Context, st store.Store, res blastradius.Result, p ReadPolicy) (Subgraph, error) {
 	fail := func(err error) (Subgraph, error) { return Subgraph{}, fmt.Errorf("subgraph: FromBlastRadius: %w", err) }
 	c, err := newCollector(res.From, res.To)

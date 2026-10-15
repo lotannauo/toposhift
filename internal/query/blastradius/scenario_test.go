@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -397,35 +398,34 @@ func TestScenarioHTheTokenIsPinnedOnce(t *testing.T) {
 }
 
 func TestScenarioIRetention(t *testing.T) {
-	retained := func(t *testing.T, res blastradius.Result, err error) {
-		t.Helper()
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || res.Token != 0 || res.Members != nil || res.Seed != (identity.Fingerprint{}) {
-			t.Fatalf("%v, %+v; want ErrRetained with a zero result", err, res)
-		}
-	}
+	// After a retention at the window's start a walk answers as on a store that
+	// kept everything, reads included; a window that starts before the horizon
+	// is refused by the store, with ErrBeforeHorizon and a zero result.
 	p1 := observe(ent(P1), k8s, hm(9, 0), 0)
-	t.Run("L1 retained", func(t *testing.T) {
-		st := scenarioA(t, memstore.Options{Keep: [4]bool{true, false, true, true}}, p1)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		res, err := blastradius.NewWalker(st).Impact(ctx, H, w30, blastradius.Options{})
-		retained(t, res, err)
-		res = impact(t, st, P1, w30, blastradius.Options{})
-		expect(t, "Impact(P1)", briefs(res.Members), mline(C1, 1, whole, interval.ClassStable, 0, arr{P1, catalog.PartOf, whole}))
-	})
-	t.Run("L2 retained", func(t *testing.T) {
-		st := scenarioA(t, memstore.Options{Keep: [4]bool{true, true, false, true}}, p1)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		reads := &spy{Store: st}
-		res, err := blastradius.NewWalker(reads).Impact(ctx, H, w30, blastradius.Options{})
-		retained(t, res, err)
-		if reads.windows != 1 {
-			t.Errorf("%d Window reads, want the first call's only", reads.windows)
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		keep [4]bool
+	}{
+		{"L1 retained", [4]bool{true, false, true, true}},
+		{"L2 retained", [4]bool{true, true, false, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			twin := scenarioA(t, memstore.Options{}, p1)
+			st := scenarioA(t, memstore.Options{Keep: tc.keep}, p1)
+			if err := st.Retain(ctx, hm(10, 0)); err != nil {
+				t.Fatal(err)
+			}
+			for _, seed := range []identity.Fingerprint{H, P1} {
+				if got, want := impact(t, st, seed, w30, blastradius.Options{}), impact(t, twin, seed, w30, blastradius.Options{}); !reflect.DeepEqual(got, want) {
+					t.Errorf("Impact(%s) after the retention:\n%+v\nwant\n%+v", seed, got, want)
+				}
+			}
+			res, err := blastradius.NewWalker(st).Impact(ctx, H, interval.Window{From: hm(9, 59), To: hm(10, 30), AsOf: store.Latest}, blastradius.Options{})
+			if !errors.Is(err, store.ErrBeforeHorizon) || res.Token != 0 || res.Members != nil || res.Seed != (identity.Fingerprint{}) {
+				t.Fatalf("a window before the horizon: %v, %+v; want ErrBeforeHorizon with a zero result", err, res)
+			}
+		})
+	}
 }
 
 func TestScenarioJArguments(t *testing.T) {

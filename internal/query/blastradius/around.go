@@ -90,7 +90,8 @@ func walkedByDefault(fp identity.Fingerprint) bool {
 // racks and zones included, is walked only if o.ExpandFabric is set.
 // Arguments are checked before any store call, and the seed must be a pod.
 // After that, any error of a read fails the whole query with a zero result, and
-// a retained layer gives an error wrapping interval.ErrRetained.
+// a window that starts before a layer's retention horizon gives an error
+// wrapping store.ErrBeforeHorizon.
 func (w *Walker) Around(ctx context.Context, pod identity.Fingerprint, win interval.Window, o Options) (AroundResult, error) {
 	fail := func(err error) (AroundResult, error) {
 		return AroundResult{}, fmt.Errorf("blastradius: Around: %w", err)

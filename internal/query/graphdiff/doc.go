@@ -93,8 +93,11 @@
 // The first read resolves the token, and every later read uses it;
 // [Result].Token names it. A diff is in event time only: what was known at two
 // tokens is two diffs. Arguments are checked before any store call. After that
-// any error fails the whole diff, with no partial answer; a retained layer
-// gives an error wrapping interval.ErrRetained.
+// any error fails the whole diff, with no partial answer. A T1 before a layer's
+// retention horizon gives an error wrapping store.ErrBeforeHorizon, and a
+// description at T1 or T2 asserted before the horizon, whose payload the store
+// no longer keeps, one wrapping interval.ErrRetained: it is refused, not
+// guessed.
 //
 // # Reads
 //
@@ -104,8 +107,8 @@
 // entity and edge layer; and one existence read (an Alive and, unless
 // quarantined, an EntityWindow) per scope entity, plus, per edge call, one per
 // distinct endpoint of an edge with an interval of its own in W. The read
-// budget is fixed in [BudgetDate] and the constants beside it. The Window
-// reads are not bounded by the window: they read every edge record from the
-// start of the store's history, until the store has an interval read of its
-// own.
+// budget is fixed in [BudgetDate] and the constants beside it. Each layer is
+// read in one batched store read (store.Store.WindowSince), counted as one
+// Window or EntityWindow per entity, which returns the window's records and each
+// reference's seed just before T1, never the history before it.
 package graphdiff

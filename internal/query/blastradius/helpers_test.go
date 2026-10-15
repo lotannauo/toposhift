@@ -210,6 +210,30 @@ func (s *spy) EntityWindow(ctx context.Context, fp identity.Fingerprint, from, t
 	return s.Store.EntityWindow(ctx, fp, from, to, sc)
 }
 
+// WindowSince stands for one Window (or, for direction 0, one EntityWindow) per
+// fingerprint: it notes each one's token, and runs the hook before the store read
+// for each fingerprint of an edge read.
+func (s *spy) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	var ns []int
+	var hook func(int)
+	for range fps {
+		s.note(sc.AsOf)
+		if d == 0 {
+			continue
+		}
+		s.mu.Lock()
+		s.windows++
+		ns, hook = append(ns, s.windows), s.onWindow
+		s.mu.Unlock()
+	}
+	for _, n := range ns {
+		if hook != nil {
+			hook(n)
+		}
+	}
+	return s.Store.WindowSince(ctx, fps, d, from, to, sc, o)
+}
+
 func ts(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
 func spansString(ss []interval.Span) string {

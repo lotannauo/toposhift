@@ -111,7 +111,8 @@ func openStore(t testing.TB, opts memstore.Options) *memstore.Store {
 }
 
 // spy wraps a store, counts its reads and writes, logs each read with its
-// layer, and can run a hook before each Window.
+// layer, and can run a hook before each Window. A WindowSince counts as the
+// Windows or EntityWindows of its fingerprints.
 type spy struct {
 	store.Store
 	mu       sync.Mutex
@@ -178,6 +179,38 @@ func (s *spy) Window(ctx context.Context, fp identity.Fingerprint, d store.Direc
 func (s *spy) EntityWindow(ctx context.Context, fp identity.Fingerprint, from, to time.Time, sc store.Scope) ([]store.Record, error) {
 	s.read("EntityWindow "+string(fp.Type()), sc.Layer)
 	return s.Store.EntityWindow(ctx, fp, from, to, sc)
+}
+
+// WindowSince logs one read per fingerprint, as the Window or EntityWindow it
+// stands for, and runs the hooks around the one store read for each of its
+// fingerprints that is a Window.
+func (s *spy) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	var ns []int
+	var hook, after func(int)
+	for _, fp := range fps {
+		if d == 0 {
+			s.read("EntityWindow "+string(fp.Type()), sc.Layer)
+			continue
+		}
+		s.read("Window "+string(fp.Type()), sc.Layer)
+		s.mu.Lock()
+		s.windows++
+		ns = append(ns, s.windows)
+		hook, after = s.onWindow, s.afterWin
+		s.mu.Unlock()
+	}
+	for _, n := range ns {
+		if hook != nil {
+			hook(n)
+		}
+	}
+	out, err := s.Store.WindowSince(ctx, fps, d, from, to, sc, o)
+	for _, n := range ns {
+		if after != nil {
+			after(n)
+		}
+	}
+	return out, err
 }
 
 func (s *spy) counts() (reads, writes int) {

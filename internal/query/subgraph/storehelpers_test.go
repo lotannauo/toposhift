@@ -159,6 +159,15 @@ func (s *spy) EntityWindow(ctx context.Context, fp identity.Fingerprint, from, t
 	return s.Store.EntityWindow(ctx, fp, from, to, sc)
 }
 
+// WindowSince stands for one Window (or, for direction 0, one EntityWindow) per
+// fingerprint: it notes each one's token.
+func (s *spy) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	for range fps {
+		s.note(sc.AsOf)
+	}
+	return s.Store.WindowSince(ctx, fps, d, from, to, sc, o)
+}
+
 // pointPresence is what the store's point reads say is present at x, with the
 // cascade: each scope entity Alive, and each edge listed by Neighbors of a scope
 // entity with both endpoints Alive. Quarantined entities and the edges touching

@@ -29,9 +29,11 @@ func endpointReads(s *spy) int {
 	return n
 }
 
-// A node with a long history of short-lived pods: the cascade reads the
-// endpoints of the edges in the window only, not of every pod the node ever
-// had.
+// A node with a long history of short-lived pods: the read returns the edges
+// alive just before the window and those with records in it, never the history
+// before them, and the cascade reads their endpoints only. Reading every
+// endpoint of what is read reads the same three, because the pods placed and
+// gone before the window are not even in what is read.
 func TestCascadeReadsOnlyTheEndpointsOfEdgesInTheWindow(t *testing.T) {
 	const history = 50
 	inner := openStore(t, memstore.Options{})
@@ -66,35 +68,63 @@ func TestCascadeReadsOnlyTheEndpointsOfEdgesInTheWindow(t *testing.T) {
 	every := &spy{Store: inner}
 	all := mustEdges(t, interval.ReadingEveryEndpoint(interval.NewReader(every, interval.Options{})), n, store.Reverse, w)
 	check(t, "against reading every endpoint", res.Elements, all.Elements)
-	if got := endpointReads(every); got != history+3 {
-		t.Errorf("reading every endpoint made %d endpoint reads, want %d", got, history+3)
+	if got := endpointReads(every); got != 3 {
+		t.Errorf("reading every endpoint made %d endpoint reads, want 3", got)
+	}
+	recs, err := inner.WindowSince(ctx, []identity.Fingerprint{n}, store.Reverse, w.From, w.To, store.Current(catalog.L2), store.SinceOptions{})
+	if err != nil || len(recs[0].Seeds)+len(recs[0].Window) != 2 {
+		t.Errorf("the node's reverse read gives %+v, %v; want x's seed and y's record, not the %d pods before them", recs, err, history)
 	}
 }
 
-// An edge with nothing in the window touches no endpoint layer, so a retained
-// endpoint layer does not refuse it; an edge in the window still is refused
-// (scenario H).
+// An edge that ended before the window is not read at all, so even reading every
+// endpoint reads none of its endpoints; and a window from the horizon of a
+// retained endpoint layer is answered, from the seeds, as a store that kept
+// everything answers it. One that starts before that horizon is refused by the
+// store at the endpoint's existence.
 func TestCascadeOfAnEdgeOutsideTheWindowReadsNoEndpointLayer(t *testing.T) {
-	// A process, whose forward edges are stored in L1 only: a node's forward
-	// read also covers L2, which is retained here, and is refused up front.
-	st := openStore(t, memstore.Options{Keep: [4]bool{true, true, false, true}})
 	proc, h := mkfp(t, catalog.Process, 1), mkfp(t, catalog.Host, 1)
 	e := edge(proc, h, catalog.RunsOn)
-	newFeed(t, st).write(
+	recs := []store.Record{
 		observe(ent(proc), k8s, hm(9, 0), 0), observe(ent(h), k8s, hm(9, 0), 0),
 		observe(e, k8s, hm(9, 0), 0), deleted(e, k8s, hm(9, 30)),
-	)
-	if err := st.Retain(ctx, hm(10, 0)); err != nil {
+	}
+	inner := openStore(t, memstore.Options{Keep: [4]bool{true, false, false, true}})
+	newFeed(t, inner).write(recs...)
+	if err := inner.Retain(ctx, hm(10, 0)); err != nil {
 		t.Fatal(err)
 	}
 	w := win(hm(10, 0), hm(10, 30))
-	res, err := interval.NewReader(st, interval.Options{}).Edges(ctx, proc, store.Forward, w)
-	if err != nil || len(res.Elements) != 0 {
-		t.Errorf("Edges(process, Forward) = %v, %v; want an empty answer", describeAll(res.Elements), err)
+	for _, every := range []bool{false, true} {
+		st := &spy{Store: inner}
+		r := interval.NewReader(st, interval.Options{})
+		if every {
+			r = interval.ReadingEveryEndpoint(r)
+		}
+		res, err := r.Edges(ctx, proc, store.Forward, w)
+		if err != nil || len(res.Elements) != 0 || endpointReads(st) != 0 {
+			t.Errorf("every %t: Edges(process, Forward) = %v, %v after reads %q; want an empty answer and no endpoint read", every, describeAll(res.Elements), err, st.log)
+		}
 	}
-	_, err = interval.ReadingEveryEndpoint(interval.NewReader(st, interval.Options{})).Edges(ctx, proc, store.Forward, w)
-	if !errors.Is(err, interval.ErrRetained) {
-		t.Errorf("reading every endpoint: %v, want ErrRetained", err)
+
+	// The edge alive across the horizon: its endpoints are read at From, which is
+	// the horizon, and the answer is the twin's.
+	inner2 := openStore(t, memstore.Options{Keep: [4]bool{true, false, false, true}})
+	twin := openStore(t, memstore.Options{})
+	for _, st := range []store.Store{inner2, twin} {
+		newFeed(t, st).write(recs[:3]...)
+	}
+	if err := inner2.Retain(ctx, hm(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := interval.NewReader(inner2, interval.Options{}).Edges(ctx, proc, store.Forward, w)
+	want := mustEdges(t, interval.NewReader(twin, interval.Options{}), proc, store.Forward, w)
+	if err != nil || diff(got.Elements, want.Elements) != "" || len(want.Elements) != 1 {
+		t.Errorf("Edges(process, Forward) after the retention = %v, %v; want %v", describeAll(got.Elements), err, describeAll(want.Elements))
+	}
+	_, err = interval.NewReader(inner2, interval.Options{}).Edges(ctx, proc, store.Forward, win(hm(9, 59), hm(10, 30)))
+	if !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("a window before the horizon: %v, want ErrBeforeHorizon", err)
 	}
 }
 

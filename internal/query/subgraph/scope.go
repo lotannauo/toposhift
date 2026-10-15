@@ -46,7 +46,8 @@ func (p ScopePolicy) validate() error {
 // edge with a quarantined endpoint, are in the static section. The zero policy
 // means [DefaultScopePolicy]. Arguments are checked before any store call;
 // after that any error fails the whole read, with no partial answer, and a
-// retained layer gives an error wrapping interval.ErrRetained. Reading it costs
+// window that starts before a layer's retention horizon gives an error wrapping
+// store.ErrBeforeHorizon. Reading it costs
 // what package interval's reads cost: one entity call, and one edge call per
 // direction in which a scope entity has an edge layer.
 func ReadScope(ctx context.Context, st store.Store, scope []identity.Fingerprint, w interval.Window, p ScopePolicy) (Subgraph, error) {

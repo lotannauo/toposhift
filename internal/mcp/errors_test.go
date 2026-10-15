@@ -59,8 +59,10 @@ func TestSentenceOrder(t *testing.T) {
 }
 
 // The order, end to end, on a retained store: a point read before the horizon is
-// refused for the horizon and not as an invalid argument, naming the layer; a
-// range read of a retained layer is refused for retention.
+// refused for the horizon and not as an invalid argument, naming the layer; so is
+// a range read whose window starts before it. A range read from after the horizon
+// is answered, except that a description asserted before the horizon, whose
+// payload the store no longer keeps, is refused for retention.
 func TestRefusalsOnARetainedStore(t *testing.T) {
 	w := newWorld(t, rankObjs)
 	if err := w.st.Retain(ctx, hm(9, 30)); err != nil {
@@ -80,13 +82,16 @@ func TestRefusalsOnARetainedStore(t *testing.T) {
 	_, err = s.ResolveEntity(ctx, ResolveEntityInput{Type: "host", Attributes: rawAttrs(`{"host.id":"x"}`), At: "2026-01-01T09:00:00Z"})
 	wantErr(t, "resolve_entity before the horizon", err, "The store no longer keeps history of layer L1 before", store.ErrBeforeHorizon)
 	_, err = s.EntityHistory(ctx, EntityHistoryInput{Entity: w.p1.String(), From: "2026-01-01T09:00:00Z", To: w1030})
-	wantErr(t, "entity_history over a retained layer", err, "Range answers for layer L0 are unavailable since retention began at 2026-01-01T09:30:00Z.", interval.ErrRetained)
-	_, err = s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030})
-	wantErr(t, "blast_radius over a retained layer", err, "Range answers for layer L0 are unavailable since retention began at 2026-01-01T09:30:00Z.", interval.ErrRetained)
+	wantErr(t, "entity_history from before the horizon", err, "The store no longer keeps history of layer L0 before 2026-01-01T09:30:00Z "+hz, store.ErrBeforeHorizon)
+	if _, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030}); err != nil {
+		t.Errorf("blast_radius after the horizon: %v", err)
+	}
+	if _, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030}); err != nil {
+		t.Errorf("co_residents after the horizon: %v", err)
+	}
+	// The diff describes p1 at From, by an assertion made before the horizon.
 	_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{w.p1.String()}, From: w10, To: w1030})
-	wantErr(t, "what_changed over a retained layer", err, "Range answers for layer L0 are unavailable since retention began", interval.ErrRetained)
-	_, err = s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030})
-	wantErr(t, "co_residents over a retained layer", err, "Range answers for layer L0 are unavailable since retention began", interval.ErrRetained)
+	wantErr(t, "what_changed of a description before the horizon", err, "Range answers for layer L0 are unavailable since retention began", interval.ErrRetained)
 }
 
 func wantErr(t *testing.T, what string, err error, prefix string, is ...error) {
@@ -220,7 +225,8 @@ func TestRefusalsOfTheSource(t *testing.T) {
 	})
 }
 
-// failStore fails every Window read.
+// failStore fails every Window read, and every WindowSince of edges, which
+// stands for Window reads.
 type failStore struct {
 	store.Store
 	err error
@@ -228,6 +234,13 @@ type failStore struct {
 
 func (f *failStore) Window(context.Context, identity.Fingerprint, store.Direction, time.Time, time.Time, store.Scope) ([]store.Record, error) {
 	return nil, f.err
+}
+
+func (f *failStore) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	if d != 0 {
+		return nil, f.err
+	}
+	return f.Store.WindowSince(ctx, fps, d, from, to, sc, o)
 }
 
 // Arguments are refused with a sentence that names the argument, before any read.

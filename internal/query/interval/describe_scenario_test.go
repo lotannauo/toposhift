@@ -318,7 +318,9 @@ func TestDescribeQuarantine(t *testing.T) {
 	checkDescribed(t, "Edges(N, Forward)", mustEdges(t, r, n, store.Forward, w).Elements, []interval.Element{want})
 }
 
-// hooked runs a hook after the n-th EntityWindow returns.
+// hooked runs a hook after the n-th EntityWindow returns; a WindowSince of
+// entities counts as one EntityWindow per fingerprint, and the hook runs after
+// it returns for each of them.
 type hooked struct {
 	*spy
 	n     int
@@ -332,6 +334,20 @@ func (h *hooked) EntityWindow(ctx context.Context, fp identity.Fingerprint, from
 		h.after(h.n)
 	}
 	return recs, err
+}
+
+func (h *hooked) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	out, err := h.spy.WindowSince(ctx, fps, d, from, to, sc, o)
+	if d != 0 {
+		return out, err
+	}
+	for range fps {
+		h.n++
+		if h.after != nil {
+			h.after(h.n)
+		}
+	}
+	return out, err
 }
 
 func TestEntities(t *testing.T) {
@@ -353,10 +369,10 @@ func TestEntities(t *testing.T) {
 			described(stable(sc.n), x, x), described(stable(sc.s), x, x),
 			described(stable(sc.n), x, x), described(stable(sc.a), x, x),
 		})
+		// One Alive per distinct entity, then one read of all three in their layer.
 		wantLog := []string{
-			"Alive k8s.node L2", "EntityWindow k8s.node L2",
-			"Alive k8s.pod L2", "EntityWindow k8s.pod L2",
-			"Alive k8s.pod L2", "EntityWindow k8s.pod L2",
+			"Alive k8s.node L2", "Alive k8s.pod L2", "Alive k8s.pod L2",
+			"EntityWindow k8s.node L2", "EntityWindow k8s.pod L2", "EntityWindow k8s.pod L2",
 		}
 		if !slices.Equal(st.log, wantLog) {
 			t.Errorf("reads %q, want %q", st.log, wantLog)
@@ -444,39 +460,56 @@ func TestEntities(t *testing.T) {
 	})
 }
 
-// Every entity layer of an Entities call is checked before its first read, so
-// a retained layer refuses the call with nothing read.
+// After a retention, an Entities call whose window starts at the horizon gives
+// the existence a store that kept everything gives. Its descriptions are refused
+// with ErrRetained while the winning producer's latest assertion is before the
+// horizon, whose payload is not kept, and given once one at or after it is in the
+// window. A window that starts before the horizon is refused by the store.
 func TestEntitiesRetention(t *testing.T) {
 	p, h := mkfp(t, catalog.K8sPod, 1), mkfp(t, catalog.Host, 1)
 	w := win(hm(10, 0), hm(10, 30))
+	recs := []store.Record{observe(ent(p), k8s, hm(9, 0), 0), observe(ent(h), k8s, hm(9, 0), 0)}
 	for _, tc := range []struct {
-		name   string
-		keep   [4]bool
-		layer  string
-		refuse []identity.Fingerprint
-		allow  []identity.Fingerprint
+		name  string
+		keep  [4]bool
+		layer string
+		fp    identity.Fingerprint // the entity in the retained layer
 	}{
-		{"L1 retained", [4]bool{true, false, true, true}, "L1", []identity.Fingerprint{p, h}, []identity.Fingerprint{p, p}},
-		{"L2 retained", [4]bool{true, true, false, true}, "L2", []identity.Fingerprint{h, p}, []identity.Fingerprint{h}},
+		{"L1 retained", [4]bool{true, false, true, true}, "L1", h},
+		{"L2 retained", [4]bool{true, true, false, true}, "L2", p},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			inner := openStore(t, memstore.Options{Keep: tc.keep})
-			newFeed(t, inner).write(observe(ent(p), k8s, hm(9, 0), 0), observe(ent(h), k8s, hm(9, 0), 0))
+			inner, twin := openStore(t, memstore.Options{Keep: tc.keep}), openStore(t, memstore.Options{})
+			for _, st := range []store.Store{inner, twin} {
+				newFeed(t, st).write(recs...)
+			}
 			if err := inner.Retain(ctx, hm(10, 0)); err != nil {
 				t.Fatal(err)
 			}
-			st := &spy{Store: inner}
-			r := interval.NewReader(st, interval.Options{Describe: true})
-			_, out, err := r.Entities(ctx, tc.refuse, w)
-			if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), tc.layer) || out != nil {
-				t.Errorf("Entities = %v, %v; want ErrRetained naming %s", out, err, tc.layer)
+			fps := []identity.Fingerprint{p, h}
+			_, got, err := interval.NewReader(inner, interval.Options{}).Entities(ctx, fps, w)
+			_, want, _ := interval.NewReader(twin, interval.Options{}).Entities(ctx, fps, w)
+			if err != nil || diff(got, want) != "" {
+				t.Errorf("Entities after the retention = %v, %v; want %v", describeAll(got), err, describeAll(want))
 			}
-			if reads, _ := st.counts(); reads != 0 {
-				t.Errorf("%d reads before the refusal: %q", reads, st.log)
+			_, out, err := interval.NewReader(inner, interval.Options{Describe: true}).Entities(ctx, fps, w)
+			if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || !strings.Contains(err.Error(), tc.fp.String()) || out != nil {
+				t.Errorf("Entities with descriptions = %v, %v; want ErrRetained naming %s", out, err, tc.fp)
 			}
-			if _, out, err := r.Entities(ctx, tc.allow, w); err != nil || len(out) != len(tc.allow) {
-				t.Errorf("Entities in the kept layer = %v, %v", out, err)
+			_, _, err = interval.NewReader(inner, interval.Options{}).Entities(ctx, fps, win(hm(9, 59), hm(10, 30)))
+			if !errors.Is(err, store.ErrBeforeHorizon) || errors.Is(err, interval.ErrRetained) || !strings.Contains(err.Error(), tc.layer) {
+				t.Errorf("a window before the horizon: %v; want ErrBeforeHorizon naming %s", err, tc.layer)
 			}
+			// A re-assertion at the horizon is in the window: the descriptions are known.
+			for _, st := range []store.Store{inner, twin} {
+				newFeed(t, st).write(observe(ent(tc.fp), k8s, hm(10, 0), 0))
+			}
+			_, got, err = interval.NewReader(inner, interval.Options{Describe: true}).Entities(ctx, []identity.Fingerprint{tc.fp}, w)
+			_, want, _ = interval.NewReader(twin, interval.Options{Describe: true}).Entities(ctx, []identity.Fingerprint{tc.fp}, w)
+			if err != nil {
+				t.Fatalf("Entities with a description at the horizon: %v", err)
+			}
+			checkDescribed(t, "Entities with a description at the horizon", got, want)
 		})
 	}
 }

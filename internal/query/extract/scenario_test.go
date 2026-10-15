@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -522,38 +523,61 @@ func oneToken(t *testing.T, window int) {
 	}
 }
 
+// TestScenarioQJRetention: after a retention at the window's start an extraction
+// answers as on a store that kept everything, Reads included (the memo keeps
+// nothing under a horizon, so only StoreReads differ); a window that starts
+// before the horizon is refused by the store, with ErrBeforeHorizon and a zero
+// result.
 func TestScenarioQJRetention(t *testing.T) {
-	retained := func(t *testing.T, st store.Store, seed extract.Seed, o extract.Options) {
-		t.Helper()
-		res, err := extract.NewExtractor(st).Extract(ctx, seed, w30, o)
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || res.Token != 0 || res.Members != nil {
-			t.Fatalf("%v, %+v; want ErrRetained with a zero result", err, res)
-		}
-	}
 	anchored := extract.Anchored{Service: S, Host: H, At: hm(10, 15)}
-	t.Run("L3 retained", func(t *testing.T) {
-		st, _ := scenarioQA(t, memstore.Options{Keep: [4]bool{true, true, true, false}})
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		retained(t, st, extract.Exploratory{Service: S}, extract.Options{NodeOnly: true})
-		retained(t, st, anchored, extract.Options{})
-	})
-	t.Run("L1 retained", func(t *testing.T) {
-		st, _ := scenarioQA(t, memstore.Options{Keep: [4]bool{true, false, true, true}})
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		retained(t, st, extract.Exploratory{Service: S}, extract.Options{})
-		retained(t, st, anchored, extract.Options{})
-		res := run(t, st, extract.Exploratory{Service: S}, w30, extract.Options{NodeOnly: true})
-		if len(res.Pairs) != 1 || res.Pairs[0].Peer != T {
-			t.Errorf("NodeOnly: %v", describePairs(res.Pairs, false))
-		}
-		if _, err := extract.NewExtractor(st).Extract(ctx, anchored, w30, extract.Options{NodeOnly: true}); !errors.Is(err, store.ErrInvalid) {
-			t.Errorf("anchored NodeOnly: %v", err)
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		keep [4]bool
+	}{
+		{"L3 retained", [4]bool{true, true, true, false}},
+		{"L1 retained", [4]bool{true, false, true, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			twin, _ := scenarioQA(t, memstore.Options{})
+			st, _ := scenarioQA(t, memstore.Options{Keep: tc.keep})
+			if err := st.Retain(ctx, hm(10, 0)); err != nil {
+				t.Fatal(err)
+			}
+			refused := 0
+			for _, c := range []struct {
+				seed extract.Seed
+				o    extract.Options
+			}{{extract.Exploratory{Service: S}, extract.Options{}}, {extract.Exploratory{Service: S}, extract.Options{NodeOnly: true}}, {anchored, extract.Options{}}} {
+				got, want := run(t, st, c.seed, w30, c.o), run(t, twin, c.seed, w30, c.o)
+				if !reflect.DeepEqual(withoutStoreReads(got), withoutStoreReads(want)) {
+					t.Errorf("seed %+v after the retention: %s", c.seed, sameResult(got, want))
+				}
+				// Before the horizon: refused if the extraction reads the retained
+				// layer, and otherwise the twin's answer.
+				early := interval.Window{From: hm(9, 59), To: hm(10, 30), AsOf: store.Latest}
+				res, err := extract.NewExtractor(st).Extract(ctx, c.seed, early, c.o)
+				switch {
+				case errors.Is(err, store.ErrBeforeHorizon):
+					refused++
+					if res.Token != 0 || res.Members != nil {
+						t.Errorf("seed %+v before the horizon: %+v; want a zero result", c.seed, res)
+					}
+				case err != nil:
+					t.Fatalf("seed %+v before the horizon: %v", c.seed, err)
+				default:
+					if want := run(t, twin, c.seed, early, c.o); !reflect.DeepEqual(withoutStoreReads(res), withoutStoreReads(want)) {
+						t.Errorf("seed %+v before the horizon, of layers not retained: %s", c.seed, sameResult(res, want))
+					}
+				}
+			}
+			if refused == 0 {
+				t.Error("no extraction read the retained layer before its horizon")
+			}
+			if _, err := extract.NewExtractor(st).Extract(ctx, anchored, w30, extract.Options{NodeOnly: true}); !errors.Is(err, store.ErrInvalid) {
+				t.Errorf("anchored NodeOnly: %v", err)
+			}
+		})
+	}
 }
 
 func TestScenarioQKArguments(t *testing.T) {

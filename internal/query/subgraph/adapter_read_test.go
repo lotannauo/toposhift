@@ -12,7 +12,6 @@ import (
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
 	"github.com/lotannauo/toposhift/internal/query/extract"
-	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/query/subgraph"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
@@ -45,6 +44,19 @@ func (c *counting) Window(ctx context.Context, fp identity.Fingerprint, d store.
 	c.wins++
 	c.cmu.Unlock()
 	return c.spy.Window(ctx, fp, d, from, to, sc)
+}
+
+// WindowSince counts the Windows or EntityWindows it stands for, one per
+// fingerprint.
+func (c *counting) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	c.cmu.Lock()
+	if d == 0 {
+		c.entityWindows += len(fps)
+	} else {
+		c.wins += len(fps)
+	}
+	c.cmu.Unlock()
+	return c.spy.WindowSince(ctx, fps, d, from, to, sc, o)
 }
 
 func readEntities(sg subgraph.Subgraph) (n int) {
@@ -243,7 +255,8 @@ func TestAdaptersRefuseWhatTheyCannotReadWhole(t *testing.T) {
 	}
 }
 
-// A retained layer fails the whole read, with no partial subgraph.
+// A retention whose Seq is above the result's token fails the whole read, with
+// no partial subgraph: the token is below the horizon's, which the store refuses.
 func TestAdaptersFailWholeOnRetention(t *testing.T) {
 	st, f := coWorld(t, memstore.Options{})
 	res := findCo(t, st, podP1, coresidency.Options{})
@@ -252,8 +265,8 @@ func TestAdaptersFailWholeOnRetention(t *testing.T) {
 		t.Skipf("memstore cannot retain: %v", err)
 	}
 	sg, err := subgraph.FromCoResidency(ctx, st, res, subgraph.ReadPolicy{})
-	if err == nil || !errors.Is(err, interval.ErrRetained) {
-		t.Fatalf("after a retention: %v", err)
+	if !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Fatalf("after a retention: %v, want ErrBeforeHorizon", err)
 	}
 	if len(sg.Elements) != 0 || len(sg.Entities) != 0 {
 		t.Error("a partial subgraph with the error")

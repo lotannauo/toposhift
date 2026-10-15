@@ -15,11 +15,14 @@ import (
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
-// ErrRetained is wrapped by the error a read gives when it touches a layer whose
-// retention horizon is not zero. It wraps [errors.ErrUnsupported]: after a
-// retention the state at the horizon lives in a baseline no store read returns,
-// so the intervals of a subject alive there cannot be rebuilt from records.
-var ErrRetained = fmt.Errorf("the layer has been retained, and a range read needs its whole history: %w", errors.ErrUnsupported)
+// ErrRetained is wrapped by the error a reader with [Options].Describe gives when
+// the description it must give was asserted before the retention horizon of its
+// layer: the store keeps the assertion's times, but not its payload, so the
+// description is refused rather than guessed or left empty. It wraps
+// [errors.ErrUnsupported]. It is the only error a retention adds: a window that
+// starts before a layer's horizon is refused by the store, with an error
+// wrapping [store.ErrBeforeHorizon].
+var ErrRetained = fmt.Errorf("asserted before the retention horizon and no longer kept: %w", errors.ErrUnsupported)
 
 // Options configures a [Reader].
 type Options struct {
@@ -66,6 +69,9 @@ func (r *Reader) Entity(ctx context.Context, fp identity.Fingerprint, w Window) 
 		return Result{}, err
 	}
 	c.keepRecords = r.opts.Describe
+	if err := c.existences([]identity.Fingerprint{fp}); err != nil {
+		return Result{}, err
+	}
 	el, err := c.entity(fp)
 	if err != nil {
 		return Result{}, err
@@ -86,12 +92,8 @@ func (r *Reader) Entities(ctx context.Context, fps []identity.Fingerprint, w Win
 		return 0, nil, err
 	}
 	c.keepRecords = r.opts.Describe
-	for _, fp := range fps {
-		// begin has checked that the catalog knows the type.
-		ent, _ := r.cat.Entity(fp.Type())
-		if err := c.checkRetention(ent.Layer()); err != nil {
-			return 0, nil, err
-		}
+	if err := c.existences(fps); err != nil {
+		return 0, nil, err
 	}
 	out = make([]Element, len(fps))
 	first := map[identity.Fingerprint]int{}
@@ -176,7 +178,6 @@ type call struct {
 	op       string
 	from, to time.Time
 	token    uint64
-	clear    map[catalog.Layer]bool // layers whose horizon was checked and is zero
 	ends     map[identity.Fingerprint]*existence
 	// keepRecords keeps each entity's records for its description: set by the
 	// entity reads of a reader that describes, never by an edge read, whose
@@ -191,15 +192,16 @@ type existence struct {
 	quarantine *store.QuarantineError
 	f          folded
 	recs       []store.Record
+	// unknown are the producers whose seed carries no payload: their assertion
+	// before From was before the retention horizon.
+	unknown map[lifecycle.Producer]bool
 }
 
-// entity is the element of one entity: its existence in the call's window, or
-// its quarantine.
+// entity is the element of one entity the call has read (see existences): its
+// existence in the call's window, or its quarantine.
 func (c *call) entity(fp identity.Fingerprint) (Element, error) {
-	ex, err := c.existence(fp)
-	if err != nil {
-		return Element{}, err
-	}
+	ex := c.ends[fp]
+	var err error
 	el := Element{Subject: store.EntitySubject(fp), Layer: ex.layer, Quarantine: ex.quarantine}
 	if ex.quarantine != nil {
 		return el, nil
@@ -209,7 +211,7 @@ func (c *call) entity(fp identity.Fingerprint) (Element, error) {
 	}
 	attribute(el.Pieces, ex.f)
 	el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
-	if err := c.describe(&el, ex.recs); err != nil {
+	if err := c.describe(&el, ex.recs, ex.unknown); err != nil {
 		return Element{}, err
 	}
 	return el, nil
@@ -217,9 +219,10 @@ func (c *call) entity(fp identity.Fingerprint) (Element, error) {
 
 // describe sets an element's descriptions at From and at the window's last
 // instant, To-1ns, when the reader describes and a piece contains the
-// instant. recs are the subject's records the call has read: they are folded
-// again under the reader's Rank, and nothing more is read.
-func (c *call) describe(el *Element, recs []store.Record) error {
+// instant. recs are the subject's records the call has read, its seeds and its
+// window: they are folded again under the reader's Rank, and nothing more is
+// read. unknown are the producers whose seed has no payload.
+func (c *call) describe(el *Element, recs []store.Record, unknown map[lifecycle.Producer]bool) error {
 	if !c.r.opts.Describe {
 		return nil
 	}
@@ -233,16 +236,34 @@ func (c *call) describe(el *Element, recs []store.Record) error {
 		return c.fail(err)
 	}
 	if atFrom {
-		if el.AtFrom, err = describeAt(tl, el.Subject, c.from); err != nil {
-			return c.fail(err)
+		if el.AtFrom, err = c.describedAt(tl, el.Subject, c.from, recs, unknown); err != nil {
+			return err
 		}
 	}
 	if atLast {
-		if el.AtLast, err = describeAt(tl, el.Subject, last); err != nil {
-			return c.fail(err)
+		if el.AtLast, err = c.describedAt(tl, el.Subject, last, recs, unknown); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// describedAt is the description at x, or the refusal of one whose winning
+// producer's latest assertion at or before x is a seed with no payload: that
+// assertion was before the retention horizon, and its payload is not kept. A
+// seed is before From, so the producer's latest assertion at x is its seed
+// exactly when it has no window record at or before x.
+func (c *call) describedAt(tl lifecycle.Timeline, sub store.Subject, x time.Time, recs []store.Record, unknown map[lifecycle.Producer]bool) (*Description, error) {
+	d, err := describeAt(tl, sub, x)
+	if err != nil {
+		return nil, c.fail(err)
+	}
+	if unknown[d.Producer] && !slices.ContainsFunc(recs, func(r store.Record) bool {
+		return r.Producer == d.Producer && !r.EventTime.Before(c.from) && !r.EventTime.After(x)
+	}) {
+		return nil, c.fail(fmt.Errorf("the description of %s at %s by %s was %w", describeSubject(sub), formatTime(x), d.Producer, ErrRetained))
+	}
+	return d, nil
 }
 
 // begin checks the arguments, in this order: the window, the direction (when
@@ -258,7 +279,7 @@ func (r *Reader) begin(ctx context.Context, op string, w Window, hasDir bool, di
 	}
 	c := &call{
 		r: r, ctx: ctx, op: op, from: w.From.UTC(), to: w.To.UTC(),
-		clear: map[catalog.Layer]bool{}, ends: map[identity.Fingerprint]*existence{},
+		ends: map[identity.Fingerprint]*existence{},
 	}
 	for i, fp := range fps {
 		if fp.IsZero() {
@@ -282,16 +303,32 @@ func (c *call) fail(err error) error { return fmt.Errorf("interval: %s: %w", c.o
 
 func (c *call) scope(l catalog.Layer) store.Scope { return store.Scope{Layer: l, AsOf: c.token} }
 
-// checkRetention refuses a layer whose horizon is not zero.
-func (c *call) checkRetention(l catalog.Layer) error {
-	if c.clear[l] {
-		return nil
+// since reads, in one store read, the window and the seeds of each of fps in one
+// layer and direction (0 for their own existence), at the call's token, with
+// the seeds' payloads when the answer describes what it reads.
+func (c *call) since(fps []identity.Fingerprint, dir store.Direction, l catalog.Layer, payloads bool) ([]store.Since, error) {
+	return c.r.st.WindowSince(c.ctx, fps, dir, c.from, c.to, c.scope(l), store.SinceOptions{Payloads: payloads})
+}
+
+// sinceRecords are the records one answer of WindowSince gives to fold: the
+// seeds, which stand for everything before From, then the window. unknown lists,
+// per subject, the producers whose seed carries no payload, when payloads were
+// asked for.
+func sinceRecords(s store.Since) (recs []store.Record, unknown map[store.Subject]map[lifecycle.Producer]bool) {
+	recs = make([]store.Record, 0, len(s.Seeds)+len(s.Window))
+	for _, sd := range s.Seeds {
+		recs = append(recs, sd.Record)
+		if !sd.PayloadKnown {
+			if unknown == nil {
+				unknown = map[store.Subject]map[lifecycle.Producer]bool{}
+			}
+			if unknown[sd.Record.Subject] == nil {
+				unknown[sd.Record.Subject] = map[lifecycle.Producer]bool{}
+			}
+			unknown[sd.Record.Subject][sd.Record.Producer] = true
+		}
 	}
-	if h := c.r.st.LayerHorizon(l); !h.IsZero() {
-		return c.fail(fmt.Errorf("layer %s has the retention horizon %s (seq %d): %w", l, formatTime(h.Time), h.Seq, ErrRetained))
-	}
-	c.clear[l] = true
-	return nil
+	return append(recs, s.Window...), unknown
 }
 
 func (r *Reader) batch(ctx context.Context, op string, fps []identity.Fingerprint, dir store.Direction, w Window) (*call, [][]Element, error) {
@@ -299,25 +336,27 @@ func (r *Reader) batch(ctx context.Context, op string, fps []identity.Fingerprin
 	if err != nil {
 		return nil, nil, err
 	}
-	// Every edge layer is checked before the first read.
+	var distinct []identity.Fingerprint
+	first := map[identity.Fingerprint]int{}
 	for _, fp := range fps {
-		for _, l := range EdgeLayers(r.cat, fp.Type(), dir) {
-			if err := c.checkRetention(l); err != nil {
-				return nil, nil, err
-			}
+		if _, ok := first[fp]; !ok {
+			first[fp] = len(distinct)
+			distinct = append(distinct, fp)
 		}
 	}
+	answers, err := c.edges(distinct, dir)
+	if err != nil {
+		return nil, nil, err
+	}
 	out := make([][]Element, len(fps))
-	first := map[identity.Fingerprint]int{}
+	given := make([]bool, len(distinct))
 	for i, fp := range fps {
-		if j, ok := first[fp]; ok {
-			out[i] = cloneElements(out[j])
+		j := first[fp]
+		if given[j] {
+			out[i] = cloneElements(answers[j])
 			continue
 		}
-		if out[i], err = c.edges(fp, dir); err != nil {
-			return nil, nil, err
-		}
-		first[fp] = i
+		out[i], given[j] = answers[j], true
 	}
 	return c, out, nil
 }
@@ -343,26 +382,74 @@ func groupBySubject(recs []store.Record) []group {
 	return out
 }
 
-// edges reads the edges of one fingerprint, one Window per layer at the call's
-// token, and orders them by peer then relation.
-func (c *call) edges(fp identity.Fingerprint, dir store.Direction) ([]Element, error) {
-	var out []Element
-	for _, l := range EdgeLayers(c.r.cat, fp.Type(), dir) {
-		recs, err := c.r.st.Window(c.ctx, fp, dir, store.MinEventTime, c.to, c.scope(l))
-		if err != nil {
-			return nil, c.fail(fmt.Errorf("reading the %s edges of %s in layer %s: %w", dir, fp, l, err))
+// edgeRead is one edge a call has read and folded: its records (seeds and
+// window), the producers whose seed has no payload, and its fold.
+type edgeRead struct {
+	g       group
+	layer   catalog.Layer
+	unknown map[lifecycle.Producer]bool
+	f       folded
+	// own says the edge has an interval of its own in the window.
+	own bool
+}
+
+// edges reads the edges of distinct fingerprints: one WindowSince per edge layer
+// at the call's token, of every fingerprint whose type has edges there; then the
+// existence of the endpoints of the edges with an interval of their own in the
+// window, at most once each; then each fingerprint's elements, ordered by peer
+// then relation. out[i] answers fps[i].
+func (c *call) edges(fps []identity.Fingerprint, dir store.Direction) ([][]Element, error) {
+	reads := make([][]edgeRead, len(fps))
+	byLayer := map[catalog.Layer][]int{}
+	var layers []catalog.Layer
+	for i, fp := range fps {
+		for _, l := range EdgeLayers(c.r.cat, fp.Type(), dir) {
+			if _, ok := byLayer[l]; !ok {
+				layers = append(layers, l)
+			}
+			byLayer[l] = append(byLayer[l], i)
 		}
-		for _, g := range groupBySubject(recs) {
-			if err := c.checkEdge(fp, dir, l, g.sub); err != nil {
-				return nil, err
+	}
+	slices.Sort(layers)
+	for _, l := range layers {
+		idx := byLayer[l]
+		of := make([]identity.Fingerprint, len(idx))
+		for k, i := range idx {
+			of[k] = fps[i]
+		}
+		answers, err := c.since(of, dir, l, c.r.opts.Describe)
+		if err != nil {
+			return nil, c.fail(fmt.Errorf("reading the %s edges of %d entities in layer %s: %w", dir, len(of), l, err))
+		}
+		for k, i := range idx {
+			recs, unknown := sinceRecords(answers[k])
+			for _, g := range groupBySubject(recs) {
+				if err := c.checkEdge(fps[i], dir, l, g.sub); err != nil {
+					return nil, err
+				}
+				f, err := foldSubject(g.recs)
+				if err != nil {
+					return nil, c.fail(err)
+				}
+				own := slices.ContainsFunc(f.ivs, func(iv ival) bool { return iv.meets(c.from, c.to) })
+				reads[i] = append(reads[i], edgeRead{g: g, layer: l, unknown: unknown[g.sub], f: f, own: own})
 			}
-			el, err := c.edge(g, l)
-			if err != nil {
-				return nil, err
+		}
+	}
+	if !c.r.opts.Raw {
+		// Only an edge with an interval of its own in the window has a piece,
+		// cut or uncut, so only its endpoints are read: the cascade costs one
+		// existence read per endpoint of an edge in the window.
+		var ends []identity.Fingerprint
+		for _, rs := range reads {
+			for _, e := range rs {
+				if e.own || c.r.everyEndpoint {
+					ends = append(ends, e.g.sub.A, e.g.sub.B)
+				}
 			}
-			if len(el.Pieces) > 0 {
-				out = append(out, el)
-			}
+		}
+		if err := c.existences(ends); err != nil {
+			return nil, err
 		}
 	}
 	peer := func(s store.Subject) identity.Fingerprint {
@@ -371,12 +458,24 @@ func (c *call) edges(fp identity.Fingerprint, dir store.Direction) ([]Element, e
 		}
 		return s.A
 	}
-	slices.SortFunc(out, func(a, b Element) int {
-		if c := store.CompareFingerprints(peer(a.Subject), peer(b.Subject)); c != 0 {
-			return c
+	out := make([][]Element, len(fps))
+	for i, rs := range reads {
+		for _, e := range rs {
+			el, err := c.edge(e)
+			if err != nil {
+				return nil, err
+			}
+			if len(el.Pieces) > 0 {
+				out[i] = append(out[i], el)
+			}
 		}
-		return cmp.Compare(a.Subject.Relation, b.Subject.Relation)
-	})
+		slices.SortFunc(out[i], func(a, b Element) int {
+			if c := store.CompareFingerprints(peer(a.Subject), peer(b.Subject)); c != 0 {
+				return c
+			}
+			return cmp.Compare(a.Subject.Relation, b.Subject.Relation)
+		})
+	}
 	return out, nil
 }
 
@@ -404,84 +503,88 @@ func (c *call) checkEdge(fp identity.Fingerprint, dir store.Direction, l catalog
 	return c.fail(fmt.Errorf("%s read in layer %s: %s: %w", describeSubject(sub), l, why, store.ErrInvalid))
 }
 
-// edge folds one edge, cuts it by its endpoints unless the reader is raw, and
-// clips it to the window.
-func (c *call) edge(g group, l catalog.Layer) (Element, error) {
-	el := Element{Subject: g.sub, Layer: l}
-	f, err := foldSubject(g.recs)
-	if err != nil {
-		return Element{}, c.fail(err)
-	}
-	ivs := f.ivs
-	if !c.r.everyEndpoint && !slices.ContainsFunc(ivs, func(iv ival) bool { return iv.meets(c.from, c.to) }) {
-		// No interval of the edge's own meets the window, so it has no piece,
-		// cut or uncut, and its endpoints are not read: the cascade costs one
-		// existence read per endpoint of an edge in the window, not per endpoint
-		// in the whole history before To.
+// edge cuts a folded edge by its endpoints unless the reader is raw, and clips
+// it to the window. An edge with no interval of its own in the window has no
+// piece, and its endpoints were not read.
+func (c *call) edge(e edgeRead) (Element, error) {
+	el := Element{Subject: e.g.sub, Layer: e.layer}
+	if !e.own {
 		return el, nil
 	}
+	ivs := e.f.ivs
 	if !c.r.opts.Raw {
-		var ends [2]*existence
-		for i, e := range []identity.Fingerprint{g.sub.A, g.sub.B} {
-			if ends[i], err = c.existence(e); err != nil {
-				return Element{}, err
-			}
-		}
+		a, b := c.ends[e.g.sub.A], c.ends[e.g.sub.B]
 		switch {
-		case ends[0].quarantine != nil:
-			el.Uncascaded = ends[0].quarantine
-		case ends[1].quarantine != nil:
-			el.Uncascaded = ends[1].quarantine
+		case a.quarantine != nil:
+			el.Uncascaded = a.quarantine
+		case b.quarantine != nil:
+			el.Uncascaded = b.quarantine
 		default:
-			ivs = cut(cut(ivs, ends[0].f.ivs), ends[1].f.ivs)
+			ivs = cut(cut(ivs, a.f.ivs), b.f.ivs)
 		}
 	}
+	var err error
 	if el.Pieces, err = clip(ivs, c.from, c.to); err != nil {
-		return Element{}, c.fail(fmt.Errorf("%s: %w", describeSubject(g.sub), err))
+		return Element{}, c.fail(fmt.Errorf("%s: %w", describeSubject(e.g.sub), err))
 	}
-	attribute(el.Pieces, f)
+	attribute(el.Pieces, e.f)
 	el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
-	if err := c.describe(&el, g.recs); err != nil {
+	if err := c.describe(&el, e.g.recs, e.unknown); err != nil {
 		return Element{}, err
 	}
 	return el, nil
 }
 
-// existence reads an entity once per call, in its own catalog layer: first
-// Alive, for the quarantine, then its records.
-func (c *call) existence(fp identity.Fingerprint) (*existence, error) {
-	if ex, ok := c.ends[fp]; ok {
-		return ex, nil
-	}
-	ent, ok := c.r.cat.Entity(fp.Type())
-	if !ok {
-		return nil, c.fail(fmt.Errorf("entity %s has an unknown type: %w", fp, store.ErrInvalid))
-	}
-	l := ent.Layer()
-	if err := c.checkRetention(l); err != nil {
-		return nil, err
-	}
-	ex := &existence{layer: l}
-	if _, err := c.r.st.Alive(c.ctx, fp, c.from, c.scope(l)); err != nil {
-		var qe *store.QuarantineError
-		if !errors.As(err, &qe) {
-			return nil, c.fail(fmt.Errorf("reading whether %s is quarantined: %w", fp, err))
+// existences reads the existence of each entity of fps the call has not read
+// yet, in its own catalog layer: an Alive each, for the quarantine, in the order
+// of fps, then one WindowSince per entity layer for those not quarantined, and
+// folds each from its seeds and window.
+func (c *call) existences(fps []identity.Fingerprint) error {
+	byLayer := map[catalog.Layer][]identity.Fingerprint{}
+	var layers []catalog.Layer
+	for _, fp := range fps {
+		if _, ok := c.ends[fp]; ok {
+			continue
 		}
-		ex.quarantine = qe
-	} else {
-		recs, err := c.r.st.EntityWindow(c.ctx, fp, store.MinEventTime, c.to, c.scope(l))
+		ent, ok := c.r.cat.Entity(fp.Type())
+		if !ok {
+			return c.fail(fmt.Errorf("entity %s has an unknown type: %w", fp, store.ErrInvalid))
+		}
+		l := ent.Layer()
+		ex := &existence{layer: l}
+		c.ends[fp] = ex
+		if _, err := c.r.st.Alive(c.ctx, fp, c.from, c.scope(l)); err != nil {
+			var qe *store.QuarantineError
+			if !errors.As(err, &qe) {
+				return c.fail(fmt.Errorf("reading whether %s is quarantined: %w", fp, err))
+			}
+			ex.quarantine = qe
+			continue
+		}
+		if _, ok := byLayer[l]; !ok {
+			layers = append(layers, l)
+		}
+		byLayer[l] = append(byLayer[l], fp)
+	}
+	slices.Sort(layers)
+	for _, l := range layers {
+		of := byLayer[l]
+		answers, err := c.since(of, 0, l, c.keepRecords)
 		if err != nil {
-			return nil, c.fail(fmt.Errorf("reading the existence of %s in layer %s: %w", fp, l, err))
+			return c.fail(fmt.Errorf("reading the existence of %d entities in layer %s: %w", len(of), l, err))
 		}
-		if ex.f, err = foldSubject(recs); err != nil {
-			return nil, c.fail(err)
-		}
-		if c.keepRecords {
-			ex.recs = recs
+		for k, fp := range of {
+			recs, unknown := sinceRecords(answers[k])
+			ex := c.ends[fp]
+			if ex.f, err = foldSubject(recs); err != nil {
+				return c.fail(err)
+			}
+			if c.keepRecords {
+				ex.recs, ex.unknown = recs, unknown[store.EntitySubject(fp)]
+			}
 		}
 	}
-	c.ends[fp] = ex
-	return ex, nil
+	return nil
 }
 
 // cloneElements copies elements, so two answers of one batch share nothing a
