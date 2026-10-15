@@ -151,6 +151,7 @@ func TestS3CoResidencyAndTheMinimumOverlap(t *testing.T) {
 			{LevelService, PredictorCSvc, ReasonSingleNodeCase, 1},
 			{LevelService, PredictorWC, ReasonSingleNodeCase, 1},
 			{LevelPod, PredictorC, ReasonSingleNodeCase, 2},
+			{LevelPod, PredictorWC, ReasonSingleNodeCase, 2},
 		}
 		if !slices.Equal(run.Skips, want) {
 			t.Errorf("skips %v, want %v", run.Skips, want)
@@ -395,7 +396,7 @@ func TestLoadChecks(t *testing.T) {
 		if run.Outcome != OutcomeExcluded || run.LoadFailed {
 			t.Errorf("outcome %s, load failed %t", run.Outcome, run.LoadFailed)
 		}
-		for _, ex := range []Exclusion{ExcludedUnmappableRoot, ExcludedNoWindow} {
+		for _, ex := range []Exclusion{ExcludedUnmappableRoot, ExcludedNoWindow, ExcludedUnreadableLabels, ExcludedMissingObjects} {
 			c.Exclusion = ex
 			if run := runCase(t, st, c, Config{}); run.LoadFailed || run.Outcome != OutcomeExcluded {
 				t.Errorf("%s: load failed %t, outcome %s; it is reported and not a load failure", ex, run.LoadFailed, run.Outcome)

@@ -400,11 +400,13 @@ func (x *runner) podLevel(walked blastradius.Result, service, snapshotOK, single
 	if !snapshotOK {
 		// The facts are one snapshot outside the window: nothing at the pod level
 		// says anything about it.
-		p := PredictorC
-		if !service {
-			p = PredictorW
+		if service {
+			x.skip(LevelPod, PredictorWPod, ReasonSnapshotOutside, c.Pod, c.Seed)
+			x.skip(LevelPod, PredictorC, ReasonSnapshotOutside, c.Pod, c.Seed)
+			x.skip(LevelPod, PredictorWC, ReasonSnapshotOutside, c.Pod, c.Seed)
+		} else {
+			x.skip(LevelPod, PredictorW, ReasonSnapshotOutside, c.Pod, c.Seed)
 		}
-		x.skip(LevelPod, p, ReasonSnapshotOutside, c.Pod, c.Seed)
 		return nil
 	}
 
@@ -418,25 +420,35 @@ func (x *runner) podLevel(walked blastradius.Result, service, snapshotOK, single
 		return nil
 	}
 
-	// A service seed has its pods' co-residents.
+	// A service seed: the walk's service members projected onto pods, and the
+	// co-residents of the seed's own pods. The seed pods are the seed here, so
+	// the baseline does not name them either.
+	wpod, err := x.projectPods(walked)
+	if err != nil {
+		return err
+	}
+	x.add(LevelPod, PredictorWPod, wpod, c.Pod, 0)
+	all, err := x.baseAll(c.Pods, catalog.K8sPod)
+	if err != nil {
+		return err
+	}
+	all = slices.DeleteFunc(all, func(p Prediction) bool { return slices.Contains(c.SeedPods, p.Entity) })
+	x.add(LevelPod, PredictorBAll, all, c.Pod, 0)
+
 	switch {
 	case len(c.SeedPods) == 0:
 		x.skip(LevelPod, PredictorC, ReasonNoSeedPods, c.Pod, c.Seed)
+		x.skip(LevelPod, PredictorWC, ReasonNoSeedPods, c.Pod, c.Seed)
 	case singleNode:
 		x.skip(LevelPod, PredictorC, ReasonSingleNodeCase, c.Pod, c.Seed)
+		x.skip(LevelPod, PredictorWC, ReasonSingleNodeCase, c.Pod, c.Seed)
 	default:
 		list, err := x.coresidentPods()
 		if err != nil {
 			return err
 		}
 		x.add(LevelPod, PredictorC, list, c.Pod, 0)
-		all, err := x.baseAll(c.Pods, catalog.K8sPod)
-		if err != nil {
-			return err
-		}
-		// The seed pods are the seed here, not predictions of the baseline either.
-		all = slices.DeleteFunc(all, func(p Prediction) bool { return slices.Contains(c.SeedPods, p.Entity) })
-		x.add(LevelPod, PredictorBAll, all, c.Pod, 0)
+		x.add(LevelPod, PredictorWC, mergeWC(wpod, list), c.Pod, 0)
 	}
 	return nil
 }
