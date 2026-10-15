@@ -180,6 +180,8 @@ func TestScenarioQAAnchoredMinimal(t *testing.T) {
 		t.Errorf("pod results %v", seedsOf(res))
 	}
 	expectReads(t, res.Reads, 10, 13, 29, 29)
+	expectStoreReads(t, res.StoreReads, 11, 10, 10)
+	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 	if res.Token != st.LastSeq() || res.PolicyVersion != 1 || res.CoResidencyPolicy != coresidency.PolicyVersion ||
 		res.IntervalPolicy != interval.PolicyVersion || res.Seed != (extract.Anchored{Service: S, Host: H, At: hm(10, 15)}) {
 		t.Errorf("header %+v", res)
@@ -206,6 +208,8 @@ func TestScenarioQA2ANeighbourOnTheAnchor(t *testing.T) {
 		qaPair(S),
 		qaPair(C))
 	expectReads(t, res.Reads, 14, 19, 46, 46)
+	expectStoreReads(t, res.StoreReads, 14, 12, 12)
+	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 }
 
 func TestScenarioQA3TheAnchorsNodeOnTwoHosts(t *testing.T) {
@@ -222,6 +226,8 @@ func TestScenarioQA3TheAnchorsNodeOnTwoHosts(t *testing.T) {
 		t.Errorf("pod results %+v", res.PodResults)
 	}
 	expectReads(t, res.Reads, 10, 13, 30, 30)
+	expectStoreReads(t, res.StoreReads, 11, 11, 11)
+	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 }
 
 func TestScenarioQBAnchoredNotOnTheHost(t *testing.T) {
@@ -234,6 +240,8 @@ func TestScenarioQBAnchoredNotOnTheHost(t *testing.T) {
 	expect(t, "members", describeMembers(res.Members), qaMembers()...)
 	expect(t, "pairs", describePairs(res.Pairs, false))
 	expectReads(t, res.Reads, 6, 7, 15, 15)
+	expectStoreReads(t, res.StoreReads, 7, 10, 10)
+	checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
 
 	// The anchor's instant decides: at 10:05 the seed's pod is on the host.
 	res = run(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 5)}, w30, extract.Options{})
@@ -285,6 +293,8 @@ func TestScenarioQCNoUnionGraphAtTheServiceLevel(t *testing.T) {
 	// S1 2/3, S2 1/2, X1 4/5, X2 3/9, three Finds 3/6 each (no runs_on: hop C
 	// reads nothing), M1 3/6 (the seed pods' sidecars), no M2.
 	expectReads(t, res.Reads, 14, 22, 43, 43)
+	expectStoreReads(t, res.StoreReads, 18, 10, 10)
+	checkMemo(t, st, extract.Exploratory{Service: S}, w30, extract.Options{})
 }
 
 func TestScenarioQDInstancesUnion(t *testing.T) {
@@ -470,7 +480,9 @@ func TestScenarioQHDependencies(t *testing.T) {
 func TestScenarioQIOneToken(t *testing.T) {
 	// S1 2, S2 1, A1 1, A2 1, A3 2, A4 2: the Find's first Window is the tenth.
 	// The Find resolves its own token before that Window, so a write before
-	// the ninth also tests that the Find is given the extraction's.
+	// the ninth also tests that the Find is given the extraction's. The count
+	// is of Windows that reach the store: none of the first nine repeats an
+	// earlier one, so the memo does not move the tenth.
 	for _, at := range []int{10, 9} {
 		t.Run(fmt.Sprintf("a write before Window %d", at), func(t *testing.T) { oneToken(t, at) })
 	}

@@ -385,3 +385,131 @@ func describeEntries(cs []coresidency.CoResident) []string {
 func sameSpans(a, b []interval.Span) bool {
 	return slices.EqualFunc(a, b, func(x, y interval.Span) bool { return x.Start.Equal(y.Start) && x.End.Equal(y.End) })
 }
+
+// readRec is one read a recorder saw: the method, the arguments that identify
+// the read, and its scope.
+type readRec struct {
+	op       string
+	fp       identity.Fingerprint
+	dir      store.Direction
+	from, to time.Time
+	layer    catalog.Layer
+	token    uint64
+}
+
+// recorder wraps a store and records every Window, EntityWindow and Alive
+// request that reaches it, and counts what must never reach it.
+type recorder struct {
+	store.Store
+	mu     sync.Mutex
+	reads  []readRec
+	writes int
+	closes int
+}
+
+func (r *recorder) note(x readRec) {
+	r.mu.Lock()
+	r.reads = append(r.reads, x)
+	r.mu.Unlock()
+}
+
+func (r *recorder) Window(ctx context.Context, fp identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope) ([]store.Record, error) {
+	r.note(readRec{op: "Window", fp: fp, dir: d, from: from, to: to, layer: sc.Layer, token: sc.AsOf})
+	return r.Store.Window(ctx, fp, d, from, to, sc)
+}
+
+func (r *recorder) EntityWindow(ctx context.Context, fp identity.Fingerprint, from, to time.Time, sc store.Scope) ([]store.Record, error) {
+	r.note(readRec{op: "EntityWindow", fp: fp, from: from, to: to, layer: sc.Layer, token: sc.AsOf})
+	return r.Store.EntityWindow(ctx, fp, from, to, sc)
+}
+
+func (r *recorder) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time, sc store.Scope) (bool, error) {
+	r.note(readRec{op: "Alive", fp: fp, from: t, layer: sc.Layer, token: sc.AsOf})
+	return r.Store.Alive(ctx, fp, t, sc)
+}
+
+func (r *recorder) Write(ctx context.Context, b []store.Record) error {
+	r.mu.Lock()
+	r.writes++
+	r.mu.Unlock()
+	return r.Store.Write(ctx, b)
+}
+
+func (r *recorder) Retain(ctx context.Context, h time.Time) error {
+	r.mu.Lock()
+	r.writes++
+	r.mu.Unlock()
+	return r.Store.Retain(ctx, h)
+}
+
+func (r *recorder) Close() error {
+	r.mu.Lock()
+	r.closes++
+	r.mu.Unlock()
+	return r.Store.Close()
+}
+
+// counts is the recording as the Reads of an extraction with Calls 0.
+func (r *recorder) counts() coresidency.Reads {
+	var out coresidency.Reads
+	for _, x := range r.reads {
+		switch x.op {
+		case "Window":
+			out.Windows++
+		case "EntityWindow":
+			out.EntityWindows++
+		case "Alive":
+			out.Alive++
+		}
+	}
+	return out
+}
+
+// formulaF is the number of reads that must reach the store when every answer
+// is kept: the distinct (fingerprint, direction, layer) among the Windows and
+// the distinct fingerprints among the Alives and the EntityWindows. It
+// assumes the instants and the token of each method are constant, which
+// constancy checks.
+func formulaF(reads []readRec) coresidency.Reads {
+	type wk struct {
+		fp    identity.Fingerprint
+		dir   store.Direction
+		layer catalog.Layer
+	}
+	windows, alive, ew := map[wk]bool{}, map[identity.Fingerprint]bool{}, map[identity.Fingerprint]bool{}
+	for _, x := range reads {
+		switch x.op {
+		case "Window":
+			windows[wk{x.fp, x.dir, x.layer}] = true
+		case "Alive":
+			alive[x.fp] = true
+		case "EntityWindow":
+			ew[x.fp] = true
+		}
+	}
+	return coresidency.Reads{Windows: len(windows), Alive: len(alive), EntityWindows: len(ew)}
+}
+
+// constant returns "" when every read of each method in a recording has the
+// same instants and token, and otherwise the first difference.
+func constant(reads []readRec) string {
+	first := map[string]readRec{}
+	for _, x := range reads {
+		f, ok := first[x.op]
+		if !ok {
+			first[x.op] = x
+			continue
+		}
+		if !f.from.Equal(x.from) || !f.to.Equal(x.to) || f.token != x.token {
+			return fmt.Sprintf("%s read at [%s, %s) token %d, and at [%s, %s) token %d", x.op, ts(f.from), ts(f.to), f.token, ts(x.from), ts(x.to), x.token)
+		}
+	}
+	tokens := map[uint64]bool{}
+	for _, x := range reads {
+		tokens[x.token] = true
+	}
+	if len(tokens) > 1 {
+		return fmt.Sprintf("reads at %d different tokens", len(tokens))
+	}
+	return ""
+}

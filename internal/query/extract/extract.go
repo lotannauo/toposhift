@@ -433,7 +433,10 @@ type Result struct {
 	// PolicyVersion is this package's; CoResidencyPolicy and IntervalPolicy are
 	// coresidency.PolicyVersion and interval.PolicyVersion.
 	PolicyVersion, CoResidencyPolicy, IntervalPolicy int
-	// Reads counts every store read, every Find's included; each PodResults
-	// element's Reads is that Find's share.
-	Reads coresidency.Reads
+	// Reads counts every read request, every Find's included; each PodResults
+	// element's Reads is that Find's share. StoreReads counts those that
+	// reached the store: the extraction keeps the answer of a read it repeats
+	// at its one token, up to a fixed size, so StoreReads is at most Reads
+	// field by field, and its Calls is always 0.
+	Reads, StoreReads coresidency.Reads
 }
