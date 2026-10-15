@@ -23,11 +23,37 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/clustername"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
+	"github.com/lotannauo/toposhift/internal/mcp/mcphttp"
 	"github.com/lotannauo/toposhift/internal/server"
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
 const envListen = "TOPOSHIFT_LISTEN"
+
+// mcpPattern is the route of the read-only tools.
+const mcpPattern = "POST /mcp"
+
+// mcpDrainTimeout is how long a stop waits for the tools' calls to end once it
+// has cancelled them; each ends within one store read. It is an estimate. It is
+// a variable only so tests can lower it.
+var mcpDrainTimeout = 5 * time.Second
+
+// drainReads ends the tools: no new call is taken, the ones running are cancelled,
+// and it waits for them. It returns whether the store may be closed. It may not
+// when a call is still reading it after mcpDrainTimeout: the store is then left
+// open for the process to end with.
+func drainReads(reads *mcphttp.Server, log *slog.Logger) (storeMayClose bool) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), mcpDrainTimeout)
+	defer cancel()
+	if err := reads.Drain(ctx); err != nil {
+		log.Error("the tools did not stop in time; the store is left open, because a call may still be reading it",
+			"timeout", mcpDrainTimeout, "err", err)
+		return false
+	}
+	log.Info("tools stopped", "took", time.Since(start))
+	return true
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -169,6 +195,24 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		Pattern: "GET /status",
 		Handler: status,
 	}}
+	// The read-only tools are mounted the same way: before the store opens, and
+	// answering with the receiver's sentence until it has. They are served on a
+	// loopback listener only, because the server has no authentication yet.
+	reads, err := mcphttp.New(mcphttp.Config{
+		Rank:    serveRank(ic.clusterName, ic.set),
+		Version: version(),
+		Logf:    func(format string, args ...any) { log.Error(fmt.Sprintf(format, args...)) },
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
+		return 1
+	}
+	reads.Unavailable(gate)
+	if cfg.IsLoopback() {
+		cfg.Routes = append(cfg.Routes, server.Route{Pattern: mcpPattern, Handler: reads.Handler()})
+	} else {
+		log.Info("the tools at " + mcpPattern + " are off: the server listens on a non-loopback address and has no authentication yet")
+	}
 	logStop := watchStop(ctx, nil)
 	stopped := make(chan struct{})
 	var srvErr error
@@ -179,15 +223,16 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 
 	var in *ingest
 	if dir != nil {
-		in = startIngest(ctx, dir, ic, sink, status, log, stopped)
+		in = startIngest(ctx, dir, ic, sink, status, reads, log, stopped)
 	}
 
 	// The server returns after its graceful shutdown, while the sequencer still
-	// runs, so the requests in flight are answered; then ingest stops, and the
-	// store and the directory close.
+	// runs, so the requests in flight are answered; the tools' calls still
+	// running are ended and waited for, because the server's shutdown does not wait
+	// for them; then ingest stops, and the store and the directory close.
 	<-stopped
 	logStop(log)
-	in.stop(log)
+	in.stop(log, drainReads(reads, log))
 	if srvErr != nil {
 		log.Error("server failed", "err", srvErr)
 		return 1

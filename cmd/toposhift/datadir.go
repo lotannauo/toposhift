@@ -19,6 +19,11 @@ listens on loopback and serves health; it keeps its data in
 $HOME/.local/share/toposhift, takes OpenTelemetry logs at POST /v1/logs into
 the store there, and keeps ingest off when no data directory resolves.
 
+On a loopback listener it also serves read-only topology tools to MCP clients,
+at POST /mcp (streamable HTTP, no session). They answer from the same store,
+each answer read at one token, and are off on any other listen address until
+the server has authentication.
+
 Flags:
 `
 
