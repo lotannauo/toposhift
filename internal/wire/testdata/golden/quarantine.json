@@ -1,0 +1,226 @@
+{
+  "format": {
+    "major": 1,
+    "minor": 0
+  },
+  "basis": "derived",
+  "token": "5",
+  "from": "1767261600000000000",
+  "to": "1767261660000000000",
+  "policy": {
+    "subgraph": 2,
+    "interval": 1,
+    "coresidency": 1,
+    "extract": 1,
+    "blastradius": 1,
+    "graphdiff": 1,
+    "catalog_ids": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "identity_encoding": 1
+  },
+  "query": {
+    "kind": "scope",
+    "seeds": [
+      "k8s.pod:00050000000000000000000000000000",
+      "k8s.pod:00060000000000000000000000000000"
+    ],
+    "options": [],
+    "asof": "latest"
+  },
+  "entities": [
+    {
+      "fingerprint": "k8s.node:00010000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.node:00070000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.pod:00050000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.pod:00060000000000000000000000000000",
+      "boundary": false
+    }
+  ],
+  "elements": [
+    {
+      "key": {
+        "kind": "entity",
+        "a": "k8s.node:00010000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "stable",
+      "transitions": 0,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "60000000000",
+          "before": true,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "entity",
+        "a": "k8s.pod:00050000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "stable",
+      "transitions": 0,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "60000000000",
+          "before": true,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "at": "0",
+      "elements": [
+        0,
+        1
+      ]
+    }
+  ],
+  "deltas": [],
+  "quarantine": {
+    "entities": [
+      {
+        "fingerprint": "k8s.node:00070000000000000000000000000000",
+        "cause": {
+          "entity": "k8s.node:00070000000000000000000000000000",
+          "layer": "L2",
+          "collision": null
+        }
+      },
+      {
+        "fingerprint": "k8s.pod:00060000000000000000000000000000",
+        "cause": {
+          "entity": "k8s.pod:00060000000000000000000000000000",
+          "layer": "L2",
+          "collision": {
+            "stale_boot": "boot-a",
+            "observed_at": "1767261620000000000",
+            "newer_boot": "boot-é",
+            "newer_first_seen": "1767261610000000000"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "key": {
+          "kind": "edge",
+          "a": "k8s.pod:00050000000000000000000000000000",
+          "b": "k8s.node:00070000000000000000000000000000",
+          "relation": "scheduled_on"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "flapping",
+        "transitions": 2,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "30000000000",
+            "before": true,
+            "end_reason": "producer",
+            "producers": [
+              "k8s"
+            ],
+            "ends": []
+          },
+          {
+            "start": "40000000000",
+            "end": "60000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [],
+            "ends": []
+          }
+        ],
+        "cause": {
+          "entity": "k8s.node:00070000000000000000000000000000",
+          "layer": "L2",
+          "collision": null
+        }
+      },
+      {
+        "key": {
+          "kind": "edge",
+          "a": "k8s.pod:00060000000000000000000000000000",
+          "b": "k8s.node:00010000000000000000000000000000",
+          "relation": "scheduled_on"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "appeared",
+        "transitions": 1,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "15000000000",
+            "end": "60000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [
+              "otel"
+            ],
+            "ends": []
+          }
+        ],
+        "cause": {
+          "entity": "k8s.pod:00060000000000000000000000000000",
+          "layer": "L2",
+          "collision": {
+            "stale_boot": "boot-a",
+            "observed_at": "1767261620000000000",
+            "newer_boot": "boot-é",
+            "newer_first_seen": "1767261610000000000"
+          }
+        }
+      }
+    ]
+  },
+  "sections": {
+    "truncated": {
+      "nodes": [],
+      "hosts": [],
+      "members": [],
+      "instances": [],
+      "seed_pods": [],
+      "depth": [],
+      "frontier": [],
+      "per_via": [],
+      "results": 0,
+      "pairs": 0,
+      "members_dropped": 0,
+      "suppressed_dropped": 0
+    },
+    "unattributed": [],
+    "unmapped": [],
+    "suppressed": [],
+    "pods": [],
+    "anchor": "none",
+    "ubiquity": {
+      "judged": false,
+      "frontier_nodes": 0
+    }
+  }
+}

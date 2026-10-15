@@ -1,0 +1,95 @@
+{
+  "format": {
+    "major": 1,
+    "minor": 0
+  },
+  "basis": "derived",
+  "token": "7",
+  "from": "1000",
+  "to": "1100",
+  "policy": {
+    "subgraph": 2,
+    "interval": 1,
+    "coresidency": 1,
+    "extract": 1,
+    "blastradius": 1,
+    "graphdiff": 1,
+    "catalog_ids": "0000000000000000000000000000000000000000000000000000000000000000",
+    "identity_encoding": 1
+  },
+  "query": {
+    "kind": "scope",
+    "seeds": [
+      "host:00010000000000000000000000000000"
+    ],
+    "options": [],
+    "asof": "latest"
+  },
+  "entities": [
+    {
+      "fingerprint": "host:00010000000000000000000000000000",
+      "boundary": false
+    }
+  ],
+  "elements": [
+    {
+      "key": {
+        "kind": "entity",
+        "a": "host:00010000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "stable",
+      "transitions": 0,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "100",
+          "before": false,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "at": "0",
+      "elements": [
+        0
+      ]
+    }
+  ],
+  "deltas": [],
+  "quarantine": {
+    "entities": [],
+    "edges": []
+  },
+  "sections": {
+    "truncated": {
+      "nodes": [],
+      "hosts": [],
+      "members": [],
+      "instances": [],
+      "seed_pods": [],
+      "depth": [],
+      "frontier": [],
+      "per_via": [],
+      "results": 0,
+      "pairs": 0,
+      "members_dropped": 0,
+      "suppressed_dropped": 0
+    },
+    "unattributed": [],
+    "unmapped": [],
+    "suppressed": [],
+    "pods": [],
+    "anchor": "none",
+    "ubiquity": {
+      "judged": false,
+      "frontier_nodes": 0
+    }
+  }
+}

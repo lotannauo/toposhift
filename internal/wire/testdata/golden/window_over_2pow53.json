@@ -1,0 +1,373 @@
+{
+  "format": {
+    "major": 1,
+    "minor": 0
+  },
+  "basis": "derived",
+  "token": "42",
+  "from": "1767261600000000000",
+  "to": "1777629600000000000",
+  "policy": {
+    "subgraph": 2,
+    "interval": 1,
+    "coresidency": 1,
+    "extract": 1,
+    "blastradius": 1,
+    "graphdiff": 1,
+    "catalog_ids": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "identity_encoding": 1
+  },
+  "query": {
+    "kind": "blast_radius",
+    "seeds": [
+      "host:00010000000000000000000000000000"
+    ],
+    "options": [
+      {
+        "name": "depth",
+        "value": "3"
+      }
+    ],
+    "asof": "41"
+  },
+  "entities": [
+    {
+      "fingerprint": "host:00010000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.node:00010000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.pod:00010000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.pod:00020000000000000000000000000000",
+      "boundary": false
+    },
+    {
+      "fingerprint": "k8s.pod:00030000000000000000000000000000",
+      "boundary": true
+    }
+  ],
+  "elements": [
+    {
+      "key": {
+        "kind": "entity",
+        "a": "host:00010000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "stable",
+      "transitions": 0,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "10368000000000000",
+          "before": true,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "entity",
+        "a": "k8s.node:00010000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "stable",
+      "transitions": 0,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "10368000000000000",
+          "before": true,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "entity",
+        "a": "k8s.pod:00010000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "flapping",
+      "transitions": 2,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "0",
+          "end": "9007199254740999",
+          "before": true,
+          "end_reason": "producer",
+          "producers": [
+            "k8s"
+          ],
+          "ends": []
+        },
+        {
+          "start": "9007199254741992",
+          "end": "10368000000000000",
+          "before": false,
+          "end_reason": "unknown",
+          "producers": [
+            "k8s"
+          ],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "entity",
+        "a": "k8s.pod:00020000000000000000000000000000"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "transient",
+      "transitions": 2,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "9007199254753337",
+          "end": "10367999999999999",
+          "before": false,
+          "end_reason": "operator",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "edge",
+        "a": "k8s.pod:00010000000000000000000000000000",
+        "b": "k8s.node:00010000000000000000000000000000",
+        "relation": "scheduled_on"
+      },
+      "subject": "asserted",
+      "rule": "existence",
+      "class": "flapping",
+      "transitions": 3,
+      "paths": [],
+      "pieces": [
+        {
+          "start": "1",
+          "end": "9007199254740999",
+          "before": false,
+          "end_reason": "producer",
+          "producers": [],
+          "ends": []
+        },
+        {
+          "start": "9007199254741992",
+          "end": "10368000000000000",
+          "before": false,
+          "end_reason": "unknown",
+          "producers": [
+            "otel"
+          ],
+          "ends": []
+        }
+      ]
+    },
+    {
+      "key": {
+        "kind": "derived",
+        "a": "host:00010000000000000000000000000000",
+        "b": "k8s.pod:00010000000000000000000000000000",
+        "rule": "blast_radius.reach",
+        "detail": ""
+      },
+      "subject": "derived",
+      "rule": "blast_radius.reach",
+      "class": "flapping",
+      "transitions": 3,
+      "paths": [
+        [
+          4
+        ]
+      ],
+      "pieces": [
+        {
+          "start": "2",
+          "end": "9007199254740997",
+          "before": false,
+          "end_reason": "reach_ended",
+          "producers": [],
+          "ends": []
+        },
+        {
+          "start": "9007199254742992",
+          "end": "10368000000000000",
+          "before": false,
+          "end_reason": "unknown",
+          "producers": [],
+          "ends": []
+        }
+      ]
+    }
+  ],
+  "keyframes": [
+    {
+      "at": "0",
+      "elements": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "at": "9007199254740999",
+      "elements": [
+        0,
+        1
+      ]
+    },
+    {
+      "at": "10367999999999999",
+      "elements": [
+        0,
+        1,
+        2,
+        4,
+        5
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "at": "1",
+      "element": 4,
+      "op": "appear",
+      "before": "absent:not_seen_in_window",
+      "after": "present"
+    },
+    {
+      "at": "2",
+      "element": 5,
+      "op": "appear",
+      "before": "absent:not_seen_in_window",
+      "after": "present"
+    },
+    {
+      "at": "9007199254740997",
+      "element": 5,
+      "op": "disappear",
+      "before": "present",
+      "after": "absent:reach_ended"
+    },
+    {
+      "at": "9007199254740999",
+      "element": 2,
+      "op": "disappear",
+      "before": "present",
+      "after": "absent:producer"
+    },
+    {
+      "at": "9007199254740999",
+      "element": 4,
+      "op": "disappear",
+      "before": "present",
+      "after": "absent:producer"
+    },
+    {
+      "at": "9007199254741992",
+      "element": 2,
+      "op": "appear",
+      "before": "absent:producer",
+      "after": "present"
+    },
+    {
+      "at": "9007199254741992",
+      "element": 4,
+      "op": "appear",
+      "before": "absent:producer",
+      "after": "present"
+    },
+    {
+      "at": "9007199254742992",
+      "element": 5,
+      "op": "appear",
+      "before": "absent:reach_ended",
+      "after": "present"
+    },
+    {
+      "at": "9007199254753337",
+      "element": 3,
+      "op": "appear",
+      "before": "absent:not_seen_in_window",
+      "after": "present"
+    },
+    {
+      "at": "10367999999999999",
+      "element": 3,
+      "op": "disappear",
+      "before": "present",
+      "after": "absent:operator"
+    }
+  ],
+  "quarantine": {
+    "entities": [],
+    "edges": []
+  },
+  "sections": {
+    "truncated": {
+      "nodes": [],
+      "hosts": [],
+      "members": [],
+      "instances": [],
+      "seed_pods": [],
+      "depth": [
+        "k8s.pod:00020000000000000000000000000000"
+      ],
+      "frontier": [
+        {
+          "depth": 2,
+          "dropped": [
+            "k8s.pod:00030000000000000000000000000000"
+          ]
+        }
+      ],
+      "per_via": [],
+      "results": 0,
+      "pairs": 0,
+      "members_dropped": 0,
+      "suppressed_dropped": 0
+    },
+    "unattributed": [
+      {
+        "subject": "k8s.node:00010000000000000000000000000000",
+        "reason": "several_hosts",
+        "spans": [
+          {
+            "start": "9007199254740993",
+            "end": "10368000000000000",
+            "before": false,
+            "end_reason": "unknown"
+          }
+        ],
+        "candidates": []
+      }
+    ],
+    "unmapped": [],
+    "suppressed": [],
+    "pods": [],
+    "anchor": "none",
+    "ubiquity": {
+      "judged": false,
+      "frontier_nodes": 0
+    }
+  }
+}
