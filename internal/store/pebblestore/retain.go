@@ -410,7 +410,9 @@ func (p *retainPass) report() {
 
 // chunk rewrites prefixes from the marker's resume key until its commit holds
 // retainBytes or it has run for the chunk time, and commits them with the
-// marker's next state. A chunk ends only between prefixes. It reads through an
+// marker's next state. A chunk of the background pass also ends when a write is
+// waiting for the lock, once it has done a minimum of work (see
+// [retainPass.yields]). A chunk ends only between prefixes. It reads through an
 // iterator of its own, opened here.
 //
 // The chunk's time counts the opening and first positioning of its iterator, but
@@ -451,7 +453,7 @@ func (p *retainPass) chunk() error {
 	workStart := positioned.Add(-min(open, s.chunkTime/2))
 	var lastPrefix []byte
 	var prefixes int64
-	exhausted := true
+	exhausted, yielded := true, false
 	for ok {
 		key := it.Key()
 		if len(key) < prefixLen {
@@ -483,8 +485,15 @@ func (p *retainPass) chunk() error {
 		}
 		ok = res.ok
 		lastPrefix = prefix
+		if s.afterChunkPrefix != nil {
+			s.afterChunkPrefix(prefixes)
+		}
 		if ok && (p.b.Len() >= s.retainBytes || s.chunkNow().Sub(workStart) >= s.chunkTime) {
 			exhausted = false
+			break
+		}
+		if ok && p.yields(prefixes, positioned, open) {
+			exhausted, yielded = false, true
 			break
 		}
 	}
@@ -508,10 +517,29 @@ func (p *retainPass) chunk() error {
 	if err := p.commit(next, begin, open, prefixes); err != nil {
 		return err
 	}
+	if yielded {
+		s.rec.Count("retain.chunks_yielded", 1)
+	}
 	if p.bg {
 		p.install()
 	}
 	return nil
+}
+
+// yields says a background chunk ends here, between two prefixes, for a write that
+// is waiting for the lock. It does so only once the chunk has rewritten
+// s.chunkMinPrefixes prefixes and has worked, since its iterator was positioned,
+// at least as long as its opening was charged against its time (open, up to half the
+// chunk time), so that however often writers wait, a pass keeps its progress per
+// chunk and most of a shortened chunk's hold is work and not the cost of opening
+// its iterator. The synchronous pass holds the lock across all its chunks, so ending
+// one early would only add commits: it never yields. The bytes and the time still
+// end a chunk, so a pass ends whatever the writers do.
+func (p *retainPass) yields(prefixes int64, positioned time.Time, open time.Duration) bool {
+	s := p.s
+	return p.bg && s.writersWaiting.Load() > 0 &&
+		prefixes >= s.chunkMinPrefixes &&
+		s.chunkNow().Sub(positioned) >= min(open, s.chunkTime/2)
 }
 
 // install puts what has been worked out of the writer's state, since the last
@@ -1036,7 +1064,10 @@ const (
 // bound keeps from growing without end, plus the work, until the chunk time (20 ms) has passed with the opening
 // counted up to half of it, plus its commit: about the chunk time plus the commit
 // when the opening is cheap, and at most the opening plus half the chunk time plus
-// the commit when it is not.
+// the commit when it is not. A chunk may be shorter: it ends at the next prefix once
+// a write is waiting for the lock and the chunk has done a minimum of work (see
+// [retainPass.yields]), and before the retainer takes the lock again it yields to the
+// waiting write (see [Store.yieldToWriters]).
 func (s *Store) retainer() {
 	defer func() {
 		s.mu.Lock()
@@ -1059,6 +1090,7 @@ func (s *Store) retainer() {
 			if s.beforeRetainChunk != nil && !flushed && s.pending() {
 				s.beforeRetainChunk() // the lock is free: a hook may write
 			}
+			s.yieldToWriters()
 			step, landed, w := s.retainStep(&cur)
 			if flushed = w.flush != nil; flushed {
 				// Before the chunk, and without the lock: a flush to start, or one to wait for.
@@ -1085,6 +1117,21 @@ func (s *Store) retainer() {
 			runtime.Gosched()
 		}
 	}
+}
+
+// yieldToWriters yields the processor, at most retainYieldSpins times and while a
+// write is waiting for the lock, so that the write takes it before the retainer
+// takes it again for its next chunk: a goroutine that is running can take a mutex
+// that has just been released before the one it woke gets to it. It changes no
+// byte, only who takes the lock next, and the bound keeps a stream of writers from
+// stalling the retainer. It returns how many times it yielded.
+func (s *Store) yieldToWriters() int {
+	n := 0
+	for n < retainYieldSpins && s.writersWaiting.Load() > 0 {
+		runtime.Gosched()
+		n++
+	}
+	return n
 }
 
 // pending says a pass is waiting to be run.

@@ -62,7 +62,10 @@ import (
 //     "retain.chunk_prefixes" (the prefixes it rewrote) and "retain.chunk_hold_ns"
 //     (the nanoseconds from the chunk's start, before its iterator is opened, to
 //     the end of its commit, which is how long a writer waits for it, the lock being
-//     released between chunks in a Background store); and, as a sample at the start
+//     released between chunks in a Background store); "retain.chunks_yielded", the
+//     chunks of a Background store that ended only because a write was waiting for
+//     the lock (see the package comment), counted once each when its commit has landed;
+//     and, as a sample at the start
 //     of each chunk, "retain.unflushed_range_deletes" (the range deletions retention
 //     has committed since the start of the last flush known to have completed: an
 //     upper bound of those the memtables hold); and "retain.flushes", the flushes a
@@ -205,9 +208,13 @@ type Options struct {
 	// resumeStopAfter does the same to the retention Open finishes, which
 	// retainStopAfter leaves alone; with either set, a retainChunkTime of zero means
 	// no limit of time, so that the commit a retention stops at does not depend on
-	// the clock. afterRetainCommit runs after each commit of either. All for tests.
+	// the clock. afterRetainCommit runs after each commit of either.
+	// retainMinPrefixes overrides [defaultRetainMinPrefixes], the prefixes a
+	// background chunk rewrites at least before it may end for a waiting write. All
+	// for tests.
 	retainBatchBytes  int
 	retainChunkTime   time.Duration
+	retainMinPrefixes int
 	retainStopAfter   int
 	resumeStopAfter   int
 	afterRetainCommit func()
@@ -226,8 +233,10 @@ type Options struct {
 	// stop threshold.
 	// chunkNow replaces the clock a chunk's time and its samples are read from.
 	// afterChunkOpen runs in a chunk once its iterator is open and positioned, before
-	// the clock is read for the opening's cost. flushHook, if not nil, starts each
-	// flush a pass starts, given the database's AsyncFlush. beforeFlushWait runs
+	// the clock is read for the opening's cost. afterChunkPrefix runs in a chunk after
+	// each prefix it rewrites, with the prefixes it has rewritten so far, before the
+	// chunk decides whether to end, with the store's lock held. flushHook, if not nil,
+	// starts each flush a pass starts, given the database's AsyncFlush. beforeFlushWait runs
 	// before a pass waits for a flush, beforeApply before each commit of a chunk or of
 	// records is applied, with its batch, and beforeKVClose in Close just before the
 	// database is closed. All for tests.
@@ -236,6 +245,7 @@ type Options struct {
 	l0Sublevels         func() (n, stop int)
 	chunkNow            func() time.Time
 	afterChunkOpen      func()
+	afterChunkPrefix    func(prefixes int64)
 	flushHook           func(flush func() (<-chan struct{}, error)) (<-chan struct{}, error)
 	beforeFlushWait     func()
 	beforeApply         func(*pebble.Batch)

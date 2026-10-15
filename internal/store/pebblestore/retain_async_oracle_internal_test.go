@@ -132,6 +132,14 @@ type asyncConfig struct {
 	// exact makes the test also write, at every chunk boundary, a record to the prefix
 	// that is exactly the first one the pass has not reached, if the world has one.
 	exact bool
+	// yield makes a write wait, in the background store's chunks, after the prefixes
+	// that waits says (given the number of prefixes the chunk has rewritten), and sets
+	// the least prefixes a chunk rewrites before it ends for it to minPrefixes; the
+	// background store's chunks end by nothing else (bytes is the synchronous
+	// store's alone). The write is taken to have taken the lock when the pass is next
+	// about to take a chunk.
+	yield       func(prefixes int64) bool
+	minPrefixes int
 }
 
 // asyncResult is what a run leaves for the tests that look further.
@@ -197,6 +205,10 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 	open := func(mode RetentionMode, rec *memRecorder, hooks func(*Options)) *Store {
 		o := chunkOptions(vfs.NewMem(), c.ck)
 		o.Retention, o.retainBatchBytes, o.retainChunkTime = mode, chunkBytes, time.Hour
+		if mode == Background && c.yield != nil {
+			// A clock that stands still: the work minimum is met at once.
+			o.retainBatchBytes, o.retainMinPrefixes, o.chunkNow = 1<<30, c.minPrefixes, (&yieldClock{}).now
+		}
 		o.Recorder = rec
 		if c.tweak != nil {
 			c.tweak(&o)
@@ -318,6 +330,9 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 		}
 	}
 	before := func() {
+		if c.yield != nil {
+			bgs.writersWaiting.Store(0) // the write that waited has taken the lock
+		}
 		k := hooks
 		hooks++
 		for next < len(w.later) && slots[next] <= k {
@@ -330,7 +345,16 @@ func runAsync(t *testing.T, w *asyncWorld, c asyncConfig) *asyncResult {
 			checks()
 		}
 	}
-	bgs = open(Background, recBg, func(o *Options) { o.beforeRetainChunk = before })
+	bgs = open(Background, recBg, func(o *Options) {
+		o.beforeRetainChunk = before
+		if c.yield != nil {
+			o.afterChunkPrefix = func(n int64) {
+				if c.yield(n) {
+					bgs.writersWaiting.Store(1)
+				}
+			}
+		}
+	})
 	layerPrefix = func(l catalog.Layer, fp identity.Fingerprint, dir byte) []byte {
 		p, _ := bgs.prefixOf(l, fp, dir)
 		return p
@@ -678,6 +702,47 @@ func TestABackgroundPassIsTheSynchronousOneWhateverTheInterleaving(t *testing.T)
 		t.Fatalf("the histories wrote to %d prefixes the pass had not reached and %d it had passed, over %d chunks, with %d rewrites by a write and %d writes to the prefix the pass was to take next: they do not exercise the pass", touches, passed, chunks, wrote, exactly)
 	}
 	t.Logf("%d puts to prefixes the pass had not reached, %d to prefixes it had passed, %d chunks, %d rewrites by a write, %d writes to the prefix the pass was to take next", touches, passed, chunks, wrote, exactly)
+}
+
+// The oracle again, with a write that waits at random prefixes of the background
+// store's chunks, which then end at the minimum of 1 to 3 prefixes (or later), and
+// are the only chunks the background pass takes. The data, the writer's states and
+// the answers are the synchronous pass's whatever the chunks.
+func TestABackgroundPassWhoseChunksEndForWaitingWritesIsTheSynchronousOne(t *testing.T) {
+	t.Parallel()
+	seeds := 24
+	if raceEnabled {
+		seeds = 2
+	}
+	policies := []*CheckpointOptions{policy(CheckpointOptions{On: true, KMin: 1}), policy(CheckpointOptions{On: true, KMin: 2, Lag: 3}), off()}
+	var mu sync.Mutex
+	var touches, passed, yielded, chunks int64
+	t.Run("seeds", func(t *testing.T) {
+		for seed := range seeds {
+			t.Run(fmt.Sprint(seed), func(t *testing.T) {
+				t.Parallel()
+				w := newAsyncWorld(int64(seed))
+				rng := rand.New(rand.NewSource(int64(seed) + 1000))
+				res := runAsync(t, w, asyncConfig{
+					ck: policies[seed%len(policies)], bytes: 1, exact: seed%2 == 0, noMidReads: raceEnabled,
+					yield:       func(int64) bool { return rng.Intn(2) == 0 },
+					minPrefixes: 1 + seed%3,
+				})
+				mu.Lock()
+				defer mu.Unlock()
+				touches += int64(res.before)
+				passed += int64(res.after)
+				yielded += res.rec.counters["retain.chunks_yielded"]
+				if got := res.rec.samples["retain.chunks"]; len(got) == 1 {
+					chunks += got[0]
+				}
+			})
+		}
+	})
+	if touches == 0 || passed == 0 || yielded == 0 || chunks <= yielded {
+		t.Fatalf("%d puts to prefixes the pass had not reached, %d to ones it had passed, %d chunks of which %d ended for a waiting write: the histories do not exercise it", touches, passed, chunks, yielded)
+	}
+	t.Logf("%d puts to prefixes the pass had not reached, %d to prefixes it had passed, %d chunks, %d ended for a waiting write", touches, passed, chunks, yielded)
 }
 
 // refused drops from the writes after the retention those a layer's horizon would
