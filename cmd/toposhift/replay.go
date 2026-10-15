@@ -16,7 +16,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
-const defaultBatch = 1000
+const defaultBatch = 10000
 
 const replayUsage = `Usage: toposhift replay activity FILE --data-dir DIR [--store pebble|mem] [--batch N] [--no-layer-check]
 
@@ -32,7 +32,7 @@ detects leaves the store as it was.
                      memory, keeps nothing and takes no directory. It is for
                      small files, and checks what reading the file does not:
                      that the store's Write accepts every batch
-  --batch N          records per batch (default 1000)
+  --batch N          records per batch (default 10000)
   --no-layer-check   skip the check that every record of one edge is in one
                      layer. The check keeps 17 bytes per distinct edge in
                      memory (about 50 with the map's overhead, so about 1 GB at
