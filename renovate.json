@@ -18,6 +18,28 @@
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "labels": ["manual-review"]
+    },
+    {
+      "description": "The MCP SDK is taken only at a release at least 14 days old and merged by hand after govulncheck and the purego build. A security fix bypasses the age (Renovate's default for vulnerability updates).",
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/modelcontextprotocol/go-sdk",
+        "github.com/modelcontextprotocol/go-sdk/**"
+      ],
+      "minimumReleaseAge": "14 days",
+      "internalChecksFilter": "strict",
+      "automerge": false,
+      "labels": ["manual-review"]
+    },
+    {
+      "description": "A new major version of the MCP SDK is a new decision: no pull request until it is approved on the dependency dashboard.",
+      "matchDatasources": ["go"],
+      "matchPackageNames": [
+        "github.com/modelcontextprotocol/go-sdk",
+        "github.com/modelcontextprotocol/go-sdk/**"
+      ],
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
     }
   ]
 }
