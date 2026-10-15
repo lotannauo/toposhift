@@ -1,0 +1,100 @@
+{
+  "token": "33",
+  "derived": true,
+  "policy": {
+    "interval": 1,
+    "rank": "253c746577b09aba",
+    "names": 1
+  },
+  "entity": {
+    "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
+    "type": "k8s.node",
+    "name": "worker-1",
+    "name_from": "k8sobjects/c1"
+  },
+  "at": "2026-01-01T10:08:00Z",
+  "direction": "both",
+  "edges": [
+    {
+      "direction": "forward",
+      "relation": "runs_on",
+      "layer": "L1",
+      "peer": {
+        "id": "host:3c95ddc202c9c9179f85015702e4853b",
+        "type": "host",
+        "name": null
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence"
+    },
+    {
+      "direction": "reverse",
+      "relation": "scheduled_on",
+      "layer": "L2",
+      "peer": {
+        "id": "k8s.pod:029145e57e9a1658836a04cec8fcf25c",
+        "type": "k8s.pod",
+        "name": "web-5",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence"
+    },
+    {
+      "direction": "reverse",
+      "relation": "scheduled_on",
+      "layer": "L2",
+      "peer": {
+        "id": "k8s.pod:4226c8ed8a6a4f04744f44bfe88615e3",
+        "type": "k8s.pod",
+        "name": "web-3",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence"
+    },
+    {
+      "direction": "reverse",
+      "relation": "scheduled_on",
+      "layer": "L2",
+      "peer": {
+        "id": "k8s.pod:816a5b8355b23fa798419330d404ba6f",
+        "type": "k8s.pod",
+        "name": "web-2",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence"
+    },
+    {
+      "direction": "reverse",
+      "relation": "scheduled_on",
+      "layer": "L2",
+      "peer": {
+        "id": "k8s.pod:b408e4c76f5a3033e7a43664b8980832",
+        "type": "k8s.pod",
+        "name": "web-0",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence"
+    }
+  ],
+  "quarantined": [],
+  "counts": {
+    "edges": 5,
+    "edges_shown": 5
+  },
+  "notes": [
+    "Pass asof=33 to see the same world, until the next retention (at most a day) or a restart with other ranks."
+  ]
+}
