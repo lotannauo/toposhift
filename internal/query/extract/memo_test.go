@@ -203,9 +203,10 @@ func TestMemoCancelledContext(t *testing.T) {
 	}
 }
 
-// TestMemoRetentionMidRun: a Retain that lands while the extraction runs fails
-// it with and without the memo, in the same way, even where every later read
-// would be a hit: a kept answer is never served past a horizon.
+// TestMemoRetentionMidRun: a Retain that lands while the extraction runs, with a
+// horizon after the window's start, fails it with and without the memo, in the
+// same way, even where every later read would be a hit: a kept answer is never
+// served past a horizon, and the store refuses the read.
 func TestMemoRetentionMidRun(t *testing.T) {
 	seed := extract.Anchored{Service: S, Host: H, At: hm(10, 15)}
 	for _, mk := range []struct {
@@ -217,28 +218,45 @@ func TestMemoRetentionMidRun(t *testing.T) {
 				inner, _ := scenarioQA(t, memstore.Options{})
 				sp := &spy{Store: inner, onWindow: func(n int) {
 					if n == at {
-						if err := inner.Retain(ctx, hm(10, 0)); err != nil {
+						if err := inner.Retain(ctx, hm(10, 5)); err != nil {
 							t.Error(err)
 						}
 					}
 				}}
 				res, err := mk.ex(sp).Extract(ctx, seed, w30, extract.Options{})
-				if !errors.Is(err, interval.ErrRetained) && !errors.Is(err, store.ErrBeforeHorizon) || res.Token != 0 {
-					t.Errorf("got %v and token %d, want a retention error and a zero result", err, res.Token)
+				if !errors.Is(err, store.ErrBeforeHorizon) || res.Token != 0 {
+					t.Errorf("got %v and token %d, want ErrBeforeHorizon and a zero result", err, res.Token)
 				}
 			})
 		}
 	}
 }
 
-// TestMemoRetainedLayer: a layer that is already retained fails alike.
+// TestMemoRetainedLayer: after a retention at the window's start the extraction
+// answers, with and without the memo, as it does on a store that kept
+// everything; the memo keeps nothing under a horizon, so every request reaches
+// the store.
 func TestMemoRetainedLayer(t *testing.T) {
+	seed := extract.Anchored{Service: S, Host: H, At: hm(10, 15)}
+	twin, _ := scenarioQA(t, memstore.Options{})
+	want, err := extract.NewExtractor(twin).Extract(ctx, seed, w30, extract.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	st, _ := scenarioQA(t, memstore.Options{})
 	if err := st.Retain(ctx, hm(10, 0)); err != nil {
 		t.Fatal(err)
 	}
-	res := checkMemo(t, st, extract.Anchored{Service: S, Host: H, At: hm(10, 15)}, w30, extract.Options{})
-	if res.Token != 0 {
-		t.Errorf("token %d from a retained store", res.Token)
+	for _, ex := range []*extract.Extractor{extract.NewExtractor(st), extract.NewExtractorNoMemo(st)} {
+		got, err := ex.Extract(ctx, seed, w30, extract.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(withoutStoreReads(got), withoutStoreReads(want)) {
+			t.Errorf("after the retention the answer differs from the twin's: %s", sameResult(got, want))
+		}
+		if got.StoreReads.Windows != got.Reads.Windows || got.StoreReads.EntityWindows != got.Reads.EntityWindows || got.StoreReads.Alive != got.Reads.Alive {
+			t.Errorf("StoreReads %+v under a horizon, want every request %+v", got.StoreReads, got.Reads)
+		}
 	}
 }

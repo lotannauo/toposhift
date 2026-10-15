@@ -96,4 +96,14 @@ func (s *spyStore) EntityWindow(ctx context.Context, fp identity.Fingerprint, fr
 	return s.Store.EntityWindow(ctx, fp, from, to, sc)
 }
 
+// WindowSince records the token once per fingerprint, as the Window or
+// EntityWindow reads it stands for.
+func (s *spyStore) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	for range fps {
+		s.note(sc)
+	}
+	defer s.after()
+	return s.Store.WindowSince(ctx, fps, d, from, to, sc, o)
+}
+
 func (s *spyStore) LayerHorizon(l catalog.Layer) store.Horizon { return s.Store.LayerHorizon(l) }

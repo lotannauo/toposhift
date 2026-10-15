@@ -44,6 +44,20 @@ func (c *counting) EntityWindow(ctx context.Context, fp identity.Fingerprint, fr
 	return c.Store.EntityWindow(ctx, fp, from, to, s)
 }
 
+// WindowSince counts one Window per fingerprint of an edge read, and one
+// EntityWindow per fingerprint of an existence read (direction 0): the reads it
+// stands for.
+func (c *counting) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, s store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	c.count(func(r *Reads) {
+		if d == 0 {
+			r.EntityWindows += len(fps)
+		} else {
+			r.Windows += len(fps)
+		}
+	})
+	return c.Store.WindowSince(ctx, fps, d, from, to, s, o)
+}
+
 func (c *counting) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time, s store.Scope) (bool, error) {
 	c.count(func(r *Reads) { r.Alive++ })
 	return c.Store.Alive(ctx, fp, t, s)
@@ -54,8 +68,8 @@ func (c *counting) Alive(ctx context.Context, fp identity.Fingerprint, t time.Ti
 // propagates and all live at once, leads to from the seed, with the instants
 // at which it does. Arguments are checked before any store call. After that,
 // any error of a read fails the whole walk with a zero Result: there is no
-// partial answer, and a retained layer gives an error wrapping
-// interval.ErrRetained.
+// partial answer, and a window that starts before a layer's retention horizon
+// gives an error wrapping store.ErrBeforeHorizon.
 func (w *Walker) Impact(ctx context.Context, seed identity.Fingerprint, win interval.Window, o Options) (Result, error) {
 	fail := func(err error) (Result, error) { return Result{}, fmt.Errorf("blastradius: Impact: %w", err) }
 	if !win.From.Before(win.To) {

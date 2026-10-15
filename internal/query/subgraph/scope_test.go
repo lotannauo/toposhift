@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -308,16 +309,29 @@ func TestScopeQuarantine(t *testing.T) {
 	}
 }
 
-// A retained layer fails the whole read.
+// After a retention before the window, a scope reads as on a store that kept
+// everything; a window that starts before the horizon fails the whole read, with
+// a zero subgraph.
 func TestScopeRetention(t *testing.T) {
+	recs := func(f *feed) {
+		f.write(observe(ent(nodeN), k8s, -100, 0), observe(ent(hostH), agent, -100, 0), observe(runsOn(nodeN, hostH), agent, -100, 0))
+	}
+	twin, tf := openStore(t, memstore.Options{})
+	recs(tf)
 	st, f := openStore(t, memstore.Options{Keep: [4]bool{true, false, true, true}})
-	f.write(observe(ent(nodeN), k8s, -100, 0), observe(ent(hostH), agent, -100, 0), observe(runsOn(nodeN, hostH), agent, -100, 0))
+	recs(f)
 	if err := st.Retain(ctx, at(-50)); err != nil {
 		t.Fatal(err)
 	}
-	sg, err := subgraph.ReadScope(ctx, st, []identity.Fingerprint{nodeN}, window30(store.Latest), subgraph.ScopePolicy{})
-	if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || sg.Entities != nil || sg.Elements != nil {
-		t.Fatalf("%v, %+v; want ErrRetained with a zero subgraph", err, sg)
+	got, err := subgraph.ReadScope(ctx, st, []identity.Fingerprint{nodeN}, window30(store.Latest), subgraph.ScopePolicy{})
+	want, werr := subgraph.ReadScope(ctx, twin, []identity.Fingerprint{nodeN}, window30(store.Latest), subgraph.ScopePolicy{})
+	if err != nil || werr != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the retention: %v, %+v; want %+v (%v)", err, got, want, werr)
+	}
+	early := interval.Window{From: at(-60), To: at(30), AsOf: store.Latest}
+	sg, err := subgraph.ReadScope(ctx, st, []identity.Fingerprint{nodeN}, early, subgraph.ScopePolicy{})
+	if !errors.Is(err, store.ErrBeforeHorizon) || sg.Entities != nil || sg.Elements != nil {
+		t.Fatalf("%v, %+v; want ErrBeforeHorizon with a zero subgraph", err, sg)
 	}
 }
 

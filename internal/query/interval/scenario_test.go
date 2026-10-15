@@ -348,7 +348,7 @@ func TestScenarioGQuarantine(t *testing.T) {
 	st.reset()
 	res = mustEdges(t, r, n, store.Forward, w)
 	check(t, "Edges(N, Forward)", res.Elements, []interval.Element{want})
-	wantLog := []string{"Window k8s.node L1", "Alive k8s.node L2", "EntityWindow k8s.node L2", "Alive host L1", "Window k8s.node L2"}
+	wantLog := []string{"Window k8s.node L1", "Window k8s.node L2", "Alive k8s.node L2", "Alive host L1", "EntityWindow k8s.node L2"}
 	if !slices.Equal(st.log, wantLog) {
 		t.Errorf("reads %q, want %q", st.log, wantLog)
 	}
@@ -415,6 +415,10 @@ func TestScenarioG2WriterDriftIsLoud(t *testing.T) {
 	})
 }
 
+// TestScenarioHRetention: after a retention a window that starts at or after a
+// layer's horizon is read from the seeds the store keeps and gives the answer of
+// a store that kept everything; one that starts before it is refused by the
+// store, with ErrBeforeHorizon, at the first read of that layer.
 func TestScenarioHRetention(t *testing.T) {
 	p, n, h := mkfp(t, catalog.K8sPod, 1), mkfp(t, catalog.K8sNode, 1), mkfp(t, catalog.Host, 1)
 	recs := []store.Record{
@@ -422,12 +426,15 @@ func TestScenarioHRetention(t *testing.T) {
 		observe(edge(p, n, catalog.ScheduledOn), k8s, hm(9, 0), 0), observe(edge(n, h, catalog.RunsOn), k8s, hm(9, 0), 0),
 	}
 	w := win(hm(10, 0), hm(10, 30))
-	retained := func(t *testing.T, err error) {
+	early := win(hm(10, 0).Add(-time.Nanosecond), hm(10, 30))
+	refused := func(t *testing.T, err error, layer string) {
 		t.Helper()
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) {
-			t.Fatalf("%v, want ErrRetained and ErrUnsupported", err)
+		if !errors.Is(err, store.ErrBeforeHorizon) || errors.Is(err, interval.ErrRetained) || !strings.Contains(err.Error(), "layer "+layer) {
+			t.Fatalf("%v, want ErrBeforeHorizon naming layer %s", err, layer)
 		}
 	}
+	twin := openStore(t, memstore.Options{})
+	newFeed(t, twin).write(recs...)
 	open := func(t *testing.T, keep [4]bool) *spy {
 		inner := openStore(t, memstore.Options{Keep: keep})
 		newFeed(t, inner).write(recs...)
@@ -436,69 +443,87 @@ func TestScenarioHRetention(t *testing.T) {
 		}
 		return &spy{Store: inner}
 	}
+	// same requires a read of the retained store to answer as the twin does.
+	same := func(t *testing.T, what string, got, want interval.Result, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+		if df := diff(got.Elements, want.Elements); df != "" {
+			t.Errorf("%s after the retention, and on a store that kept everything:\n%s", what, df)
+		}
+	}
 
 	t.Run("every layer retained", func(t *testing.T) {
 		st := open(t, [4]bool{})
 		for _, raw := range []bool{false, true} {
-			r := interval.NewReader(st, interval.Options{Raw: raw})
+			r, tw := interval.NewReader(st, interval.Options{Raw: raw}), interval.NewReader(twin, interval.Options{Raw: raw})
 			for e := range catalog.Default().Entities() {
-				fp := mkfp(t, e.Type(), 9)
-				_, err := r.Entity(ctx, fp, w)
-				retained(t, err)
-				for _, dir := range []store.Direction{store.Forward, store.Reverse} {
-					_, err := r.Edges(ctx, fp, dir, w)
-					_, _, berr := r.EdgesBatch(ctx, []identity.Fingerprint{fp, fp}, dir, w)
-					if len(interval.EdgeLayers(catalog.Default(), e.Type(), dir)) == 0 {
-						// No layer is touched, so nothing is refused.
-						if err != nil || berr != nil {
-							t.Errorf("%s %s with no edge layer: %v, %v", e.Type(), dir, err, berr)
-						}
+				for _, fp := range []identity.Fingerprint{mkfp(t, e.Type(), 9), p, n, h} {
+					if fp.Type() != e.Type() {
 						continue
 					}
-					retained(t, err)
-					retained(t, berr)
+					got, err := r.Entity(ctx, fp, w)
+					want, _ := tw.Entity(ctx, fp, w)
+					same(t, "Entity", got, want, err)
+					_, err = r.Entity(ctx, fp, early)
+					refused(t, err, e.Layer().String())
+					for _, dir := range []store.Direction{store.Forward, store.Reverse} {
+						got, err := r.Edges(ctx, fp, dir, w)
+						want, _ := tw.Edges(ctx, fp, dir, w)
+						same(t, "Edges", got, want, err)
+						_, err = r.Edges(ctx, fp, dir, early)
+						_, _, berr := r.EdgesBatch(ctx, []identity.Fingerprint{fp, fp}, dir, early)
+						layers := interval.EdgeLayers(catalog.Default(), e.Type(), dir)
+						if len(layers) == 0 {
+							// No layer is read, so nothing is refused.
+							if err != nil || berr != nil {
+								t.Errorf("%s %s with no edge layer: %v, %v", e.Type(), dir, err, berr)
+							}
+							continue
+						}
+						refused(t, err, layers[0].String())
+						refused(t, berr, layers[0].String())
+					}
 				}
 			}
 		}
-		if reads, writes := st.counts(); reads != 0 || writes != 0 {
-			t.Errorf("%d reads and %d writes; want none", reads, writes)
+		if _, writes := st.counts(); writes != 0 {
+			t.Errorf("%d writes; want none", writes)
 		}
 	})
 	t.Run("only L1 retained", func(t *testing.T) {
 		st := open(t, [4]bool{true, false, true, true})
 		r := interval.NewReader(st, interval.Options{})
-		res := mustEdges(t, r, p, store.Forward, w)
+		res := mustEdges(t, r, p, store.Forward, early)
 		if len(res.Elements) != 1 {
 			t.Errorf("Edges(P, Forward) = %v", describeAll(res.Elements))
 		}
+		got, err := r.Edges(ctx, n, store.Forward, w)
+		want, _ := interval.NewReader(twin, interval.Options{}).Edges(ctx, n, store.Forward, w)
+		same(t, "Edges(N, Forward)", got, want, err)
 		st.reset()
-		_, err := r.Edges(ctx, n, store.Forward, w)
-		retained(t, err)
-		if !strings.Contains(err.Error(), "L1") {
-			t.Errorf("%v does not name L1", err)
-		}
-		if reads, _ := st.counts(); reads != 0 {
-			t.Errorf("%d reads before the refusal: %q", reads, st.log)
+		_, err = r.Edges(ctx, n, store.Forward, early)
+		refused(t, err, "L1")
+		if !slices.Equal(st.log, []string{"Window k8s.node L1"}) {
+			t.Errorf("reads %q; want the refusal at the first read of L1", st.log)
 		}
 	})
 	t.Run("only L2 retained", func(t *testing.T) {
 		st := open(t, [4]bool{true, true, false, true})
-		// A node's forward edges are stored in L1 and L2 (has_address), so even
-		// a raw read of them is refused.
-		_, err := interval.NewReader(st, interval.Options{Raw: true}).Edges(ctx, n, store.Forward, w)
-		retained(t, err)
-		if !strings.Contains(err.Error(), "L2") {
-			t.Errorf("raw: %v does not name L2", err)
+		// A node's forward edges are stored in L1 and L2 (has_address), so even a
+		// raw read of them is refused, at the read of L2, after the one of L1.
+		for _, raw := range []bool{true, false} {
+			st.reset()
+			_, err := interval.NewReader(st, interval.Options{Raw: raw}).Edges(ctx, n, store.Forward, early)
+			refused(t, err, "L2")
+			if !slices.Equal(st.log, []string{"Window k8s.node L1", "Window k8s.node L2"}) {
+				t.Errorf("raw %t: reads %q; want the refusal at the read of L2", raw, st.log)
+			}
 		}
-		st.reset()
-		_, err = interval.NewReader(st, interval.Options{}).Edges(ctx, n, store.Forward, w)
-		retained(t, err)
-		if !strings.Contains(err.Error(), "L2") {
-			t.Errorf("%v does not name L2", err)
-		}
-		if reads, _ := st.counts(); reads != 0 {
-			t.Errorf("%d reads before the refusal: %q", reads, st.log)
-		}
+		got, err := interval.NewReader(st, interval.Options{}).Edges(ctx, n, store.Forward, w)
+		want, _ := interval.NewReader(twin, interval.Options{}).Edges(ctx, n, store.Forward, w)
+		same(t, "Edges(N, Forward)", got, want, err)
 	})
 }
 

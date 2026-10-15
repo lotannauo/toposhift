@@ -27,13 +27,22 @@
 // # What is folded
 //
 // A subject's intervals in [From, To) are its lifecycle existence, folded from
-// every visible record with an event time before To, from the start of the
-// store's history, and then clipped to the window. So a late record changes
-// the answer exactly where its event time puts it. Nothing after To is
-// reported: an interval that reaches To ends there with no end source, even
-// when a deadline after To is already known, because a later record could
-// still move it. Before From only one bit is reported, [Piece].Before: whether
-// the interval began before From.
+// every visible record with an event time before To, from the start of retained
+// history, and then clipped to the window. So a late record changes the answer
+// exactly where its event time puts it. Nothing after To is reported: an
+// interval that reaches To ends there with no end source, even when a deadline
+// after To is already known, because a later record could still move it.
+// Before From only one bit is reported, [Piece].Before: whether the interval
+// began before From.
+//
+// The history before From is not read. One store read per layer,
+// store.Store.WindowSince, gives for many entities the records of the window
+// and, for each reference (a subject and a producer) live just before From, the
+// assertion that decides it there, its seed; folding the seeds with the window
+// records is folding the whole history, on the window. So a read costs the
+// window's records and the store's walk to each seed, not the history of the
+// prefix: on pebblestore, a walk from From back to the nearest checkpoint, whose
+// budget the store fixes, or to the retention baseline.
 //
 // # Producers, gaps and ends
 //
@@ -63,10 +72,10 @@
 //
 // Only an edge with an interval of its own in the window has its endpoints
 // read: one existence read per distinct endpoint of such an edge, at most, per
-// call. An edge with none has no piece whatever its endpoints did, so the
-// endpoints of an edge that ended before From, which a node's history is full
-// of, are never read, and an error reading them (a retained endpoint layer
-// among them) cannot fail the call.
+// call (an Alive, for the quarantine, and the endpoint's share of one read of
+// its layer's entities). An edge with none has no piece whatever its endpoints
+// did, so its endpoints are not read; an edge that ended before From, which a
+// node's history is full of, is not even in what is read.
 //
 // # Quarantine
 //
@@ -93,13 +102,21 @@
 // producers by name, and when the winner differs between the two ends the two
 // payloads are two producers' descriptions, not one that changed.
 //
-// A reader that describes reads nothing more: it folds a second time, under
-// Rank, the records of the subject the call has already read. Rank changes no
-// existence: pieces, classes and transitions are the same with Describe on or
-// off and under any Rank. Its cost is memory and CPU only: an entity read
-// keeps each entity's records until the call ends, and an element with a
-// piece at either end is folded twice, while the endpoints an edge read reads
-// for the cascade keep no records.
+// A reader that describes reads the same records, with the seeds' payloads: it
+// folds a second time, under Rank, the seeds and window records of the subject
+// the call has already read. Rank changes no existence: pieces, classes and
+// transitions are the same with Describe on or off and under any Rank. Its cost
+// is the seeds' payloads, memory and CPU: an entity read keeps each entity's
+// records until the call ends, and an element with a piece at either end is
+// folded twice, while the endpoints an edge read reads for the cascade keep no
+// records and ask for no payload.
+//
+// A description is never guessed. When the winning producer's latest assertion
+// at the instant is a seed recorded before the retention horizon, whose payload
+// the store no longer keeps, the call fails with an error wrapping [ErrRetained].
+// For a producer that refreshes, that is a window starting within about one run
+// of the horizon; for one that asserts once, every window until it asserts
+// again.
 //
 // # A multigraph of subjects
 //
@@ -153,14 +170,15 @@
 //
 // # Retention
 //
-// A read that touches a layer whose retention horizon is not zero is refused,
-// before it reads that layer, with an error wrapping [ErrRetained] and so
-// [errors.ErrUnsupported]. Every edge layer of a call is checked before its
-// first read, and an endpoint's entity layer before that endpoint is read, by
-// which time edge layers may have been read; either way the call then fails as
-// a whole, with no partial answer, as it does for every other error. After a retention the state at the horizon may live
-// in a baseline that no store read returns, so the intervals of a subject that
-// was alive there cannot be rebuilt from records alone. The refusal lasts until
-// the store has an interval read of its own. A retention that lands during a
-// read is refused by the store itself, with store.ErrBeforeHorizon.
+// A read of a layer whose retention horizon is not zero is answered for a
+// window that starts at or after the horizon, from the seeds the store keeps,
+// exactly as a store that kept everything answers it, except in one case: at a
+// window that starts at the horizon itself, the state just before it is the
+// state at it, so a reference whose deadline is exactly the horizon is no seed,
+// and an interval it would have joined across From starts at From. A window
+// that starts before the horizon is refused by the store, at the first read of
+// that layer, with an error wrapping store.ErrBeforeHorizon (and so
+// store.ErrInvalid); the call then fails as a whole, with no partial answer, as
+// it does for every other error. [ErrRetained] is only the refusal of a
+// description asserted before the horizon (see Descriptions).
 package interval

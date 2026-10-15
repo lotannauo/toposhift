@@ -88,9 +88,9 @@
 //
 // The first read resolves the window's token, and every later read uses it;
 // [Result].Token names it. Arguments are checked before any store call. After
-// that any error fails the whole query, with no partial answer; a retained
-// layer gives an error wrapping interval.ErrRetained, and [Options].NodeOnly
-// reads no L1 layer.
+// that any error fails the whole query, with no partial answer; a window that
+// starts before a layer's retention horizon gives an error wrapping
+// store.ErrBeforeHorizon, and [Options].NodeOnly reads no L1 layer.
 //
 // # Reads
 //
@@ -100,8 +100,10 @@
 // an edge with an interval of its own in the window, per call. The read budget
 // of the cascade is fixed in [BudgetDate] and the constants beside it.
 //
-// The Window reads are not bounded by the window: they read every edge record
-// from the start of the store's history, so on a store that keeps a long
-// history they grow with it. That lasts until the store has an interval read
-// of its own.
+// Each interval call reads a layer's edges, and an endpoint layer's existence,
+// in one batched store read (store.Store.WindowSince) that is counted as one
+// Window, or one EntityWindow, per entity. It returns the window's records and
+// each reference's seed just before From, never the history before it, so its
+// cost is bounded by the window and the store's walk to the seeds, whose budget
+// the store fixes.
 package coresidency

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -538,33 +539,33 @@ func TestARHOneToken(t *testing.T) {
 }
 
 func TestARIRetention(t *testing.T) {
-	retained := func(t *testing.T, res blastradius.AroundResult, err error) {
-		t.Helper()
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || res.Token != 0 || res.Substrates != nil || res.Seed != (identity.Fingerprint{}) {
-			t.Fatalf("%v, %+v; want ErrRetained with a zero result", err, res)
-		}
-	}
+	// As for Impact: after a retention at the window's start Around answers as on
+	// a store that kept everything; before the horizon it is refused.
 	p1 := observe(ent(P1), k8s, hm(9, 0), 0)
-	t.Run("L1 retained", func(t *testing.T) {
-		st := scenarioA(t, memstore.Options{Keep: [4]bool{true, false, true, true}}, p1)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		res, err := blastradius.NewWalker(st).Around(ctx, P1, w30, blastradius.Options{})
-		retained(t, res, err)
-	})
-	t.Run("L2 retained", func(t *testing.T) {
-		st := scenarioA(t, memstore.Options{Keep: [4]bool{true, true, false, true}}, p1)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		reads := &spy{Store: st}
-		res, err := blastradius.NewWalker(reads).Around(ctx, P1, w30, blastradius.Options{})
-		retained(t, res, err)
-		if reads.windows != 0 {
-			t.Errorf("%d Window reads, want none: the first call is refused before its first read", reads.windows)
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		keep [4]bool
+	}{
+		{"L1 retained", [4]bool{true, false, true, true}},
+		{"L2 retained", [4]bool{true, true, false, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			twin := scenarioA(t, memstore.Options{}, p1)
+			st := scenarioA(t, memstore.Options{Keep: tc.keep}, p1)
+			if err := st.Retain(ctx, hm(10, 0)); err != nil {
+				t.Fatal(err)
+			}
+			for _, o := range []blastradius.Options{{}, {ExpandFabric: true}} {
+				if got, want := around(t, st, P1, w30, o), around(t, twin, P1, w30, o); !reflect.DeepEqual(got, want) {
+					t.Errorf("Around(P1) after the retention:\n%+v\nwant\n%+v", got, want)
+				}
+			}
+			res, err := blastradius.NewWalker(st).Around(ctx, P1, interval.Window{From: hm(9, 59), To: hm(10, 30), AsOf: store.Latest}, blastradius.Options{})
+			if !errors.Is(err, store.ErrBeforeHorizon) || res.Token != 0 || res.Substrates != nil || res.Seed != (identity.Fingerprint{}) {
+				t.Fatalf("a window before the horizon: %v, %+v; want ErrBeforeHorizon with a zero result", err, res)
+			}
+		})
+	}
 }
 
 func TestARLTheReferenceCell(t *testing.T) {

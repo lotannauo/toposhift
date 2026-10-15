@@ -598,3 +598,108 @@ func TestMemoReadsAKeyOnceUnderConcurrency(t *testing.T) {
 	wg.Wait()
 	wantReads(t, f, 1)
 }
+
+func (s *failing) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	if s.fail("WindowSince") {
+		return nil, errBoom
+	}
+	return s.Store.WindowSince(ctx, fps, d, from, to, sc, o)
+}
+
+func (f *fixture) since(fps []identity.Fingerprint, d store.Direction, from, to time.Time, s store.Scope, o store.SinceOptions) []store.Since {
+	f.t.Helper()
+	out, err := f.memo.WindowSince(bg, fps, d, from, to, s, o)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if len(out) != len(fps) {
+		f.t.Fatalf("%d answers for %d fingerprints", len(out), len(fps))
+	}
+	return out
+}
+
+func sinceSeqs(s store.Since) []uint64 {
+	var out []uint64
+	for _, sd := range s.Seeds {
+		out = append(out, sd.Record.Seq)
+	}
+	return append(out, seqs(s.Window)...)
+}
+
+// WindowSince is kept per fingerprint: a repeat in one call, and a later call,
+// reach the store only for what the memo does not hold, each fingerprint once.
+// The option is part of the key, and the answers equal the store's.
+func TestMemoKeepsWindowSincePerFingerprint(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, memoCap)
+	f.write(edgeRec(tPod, tNode, tm(1)), edgeRec(tPod2, tNode, tm(2)), edgeRec(tPod, tNode2, tm(5)))
+	sc, from, to := f.scope(), tm(3), tm(10)
+	got := f.since([]identity.Fingerprint{tNode, tNode, tNode2}, store.Reverse, from, to, sc, store.SinceOptions{})
+	want, err := f.st.WindowSince(bg, []identity.Fingerprint{tNode, tNode, tNode2}, store.Reverse, from, to, sc, store.SinceOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range want {
+		if !slices.Equal(sinceSeqs(got[i]), sinceSeqs(want[i])) {
+			t.Errorf("answer %d: %v, want %v", i, sinceSeqs(got[i]), sinceSeqs(want[i]))
+		}
+	}
+	if f.cnt.reads.Windows != 2 {
+		t.Errorf("%d fingerprints reached the store, want the two distinct ones", f.cnt.reads.Windows)
+	}
+	f.since([]identity.Fingerprint{tNode2, tNode, tNode2}, store.Reverse, from, to, sc, store.SinceOptions{})
+	wantReads(t, f, 2)
+	f.since([]identity.Fingerprint{tNode, tNode2}, store.Reverse, from, to, sc, store.SinceOptions{Payloads: true})
+	wantReads(t, f, 4)
+	// The entities' own existence (direction 0) is kept apart from their edges.
+	f.since([]identity.Fingerprint{tNode}, 0, from, to, store.Scope{Layer: entityLayer(catalog.K8sNode), AsOf: f.seq}, store.SinceOptions{})
+	if f.cnt.reads.EntityWindows != 1 {
+		t.Errorf("%d entity reads, want 1", f.cnt.reads.EntityWindows)
+	}
+	// A changed answer changes nothing kept.
+	a := f.since([]identity.Fingerprint{tNode}, store.Reverse, from, to, sc, store.SinceOptions{})
+	a[0].Seeds[0].Record.Seq = 99
+	b := f.since([]identity.Fingerprint{tNode}, store.Reverse, from, to, sc, store.SinceOptions{})
+	if b[0].Seeds[0].Record.Seq == 99 {
+		t.Error("a change to an answer reached the memo")
+	}
+}
+
+// A WindowSince under Latest, or of a retained layer, is never kept; an error is
+// returned and not kept; and no fingerprints still reach the store, which judges
+// the horizon.
+func TestMemoKeepsWindowSinceOnlyByTheRules(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, memoCap)
+	f.write(edgeRec(tPod, tNode, tm(1)))
+	latest := store.Current(edgeLayer())
+	for range 2 {
+		f.since([]identity.Fingerprint{tNode}, store.Reverse, tm(0), tm(5), latest, store.SinceOptions{})
+	}
+	wantReads(t, f, 2)
+
+	fl := &failing{Store: f.st, fails: map[string]bool{"WindowSince": true}}
+	m := newMemo(fl, memoCap)
+	if _, err := m.WindowSince(bg, []identity.Fingerprint{tNode}, store.Reverse, tm(0), tm(5), f.scope(), store.SinceOptions{}); !errors.Is(err, errBoom) {
+		t.Fatalf("the failing read: %v", err)
+	}
+	if got, err := m.WindowSince(bg, []identity.Fingerprint{tNode}, store.Reverse, tm(0), tm(5), f.scope(), store.SinceOptions{}); err != nil || len(got[0].Window) != 1 {
+		t.Fatalf("after the failure: %v, %v", got, err)
+	}
+
+	// An answer kept before a retention is not served after it: the store judges
+	// every read of a layer with a horizon.
+	f.since([]identity.Fingerprint{tNode}, store.Reverse, tm(2), tm(5), f.scope(), store.SinceOptions{})
+	f.since([]identity.Fingerprint{tNode}, store.Reverse, tm(2), tm(5), f.scope(), store.SinceOptions{})
+	if err := f.st.Retain(bg, tm(2)); err != nil {
+		t.Fatal(err)
+	}
+	before := f.storeReads()
+	for range 2 {
+		f.since([]identity.Fingerprint{tNode}, store.Reverse, tm(2), tm(5), f.scope(), store.SinceOptions{})
+	}
+	wantReads(t, f, before+2)
+	if _, err := f.memo.WindowSince(bg, nil, store.Reverse, tm(1), tm(5), f.scope(), store.SinceOptions{}); !errors.Is(err, store.ErrBeforeHorizon) {
+		t.Errorf("no fingerprints before the horizon: %v, want ErrBeforeHorizon", err)
+	}
+}

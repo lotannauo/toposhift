@@ -59,3 +59,10 @@ func (b *blockStore) EntityWindow(ctx context.Context, fp identity.Fingerprint, 
 	}
 	return b.spyStore.EntityWindow(ctx, fp, from, to, sc)
 }
+
+func (b *blockStore) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, sc store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	if err := b.block(ctx); err != nil {
+		return nil, err
+	}
+	return b.spyStore.WindowSince(ctx, fps, d, from, to, sc, o)
+}

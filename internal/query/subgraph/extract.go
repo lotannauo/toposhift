@@ -43,8 +43,8 @@ const mappingLegs = 4
 // A contribution's own spans, a pair's per-via spans and each search's
 // placement are not carried.
 //
-// Everything in it is derived. Any error, a retained layer included, fails the
-// whole call, with no partial answer.
+// Everything in it is derived. Any error, a refusal for retention included,
+// fails the whole call, with no partial answer.
 func FromExtraction(ctx context.Context, st store.Store, res extract.Result, p ReadPolicy) (Subgraph, error) {
 	fail := func(err error) (Subgraph, error) { return Subgraph{}, fmt.Errorf("subgraph: FromExtraction: %w", err) }
 	c, err := newCollector(res.From, res.To)

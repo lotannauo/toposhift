@@ -15,17 +15,19 @@ import (
 
 // memoCap is the most a memo holds, in units: each stored answer costs the
 // number of records it holds plus one, so an existence answer or an empty read
-// costs one. One hot node's reverse history is the largest single read an
-// extraction makes, at an estimated 475,000 records for 110 live pods over 30 days;
-// the cap holds that and as much again. A read that would pass it is answered
+// costs one. It was sized when a read returned a prefix's whole history, of which
+// one hot node's reverse history was the largest an extraction made, at an
+// estimated 475,000 records for 110 live pods over 30 days, and holds that and as
+// much again; a read now returns its window and seeds, which are far fewer. A read that would pass it is answered
 // from the store and not kept, so an answer never depends on the cap, only the
 // number of reads that reach the store does.
 const memoCap = 1 << 20
 
 // memo is the store an extraction's reader and Finds read through. It keeps the
-// answer of a Window, EntityWindow or Alive read, so a read the extraction
-// repeats (the same entity as an endpoint of several hops, or of several Finds)
-// reaches the store once. It is one extraction's: Extract builds it and drops
+// answer of a Window, EntityWindow or Alive read, and each fingerprint's answer of
+// a WindowSince, so a read the extraction repeats (the same entity as an endpoint
+// of several hops, or of several Finds) reaches the store once: a WindowSince
+// passes on to the store only the fingerprints it does not hold, once each. It is one extraction's: Extract builds it and drops
 // it when it returns.
 //
 // What it keeps are facts read at one snapshot token, never a derived result,
@@ -49,6 +51,7 @@ const (
 	opWindow memoOp = iota + 1
 	opEntityWindow
 	opAlive
+	opSince
 )
 
 // memoKey is everything a read's answer depends on. The instants are kept as
@@ -62,12 +65,15 @@ type memoKey struct {
 	fromNs, toNs int
 	layer        catalog.Layer
 	asOf         uint64
+	payloads     bool // a WindowSince's option
 }
 
-// memoEntry is a stored answer: the records of a Window or EntityWindow, or an
-// Alive's boolean, or the quarantine error an Alive returned.
+// memoEntry is a stored answer: the records of a Window or EntityWindow, one
+// fingerprint's answer of a WindowSince, or an Alive's boolean, or the quarantine
+// error an Alive returned.
 type memoEntry struct {
 	recs  []store.Record
+	since store.Since
 	alive bool
 	err   error
 }
@@ -108,7 +114,7 @@ func (m *memo) storable(k memoKey, last uint64) bool {
 
 // keep stores e under k if it fits the cap. The caller holds m.mu.
 func (m *memo) keep(k memoKey, e memoEntry) {
-	cost := len(e.recs) + 1
+	cost := len(e.recs) + len(e.since.Seeds) + len(e.since.Window) + 1
 	if m.used+cost > m.capacity {
 		return
 	}
@@ -148,6 +154,66 @@ func (m *memo) EntityWindow(ctx context.Context, fp identity.Fingerprint, from, 
 	return m.records(ctx, "EntityWindow", m.key(opEntityWindow, fp, 0, from, to, s), func() ([]store.Record, error) {
 		return m.Store.EntityWindow(ctx, fp, from, to, s)
 	})
+}
+
+// WindowSince serves each fingerprint from the memo when it may, and reads the
+// others from the store in one call, each once however often fps repeats it.
+// With no fingerprint to read it makes no store read; with no fingerprints at
+// all it asks the store, which still judges the horizon.
+func (m *memo) WindowSince(ctx context.Context, fps []identity.Fingerprint, d store.Direction, from, to time.Time, s store.Scope, o store.SinceOptions) ([]store.Since, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, memoErr("WindowSince", err)
+	}
+	if len(fps) == 0 {
+		return m.Store.WindowSince(ctx, fps, d, from, to, s, o)
+	}
+	key := func(fp identity.Fingerprint) memoKey {
+		k := m.key(opSince, fp, d, from, to, s)
+		k.payloads = o.Payloads
+		return k
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]store.Since, len(fps))
+	var missing []identity.Fingerprint
+	at := map[identity.Fingerprint][]int{}
+	for i, fp := range fps {
+		if e, ok := m.get(key(fp)); ok {
+			out[i] = cloneSince(e.since)
+			continue
+		}
+		if _, seen := at[fp]; !seen {
+			missing = append(missing, fp)
+		}
+		at[fp] = append(at[fp], i)
+	}
+	if len(missing) == 0 {
+		return out, nil
+	}
+	last := m.LastSeq()
+	got, err := m.Store.WindowSince(ctx, missing, d, from, to, s, o)
+	if err != nil {
+		return nil, err
+	}
+	for j, fp := range missing {
+		if k := key(fp); m.storable(k, last) {
+			m.keep(k, memoEntry{since: cloneSince(got[j])})
+		}
+		for n, i := range at[fp] {
+			if n == 0 {
+				out[i] = got[j]
+			} else {
+				out[i] = cloneSince(got[j])
+			}
+		}
+	}
+	return out, nil
+}
+
+// cloneSince copies an answer's lists, so a caller that changes them changes
+// nothing kept.
+func cloneSince(s store.Since) store.Since {
+	return store.Since{Seeds: slices.Clone(s.Seeds), Window: slices.Clone(s.Window)}
 }
 
 // Alive serves from the memo when it may, and otherwise reads the store. A

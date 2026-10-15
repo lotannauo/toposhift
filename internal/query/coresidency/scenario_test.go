@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -429,36 +430,35 @@ func TestScenarioGTokenPinnedOnce(t *testing.T) {
 	}
 }
 
+// TestScenarioHRetention: after a retention at the window's start the query
+// answers as on a store that kept everything, reads included; a window that
+// starts before the horizon is refused by the store, with ErrBeforeHorizon and a
+// zero result.
 func TestScenarioHRetention(t *testing.T) {
-	retained := func(t *testing.T, res coresidency.Result, err error) {
-		t.Helper()
-		if !errors.Is(err, interval.ErrRetained) || !errors.Is(err, errors.ErrUnsupported) || res.Token != 0 || res.CoResidents != nil {
-			t.Fatalf("%v, %+v; want ErrRetained with a zero result", err, res)
-		}
+	for _, tc := range []struct {
+		name string
+		keep [4]bool
+	}{
+		{"L2 retained", [4]bool{true, true, false, true}},
+		{"L1 retained", [4]bool{true, false, true, true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			twin, _ := scenarioE(t, memstore.Options{}, true)
+			st, _ := scenarioE(t, memstore.Options{Keep: tc.keep}, true)
+			if err := st.Retain(ctx, hm(10, 0)); err != nil {
+				t.Fatal(err)
+			}
+			for _, o := range []coresidency.Options{{}, {NodeOnly: true}} {
+				if got, want := find(t, st, S, w30, o), find(t, twin, S, w30, o); !reflect.DeepEqual(got, want) {
+					t.Errorf("NodeOnly %t after the retention:\n%+v\nwant\n%+v", o.NodeOnly, got, want)
+				}
+			}
+			res, err := coresidency.NewFinder(st).Find(ctx, S, interval.Window{From: hm(9, 59), To: hm(10, 30), AsOf: store.Latest}, coresidency.Options{})
+			if !errors.Is(err, store.ErrBeforeHorizon) || res.Token != 0 || res.CoResidents != nil {
+				t.Fatalf("a window before the horizon: %v, %+v; want ErrBeforeHorizon with a zero result", err, res)
+			}
+		})
 	}
-	t.Run("L2 retained", func(t *testing.T) {
-		st, _ := scenarioE(t, memstore.Options{Keep: [4]bool{true, true, false, true}}, true)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		res, err := coresidency.NewFinder(st).Find(ctx, S, w30, coresidency.Options{})
-		retained(t, res, err)
-	})
-	t.Run("L1 retained", func(t *testing.T) {
-		st, e := scenarioE(t, memstore.Options{Keep: [4]bool{true, false, true, true}}, true)
-		if err := st.Retain(ctx, hm(10, 0)); err != nil {
-			t.Fatal(err)
-		}
-		res, err := coresidency.NewFinder(st).Find(ctx, S, w30, coresidency.Options{})
-		retained(t, res, err)
-		res = find(t, st, S, w30, coresidency.Options{NodeOnly: true})
-		expect(t, "NodeOnly", describeAll(res.CoResidents),
-			shared(e[4], e[1], S, 30*time.Minute, interval.ClassStable, 0, ov{hm(10, 0), hm(10, 30), true, legs(sk, sk), nil}))
-		expect(t, "NodeOnly unattributed", describeUnattributed(res.Unattributed))
-		if res.Reads.Calls != 2 {
-			t.Errorf("reads %+v, want 2 calls", res.Reads)
-		}
-	})
 }
 
 func TestScenarioIArguments(t *testing.T) {
