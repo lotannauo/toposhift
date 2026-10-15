@@ -11,7 +11,7 @@
 #   REF, SHA                 the ref the run was dispatched from and its commit
 #   RUN_ID, RUN_ATTEMPT      the run and its attempt
 #   FAMILY WINDOWS CANDIDATES REPS ARCHES PINS_WINDOW SYNC METRICS_EVERY GO_MEM_LIMIT
-#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA
+#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ
 #                            the dispatch's inputs
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, RUNNER_TEMP
 #
@@ -70,6 +70,11 @@ case "$SYNC" in
   *) fail "sync: not true or false" ;;
 esac
 
+case "$READ" in
+  true | false) ;;
+  *) fail "read: not true or false" ;;
+esac
+
 # The pace is not an input: the gate admits no other rate for a background build.
 case "$RETENTION_MODE" in
   sync) pace=0 ;;
@@ -92,6 +97,15 @@ if [ -n "$go_mem_limit" ]; then
   [[ $go_mem_limit =~ $re ]] ||
     fail "go_mem_limit: empty or a whole number of MiB or GiB such as 11GiB"
 fi
+# The same limit in bytes, or none, for rocksbench's -pebble-memory-limit: an RL build
+# runs under the limit of the Pebble builds it is compared with, less the plan's cache
+# and the four memtables RocksDB holds outside the Go heap, and rocksbench works that
+# out from this. The digits were checked above, so the product fits in 64 bits.
+pebble_memory_limit=none
+case "$go_mem_limit" in
+  *GiB) pebble_memory_limit=$((${go_mem_limit%GiB} * 1073741824)) ;;
+  *MiB) pebble_memory_limit=$((${go_mem_limit%MiB} * 1048576)) ;;
+esac
 
 re='^[1-9][0-9]?$'
 [[ $PINS_WINDOW =~ $re ]] && [ "$PINS_WINDOW" -le 60 ] ||
@@ -133,6 +147,8 @@ IFS=, read -ra cands <<<"$candidates"
 re='^[A-Za-z0-9][A-Za-z0-9/+._-]*$'
 seen=" "
 all_root=true
+has_rocks=false
+has_pebble=false
 for c in "${cands[@]}"; do
   [[ $c =~ $re ]] ||
     fail "candidates: every name must match ^[A-Za-z0-9][A-Za-z0-9/+._-]*\$"
@@ -146,7 +162,29 @@ for c in "${cands[@]}"; do
     Lroot/*) ;;
     *) all_root=false ;;
   esac
+  # Layout L on RocksDB (RL/ and RL4/) is built and read by rocksbench, with cgo;
+  # every other candidate by spikebench, on Pebble.
+  case "$c" in
+    RL/* | RL4/*) has_rocks=true ;;
+    *) has_pebble=true ;;
+  esac
 done
+
+# rocksbench runs the synchronous retention only, takes no threshold and samples no
+# metrics: the RocksDB candidates are compared with layout L built the same way. The
+# rule that judges them needs the answers and counters of repetition 1 of both
+# engines, so a dispatch of both reads them.
+if [ "$has_rocks" = true ]; then
+  [ "$RETENTION_MODE" = sync ] ||
+    fail "retention_mode: the RocksDB candidates (RL/... and RL4/...) are built with retention_mode sync only"
+  [ "$RETAIN_FLUSH_DELS" = default ] ||
+    fail "retain_flush_dels: the RocksDB candidates (RL/... and RL4/...) take no threshold"
+  [ -z "$metrics_every" ] ||
+    fail "metrics_every: rocksbench samples no metrics, so a dispatch with RocksDB candidates (RL/... and RL4/...) leaves it empty"
+  if [ "$has_pebble" = true ] && [ "$READ" != true ]; then
+    fail "read: a dispatch of both engines reads repetition 1 of every candidate, which the RocksDB rule's judge compares"
+  fi
+fi
 
 # The retention flush threshold takes one of the registered rungs, or the store's
 # default; a rung is measured only on a background build of the root store.
@@ -204,9 +242,13 @@ sep=""
 for os in "${oses[@]}"; do
   for w in "${wins[@]}"; do
     for c in "${cands[@]}"; do
+      case "$c" in
+        RL/* | RL4/*) engine=rocksdb ;;
+        *) engine=pebble ;;
+      esac
       for ((rep = 1; rep <= REPS; rep++)); do
-        printf '%s\t%s\t%s\t%s\t%s\n' "$os" "$w" "$c" "${c//\//_}" "$rep" >>"$tsv"
-        matrix+="$sep{\"os\":\"$os\",\"window\":$w,\"candidate\":\"$c\",\"slug\":\"${c//\//_}\",\"rep\":$rep}"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$os" "$w" "$c" "${c//\//_}" "$engine" "$rep" >>"$tsv"
+        matrix+="$sep{\"os\":\"$os\",\"window\":$w,\"candidate\":\"$c\",\"slug\":\"${c//\//_}\",\"engine\":\"$engine\",\"rep\":$rep}"
         sep=","
       done
     done
@@ -223,6 +265,8 @@ matrix+=']}'
   echo "sync=$SYNC"
   echo "metrics_every=$metrics_every"
   echo "go_mem_limit=$go_mem_limit"
+  echo "pebble_memory_limit=$pebble_memory_limit"
+  echo "read=$READ"
   echo "max_parallel=$MAX_PARALLEL"
   echo "retention_mode=$RETENTION_MODE"
   echo "pace=$pace"
@@ -239,12 +283,13 @@ matrix+=']}'
   echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
   echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
   echo "- retention mode: \`$RETENTION_MODE\`; pace: \`$pace\` records/s (0: unpaced); retention flush threshold: \`$RETAIN_FLUSH_DELS\`"
-  echo "- Go memory limit: \`${go_mem_limit:-none}\`"
+  echo "- Go memory limit: \`${go_mem_limit:-none}\` (a RocksDB build's: that less the plan's cache and four memtables; \`-pebble-memory-limit $pebble_memory_limit\`)"
+  echo "- read repetition 1 after its build: \`$READ\`"
   echo "- at most \`$MAX_PARALLEL\` build jobs at once"
   echo
-  echo "| runner | window (days) | candidate | repetition |"
-  echo "|---|---|---|---|"
-  while IFS=$'\t' read -r os w c _ rep; do
-    echo "| $os | $w | \`$c\` | $rep |"
+  echo "| runner | window (days) | candidate | engine | repetition |"
+  echo "|---|---|---|---|---|"
+  while IFS=$'\t' read -r os w c _ engine rep; do
+    echo "| $os | $w | \`$c\` | $engine | $rep |"
   done <"$tsv"
 } >>"$GITHUB_STEP_SUMMARY"
