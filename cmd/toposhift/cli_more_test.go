@@ -160,7 +160,7 @@ func TestADirectoryAnotherOpenHoldsIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	want := "another toposhift process has " + data + " open (a replay or a query); try again when it finishes"
+	want := "another toposhift process has " + data + " open (a replay, a query, a serve or an mcp); try again when it finishes"
 	g, _ := storetest.NewGenerator(storetest.Tiny())
 	fp := g.Entities()[3].String()
 	code, _, errs := cli(t, "query", "alive", "--data-dir", data, "--fp", fp, "--at", ts(g.Start()))
