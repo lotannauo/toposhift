@@ -74,6 +74,11 @@ func TestConfig(t *testing.T) {
 		"TTL just under two":         {Producer: testProducer, Resolver: resolver(), PullInterval: interval, EntityTTL: 9*time.Minute + 59*time.Second},
 		"TTL of one interval":        {Producer: testProducer, Resolver: resolver(), PullInterval: interval, EntityTTL: interval},
 		"interval too long to scale": {Producer: testProducer, Resolver: resolver(), PullInterval: time.Duration(1<<62 + 1)},
+		// The cluster name after the prefix is the realm of the private addresses.
+		"another source":     {Producer: "k8scluster/test", Resolver: resolver()},
+		"no cluster name":    {Producer: "k8sobjects/", Resolver: resolver()},
+		"a bad cluster name": {Producer: "k8sobjects/a b", Resolver: resolver()},
+		"no prefix at all":   {Producer: "test", Resolver: resolver()},
 	} {
 		if _, err := k8sobjects.New(c); err == nil {
 			t.Errorf("%s: New returned no error", name)
@@ -239,9 +244,19 @@ func TestPayloadsExcludeVolatileFields(t *testing.T) {
 func TestFailedEvictedPatch(t *testing.T) {
 	in := ofUID(t, loadCapture(t, "run1.jsonl"), uidEvicted)
 	rs := translateAll(t, newTranslator(t, 0), in)
-	patch, x := only(t, rs[len(rs)-1]), in[len(in)-1]
+	x := in[len(in)-1]
+	if got := rs[len(rs)-1].Records; len(got) != 2 {
+		t.Fatalf("patch gave %d records, want the pod and the end of its address claim: %v", len(got), got)
+	}
+	patch, end := rs[len(rs)-1].Records[0], rs[len(rs)-1].Records[1]
 	if patch.Kind != lifecycle.Observe || patch.Subject.A != podFP(t, uidOf(x)) {
 		t.Fatalf("patch gave %+v", patch)
+	}
+	// Failed is terminal: the pod's claim on its address ends at this record, at
+	// its time, although the status still lists the address.
+	if end.Kind != lifecycle.Delete || end.Subject != store.EdgeSubject(patch.Subject.A, endpointFP(t, "10.0.0.3"), catalog.HasAddress) ||
+		!end.EventTime.Equal(patch.EventTime) || end.EventTimeBasis != patch.EventTimeBasis {
+		t.Errorf("patch ended %+v, want the claim on 10.0.0.3 ended at the record's time", end)
 	}
 	// A phase and a reason carry no time of their own.
 	if !patch.EventTime.Equal(observedOf(x)) || patch.EventTimeBasis != store.BasisObserved {
@@ -373,17 +388,23 @@ func TestGapPodFirstSeenInPull(t *testing.T) {
 	}
 	translateAll(t, tr, in[:first])
 	r := translate(t, tr, in[first].Rec).Records
-	if len(r) != 2 {
-		t.Fatalf("first sight gave %d records, want the pod and its edge: %v", len(r), r)
+	if len(r) != 4 {
+		t.Fatalf("first sight gave %d records, want the pod, its edge, its endpoint and its claim: %v", len(r), r)
 	}
 	_, o := objectOf(in[first].Rec)
 	created, _ := time.Parse(time.RFC3339, subStr(o, "metadata", "creationTimestamp"))
 	if !created.Before(observedOf(in[first])) {
 		t.Fatal("the creation time is not before the observed time, so the test proves nothing")
 	}
-	for _, rec := range r {
+	for _, rec := range r[:2] {
 		if !rec.EventTime.Equal(created) || rec.EventTimeBasis != store.BasisObjectField {
 			t.Errorf("%+v: want the creation time %s, object field", rec, created)
+		}
+	}
+	// The address claim is never backdated: it begins when it was seen.
+	for _, rec := range r[2:] {
+		if !rec.EventTime.Equal(observedOf(in[first])) || rec.EventTimeBasis != store.BasisObserved || !rec.Through.IsZero() {
+			t.Errorf("%+v: want the observed time %s, observed, no Through", rec, observedOf(in[first]))
 		}
 	}
 
@@ -397,9 +418,15 @@ func TestGapPodFirstSeenInPull(t *testing.T) {
 		"type": "DisruptionTarget", "status": "True", "lastTransitionTime": ts(observedOf(in[first]).Add(30 * time.Second)),
 	})
 	changed.Body = bodyOf(obj)
-	rec := only(t, translate(t, tr, changed))
-	if !rec.EventTime.Equal(observedOf(input{Rec: changed})) || rec.EventTimeBasis != store.BasisObserved {
-		t.Errorf("a changed list item of a known UID gave %+v, want the observed time, observed", rec)
+	// The pod, then the end of its claim: Failed is terminal.
+	recs := translate(t, tr, changed).Records
+	if len(recs) != 2 || recs[1].Kind != lifecycle.Delete || recs[1].Subject.Relation != catalog.HasAddress {
+		t.Fatalf("a terminal list item gave %v, want the pod and the end of its claim", recs)
+	}
+	for _, rec := range recs {
+		if !rec.EventTime.Equal(observedOf(input{Rec: changed})) || rec.EventTimeBasis != store.BasisObserved {
+			t.Errorf("a changed list item of a known UID gave %+v, want the observed time, observed", rec)
+		}
 	}
 }
 
@@ -885,7 +912,9 @@ func TestPayloadAllowList(t *testing.T) {
 		map[string]any{"type": "Hostname", "address": node},
 	}
 	n["status"].(map[string]any)["nodeInfo"] = map[string]any{"machineID": "machine-x", "systemUUID": "uuid-x", "bootID": "b", "kubeletVersion": "v1"}
-	rec := only(t, translate(t, tr, pullRec(t0.Add(time.Minute), n)))
+	// The node's own record comes first; its claim on 10.0.0.2 follows it (see
+	// claims_test.go), and the description keeps the addresses as before.
+	rec := translate(t, tr, pullRec(t0.Add(time.Minute), n)).Records[0]
 	// The node was created a minute before it was seen, so the Observe at its
 	// creation carries the observed time as its Through.
 	if rec.Boot != "" || rec.Seq != 0 || !rec.Through.Equal(t0.Add(time.Minute)) || rec.Producer != testProducer {
@@ -914,7 +943,7 @@ func TestPayloadAllowList(t *testing.T) {
 		map[string]any{"kind": "Other", "name": "x"},
 		map[string]any{"kind": "ReplicaSet", "name": "rs", "controller": true},
 	}
-	rec = only(t, translate(t, tr, pullRec(t0.Add(time.Minute), o)))
+	rec = translate(t, tr, pullRec(t0.Add(time.Minute), o)).Records[0]
 	want = `{"host_ip":"192.168.0.1","name":"p","namespace":"default","owner":{"kind":"ReplicaSet","name":"rs"},"phase":"Running","pod_ips":["10.1.0.1","fd00::1"]}`
 	if string(rec.Payload) != want {
 		t.Errorf("pod payload\n got %s\nwant %s", rec.Payload, want)

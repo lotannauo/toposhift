@@ -63,6 +63,24 @@
      },
      "provider_id": "test:///node-a"
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.10",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.228764923Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address node node-a f0125f00 -\u003e endpoint k8s/test 10.0.0.10",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.228764923Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {
+     "type": "InternalIP"
+    }
    }
   ]
  },
@@ -190,6 +208,22 @@
       "node_interval_start": "2026-10-15T06:24:30Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.1.233",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod native-app-0 -\u003e endpoint k8s/test 10.0.1.233",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ]
  },
@@ -316,6 +350,22 @@
       "node_interval_start": "2026-10-15T06:24:30Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.1.137",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod classic-app-0 -\u003e endpoint k8s/test 10.0.1.137",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ]
  },
@@ -415,6 +465,22 @@
       "node_interval_start": "2026-10-15T06:24:30Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.20",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod plain-app-0 -\u003e endpoint k8s/test 10.0.0.20",
+    "kind": "observe",
+    "event_time": "2026-10-15T06:55:26.401183071Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ]
  },

@@ -18,11 +18,12 @@ import (
 
 // Version labels this loader in results. A change to what it writes, or to how it
 // pairs spans, changes it.
-const Version = "factload-1"
+const Version = "factload-2"
 
 // The producers of the two parts of a scenario. Both pass store.WritableProducer.
 const (
-	// ProducerObjects asserts the pods, nodes and containers of the pulls.
+	// ProducerObjects asserts the pods, nodes and containers of the pulls, and the
+	// addresses the pods and nodes claim.
 	ProducerObjects lifecycle.Producer = "k8sobjects/eval"
 	// ProducerTraces asserts services, instances and dependencies. It is the
 	// evaluation's writer: no other producer writes those facts here.

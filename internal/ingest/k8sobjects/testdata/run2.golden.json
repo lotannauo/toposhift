@@ -132,6 +132,22 @@
       "node_interval_start": "2026-10-09T16:41:25Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.47",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56.716079697Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod pre-5984778487-6xxvb -\u003e endpoint k8s/test 10.0.0.47",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:43:56.716079697Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "skipped": {
@@ -144,6 +160,13 @@
   "records": [
    {
     "subject": "scheduled_on pod pre-5984778487-6xxvb -\u003e node kwok-node-2 4edef4ef",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:45:56.911110922Z",
+    "basis": "observed",
+    "ttl": "0s"
+   },
+   {
+    "subject": "has_address pod pre-5984778487-6xxvb -\u003e endpoint k8s/test 10.0.0.47",
     "kind": "delete",
     "event_time": "2026-10-09T16:45:56.911110922Z",
     "basis": "observed",

@@ -190,6 +190,22 @@
       "node_interval_start": "2026-10-09T16:31:53Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.3",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod pre-5984778487-42s2c -\u003e endpoint k8s/test 10.0.0.3",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "skipped": {
@@ -256,6 +272,22 @@
       "10.0.0.25"
      ]
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.25",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod pre-5984778487-4gjhs -\u003e endpoint k8s/test 10.0.0.25",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "pending": [
@@ -340,6 +372,22 @@
       "node_interval_start": "2026-10-09T16:31:53Z"
      }
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.12",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod pre-5984778487-wr85m -\u003e endpoint k8s/test 10.0.0.12",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:32:54.1936416Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "skipped": {
@@ -437,6 +485,22 @@
       "10.0.0.41"
      ]
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.41",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:24.732702658Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod db-0 -\u003e endpoint k8s/test 10.0.0.41",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:34:24.732702658Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "pending": [
@@ -564,6 +628,22 @@
       "10.0.0.44"
      ]
     }
+   },
+   {
+    "subject": "endpoint k8s/test 10.0.0.44",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:36:24.95308785Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
+   },
+   {
+    "subject": "has_address pod pre-5984778487-sbt4s -\u003e endpoint k8s/test 10.0.0.44",
+    "kind": "observe",
+    "event_time": "2026-10-09T16:36:24.95308785Z",
+    "basis": "observed",
+    "ttl": "0s",
+    "payload": {}
    }
   ],
   "skipped": {
@@ -574,6 +654,13 @@
   "input": "run1.jsonl:13 DELETED Pod pre-5984778487-sbt4s",
   "observed": "2026-10-09T16:36:25.006611328Z",
   "records": [
+   {
+    "subject": "has_address pod pre-5984778487-sbt4s -\u003e endpoint k8s/test 10.0.0.44",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:36:25.006611328Z",
+    "basis": "observed",
+    "ttl": "0s"
+   },
    {
     "subject": "pod pre-5984778487-sbt4s",
     "kind": "delete",
@@ -646,6 +733,13 @@
      ],
      "reason": "Evicted"
     }
+   },
+   {
+    "subject": "has_address pod pre-5984778487-42s2c -\u003e endpoint k8s/test 10.0.0.3",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:37:55.08729608Z",
+    "basis": "observed",
+    "ttl": "0s"
    }
   ],
   "skipped": {
@@ -796,6 +890,13 @@
       "10.0.0.12"
      ]
     }
+   },
+   {
+    "subject": "has_address pod pre-5984778487-wr85m -\u003e endpoint k8s/test 10.0.0.12",
+    "kind": "delete",
+    "event_time": "2026-10-09T16:41:12Z",
+    "basis": "object_field",
+    "ttl": "0s"
    }
   ],
   "skipped": {

@@ -218,9 +218,9 @@ func TestPayloadTableIsVersion1(t *testing.T) {
 func TestPayloadTableCoversTheTranslators(t *testing.T) {
 	typeOf := map[string]catalog.EntityType{
 		"pod": catalog.K8sPod, "node": catalog.K8sNode, "container": catalog.Container,
-		"host": catalog.Host, "zone": catalog.Zone,
+		"host": catalog.Host, "zone": catalog.Zone, "endpoint": catalog.NetworkEndpoint,
 	}
-	edges := []string{"scheduled_on", "runs_on", "located_in", "part_of"}
+	edges := []string{"scheduled_on", "runs_on", "located_in", "part_of", "has_address"}
 	var files []string
 	for _, pat := range []string{"k8sobjects", "k8scluster", "nodeagent"} {
 		m, err := filepath.Glob(filepath.Join("..", "ingest", pat, "testdata", "*.golden.json"))
