@@ -225,8 +225,16 @@ func TestPodOutlivesItsDeletedNode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ns) != c.want {
-			t.Errorf("at %s the pod has %d neighbors, want %d", c.at.Format(time.RFC3339Nano), len(ns), c.want)
+		// The pod's address claim is a forward neighbor too while it lasts; only
+		// scheduled_on is counted here.
+		n := 0
+		for _, e := range ns {
+			if e.Relation == catalog.ScheduledOn {
+				n++
+			}
+		}
+		if n != c.want {
+			t.Errorf("at %s the pod has %d scheduled_on neighbors, want %d", c.at.Format(time.RFC3339Nano), n, c.want)
 		}
 	}
 }

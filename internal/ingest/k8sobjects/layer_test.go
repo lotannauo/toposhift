@@ -14,7 +14,7 @@ func TestRecordLayersAgreeWithTheCatalog(t *testing.T) {
 
 	c := catalog.Default()
 	edges, entities := 0, 0
-	for _, name := range []string{"run1", "run2"} {
+	for _, name := range []string{"run1", "run2", "native"} {
 		t.Run(name, func(t *testing.T) {
 			in := loadCapture(t, name+".jsonl")
 			for i, r := range translateAll(t, newTranslator(t, 0), in) {

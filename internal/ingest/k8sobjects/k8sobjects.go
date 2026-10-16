@@ -34,6 +34,47 @@
 // Delete carries no TTL, and a Delete is still written for the containers, their
 // part_of edges and the scheduled_on edge of a pod at the pod's own DELETED.
 //
+// # Addresses
+//
+// An address is an endpoint ([catalog.NetworkEndpoint]), keyed by its realm and
+// its canonical text, which package endpoint alone builds: the realm is "global"
+// for a globally reachable address, and otherwise "k8s/<cluster>", the cluster
+// being the part of the producer's name after "k8sobjects/". A pod or a node
+// that lists an address claims it with a has_address edge to its endpoint,
+// stored on the pod or node side, and the endpoint is observed with each claim
+// (payload {} for both on a pod). The address is the API object's own assertion,
+// as its node name is for scheduled_on; it is never inferred, and never joins the
+// pod or node to anything else.
+//
+//   - A pod claims each address of status.podIPs, or status.podIP when podIPs
+//     lists none, unless it uses its node's network (spec.hostNetwork), whose
+//     addresses are the node's and are counted with [SkipHostNetworkAddress], or
+//     is in phase Succeeded or Failed.
+//   - A node claims each address of status.addresses of type InternalIP or
+//     ExternalIP, with the payload {"type":<type>} ("ExternalIP,InternalIP" for
+//     one listed under both). Hostname and the DNS types are names, not addresses.
+//   - An address the canonical form refuses (not an IP address, a zone, an
+//     address that needs a host realm) is counted with [SkipBadAddress]. It claims
+//     nothing and changes no other record.
+//   - A claim begins at the observed time of the first record that lists its
+//     address (basis observed), never at the object's creation and never with a
+//     Through: an address held now says nothing about who held it before. With a
+//     TTL it is re-asserted with each record of its holder, never before its own
+//     latest assertion.
+//   - A claim ends with a Delete at the first of: the holder's DELETED; the record
+//     that shows a pod in phase Succeeded or Failed, at that record's time, though
+//     the status still lists the address; the record whose list no longer has the
+//     address. An end is never timed before the claim's latest assertion. A claim
+//     whose DELETED was lost lapses at its TTL.
+//   - The endpoint is never deleted: another holder may claim it, and a Delete of
+//     the entity would end that claim too. It lapses at its TTL after the last
+//     claim.
+//   - A claim begun on an address another holder of this translator claims (its
+//     claim not ended and not lapsed) is written all the same, and counted with
+//     [NoteAddressClaimedTwice]. The translator never decides which holds it:
+//     nothing ends the other claim but its holder's own records or its TTL, and a
+//     reader that finds two claims at once finds the address unattributed.
+//
 // # Event time
 //
 //   - The first record of a UID the translator has not seen, whether a watch
@@ -140,14 +181,23 @@
 // but a scheduled_on edge's resolution, which this translator derives from its
 // own node index.
 //
-// A pod's DELETED after a restart is addressed from the deleted object itself: its
-// DELETED is addressed from the deleted object itself: the delete of each of its
-// containers that has a runtime id, of their part_of edges, and of its scheduled_on
-// edge if the node name resolves at the time the pod was scheduled, or at the
+// A pod's DELETED after a restart is addressed from the deleted object itself: the
+// delete of each of its containers that has a runtime id, of their part_of edges,
+// and of its scheduled_on edge if the node name resolves at the time the pod was scheduled, or at the
 // observed time when the object has no scheduling time (otherwise the edge is
-// counted with [SkipUnseenDelete]). The observed time is not tried after a
-// scheduling time fails: the name may by then belong to a newer node. A Delete of
-// a reference this producer never held changes nothing.
+// counted with [SkipUnseenDelete]), and of the claims of the addresses it lists.
+// The observed time is not tried after a scheduling time fails: the name may by
+// then belong to a newer node. A Delete of a reference this producer never held
+// changes nothing. A node's DELETED after a restart ends the claims of the
+// addresses its object lists in the same way. A claim is never backdated, so the
+// first list after a restart asserts it at the observed time and marks nothing
+// for it. The translator writes no end for a claim made before a restart whose
+// end it did not see: a pod that reached Succeeded or Failed while the
+// translator was down claims nothing after it, and an address removed while it
+// was down is not listed again. The old claim lapses at its TTL, and an edge is
+// read only while both its ends exist, so it is not read once the pod itself has
+// ended. Until then a pod given the address reads as a second holder, and the
+// address as unattributed, never as guessed.
 //
 // A Translator is not safe for concurrent use.
 package k8sobjects
@@ -163,6 +213,7 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/endpoint"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
@@ -231,6 +282,15 @@ const (
 	// SkipAmbiguousNodeName is a lookup of a node name that more than one node UID
 	// bears at the time asked. It resolves to none, and is counted once per lookup.
 	SkipAmbiguousNodeName = "node name borne by more than one node"
+	// SkipHostNetworkAddress is an address of a pod that uses its node's network
+	// (spec.hostNetwork). The address is the node's, so the pod claims nothing. It
+	// is counted once per address per pod record.
+	SkipHostNetworkAddress = "address of a host-network pod: not claimed"
+	// SkipBadAddress is an address of a pod or a node that the canonical form
+	// refuses: not an IP address, or one with a zone or that needs a host realm
+	// (unspecified, loopback, link-local, multicast). It is counted once per
+	// address per record, and the object's other records are unchanged.
+	SkipBadAddress = "address refused by the canonical form: not claimed"
 )
 
 // The reasons a translator gives for a note: something the caller should know
@@ -240,7 +300,16 @@ const (
 	// time is more than one and a half pull intervals after the previous
 	// generation's.
 	NotePullGap = "gap between pull generations over 1.5 times the pull interval"
+	// NoteAddressClaimedTwice is a claim begun on an address that another pod or
+	// node of this translator still claims: one whose claim has not ended and,
+	// with a TTL, has not lapsed. Both claims are written; neither is ended for
+	// it. It is counted once per claim begun.
+	NoteAddressClaimedTwice = "address claimed while another pod or node claims it"
 )
+
+// producerPrefix begins the name of every producer of this package. What follows
+// it is the cluster name, which is the realm of the cluster's private addresses.
+const producerPrefix = "k8sobjects/"
 
 // ErrNoObservedTime is returned for a record that sets no observed time, the one
 // time every record is expected to carry.
@@ -249,7 +318,10 @@ var ErrNoObservedTime = errors.New("k8sobjects: record has no observed time")
 // Config configures a [Translator].
 type Config struct {
 	// Producer names the source of the assertions: a stable logical name from
-	// configuration, such as "k8sobjects/default", never a process. Required.
+	// configuration, such as "k8sobjects/default", never a process. Required, of
+	// the form "k8sobjects/<cluster>" with a cluster name [store.ValidClusterName]
+	// accepts: the cluster is the realm of the addresses that are not globally
+	// reachable (see package endpoint).
 	Producer lifecycle.Producer
 	// Resolver turns the identifying attributes into fingerprints. Required;
 	// usually identity.NewResolver(catalog.Default()).
@@ -326,6 +398,11 @@ type Translator struct {
 	resolver *identity.Resolver
 	ttl      time.Duration
 	interval time.Duration
+	// cluster is the producer's cluster name, the realm of its private addresses.
+	cluster string
+	// holders are the claims this translator has begun and not ended, by endpoint
+	// and then by the pod or node that holds them.
+	holders map[identity.Fingerprint]map[identity.Fingerprint]*claim
 
 	// pulls is the newest pull generation seen, by kind.
 	pulls [numKinds]pullGen
@@ -363,6 +440,9 @@ type podState struct {
 	observed time.Time
 	edge     podEdge
 	ctrs     map[string]ctrState
+	// claims are the pod's has_address edges begun and not ended, by canonical
+	// address.
+	claims map[string]*claim
 }
 
 // podEdge is the scheduled_on edge of a pod. With a name and a zero node it is
@@ -399,6 +479,19 @@ type nodeState struct {
 	last      time.Time
 	lastBasis store.EventTimeBasis
 	span      *nodeSpan
+	// claims are the node's has_address edges begun and not ended, by canonical
+	// address.
+	claims map[string]*claim
+}
+
+// claim is a has_address edge from a pod or a node to an endpoint: the holder
+// asserts that it has the address. since and sinceBasis are the time and basis of
+// its latest Observe, which a re-assertion or an end is never timed before.
+type claim struct {
+	holder, endpoint identity.Fingerprint
+	payload          []byte
+	since            time.Time
+	sinceBasis       store.EventTimeBasis
 }
 
 // nodeSpan is the interval one node UID bore a name: from its first observation
@@ -438,6 +531,13 @@ func New(c Config) (*Translator, error) {
 	case c.PullInterval < 0:
 		return nil, errors.New("k8sobjects: pull interval is negative")
 	}
+	cluster, ok := strings.CutPrefix(string(c.Producer), producerPrefix)
+	if !ok {
+		return nil, fmt.Errorf("k8sobjects: producer %q is not %q followed by a cluster name", c.Producer, producerPrefix)
+	}
+	if err := store.ValidClusterName(cluster); err != nil {
+		return nil, fmt.Errorf("k8sobjects: producer %q: %w", c.Producer, err)
+	}
 	ttl := c.EntityTTL
 	if c.PullInterval > 0 {
 		if c.PullInterval > math.MaxInt64/DefaultTTLMultiple {
@@ -455,6 +555,8 @@ func New(c Config) (*Translator, error) {
 		resolver: c.Resolver,
 		ttl:      ttl,
 		interval: c.PullInterval,
+		cluster:  cluster,
+		holders:  make(map[identity.Fingerprint]map[identity.Fingerprint]*claim),
 		pods:     make(map[string]*podState),
 		nodes:    make(map[string]*nodeState),
 		deleted:  make(map[string]struct{}),
@@ -828,6 +930,7 @@ func (t *Translator) pod(b *batch, watchType string, o object, ns string, observ
 	if len(b.recs) > n && at.After(st.last) {
 		st.last, st.lastBasis = at, basis
 	}
+	t.reconcileClaims(b, st.fp, &st.claims, t.podAddrs(b, v, true), at, basis)
 	return nil
 }
 
@@ -1052,6 +1155,7 @@ func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, 
 				b.skip(SkipUnseenDelete)
 			}
 		}
+		t.deleteUnseenClaims(b, fp, t.podAddrs(b, v, false), observed)
 		t.deleteEntity(b, fp, observed, store.BasisObserved)
 		return
 	}
@@ -1060,6 +1164,7 @@ func (t *Translator) deletePod(b *batch, st *podState, fp identity.Fingerprint, 
 		t.deleteContainer(b, st, st.ctrs[name], at, basis)
 	}
 	t.dropEdge(b, st, at, basis, SkipPendingDroppedDeleted)
+	t.reconcileClaims(b, fp, &st.claims, nil, at, basis)
 	t.deleteEntity(b, fp, at, basis)
 	delete(t.pods, v.UID)
 }
@@ -1086,6 +1191,9 @@ func (t *Translator) node(b *batch, watchType string, o object, observed time.Ti
 		at, basis := observed, store.BasisObserved
 		if st != nil {
 			at, basis = b.raise(at, basis, st.last, st.lastBasis)
+			t.reconcileClaims(b, fp, &st.claims, nil, at, basis)
+		} else {
+			t.deleteUnseenClaims(b, fp, t.nodeAddrs(b, v, false), at)
 		}
 		t.deleteEntity(b, fp, at, basis)
 		switch {
@@ -1147,6 +1255,7 @@ func (t *Translator) node(b *batch, watchType string, o object, observed time.Ti
 		t.byName[v.Name] = append(t.byName[v.Name], st.span)
 		t.resolvePending(b, v.Name)
 	}
+	t.reconcileClaims(b, fp, &st.claims, t.nodeAddrs(b, v, true), at, basis)
 	return nil
 }
 
@@ -1196,5 +1305,193 @@ func (t *Translator) resolvePending(b *batch, name string) {
 		pod := t.pods[p.PodUID]
 		t.beginEdge(b, pod, sp, name, p.Time, p.Basis, pod.observed)
 		delete(t.pending, p.PodUID)
+	}
+}
+
+// wanted is an address a pod or a node claims: its endpoint, and the payload of
+// the claim.
+type wanted struct {
+	endpoint identity.Fingerprint
+	payload  []byte
+}
+
+// address returns the canonical text and the endpoint of an address the object
+// lists, or false if the canonical form refuses it.
+func (t *Translator) address(s string) (string, identity.Fingerprint, bool) {
+	a, err := endpoint.Parse(s)
+	if err != nil {
+		return "", identity.Fingerprint{}, false
+	}
+	id, err := endpoint.Identity(t.cluster, s)
+	if err != nil {
+		return "", identity.Fingerprint{}, false
+	}
+	return a.String(), id.Fingerprint(), true
+}
+
+// podAddrs returns the addresses the pod claims, by canonical text, each with
+// the payload {}. A pod that uses its node's network claims none. With live set
+// (a record of a pod that is not deleted), a pod in phase Succeeded or Failed
+// claims none either, and each address set aside is counted; without it (the
+// DELETED of a pod not in the state), the phase is not read and nothing is
+// counted.
+func (t *Translator) podAddrs(b *batch, v podView, live bool) map[string]wanted {
+	if v.HostNetwork {
+		if live {
+			for range v.IPs {
+				b.skip(SkipHostNetworkAddress)
+			}
+		}
+		return nil
+	}
+	if live && terminal(v.Phase) {
+		return nil
+	}
+	var out map[string]wanted
+	for _, s := range v.IPs {
+		a, ep, ok := t.address(s)
+		if !ok {
+			if live {
+				b.skip(SkipBadAddress)
+			}
+			continue
+		}
+		if out == nil {
+			out = make(map[string]wanted)
+		}
+		out[a] = wanted{endpoint: ep, payload: []byte("{}")}
+	}
+	return out
+}
+
+// nodeAddrs returns the addresses the node claims, by canonical text: those of
+// its InternalIP and ExternalIP entries, each with the payload {"type":<type>}.
+// An address listed under both types has both, comma-separated in sorted order.
+// With count set, each address the canonical form refuses is counted.
+func (t *Translator) nodeAddrs(b *batch, v nodeView, count bool) map[string]wanted {
+	types := map[string][]string{}
+	eps := map[string]identity.Fingerprint{}
+	for _, p := range v.Addrs {
+		a, ep, ok := t.address(p[1])
+		if !ok {
+			if count {
+				b.skip(SkipBadAddress)
+			}
+			continue
+		}
+		if !slices.Contains(types[a], p[0]) {
+			types[a] = append(types[a], p[0])
+		}
+		eps[a] = ep
+	}
+	var out map[string]wanted
+	for a, ts := range types {
+		if out == nil {
+			out = make(map[string]wanted)
+		}
+		slices.Sort(ts)
+		out[a] = wanted{endpoint: eps[a], payload: canonical(object{"type": strings.Join(ts, ",")})}
+	}
+	return out
+}
+
+// reconcileClaims keeps the claims of a pod or a node in step with the addresses
+// it lists now (want). A claim whose address is gone ends at the record's time
+// (at, basis), or at the claim's latest assertion if that is later, and so does
+// every claim when want is empty: at the pod's terminal record, or at the
+// object's DELETED. A claim begins at the observed time of the record that first
+// lists its address, with the endpoint observed before it: a claim is never
+// backdated, so it carries no Through and is never marked for resume. With a TTL,
+// the claims that stay are re-asserted with each record, each after its endpoint,
+// at the observed time or at the claim's latest assertion if that is later;
+// without one, only a claim whose payload changed is. The endpoint itself is
+// never deleted: another holder may claim it, and it lapses with its TTL.
+//
+// A claim begun while another holder of this translator claims the address is
+// written all the same, and counted with [NoteAddressClaimedTwice]: which of the
+// two holds it is not this translator's to decide.
+func (t *Translator) reconcileClaims(b *batch, holder identity.Fingerprint, claims *map[string]*claim, want map[string]wanted, at time.Time, basis store.EventTimeBasis) {
+	for _, a := range slices.Sorted(maps.Keys(*claims)) {
+		c := (*claims)[a]
+		if _, ok := want[a]; ok {
+			continue
+		}
+		eAt, eBasis := later(at, basis, c.since, c.sinceBasis)
+		t.deleteEdge(b, holder, c.endpoint, catalog.HasAddress, eAt, eBasis)
+		t.unhold(c)
+		delete(*claims, a)
+	}
+	for _, a := range slices.Sorted(maps.Keys(want)) {
+		w := want[a]
+		if c, ok := (*claims)[a]; ok {
+			if t.ttl > 0 || !bytes.Equal(c.payload, w.payload) {
+				c.since, c.sinceBasis = later(b.observed, store.BasisObserved, c.since, c.sinceBasis)
+				c.payload = w.payload
+				t.observeClaim(b, c)
+			}
+			continue
+		}
+		if t.claimedElsewhere(w.endpoint, holder, b.observed) {
+			b.note(NoteAddressClaimedTwice)
+		}
+		c := &claim{holder: holder, endpoint: w.endpoint, payload: w.payload, since: b.observed, sinceBasis: store.BasisObserved}
+		t.observeClaim(b, c)
+		if *claims == nil {
+			*claims = make(map[string]*claim)
+		}
+		(*claims)[a] = c
+		if t.holders[w.endpoint] == nil {
+			t.holders[w.endpoint] = make(map[identity.Fingerprint]*claim)
+		}
+		t.holders[w.endpoint][holder] = c
+	}
+}
+
+// later returns the time and basis given, or the claim's latest assertion if that
+// is later. Unlike [batch.raise] it counts nothing: a claim begins at its
+// observation, which a record timed by its own change may precede, and a claim's
+// payload never says more than that the address is held, so no description is
+// shown out of order.
+func later(at time.Time, basis store.EventTimeBasis, since time.Time, sinceBasis store.EventTimeBasis) (time.Time, store.EventTimeBasis) {
+	if at.Before(since) {
+		return since, sinceBasis
+	}
+	return at, basis
+}
+
+// observeClaim asserts the endpoint of a claim and then the claim, at the
+// claim's latest assertion.
+func (t *Translator) observeClaim(b *batch, c *claim) {
+	t.observeEntity(b, c.endpoint, c.since, c.sinceBasis, t.ttl, []byte("{}"), b.observed)
+	t.observeEdge(b, c.holder, c.endpoint, catalog.HasAddress, c.since, c.sinceBasis, t.ttl, c.payload, b.observed)
+}
+
+// unhold forgets an ended claim in the index of holders.
+func (t *Translator) unhold(c *claim) {
+	hs := t.holders[c.endpoint]
+	delete(hs, c.holder)
+	if len(hs) == 0 {
+		delete(t.holders, c.endpoint)
+	}
+}
+
+// claimedElsewhere says whether a holder other than the given one claims the
+// endpoint at the time: its claim has not ended and, with a TTL, was asserted
+// less than a TTL before.
+func (t *Translator) claimedElsewhere(ep, holder identity.Fingerprint, at time.Time) bool {
+	for h, c := range t.holders[ep] {
+		if h != holder && (t.ttl == 0 || c.since.Add(t.ttl).After(at)) {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteUnseenClaims ends, at the observed time, the claims of a pod or a node
+// that is not in the state, from the addresses its deleted object lists. A Delete
+// of a claim this producer never held changes nothing.
+func (t *Translator) deleteUnseenClaims(b *batch, holder identity.Fingerprint, want map[string]wanted, observed time.Time) {
+	for _, a := range slices.Sorted(maps.Keys(want)) {
+		t.deleteEdge(b, holder, want[a].endpoint, catalog.HasAddress, observed, store.BasisObserved)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/endpoint"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
@@ -25,7 +26,10 @@ import (
 // is never on by default; the files it rewrote are named in the test log.
 var update = flag.Bool("update", false, "rewrite the golden files in testdata")
 
-const testProducer = lifecycle.Producer("k8sobjects/test")
+const (
+	testProducer = lifecycle.Producer("k8sobjects/" + testCluster)
+	testCluster  = "test"
+)
 
 // ttls are the two modes every property is checked in: watch semantics, and a
 // TTL as a poller would set.
@@ -167,6 +171,16 @@ func nodeFP(t testing.TB, uid string) identity.Fingerprint {
 	return fp(t, catalog.K8sNode, catalog.K8sNodeUID, uid)
 }
 
+// endpointFP is the endpoint of an address asserted by the test producer.
+func endpointFP(t testing.TB, addr string) identity.Fingerprint {
+	t.Helper()
+	id, err := endpoint.Identity(testCluster, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Fingerprint()
+}
+
 func containerFP(t testing.TB, id string) identity.Fingerprint {
 	return fp(t, catalog.Container, catalog.ContainerID, id)
 }
@@ -194,11 +208,34 @@ func labels(t testing.TB, in []input) map[identity.Fingerprint]string {
 					}
 				}
 			}
+			ips, _ := sub(o, "status", "podIPs").([]any)
+			for _, ip := range ips {
+				m, _ := ip.(map[string]any)
+				labelEndpoint(out, subStr(m, "ip"))
+			}
+			labelEndpoint(out, subStr(o, "status", "podIP"))
 		case "Node":
 			out[nodeFP(t, uid)] = "node " + name + " " + uid[:8]
+			as, _ := sub(o, "status", "addresses").([]any)
+			for _, a := range as {
+				m, _ := a.(map[string]any)
+				labelEndpoint(out, subStr(m, "address"))
+			}
 		}
 	}
 	return out
+}
+
+// labelEndpoint names the endpoint of an address in the test producer's cluster
+// by its realm and canonical address. Text that is no address names nothing.
+func labelEndpoint(out map[identity.Fingerprint]string, s string) {
+	id, err := endpoint.Identity(testCluster, s)
+	if err != nil {
+		return
+	}
+	a, _ := endpoint.Parse(s)
+	realm, _ := endpoint.Realm(testCluster, a)
+	out[id.Fingerprint()] = "endpoint " + realm + " " + a.String()
 }
 
 type goldenRecord struct {
@@ -406,6 +443,11 @@ type podSpec struct {
 	InitStatuses    []map[string]any // status.initContainerStatuses, as Containers
 	Extra           map[string]any   // merged into metadata
 	Heartbeat       string           // an excluded field that changes with every record
+	// IPs are status.podIPs, with the first also in status.podIP; PodIP alone sets
+	// status.podIP with no podIPs. HostNetwork sets spec.hostNetwork.
+	IPs         []string
+	PodIP       string
+	HostNetwork bool
 }
 
 func (p podSpec) object() map[string]any {
@@ -423,7 +465,21 @@ func (p podSpec) object() map[string]any {
 	if p.Node != "" {
 		spec["nodeName"] = p.Node
 	}
+	if p.HostNetwork {
+		spec["hostNetwork"] = true
+	}
 	status := map[string]any{"phase": p.Phase}
+	if len(p.IPs) > 0 {
+		var ips []any
+		for _, ip := range p.IPs {
+			ips = append(ips, map[string]any{"ip": ip})
+		}
+		status["podIPs"] = ips
+		status["podIP"] = p.IPs[0]
+	}
+	if p.PodIP != "" {
+		status["podIP"] = p.PodIP
+	}
 	if len(p.Conds) > 0 {
 		var cs []any
 		for _, c := range p.Conds {
@@ -469,6 +525,17 @@ func nodeObject(uid, name string, created time.Time, heartbeat string) map[strin
 			}},
 		},
 	}
+}
+
+// nodeWithAddrs is nodeObject with status.addresses, each a type and an address.
+func nodeWithAddrs(uid, name string, created time.Time, heartbeat string, addrs ...[2]string) map[string]any {
+	o := nodeObject(uid, name, created, heartbeat)
+	var as []any
+	for _, a := range addrs {
+		as = append(as, map[string]any{"type": a[0], "address": a[1]})
+	}
+	o["status"].(map[string]any)["addresses"] = as
+	return o
 }
 
 func cond(typ, status string, at time.Time) map[string]any {

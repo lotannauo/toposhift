@@ -253,7 +253,7 @@ func TestScoreWritesAReportThatNamesNoEntity(t *testing.T) {
 		t.Fatalf("score: %d %s", code, stderr)
 	}
 	for _, want := range []string{
-		"dataset itbench-lite@d0916b0, loader factload-1", "policy versions: blastradius", "scenarios in the count: 2; not fully loaded: 1",
+		"dataset itbench-lite@d0916b0, loader factload-2", "policy versions: blastradius", "scenarios in the count: 2; not fully loaded: 1",
 		"not fully loaded: Scenario-2: unreadable_ground_truth", "1 with unreadable labels", "address-associated", "service names with a span in the trace data read: 2",
 		"trace coverage from the probe (sha256 " + probeSum + "): 1 cases covered, 0 not covered, 1 not computed",
 	} {

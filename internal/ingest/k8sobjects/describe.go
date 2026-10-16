@@ -44,17 +44,39 @@ type podView struct {
 	Creation             string
 	NodeName             string
 	Deletion             string
+	Phase                string
 	Conds                []condView
 	Ctrs                 []ctrView
-	payload              []byte
+	// HostNetwork is spec.hostNetwork: the pod uses its node's network, and its
+	// addresses are the node's.
+	HostNetwork bool
+	// IPs are the addresses of status.podIPs, or status.podIP when podIPs lists
+	// none, as the object spells them. They are not part of the payload beyond what
+	// pod_ips already says; they decide the pod's address claims.
+	IPs     []string
+	payload []byte
 }
 
 type nodeView struct {
 	UID, Name string
 	Creation  string
 	Conds     []condView
-	payload   []byte
+	// Addrs are the status.addresses entries of type InternalIP or ExternalIP, as
+	// type and address, sorted. They decide the node's address claims.
+	Addrs   [][2]string
+	payload []byte
 }
+
+// The node address types that are addresses. Hostname, InternalDNS and
+// ExternalDNS are names.
+const (
+	addrInternalIP = "InternalIP"
+	addrExternalIP = "ExternalIP"
+)
+
+// terminal says whether a pod phase is one a pod never leaves: its containers
+// have stopped for good.
+func terminal(phase string) bool { return phase == "Succeeded" || phase == "Failed" }
 
 func conditions(o object) []condView {
 	var out []condView
@@ -80,7 +102,17 @@ func parsePod(o object, ns string) podView {
 		Creation:  str(o, "metadata", "creationTimestamp"),
 		NodeName:  str(o, "spec", "nodeName"),
 		Deletion:  str(o, "metadata", "deletionTimestamp"),
+		Phase:     str(o, "status", "phase"),
 		Conds:     conditions(o),
+	}
+	v.HostNetwork, _ = walk(o, "spec", "hostNetwork").(bool)
+	for _, ip := range list(o, "status", "podIPs") {
+		if s := str(ip, "ip"); s != "" {
+			v.IPs = append(v.IPs, s)
+		}
+	}
+	if s := str(o, "status", "podIP"); len(v.IPs) == 0 && s != "" {
+		v.IPs = []string{s}
 	}
 	for _, c := range list(o, "status", "containerStatuses") {
 		v.Ctrs = append(v.Ctrs, ctrOf(c, false))
@@ -112,7 +144,7 @@ func parsePod(o object, ns string) podView {
 	put(m, "name", v.Name)
 	put(m, "namespace", v.Namespace)
 	put(m, "node_name", v.NodeName)
-	put(m, "phase", str(o, "status", "phase"))
+	put(m, "phase", v.Phase)
 	put(m, "reason", str(o, "status", "reason"))
 	put(m, "host_ip", str(o, "status", "hostIP"))
 	put(m, "deletion_timestamp", v.Deletion)
@@ -211,6 +243,11 @@ func parseNode(o object) nodeView {
 		}
 	}
 	slices.SortFunc(addrs, func(a, b [2]string) int { return slices.Compare(a[:], b[:]) })
+	for _, p := range addrs {
+		if p[0] == addrInternalIP || p[0] == addrExternalIP {
+			v.Addrs = append(v.Addrs, p)
+		}
+	}
 	if len(addrs) > 0 {
 		a := make([]any, len(addrs))
 		for i, p := range addrs {

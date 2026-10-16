@@ -1,4 +1,4 @@
-dataset itbench-lite@d0916b0, loader factload-1; policy versions: blastradius 1, coresidency 1, extract 1, interval 1
+dataset itbench-lite@d0916b0, loader factload-2; policy versions: blastradius 1, coresidency 1, extract 1, interval 1
 acceptance rule fixed 2026-10-15; bootstrap 10000 resamples, seed 20261015, paired, 95 % percentile intervals
 load check: 3 cases, 0 uninstrumented seeds excluded, 3 counted, 0 failed to load (rule: pass if at most 1/4): pass=true
 reported, not in the rule: 0 quarantined seeds, 0 unmappable roots, 0 without a window, 0 with unreadable labels, 0 without objects
