@@ -29,10 +29,17 @@ func newRestoredWorld(t *testing.T) restoredWorld {
 	c.LateProbability = 0
 	g := mustGenerator(t, c)
 	recs := g.All()
+	// The trimmed tier, which runs under the race detector, asks about every second
+	// of four minutes after each horizon, a TTL and more, and every tenth record
+	// instant after that.
+	opts := storetest.RestoredOptions{Entities: g.Entities(), Written: recs, Span: 6 * time.Minute}
+	if storetest.Trimmed() {
+		opts.Span, opts.Sample = 4*time.Minute, 10
+	}
 	return restoredWorld{
 		recs:    recs,
 		asked:   c.Start.Add(10 * time.Minute),
-		opts:    storetest.RestoredOptions{Entities: g.Entities(), Written: recs, Span: 6 * time.Minute},
+		opts:    opts,
 		offsets: memstore.Options{Offsets: [4]time.Duration{0, 5 * time.Minute, 0, 0}, Keep: [4]bool{true, false, false, false}},
 	}
 }

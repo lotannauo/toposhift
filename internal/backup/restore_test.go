@@ -21,7 +21,7 @@ import (
 func smallBackup(t testing.TB, segs segment.Store) *driven {
 	t.Helper()
 	w := equalWorkloads(t)[0]
-	d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag, segs: segs}
+	d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag(), segs: segs}
 	out := d.run(t)
 	if out.retired[backup.ClassL2] == 0 {
 		t.Fatal("no l2 file was retired")
@@ -250,7 +250,7 @@ func TestBackupOnALocalDirectory(t *testing.T) {
 		t.Fatal("no l2 file was retired")
 	}
 	r, _ := restoreInto(t, dir, prefix, engineMem, out.meta, 10_000)
-	opts := out.restoredOptions(w.span)
+	opts := out.restoredOptions(sideSpan(w.span))
 	opts.Sample = equalSample()
 	compare(t, out.live, r, opts)
 }
@@ -294,7 +294,7 @@ func TestFaultsLeaveTheLatestBackupWhole(t *testing.T) {
 			}
 			var out *driven
 			cuts, retires := 0, 0
-			d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag, segs: segs}
+			d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag(), segs: segs}
 			d.beforeRetire = func() {
 				retires++
 				if fc.atCut == 0 && retires == 1 {
@@ -321,7 +321,7 @@ func TestFaultsLeaveTheLatestBackupWhole(t *testing.T) {
 				r, _ := restoreInto(t, segs, prefix, engineMem, metaFor(w.policy), 10_000)
 				written := out.written
 				compare(t, liveUpTo(t, metaFor(w.policy), written, m), r, storetest.RestoredOptions{
-					Entities: out.entities, Written: written, Span: w.span, Sample: equalSample(),
+					Entities: out.entities, Written: written, Span: sideSpan(w.span), Sample: equalSample(),
 				})
 			}
 			d.started = func(o *driven) { out = o }
@@ -330,7 +330,7 @@ func TestFaultsLeaveTheLatestBackupWhole(t *testing.T) {
 				t.Fatalf("the fault fired %d times", fired)
 			}
 			r, _ := restoreInto(t, segs, prefix, engineMem, out.meta, 10_000)
-			compare(t, out.live, r, storetest.RestoredOptions{Entities: out.entities, Written: out.written, Span: w.span, Sample: equalSample()})
+			compare(t, out.live, r, storetest.RestoredOptions{Entities: out.entities, Written: out.written, Span: sideSpan(w.span), Sample: equalSample()})
 			// Nothing the latest manifest does not name is left, once a later Retire
 			// has retried what failed.
 			m, err := backup.Latest(ctx, segs, prefix)

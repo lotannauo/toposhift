@@ -36,7 +36,7 @@ func equalWorkloads(t testing.TB) []equalWorkload {
 		if c.HeartbeatInterval == 0 {
 			continue // watch mode asserts once: TestAssertOnceIsRefused
 		}
-		c.Duration, c.HeartbeatInterval, c.TTLFactor = equalDuration, time.Minute, 3
+		c.Duration, c.HeartbeatInterval, c.TTLFactor = equalDuration(), time.Minute, 3
 		c.Refresh.On = true
 		var runAge time.Duration
 		if c.Runs {
@@ -57,12 +57,33 @@ func equalWorkloads(t testing.TB) []equalWorkload {
 
 // The equal-answers stream: two hours, retained at half and four fifths of the
 // stream to the ingest clock less half an hour, with the comparison asking every
-// twentieth record instant past the dense span after each horizon (every
-// hundredth in the trimmed tier).
-const (
-	equalDuration = 2 * time.Hour
-	equalLag      = 30 * time.Minute
-)
+// twentieth record instant past the dense span after each horizon. The trimmed
+// tier, which is what runs under the race detector, streams 80 minutes, retains to
+// the clock less a quarter of an hour, and asks every hundredth instant past the
+// span: still long enough for both retentions to retire l1 and l2 files.
+func equalDuration() time.Duration {
+	if storetest.Trimmed() {
+		return 80 * time.Minute
+	}
+	return 2 * time.Hour
+}
+
+func equalLag() time.Duration {
+	if storetest.Trimmed() {
+		return 15 * time.Minute
+	}
+	return 30 * time.Minute
+}
+
+// sideSpan is the dense span of the comparisons that check something other than
+// the margin's edge (a whole replay, a refused class, a fault, a real directory):
+// the full span, or one minute in the trimmed tier.
+func sideSpan(full time.Duration) time.Duration {
+	if storetest.Trimmed() {
+		return min(full, time.Minute)
+	}
+	return full
+}
 
 func equalSample() int {
 	if storetest.Trimmed() {
@@ -99,10 +120,9 @@ var restores = []struct {
 func TestRestoredStoreAnswersAsTheLiveStore(t *testing.T) {
 	t.Parallel()
 	ws := equalWorkloads(t)
-	trimmed := map[string]string{ // workload: the one engine it is restored into
-		ws[0].name:         enginePebbleBack,
-		ws[len(ws)-1].name: engineMem, // the one that quarantines
-	}
+	// The trimmed tier restores the tiny workload into the reference store only;
+	// the scripted tests restore into the pebblestore under it.
+	trimmed := map[string]string{ws[0].name: engineMem} // workload: the engine it is restored into
 	for _, w := range ws {
 		rs := restores
 		if storetest.Trimmed() {
@@ -117,7 +137,7 @@ func TestRestoredStoreAnswersAsTheLiveStore(t *testing.T) {
 		}
 		t.Run(w.name, func(t *testing.T) {
 			t.Parallel()
-			d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag, hooks: hooksFor(w.cfg), plain: true}
+			d := drive{cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag(), hooks: hooksFor(w.cfg), plain: true}
 			out := d.run(t)
 			if len(out.refusals) != 0 {
 				t.Fatalf("Retire refused: %v", out.refusals)
@@ -141,7 +161,9 @@ func TestRestoredStoreAnswersAsTheLiveStore(t *testing.T) {
 				if res.Records != int64(len(out.written)) {
 					t.Fatalf("the whole backup restored %d records of %d", res.Records, len(out.written))
 				}
-				compare(t, out.live, r, opts)
+				whole := opts
+				whole.Span = sideSpan(w.span)
+				compare(t, out.live, r, whole)
 			})
 		})
 	}
@@ -217,8 +239,8 @@ func TestAssertOnceIsRefused(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			c := tt.cfg
-			c.Duration = equalDuration
-			d := drive{cfg: c, retainAt: []float64{0.5, 0.8}, lag: equalLag, hooks: hooksFor(c)}
+			c.Duration = equalDuration()
+			d := drive{cfg: c, retainAt: []float64{0.5, 0.8}, lag: equalLag(), hooks: hooksFor(c)}
 			out := d.run(t)
 			if len(out.refusals) != 2 {
 				t.Fatalf("%d of 2 Retires refused: %v", len(out.refusals), out.refusals)
@@ -246,7 +268,7 @@ func TestAssertOnceIsRefused(t *testing.T) {
 			if res.Records != int64(len(out.written)) {
 				t.Fatalf("the restore wrote %d of %d records", res.Records, len(out.written))
 			}
-			opts := out.restoredOptions(10 * time.Minute)
+			opts := out.restoredOptions(sideSpan(10 * time.Minute))
 			opts.Sample = equalSample()
 			compare(t, out.live, r, opts)
 		})
@@ -264,7 +286,7 @@ func TestACutAtTheHorizonIsSeen(t *testing.T) {
 	var at [backup.NumClasses]bool
 	at[backup.ClassL2], at[backup.ClassL3] = true, true
 	d := drive{
-		cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag, alignToCut: true,
+		cfg: w.cfg, policy: w.policy, retainAt: []float64{0.5, 0.8}, lag: equalLag(), alignToCut: true,
 		hooks: backup.Hooks{ZeroMargin: at, NoRefusal: at, NoMinEvent: at},
 	}
 	out := d.run(t)
