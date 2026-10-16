@@ -106,7 +106,7 @@ func (fx *fixture) build(outDir string, d *ids) (sinkResult, []rawAssertion, err
 	if err != nil {
 		return sinkResult{}, nil, err
 	}
-	run := newPlaceRun(fx.cfg, d, []*cadence{newCadence(cadenceC60, s, false)}, false)
+	run := newPlaceRun(fx.cfg, d, []*cadence{newCadence(fx.cfg.cadences()[0], s, false)}, false)
 	run.ensure()
 	for m := range fx.rows {
 		if err := run.minute(int32(m), 0, fx.rows[m]); err != nil {

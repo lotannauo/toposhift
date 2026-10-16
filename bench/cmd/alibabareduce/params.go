@@ -123,7 +123,7 @@ func (r *results) params() paramsFile {
 	p.InstancesPerServiceNote = "instances seen in the hour, by the msname of their first sample; an instance outside the hour is not counted"
 
 	// Churn of pod-on-node placements per node, at C60.
-	c60 := cadenceC60
+	c60 := r.cads[0].spec
 	edgeIvs := r.edgeIvs[c60.name]
 	churn := make(map[uint32]int64, d.nodes.size())
 	for id := 1; id <= d.nodes.size(); id++ {
@@ -244,7 +244,7 @@ func (r *results) manifest() manifestFile {
 			"placement_files": cfg.PlacementFiles, "call_files": cfg.CallFiles, "placement_file_minutes": cfg.PlacementFileMinutes,
 			"call_file_millis": cfg.CallFileMillis, "fixture_minutes": cfg.FixtureMinutes, "fixture_nodes": cfg.FixtureNodes,
 			"write_c60": cfg.WriteC60, "max_file_bytes": cfg.MaxFileBytes, "max_call_keys": cfg.MaxCallKeys, "max_edges": cfg.MaxEdges,
-			"sample_interval_seconds": int64(sampleInterval.Seconds()), "ttl_factor": ttlFactor,
+			"sample_interval_seconds": int64(sampleInterval.Seconds()), "ttl_factor": cfg.TTLFactor,
 		},
 		Cadences:           map[string]map[string]int64{},
 		Coalescer:          coalesceConfig().Describe(),
@@ -252,10 +252,14 @@ func (r *results) manifest() manifestFile {
 		Provisional:        "the depends_on stream is provisional: the storage format of per-minute rollups (l3-rollups) is not decided here",
 		Inputs:             r.files, Tables: r.tables, Checks: r.asked,
 	}
-	for _, c := range []cadenceSpec{cadenceC60, cadenceC300} {
-		m.Cadences[c.name] = map[string]int64{"step_minutes": int64(c.step), "ttl_seconds": int64(c.ttl().Seconds())}
+	if arms := cfg.armsFlag(); arms != "" {
+		m.Flags["arms"] = arms
+	}
+	for _, c := range r.cads {
+		m.Cadences[c.spec.name] = map[string]int64{"step_minutes": int64(c.spec.step), "ttl_seconds": int64(c.spec.ttl().Seconds())}
 	}
 	m.Outputs = append(m.Outputs, r.sinks...)
+	m.Outputs = append(m.Outputs, r.armSinks...)
 	m.Outputs = append(m.Outputs, r.fixture)
 
 	rt := ratios{

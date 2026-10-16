@@ -67,11 +67,33 @@ type minuteRow struct {
 // cadence is one reduction of the placement: the samples at its step, their
 // raw intervals, and the stream the coalescer makes of them.
 type cadence struct {
-	spec  cadenceSpec
-	sink  *sink
-	pods  *ivTracker
-	nodes *ivTracker
-	edges *ivTracker
+	spec cadenceSpec
+	sink *sink
+	// every is the stream of every assertion as it was made, with no coalescer.
+	// It is nil unless the run writes it.
+	every *sink
+	// dupToC is a mutant: an assertion the every-sample stream takes also reaches
+	// the coalesced stream a second time.
+	dupToC bool
+	pods   *ivTracker
+	nodes  *ivTracker
+	edges  *ivTracker
+}
+
+// assert hands an assertion to the cadence's coalesced stream and, if there is
+// one, to its every-sample stream.
+func (c *cadence) assert(r store.Record) error {
+	if c.every != nil {
+		if err := c.every.assert(r); err != nil {
+			return err
+		}
+		if c.dupToC {
+			if err := c.sink.assert(r); err != nil {
+				return err
+			}
+		}
+	}
+	return c.sink.assert(r)
 }
 
 func newCadence(spec cadenceSpec, s *sink, strict bool) *cadence {
@@ -280,7 +302,7 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 		ttl := c.spec.ttl()
 		for _, n := range nodes {
 			c.nodes.observe(uint64(n), m, 0, file)
-			if err := c.sink.assert(store.Record{
+			if err := c.assert(store.Record{
 				Layer: catalog.L2, Subject: store.EntitySubject(r.nodeFP.get(n)), Producer: placementProducer,
 				EventTime: at, Kind: lifecycle.Observe, TTL: ttl, EventTimeBasis: store.BasisProducerEvent,
 			}); err != nil {
@@ -289,7 +311,7 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 		}
 		for _, p := range pods {
 			c.pods.observe(uint64(p), m, r.podNameLast[p], file)
-			if err := c.sink.assert(store.Record{
+			if err := c.assert(store.Record{
 				Layer: catalog.L2, Subject: store.EntitySubject(r.podFP.get(p)), Producer: placementProducer,
 				EventTime: at, Kind: lifecycle.Observe, TTL: ttl, Payload: r.payload(r.podNameLast[p]),
 				EventTimeBasis: store.BasisProducerEvent,
@@ -300,19 +322,19 @@ func (r *placeRun) minute(m, file int32, rows []prow) error {
 		for _, e := range edges {
 			p, n := unpair(e)
 			c.edges.observe(e, m, r.podNameLast[p], file)
-			if err := c.sink.assert(store.Record{
+			if err := c.assert(store.Record{
 				Layer: catalog.L2, Subject: store.EdgeSubject(r.podFP.get(p), r.nodeFP.get(n), catalog.ScheduledOn), Producer: placementProducer,
 				EventTime: at, Kind: lifecycle.Observe, TTL: ttl, EventTimeBasis: store.BasisProducerEvent,
 			}); err != nil {
 				return err
 			}
 		}
-		if r.mut == mutInferDelete && c.spec == cadenceC60 {
+		if r.mut == mutInferDelete && c.spec.name == cadenceC60.name {
 			for _, p := range r.prevList {
 				if r.podStamp[p] == cur {
 					continue
 				}
-				if err := c.sink.assert(store.Record{
+				if err := c.assert(store.Record{
 					Layer: catalog.L2, Subject: store.EntitySubject(r.podFP.get(p)), Producer: placementProducer,
 					EventTime: at, Kind: lifecycle.Delete, EventTimeBasis: store.BasisProducerEvent,
 				}); err != nil {

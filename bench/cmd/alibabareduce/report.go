@@ -67,6 +67,27 @@ func (r *results) report() string {
 	w("- intervals at C300: pods %s, nodes %s, pod-on-node %s", n(rt.IntervalsC300["pods"]), n(rt.IntervalsC300["nodes"]), n(rt.IntervalsC300["pod_on_node"]))
 	w("- records stored by the coalescer under the shipped configuration: C60 %s, C300 %s", n(rt.StoredRecordsC60), n(rt.StoredRecordsC300))
 	w("  The stored count is the coalescer's, which bounds a run's age at half its TTL on purpose; it is not the maximal-interval count.")
+	if r.cfg.TTLFactor != defaultTTLFactor {
+		w("- the placement TTL is %d sampling intervals, not the product's %d; the call edges keep theirs", r.cfg.TTLFactor, defaultTTLFactor)
+	}
+	for _, a := range []struct{ arm, line string }{
+		{"s", "every-sample stream (S, no coalescer)"},
+		{"i", "maximal-interval stream (I, one record per interval; a derived bound, not what a source writes)"},
+	} {
+		var found []string
+		for _, s := range r.armSinks {
+			if strings.HasSuffix(s.Name, "_"+a.arm) {
+				label := fmt.Sprintf("%s %s", strings.ToUpper(strings.TrimSuffix(strings.TrimPrefix(s.Name, "placement_"), "_"+a.arm)), n(s.Records))
+				if s.DroppedOverLimit {
+					label += " (file not kept: over -max-file-bytes)"
+				}
+				found = append(found, label)
+			}
+		}
+		if len(found) > 0 {
+			w("- records of the %s: %s", a.line, strings.Join(found, ", "))
+		}
+	}
 	w("- the intervals are sampled at 60 s (300 s for C300) and censored at both ends: they are not true pod lifetimes.")
 	w("")
 	w("## Dirt (anomalies relative to this model, kept as the trace said them)")

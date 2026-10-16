@@ -69,6 +69,48 @@ func TestMutantsAreCaught(t *testing.T) {
 				return err == nil && checkServiceColumn(res) != nil
 			},
 		},
+		{
+			name: "the every-sample stream goes through the coalescer", caughtBy: "TestEveryAssertionIsInTheSStream", mut: mutCoalescedS,
+			data: armsData(t), change: arms(true, false),
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err == nil && checkEveryAssertion(t, res, cfg, "c60") != nil
+			},
+		},
+		{
+			name: "the interval stream's Through is the interval's deadline", caughtBy: "TestIntervalStreamIsOneRecordPerInterval", mut: mutIntervalThroughDeadline,
+			data: armsData(t), change: arms(false, true),
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err != nil || checkIntervalStream(t, res, cfg, "c60") != nil
+			},
+		},
+		{
+			name: "the interval stream splits at a gap of exactly one TTL", caughtBy: "TestIntervalStreamIsOneRecordPerInterval", mut: mutGapAtTTLBreaks,
+			data: armsData(t), change: arms(false, true),
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err == nil && checkIGaps(t, res, cfg) != nil
+			},
+		},
+		{
+			name: "an arm changes the coalesced stream", caughtBy: "TestArmsLeaveTheCoalescedStreamsAndTheTablesAlone", mut: mutArmFeedsC,
+			data: armsData(t), change: arms(true, false),
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err == nil && checkArmsLeaveCAlone(t, res, cfg) != nil
+			},
+		},
+		{
+			name: "the TTL factor is ignored", caughtBy: "TestTTLFactorSetsThePlacementTTLOnly", mut: mutFactorIgnored,
+			data: ttlData(), change: func(c *Config) { c.TTLFactor = 15 },
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err == nil && checkTTLFactor(t, res, cfg) != nil
+			},
+		},
+		{
+			name: "the TTL factor is applied to the calls", caughtBy: "TestTTLFactorSetsThePlacementTTLOnly", mut: mutFactorOnCalls,
+			data: ttlData(), change: func(c *Config) { c.TTLFactor = 15 },
+			fails: func(t *testing.T, res *results, cfg Config, err error) bool {
+				return err == nil && checkTTLFactor(t, res, cfg) != nil
+			},
+		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := testConfig(t, c.data.withFiller().write(t))

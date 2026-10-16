@@ -35,6 +35,8 @@ type results struct {
 	cfg             Config
 	files           []*fileReport
 	sinks           []sinkResult
+	armSinks        []sinkResult // the S and I streams, in the order they were finished
+	arms            []armOutput
 	cads            []*cadence
 	place           *placeRun
 	calls           *callRun
@@ -50,6 +52,13 @@ type results struct {
 	asked           map[string]int64          // questions the in-process store check asked, by stream
 	sinkRaw         map[string][]rawAssertion // the raw assertions of each stream, kept when VerifyStreams is set
 	tables          map[string]int64          // rows of each table
+}
+
+// armOutput is a finished S or I stream and the sink whose raw assertions it is checked against.
+type armOutput struct {
+	name string
+	sink *sink
+	raw  *sink
 }
 
 // reduce runs the whole reduction of one hour into the output directory.
@@ -91,9 +100,24 @@ func reduce(cfg Config) (*results, error) {
 	if err != nil {
 		return nil, err
 	}
+	specs := cfg.cadences()
 	res.cads = []*cadence{
-		newCadence(cadenceC60, c60, cfg.mut == mutGapAtTTLBreaks),
-		newCadence(cadenceC300, c300, cfg.mut == mutGapAtTTLBreaks),
+		newCadence(specs[0], c60, cfg.mut == mutGapAtTTLBreaks),
+		newCadence(specs[1], c300, cfg.mut == mutGapAtTTLBreaks),
+	}
+	if cfg.WriteS {
+		for _, c := range res.cads {
+			name, path := armName(c, "s"), armPath(o.out, c, "s")
+			if cfg.mut == mutCoalescedS {
+				c.every, err = newSink(name, path, true, cfg.MaxFileBytes, cfg.VerifyStreams)
+			} else {
+				c.every, err = newPlainSink(name, path, cfg.MaxFileBytes, cfg.VerifyStreams)
+			}
+			if err != nil {
+				return nil, err
+			}
+			c.dupToC = cfg.mut == mutArmFeedsC
+		}
 	}
 	pr := newPlaceRun(&cfg, d, res.cads, true)
 	res.place = pr
@@ -149,6 +173,28 @@ func reduce(cfg Config) (*results, error) {
 		res.podIvs[c.spec.name] = c.pods.finish()
 		res.nodeIvs[c.spec.name] = c.nodes.finish()
 		res.edgeIvs[c.spec.name] = c.edges.finish()
+		if c.every != nil {
+			r, err := c.every.finish()
+			if err != nil {
+				return nil, err
+			}
+			res.armSinks = append(res.armSinks, r)
+			res.arms = append(res.arms, armOutput{r.Name, c.every, c.every})
+		}
+		if cfg.WriteI {
+			cfg.logf("placement %s: writing the interval stream", c.spec.name)
+			s, err := pr.intervalStream(c, armPath(o.out, c, "i"), cfg.MaxFileBytes,
+				res.podIvs[c.spec.name], res.nodeIvs[c.spec.name], res.edgeIvs[c.spec.name])
+			if err != nil {
+				return nil, err
+			}
+			r, err := s.finish()
+			if err != nil {
+				return nil, err
+			}
+			res.armSinks = append(res.armSinks, r)
+			res.arms = append(res.arms, armOutput{r.Name, s, c.sink})
+		}
 	}
 	pr.cads, pr.statistics = res.cads, true
 
@@ -164,7 +210,7 @@ func reduce(cfg Config) (*results, error) {
 	}
 	cr := &callRun{
 		cfg: &cfg, mut: cfg.mut, epoch: cfg.Epoch, svcs: d.svcs, fps: d.svcFP, sink: callSink, rollup: rollup,
-		edges: newTracker(1, int32(callEdgeTTL/sampleInterval)),
+		edges: newTracker(1, int32(cfg.callTTL()/sampleInterval)),
 		depth: map[int64]int64{}, fanOut: map[int64]int64{}, fanIn: map[int64]int64{},
 	}
 	cr.edges.strict = cfg.mut == mutGapAtTTLBreaks
@@ -227,6 +273,17 @@ func reduce(cfg Config) (*results, error) {
 			}
 			res.asked[name] = n
 			res.sinkRaw[name] = s.raw
+		}
+		for _, a := range res.arms {
+			if a.sink.res.File == "" {
+				continue
+			}
+			n, err := verifyStream(a.sink.res.File, a.raw.raw)
+			if err != nil {
+				return nil, fmt.Errorf("%s does not say what its samples say: %w", a.name, err)
+			}
+			res.asked[a.name] = n
+			res.sinkRaw[a.name] = a.raw.raw
 		}
 	}
 

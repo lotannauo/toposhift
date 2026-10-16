@@ -51,7 +51,8 @@ type rawAssertion struct {
 type sinkResult struct {
 	Name string `json:"name"`
 	File string `json:"file,omitempty"`
-	// Records is the number of records the coalescer produced, written or not.
+	// Records is the number of records the stream holds, written or not: the
+	// coalescer's output, or for a stream with no coalescer the records handed in.
 	Records int64 `json:"records"`
 	// Written is whether the file holds them.
 	Written bool `json:"written"`
@@ -80,7 +81,8 @@ type sink struct {
 	f    *os.File
 	cw   *countWriter
 	w    *activity.Writer
-	co   *shardedCoalescer
+	co   *shardedCoalescer // nil for a stream with no coalescer
+	one  [1]store.Record   // the record of a stream with no coalescer, to write it as a slice
 
 	seq      uint64
 	buf      []store.Record
@@ -102,6 +104,16 @@ func newSink(name, path string, write bool, maxBytes int64, capture bool) (*sink
 	if err != nil {
 		return nil, err
 	}
+	return newSinkWith(name, path, co, write, maxBytes, capture)
+}
+
+// newPlainSink starts a stream with no coalescer: every record handed to assert
+// is written as it is, numbered in the order it came, with no flush clock.
+func newPlainSink(name, path string, maxBytes int64, capture bool) (*sink, error) {
+	return newSinkWith(name, path, nil, true, maxBytes, capture)
+}
+
+func newSinkWith(name, path string, co *shardedCoalescer, write bool, maxBytes int64, capture bool) (*sink, error) {
 	s := &sink{name: name, path: path, co: co, capture: capture}
 	s.res.Name = name
 	if !write {
@@ -125,6 +137,14 @@ func newSink(name, path string, write bool, maxBytes int64, capture bool) (*sink
 func (s *sink) assert(r store.Record) error {
 	if s.err != nil {
 		return s.err
+	}
+	if s.co == nil {
+		s.res.Assertions++
+		if s.capture {
+			s.raw = append(s.raw, rawAssertion{r.Subject, r.Layer, r.EventTime, r.TTL})
+		}
+		s.one[0] = r
+		return s.emit(s.one[:])
 	}
 	ingest := r.EventTime.Add(time.Second)
 	if !s.started {
