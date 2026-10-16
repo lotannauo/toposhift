@@ -18,6 +18,19 @@
 //
 //	go run ./cmd/alibabareduce -in ~/datasets/alibaba-v2022 -out ~/spikebench/alibaba-reduce/2026-10-15
 //
+// Two more streams of the placement can be written, for the same samples and
+// cadences, with -arms: s, every assertion as the producer made it with no
+// coalescer (placement_c60_s.parquet, placement_c300_s.parquet), and i, one record
+// per maximal interval of a pod, a node or a pod-on-node edge
+// (placement_c60_i.parquet, placement_c300_i.parquet). They give the other two
+// ends of a comparison of what the coalesced stream costs to store. The S stream
+// of the first hour of the trace is larger than the default -max-file-bytes: pass
+// -max-file-bytes 0 with it, or the file is dropped and only its records counted.
+// -ttl-factor sets how many sampling intervals a placement sample promises (the
+// product's is 3); the call edges keep their TTL. With no -arms and the default
+// factor, a run writes what it wrote before these flags existed. The independent
+// check in testdata/check.sql assumes the default factor and is valid only for it.
+//
 // The output directory is never inside a git work tree. It receives out/ (the
 // activity files and the tables), check/ and logs/, and params.json, manifest.json
 // and REDUCTION.md. Everything is local and informational: nothing in it is
@@ -32,7 +45,9 @@
 // part and a deadline at a time, so that flushing every run of a stream at once
 // does not build a list as long as the stream. Call archives are reduced one at a
 // time, in order. Unless GOGC is set, the command lets the heap grow 40 percent
-// over its live data between collections, not 100. Run it with GOMEMLIMIT=2GiB.
+// over its live data between collections, not 100. Run it with GOMEMLIMIT=2GiB. The S
+// stream holds no coalescer, and the I stream is made one record at a time from the
+// intervals the run already holds, through a sorted list of 24-byte references to them.
 package main
 
 import (
@@ -74,6 +89,8 @@ func main() {
 	flag.Int64Var(&cfg.MaxFileBytes, "max-file-bytes", cfg.MaxFileBytes, "stop writing a stream that passes this size, and count its records only (0: no limit)")
 	flag.IntVar(&cfg.MaxCallKeys, "max-call-keys", cfg.MaxCallKeys, "stop if one call archive has more rollup cells than this")
 	flag.IntVar(&cfg.MaxEdges, "max-edges", cfg.MaxEdges, "stop if more distinct service edges than this are open")
+	arms := flag.String("arms", "", "also write the placement's other streams: s (every assertion, no coalescer), i (one record per maximal interval), or s,i")
+	flag.IntVar(&cfg.TTLFactor, "ttl-factor", cfg.TTLFactor, "how many sampling intervals a placement sample promises, 1 to 60 (the call edges keep their TTL)")
 	flag.BoolVar(&cfg.VerifyStreams, "verify-streams", false, "check every stream against its samples in an in-memory store: holds the samples in memory, for test-sized input only")
 	flag.Parse()
 	t, err := time.Parse(time.RFC3339, *epoch)
@@ -82,6 +99,10 @@ func main() {
 		os.Exit(2)
 	}
 	cfg.Epoch = t.UTC()
+	if cfg.WriteS, cfg.WriteI, err = parseArms(*arms); err != nil {
+		fmt.Fprintln(os.Stderr, "alibabareduce:", err)
+		os.Exit(2)
+	}
 	cfg.Commit = currentCommit()
 	cfg.Progress = os.Stderr
 	if cfg.OutDir == "" {

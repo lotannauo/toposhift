@@ -296,7 +296,7 @@ func (c *callRun) emit(file int, off int32, keys []callKey, agg func(callKey) ca
 			}
 			if err := c.sink.assert(store.Record{
 				Layer: catalog.L3, Subject: store.EdgeSubject(c.fps.get(k.um), c.fps.get(k.dm), catalog.DependsOn), Producer: callsProducer,
-				EventTime: c.epoch.Add(time.Duration(gmin) * sampleInterval), Kind: lifecycle.Observe, TTL: callEdgeTTL,
+				EventTime: c.epoch.Add(time.Duration(gmin) * sampleInterval), Kind: lifecycle.Observe, TTL: c.cfg.callTTL(),
 				EventTimeBasis: store.BasisProducerEvent,
 			}); err != nil {
 				return err

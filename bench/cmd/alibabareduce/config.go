@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/coalesce"
@@ -35,8 +36,15 @@ var (
 // minute is the unit of every grid in this command.
 const sampleInterval = time.Minute
 
-// ttlFactor is how many sampling intervals a sample promises: three.
-const ttlFactor = 3
+// defaultTTLFactor is how many sampling intervals a sample promises unless a
+// run says otherwise: three, the product's multiple.
+const defaultTTLFactor = 3
+
+// The least and the most sampling intervals a sample may promise in a run.
+const (
+	minTTLFactor = 1
+	maxTTLFactor = 60
+)
 
 // callEdgeTTL is how long a minute's call rollup promises its edge.
 const callEdgeTTL = 3 * time.Minute
@@ -44,22 +52,37 @@ const callEdgeTTL = 3 * time.Minute
 // A cadence is how often the placement is sampled for a reduction: every
 // sample (C60) or every fifth (C300, the objects receiver's pull).
 type cadenceSpec struct {
-	name string
-	step int32 // minutes between samples
+	name   string
+	step   int32 // minutes between samples
+	factor int32 // sampling intervals a sample promises
 }
 
 var (
-	cadenceC60  = cadenceSpec{"c60", 1}
-	cadenceC300 = cadenceSpec{"c300", 5}
+	cadenceC60  = cadenceSpec{"c60", 1, defaultTTLFactor}
+	cadenceC300 = cadenceSpec{"c300", 5, defaultTTLFactor}
 )
 
-// ttl is the TTL of a sample of this cadence: three of its intervals.
+// withFactor is the cadence with a sample promising factor of its intervals.
+func (c cadenceSpec) withFactor(factor int32) cadenceSpec {
+	c.factor = factor
+	return c
+}
+
+// ttl is the TTL of a sample of this cadence: factor of its intervals.
 func (c cadenceSpec) ttl() time.Duration {
-	return time.Duration(c.step) * sampleInterval * ttlFactor
+	return time.Duration(c.step) * sampleInterval * time.Duration(c.factor)
 }
 
 // ttlMinutes is the TTL in minutes.
-func (c cadenceSpec) ttlMinutes() int32 { return c.step * ttlFactor }
+func (c cadenceSpec) ttlMinutes() int32 { return c.step * c.factor }
+
+// callTTL is how long a minute's call rollup promises its edge.
+func (c *Config) callTTL() time.Duration {
+	if c.mut == mutFactorOnCalls {
+		return time.Duration(c.TTLFactor) * sampleInterval
+	}
+	return callEdgeTTL
+}
 
 // coalesceConfig is the product's ingest coalescer configuration.
 func coalesceConfig() coalesce.Config {
@@ -71,14 +94,19 @@ func coalesceConfig() coalesce.Config {
 type mutant int
 
 const (
-	mutNone                mutant = iota
-	mutSplitAtFileBoundary        // intervals end where an archive ends
-	mutGapAtTTLBreaks             // a gap of exactly one TTL splits an interval
-	mutUnknownIsService           // UNKNOWN is a service like any other
-	mutInferDelete                // a Delete is written where a pod stops being seen
-	mutUniformDownsample          // the fixture keeps rows, not nodes
-	mutCPUInPayload               // the pod's payload carries the CPU utilization
-	mutServiceFromToken           // the service is read off the instance token
+	mutNone                    mutant = iota
+	mutSplitAtFileBoundary            // intervals end where an archive ends
+	mutGapAtTTLBreaks                 // a gap of exactly one TTL splits an interval
+	mutUnknownIsService               // UNKNOWN is a service like any other
+	mutInferDelete                    // a Delete is written where a pod stops being seen
+	mutUniformDownsample              // the fixture keeps rows, not nodes
+	mutCPUInPayload                   // the pod's payload carries the CPU utilization
+	mutServiceFromToken               // the service is read off the instance token
+	mutCoalescedS                     // the every-sample stream goes through the coalescer
+	mutIntervalThroughDeadline        // the interval stream's Through is the interval's deadline
+	mutFactorIgnored                  // the placement cadences keep the default TTL factor
+	mutFactorOnCalls                  // the call edges take the placement's TTL factor
+	mutArmFeedsC                      // an arm's assertions reach the coalesced stream a second time
 )
 
 // Config is everything a run depends on, and what the manifest records of it.
@@ -100,6 +128,13 @@ type Config struct {
 	// FixtureMinutes and FixtureNodes size the fixture: its first minutes, and
 	// about how many nodes it keeps.
 	FixtureMinutes, FixtureNodes int
+
+	// TTLFactor is how many sampling intervals a placement sample promises. The
+	// call edges' TTL is not a multiple of it.
+	TTLFactor int
+	// WriteS and WriteI say whether each cadence also writes its every-sample
+	// stream (S) and its one-record-per-maximal-interval stream (I).
+	WriteS, WriteI bool
 
 	// WriteC60 says whether the C60 stream is written. Its records are counted either way.
 	WriteC60 bool
@@ -132,11 +167,52 @@ func defaultConfig() Config {
 		CallFileMillis:       180000,
 		FixtureMinutes:       10,
 		FixtureNodes:         200,
+		TTLFactor:            defaultTTLFactor,
 		WriteC60:             true,
 		MaxFileBytes:         1 << 30,
 		MaxCallKeys:          8_000_000,
 		MaxEdges:             8_000_000,
 	}
+}
+
+// cadences are the placement cadences of a run, with the run's TTL factor.
+func (c *Config) cadences() []cadenceSpec {
+	f := int32(c.TTLFactor)
+	if c.mut == mutFactorIgnored {
+		f = defaultTTLFactor
+	}
+	return []cadenceSpec{cadenceC60.withFactor(f), cadenceC300.withFactor(f)}
+}
+
+// parseArms reads the value of -arms: a comma-separated list of s and i, or empty.
+func parseArms(v string) (s, i bool, err error) {
+	if v == "" {
+		return false, false, nil
+	}
+	for _, a := range strings.Split(v, ",") {
+		switch a {
+		case "s":
+			s = true
+		case "i":
+			i = true
+		default:
+			return false, false, fmt.Errorf("-arms: %q is not s or i", a)
+		}
+	}
+	return s, i, nil
+}
+
+// armsFlag is the value of -arms that sets WriteS and WriteI, for the manifest.
+func (c *Config) armsFlag() string {
+	switch {
+	case c.WriteS && c.WriteI:
+		return "s,i"
+	case c.WriteS:
+		return "s"
+	case c.WriteI:
+		return "i"
+	}
+	return ""
 }
 
 // hourMinutes is the length of the placement the archives hold, in minutes.
@@ -163,6 +239,10 @@ func (c *Config) validate() error {
 		return fmt.Errorf("a call archive must hold a whole number of minutes, not %d ms", c.CallFileMillis)
 	case c.FixtureMinutes < 1 || c.FixtureNodes < 1:
 		return errors.New("the fixture needs at least one minute and one node")
+	case c.TTLFactor < minTTLFactor || c.TTLFactor > maxTTLFactor:
+		return fmt.Errorf("the TTL factor must be between %d and %d, not %d", minTTLFactor, maxTTLFactor, c.TTLFactor)
+	case c.VerifyStreams && c.WriteI && !c.WriteC60:
+		return errors.New("the maximal-interval stream is checked against the raw assertions of the coalesced stream, which -write-c60=false does not keep")
 	case c.MaxCallKeys < 1 || c.MaxEdges < 1:
 		return errors.New("the call limits must be positive")
 	case c.Epoch.IsZero() || c.Epoch.Before(time.Unix(0, 0)):
