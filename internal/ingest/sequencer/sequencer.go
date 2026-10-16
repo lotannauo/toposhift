@@ -194,6 +194,17 @@ type outcome struct {
 	err     error
 }
 
+// CoalesceConfig is the coalescer configuration of ingest: a run is re-asserted
+// at most once per half its TTL, and its age is bounded by that same interval
+// (RunAgeFromTTL). coalesce.DefaultConfig, with its fixed 30-minute age bound, is
+// never used: an extension is keyed at its run's start, so a longer age writes
+// at old instants and deletes a prefix's newest checkpoints. pebblestore's
+// seed-walk budget (SW1, in its seeded.go) holds only under this configuration,
+// and a test of this package pins it.
+func CoalesceConfig() coalesce.Config {
+	return coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true}
+}
+
 // New returns a sequencer. It checks the configuration and starts the detector's
 // warmup at the ingest clock's present.
 func New(c Config) (*Sequencer, error) {
@@ -256,11 +267,8 @@ func New(c Config) (*Sequencer, error) {
 		cfg:      c,
 		log:      c.Logger,
 		resolver: identity.NewResolver(catalog.Default()),
-		// The configuration of ingest: a run is re-asserted at most once per half
-		// its TTL, and its age is bounded by that same interval. DefaultConfig's
-		// fixed 30-minute age bound must not be used: it would delete node
-		// checkpoints.
-		coCfg:    coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true},
+		// The configuration of ingest; see [CoalesceConfig].
+		coCfg:    CoalesceConfig(),
 		queue:    make(chan *request, c.QueueLen),
 		stopCh:   make(chan struct{}),
 		done:     make(chan struct{}),

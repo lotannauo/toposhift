@@ -41,8 +41,10 @@
 // assertion that decides it there, its seed; folding the seeds with the window
 // records is folding the whole history, on the window. So a read costs the
 // window's records and the store's walk to each seed, not the history of the
-// prefix: on pebblestore, a walk from From back to the nearest checkpoint, whose
-// budget the store fixes, or to the retention baseline.
+// prefix: on pebblestore, a walk from From back to the nearest checkpoint, or to
+// the retention baseline, bounded only under the conditions of the store's
+// seed-walk budget (its seeded.go), among them ingest's coalescer configuration.
+// Memstore, the reference, has no such bound.
 //
 // # Producers, gaps and ends
 //

@@ -153,6 +153,15 @@ func clearBefore(el interval.Element) interval.Element {
 	return el
 }
 
+// clearBeforeAll is clearBefore for each element of a copy of els.
+func clearBeforeAll(els []interval.Element) []interval.Element {
+	out := make([]interval.Element, len(els))
+	for i, el := range els {
+		out[i] = clearBefore(el)
+	}
+	return out
+}
+
 func (c twinCheck) entities(fps []identity.Fingerprint) int {
 	c.t.Helper()
 	_, got, err := interval.NewReader(c.st, interval.Options{}).Entities(ctx, fps, c.w)
@@ -214,7 +223,13 @@ func (c twinCheck) descriptions(fps []identity.Fingerprint) (refused, answered i
 		case err != nil:
 			c.t.Fatalf("%s: %v; want the twin's answer", what, err)
 		default:
-			if df := describedDiff(got, want); df != "" && !c.w.From.Equal(c.h.Time) {
+			if c.w.From.Equal(c.h.Time) {
+				// At the horizon only Before may differ, and only where same allows it;
+				// the descriptions must still be the twin's.
+				c.same(what, got, want)
+				got, want = clearBeforeAll(got), clearBeforeAll(want)
+			}
+			if df := describedDiff(got, want); df != "" {
 				c.t.Fatalf("%s:\n%s", what, df)
 			}
 			answered++

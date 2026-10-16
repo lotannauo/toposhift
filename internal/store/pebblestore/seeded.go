@@ -71,6 +71,14 @@ import (
 // seeks are counted apart and not budgeted. Each walk is sampled as
 // "read.seed_records_stepped" and "read.seed_stamps_decoded"; the budget is judged on
 // those by the composed-query measurement, not by this package.
+//
+// Added 2026-10-16: SW1 also applies only to a store written under ingest's
+// coalescer configuration (sequencer.CoalesceConfig), which bounds a run's age by
+// its own extension interval. A run extension is keyed at the run's start, so a
+// writer that extends runs for longer at old instants, as a fixed RunMaxAge does,
+// deletes a prefix's newest checkpoints, and the walk has no bound on its store.
+// The budget is this store's alone: the store contract fixes none, and memstore,
+// the reference, has none.
 const (
 	// G at the reference cell: a checkpoint of 7,831 bytes over a mean record of
 	// 213 (the edge payload is 152 bytes), so 2 x 7831 / 213 = 73, above KMin.
@@ -78,6 +86,13 @@ const (
 	seedWalkBudgetRecords = 3 * seedWalkReferenceGap
 	seedWalkBudgetStamps  = 1
 )
+
+// SeedWalkBudget is SW1: the most records a seed walk steps over, and the most
+// stamps it decodes, under the conditions above. No read checks it; it is for the
+// tests that hold a query's seed walks to it.
+func SeedWalkBudget() (records, stamps int) {
+	return seedWalkBudgetRecords, seedWalkBudgetStamps
+}
 
 // WindowSince implements [store.Store]: one iterator for the whole call, a window
 // and a seed walk per fingerprint on it.

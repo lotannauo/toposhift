@@ -345,10 +345,10 @@
 // finishes the requests already queued, writes what
 // [coalesce.Coalescer.FlushAll] returns, and makes [Sequencer.Run] return.
 //
-// The coalescer is configured as ingest measured it: a run is re-asserted at
-// most once per half its TTL, and its age is bounded by that interval
-// (coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true}). Its
-// DefaultConfig, with a fixed 30-minute age bound, is never used.
+// The coalescer is configured as ingest measured it, by [CoalesceConfig]: a run
+// is re-asserted at most once per half its TTL, and its age is bounded by that
+// interval. Its DefaultConfig, with a fixed 30-minute age bound, is never used,
+// and pebblestore's seed-walk budget holds only under this configuration.
 //
 // The sequencer never reads or writes the store's cursor meta key, and imports
 // no broker.
