@@ -520,9 +520,11 @@ type gateTracker struct {
 	windows                   []GateWindow
 	inside, settling, outside GateBatches
 	rest                      time.Duration
-	// byGen is the window of each generation a background store published, by the
-	// number the store's marker carries.
-	byGen map[uint64]int
+	// gens is what the observer of a background store told of each generation, by the
+	// number the store's marker carries, whether or not its publication has been told;
+	// lastPub is the one published last, whose window the next publication cuts.
+	gens    map[uint64]*genEnds
+	lastPub *genEnds
 	// paced says the build is paced: its batches before paceStartNs (0 until the pacing
 	// starts) are unpaced, and those after it that touch a window that started before it
 	// are excluded. restPaced is the part of rest after the pacing started.
@@ -727,14 +729,70 @@ func (g *gateTracker) returnedSince(n int, at time.Time) {
 
 // The three calls that follow feed the windows of a store that retains in the
 // background, from its observer. They come from the goroutine that reached the point,
-// so one may arrive after a later one of another goroutine; the instant given, not
-// the order of arrival, says when it happened, and a phase's end is the earliest
-// instant it is given. A phase that a later publication cuts short ends there.
+// so any of a generation's calls may arrive before another of its own, or after a later
+// one of another goroutine; the instant given, not the order of arrival, says when it
+// happened. What each call tells is kept for its generation, with each end at the
+// earliest instant it is given, and the window is worked out again from that and from
+// the next publication at every call, so the windows depend only on the instants. A
+// phase that a later publication cuts short ends there. Publications arrive in
+// generation order, because one goroutine calls Retain and the store tells a
+// publication before Retain returns; that is not checked. A generation whose
+// publication is never told (a pass an earlier process left) has no window, takes no
+// batch and moves no other window.
 
-// publishedGen opens the window of generation gen at its publication. A window before
-// it that has not ended ends here, with the rewrite or the settle it was in: the store
-// replaced that retention, and its settle, if it was settling, is not part of any
-// window from now on.
+// genEnds is what the observer told of one generation: the earliest instant given for
+// the end of its rewrite and of its settle (gateWindowOpen until one is), the deadline
+// count taken with its settle, and its window (-1 until its publication is told).
+type genEnds struct {
+	rewrite, settle int64
+	hit             bool
+	win             int
+}
+
+// ends is the record of generation gen, made on the first call that names it. The
+// caller holds g.mu.
+func (g *gateTracker) ends(gen uint64) *genEnds {
+	if e, ok := g.gens[gen]; ok {
+		return e
+	}
+	if g.gens == nil {
+		g.gens = map[uint64]*genEnds{}
+	}
+	e := &genEnds{rewrite: gateWindowOpen, settle: gateWindowOpen, win: -1}
+	g.gens[gen] = e
+	return e
+}
+
+// place works out the window of e from what was told of it, if its publication was
+// told: the publication after it, if there is one, cuts it. A background build makes its
+// windows only here, so the window after e's is the next publication. The caller holds
+// g.mu.
+func (g *gateTracker) place(e *genEnds) {
+	if e.win < 0 {
+		return
+	}
+	cut := int64(gateWindowOpen)
+	if e.win+1 < len(g.windows) {
+		cut = g.windows[e.win+1].StartNs
+	}
+	w := &g.windows[e.win]
+	w.RewriteEndNs = min(e.rewrite, cut)
+	w.SettleEndNs = max(min(e.settle, cut), w.RewriteEndNs)
+	w.SupersededNs = 0
+	if cut != gateWindowOpen && e.rewrite >= cut {
+		// The store reports a pass it replaced in its rewrite as ended at the instant of
+		// the publication that replaced it, and never settles it.
+		w.SupersededNs = cut
+	}
+	w.SettleDeadlineHit = e.hit
+}
+
+// publishedGen opens the window of generation gen at its publication, with whatever
+// was told of it before, and cuts the window before it: a retention that has not ended
+// ends here, with the rewrite or the settle it was in, because the store replaced it,
+// and its settle, if it was settling, is not part of any window from now on. A
+// publication that arrives out of generation order, or twice, is not guarded against;
+// the store rules both out.
 func (g *gateTracker) publishedGen(gen uint64, at time.Time) {
 	if g == nil {
 		return
@@ -742,30 +800,18 @@ func (g *gateTracker) publishedGen(gen uint64, at time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	s := g.off(at)
-	g.pendingHit = false
-	for i := range g.windows {
-		w := &g.windows[i]
-		if w.SettleEndNs == gateWindowOpen && (w.RewriteEndNs == gateWindowOpen || w.RewriteEndNs == s) {
-			// The store reports a pass it replaced in its rewrite as ended at the instant
-			// of the publication that replaced it, and never settles it.
-			w.SupersededNs = s
-		}
-		if w.RewriteEndNs == gateWindowOpen {
-			w.RewriteEndNs = s
-		}
-		if w.SettleEndNs == gateWindowOpen {
-			w.SettleEndNs = max(s, w.RewriteEndNs)
-		}
-	}
-	if g.byGen == nil {
-		g.byGen = map[uint64]int{}
-	}
-	g.byGen[gen] = len(g.windows)
+	prev, e := g.lastPub, g.ends(gen)
+	e.win = len(g.windows)
 	g.windows = append(g.windows, GateWindow{StartNs: s, RewriteEndNs: gateWindowOpen, SettleEndNs: gateWindowOpen, ReturnNs: s})
+	g.lastPub = e
+	if prev != nil {
+		g.place(prev) // this publication cuts the window before it
+	}
+	g.place(e) // with whatever was told of gen before its publication
 }
 
-// rewriteEndedGen ends the rewrite of generation gen's window. A generation the
-// tracker was not told the publication of (a pass an earlier process left) has none.
+// rewriteEndedGen keeps the end of the rewrite of generation gen, whether or not its
+// publication has been told; the window, if there is one, is worked out again.
 func (g *gateTracker) rewriteEndedGen(gen uint64, at time.Time) {
 	if g == nil {
 		return
@@ -775,25 +821,17 @@ func (g *gateTracker) rewriteEndedGen(gen uint64, at time.Time) {
 	// The settle that follows is counted after this and before the pass is told it
 	// ended; a count that is still pending is of a pass that was replaced as it settled.
 	g.pendingHit = false
-	if i, ok := g.byGen[gen]; ok {
-		w := &g.windows[i]
-		w.RewriteEndNs = min(w.RewriteEndNs, g.off(at))
-		if w.SupersededNs > 0 && g.off(at) < w.SupersededNs {
-			// The rewrite ended before the publication that replaced it, and was told late: it
-			// was the settle that was replaced.
-			w.SupersededNs = 0
-		}
-		if w.SettleEndNs != gateWindowOpen {
-			w.SettleEndNs = max(w.SettleEndNs, w.RewriteEndNs)
-		}
-	}
+	e := g.ends(gen)
+	e.rewrite = min(e.rewrite, g.off(at))
+	g.place(e)
 }
 
 // settleCounted is told the store's count of the settle it has just done: 1 if it
 // reached its deadline, 0 if not. The store counts a settle, then tells the observer
 // that it ended, from one goroutine, so the count is the one the next settleEndedGen
 // takes; a count no settleEndedGen takes (of a pass that was replaced as it settled) is
-// dropped when the next pass is published or its rewrite ends.
+// dropped when the next pass's rewrite ends. A publication does not drop it: a Retain
+// may come between the count of a settle and the report that it ended.
 func (g *gateTracker) settleCounted(hits int64) {
 	if g == nil {
 		return
@@ -803,19 +841,20 @@ func (g *gateTracker) settleCounted(hits int64) {
 	g.mu.Unlock()
 }
 
-// settleEndedGen ends the settle of generation gen's window.
+// settleEndedGen keeps the end of the settle of generation gen, with the count taken
+// for it, whether or not its publication has been told; the window, if there is one, is
+// worked out again.
 func (g *gateTracker) settleEndedGen(gen uint64, at time.Time) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if i, ok := g.byGen[gen]; ok {
-		w := &g.windows[i]
-		w.SettleEndNs = max(min(w.SettleEndNs, g.off(at)), w.RewriteEndNs)
-		w.SettleDeadlineHit = g.pendingHit
-	}
+	e := g.ends(gen)
+	e.settle = min(e.settle, g.off(at))
+	e.hit = g.pendingHit
 	g.pendingHit = false
+	g.place(e)
 }
 
 // gateObserver tells a gateTracker what a background store reports of its retentions;
