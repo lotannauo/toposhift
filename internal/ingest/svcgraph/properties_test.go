@@ -1,6 +1,9 @@
 package svcgraph_test
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -11,14 +14,16 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 )
 
 // Every record of every scripted run is a record a store accepts, an Observe of this
-// producer with its one TTL, with no Through and no payload, in the layer the catalog
-// records for its subject: depends_on in L3, not L2, and a service in L3.
+// producer with its one TTL and no Through, in the layer the catalog records for its
+// subject: depends_on in L3, not L2, and a service in L3. A service carries the
+// description of its identity and an edge carries no payload.
 func TestEveryRecordIsWhatTheCatalogAndTheStoreExpect(t *testing.T) {
 	t.Parallel()
 	cat := catalog.Default()
@@ -51,8 +56,8 @@ func TestEveryRecordIsWhatTheCatalogAndTheStoreExpect(t *testing.T) {
 				switch {
 				case r.Kind != lifecycle.Observe:
 					t.Fatalf("seed %d: a %v record", seed, r.Kind)
-				case !r.Through.IsZero() || len(r.Payload) != 0 || r.Seq != 0 || r.Boot != "":
-					t.Fatalf("seed %d: through %v payload %q seq %d boot %q", seed, r.Through, r.Payload, r.Seq, r.Boot)
+				case !r.Through.IsZero() || r.Seq != 0 || r.Boot != "":
+					t.Fatalf("seed %d: through %v seq %d boot %q", seed, r.Through, r.Seq, r.Boot)
 				case r.TTL != expiry || r.Producer != testProducer || r.EventTimeBasis != store.BasisObserved:
 					t.Fatalf("seed %d: ttl %s producer %s basis %s", seed, r.TTL, r.Producer, r.EventTimeBasis)
 				}
@@ -65,8 +70,14 @@ func TestEveryRecordIsWhatTheCatalogAndTheStoreExpect(t *testing.T) {
 					if !rl.Allows(r.Subject.A.Type(), r.Subject.B.Type()) {
 						t.Fatalf("seed %d: the catalog does not allow %s -> %s", seed, r.Subject.A.Type(), r.Subject.B.Type())
 					}
+					if len(r.Payload) != 0 {
+						t.Fatalf("seed %d: an edge with payload %q", seed, r.Payload)
+					}
 				} else {
 					services++
+					if err := checkDescription(t, r); err != nil {
+						t.Fatalf("seed %d: %v", seed, err)
+					}
 					e, ok := cat.Entity(r.Subject.A.Type())
 					if !ok || r.Subject.A.Type() != catalog.Service || r.Layer != e.Layer() || r.Layer != catalog.L3 {
 						t.Fatalf("seed %d: an entity %s in %s", seed, r.Subject.A.Type(), r.Layer)
@@ -79,6 +90,22 @@ func TestEveryRecordIsWhatTheCatalogAndTheStoreExpect(t *testing.T) {
 		t.Errorf("only %d edges and %d services were written: the check meant to be large", edges, services)
 	}
 	t.Logf("%d records checked", total)
+}
+
+// checkDescription checks that a service record carries the canonical description of
+// the namespace and name its subject was made from.
+func checkDescription(t tb, r store.Record) error {
+	var d struct{ Name, Namespace string }
+	if err := json.Unmarshal(r.Payload, &d); err != nil {
+		return fmt.Errorf("service payload %q: %w", r.Payload, err)
+	}
+	if want := serviceFP(t, d.Namespace, d.Name); want != r.Subject.A {
+		return fmt.Errorf("service payload %q describes another service", r.Payload)
+	}
+	if want := otlpmetrics.ServiceDescription(d.Namespace, d.Name); !bytes.Equal(want, r.Payload) {
+		return fmt.Errorf("service payload %q is not canonical, want %q", r.Payload, want)
+	}
+	return nil
 }
 
 // A translator is a function of what it was given: two made alike and fed alike give the

@@ -11,6 +11,10 @@
 //   - client and server, the service.name of each side;
 //   - connection_type, which is always there: empty for a call between two
 //     services, and messaging_system, database or virtual_node otherwise;
+//   - virtual_node, which is there on every point when the connector is configured
+//     with virtual_node_extra_label: empty for a call between two services, and
+//     client or server for an edge the connector turned into a virtual node when it
+//     expired, which also sets connection_type to virtual_node;
 //   - failed, whether the call failed, which makes up to two series of one edge;
 //   - client_service.namespace and server_service.namespace, which are there only
 //     when the collector's connector is configured with the dimension and the span
@@ -88,9 +92,12 @@
 //
 // Only edges with connection_type empty are written. A call through a broker, to a
 // database or to a virtual node ([SkipConnectionMessaging], [SkipConnectionDatabase],
-// [SkipConnectionVirtualNode]), a point with a virtual_node label, and a point with
-// no connection_type are counted and take no part in the series' state. A self-call
-// is written like any other.
+// [SkipConnectionVirtualNode]), a point with no connection_type, and a point whose
+// virtual_node label is non-empty or unreadable ([SkipVirtualNodeLabel]) are counted
+// and take no part in the series' state. The connection_type is checked first. A
+// virtual_node label that is absent or empty is no reason to set a point aside: the
+// connector puts it on every point when it is configured to, empty for a call between
+// two services. A self-call is written like any other.
 //
 // A gauge, a sum that is not monotonic and a sum with no temporality are counted. So
 // is a point whose time is zero or lies more than [otlpmetrics.MaxClockAhead] after
@@ -104,7 +111,9 @@
 // renamed. A sighting is written as Observes with the expiry as TTL, at the point's
 // time, with basis observed (the collector's clock):
 //
-//   - the service of each side, in layer L3, with no payload;
+//   - the service of each side, in layer L3, whose payload is its description,
+//     {"name":...,"namespace":...} with the namespace left out when it has none (see
+//     [otlpmetrics.ServiceDescription]);
 //   - depends_on from the client service to the server service, in the layer the
 //     catalog records for it (L3), with no payload.
 //
@@ -121,6 +130,8 @@
 // given once or repeated with the same value, and not blank. A point whose client or
 // server, or whose namespace, is not usable writes nothing and is counted. The
 // namespace of one side is never used for the other. Nothing else identifies anything.
+// The description of a service is made of the same two values and adds nothing to
+// its identity.
 //
 // # State across a failed group
 //
@@ -204,7 +215,9 @@ const (
 	SkipConnectionVirtualNode = "connection type virtual_node"
 	// SkipConnectionUnknown is a connection_type this package does not know.
 	SkipConnectionUnknown = "connection type unknown"
-	// SkipVirtualNodeLabel is a point with a virtual_node label.
+	// SkipVirtualNodeLabel is a point whose virtual_node label names a virtual node (a
+	// non-empty value) or cannot be read (it is not a string, or is given twice with
+	// different values).
 	SkipVirtualNodeLabel = "point has a virtual node label"
 	// SkipNoEndpoint is a point whose client or server is absent, not a string,
 	// given more than once with different values, or not usable as a service name.
@@ -407,7 +420,11 @@ func connection(attrs otlpmetrics.Attributes) string {
 	default:
 		return SkipConnectionUnknown
 	}
-	if _, st := attrs.Get("virtual_node"); st != otlpmetrics.StatusAbsent {
+	// The connector puts the label on every point when it is configured to: empty for
+	// a call between two services. A value names a virtual node; a label that cannot
+	// be read is never taken for a call.
+	switch v, st := attrs.Get("virtual_node"); {
+	case st == otlpmetrics.StatusBad, st == otlpmetrics.StatusOK && v != "":
 		return SkipVirtualNodeLabel
 	}
 	return ""
@@ -456,12 +473,12 @@ func (t *Translator) sighting(e edge, at time.Time) ([]store.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	obs := func(s store.Subject) store.Record {
-		return otlpmetrics.Observe(t.producer, s, at, store.BasisObserved, t.expiry, nil)
+	obs := func(s store.Subject, payload []byte) store.Record {
+		return otlpmetrics.Observe(t.producer, s, at, store.BasisObserved, t.expiry, payload)
 	}
-	recs := []store.Record{obs(store.EntitySubject(client))}
+	recs := []store.Record{obs(store.EntitySubject(client), otlpmetrics.ServiceDescription(e.clientNS, e.client))}
 	if server != client {
-		recs = append(recs, obs(store.EntitySubject(server)))
+		recs = append(recs, obs(store.EntitySubject(server), otlpmetrics.ServiceDescription(e.serverNS, e.server)))
 	}
-	return append(recs, obs(store.EdgeSubject(client, server, catalog.DependsOn))), nil
+	return append(recs, obs(store.EdgeSubject(client, server, catalog.DependsOn), nil)), nil
 }

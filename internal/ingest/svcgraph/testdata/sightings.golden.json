@@ -1,0 +1,154 @@
+[
+ {
+  "input": "the first flush: two series, in the warm-up",
+  "received": "2026-10-15T09:00:01Z",
+  "skipped": {
+   "series new during warm-up": 2
+  }
+ },
+ {
+  "input": "a series new in the second flush, still in the warm-up",
+  "received": "2026-10-15T09:01:01Z",
+  "skipped": {
+   "series new during warm-up": 1
+  }
+ },
+ {
+  "input": "the third flush: nothing called",
+  "received": "2026-10-15T09:02:01Z"
+ },
+ {
+  "input": "frontend calls checkout again",
+  "received": "2026-10-15T09:03:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/frontend",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:03:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"frontend\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "service opentelemetry-demo/checkout",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:03:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"checkout\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "depends_on service opentelemetry-demo/frontend -> service opentelemetry-demo/checkout",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:03:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s"
+   }
+  ]
+ },
+ {
+  "input": "a self-call and a call with the client's namespace only, both new",
+  "received": "2026-10-15T09:04:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:04:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"cart\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "depends_on service opentelemetry-demo/cart -> service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:04:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "service opentelemetry-demo/frontend",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:04:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"frontend\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "service payment",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:04:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"payment\"}"
+   },
+   {
+    "subject": "depends_on service opentelemetry-demo/frontend -> service payment",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:04:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s"
+   }
+  ]
+ },
+ {
+  "input": "a database, two virtual nodes and an unreadable label",
+  "received": "2026-10-15T09:05:01Z",
+  "skipped": {
+   "connection type database": 1,
+   "connection type virtual_node": 1,
+   "point has a virtual node label": 3
+  }
+ },
+ {
+  "input": "checkout calls cart, and loadgenerator calls frontend-proxy",
+  "received": "2026-10-15T09:06:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/checkout",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"checkout\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"cart\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "depends_on service opentelemetry-demo/checkout -> service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "service loadgenerator",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"loadgenerator\"}"
+   },
+   {
+    "subject": "service frontend-proxy",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"frontend-proxy\"}"
+   },
+   {
+    "subject": "depends_on service loadgenerator -> service frontend-proxy",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:06:00Z",
+    "basis": "observed",
+    "ttl": "6h0m0s"
+   }
+  ]
+ }
+]

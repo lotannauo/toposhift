@@ -1,6 +1,7 @@
 package spancount_test
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -181,10 +182,14 @@ func TestAnInstanceInAPod(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	// The instance carries its version; the others carry nothing.
+	// The service carries its description and the instance its version; the edges
+	// carry nothing.
 	for i, rec := range r.Records {
 		want := ""
-		if i == 1 {
+		switch i {
+		case 0:
+			want = `{"name":"cart","namespace":"shop"}`
+		case 1:
 			want = `{"service.version":"2.1.0"}`
 		}
 		if string(rec.Payload) != want {
@@ -416,6 +421,19 @@ func TestBothWritersAssertTheSameServiceEntity(t *testing.T) {
 	if !has(spans.Records) || !has(graph.Records) {
 		t.Errorf("the service entity is asserted by the span counter: %v, by the service graph: %v", has(spans.Records), has(graph.Records))
 	}
+	// And with the same description, byte for byte.
+	payloadOf := func(recs []store.Record) []byte {
+		for _, r := range recs {
+			if r.Subject == want {
+				return r.Payload
+			}
+		}
+		return nil
+	}
+	sp, gp := payloadOf(spans.Records), payloadOf(graph.Records)
+	if !bytes.Equal(sp, gp) || !bytes.Equal(sp, otlpmetrics.ServiceDescription("shop", "cart")) || string(sp) != `{"name":"cart","namespace":"shop"}` {
+		t.Errorf("the span counter describes the service as %q, the service graph as %q", sp, gp)
+	}
 	// The producers differ, because the two cadences differ and a producer has one TTL.
 	if spans.Records[0].Producer == graph.Records[0].Producer {
 		t.Error("the two writers share a producer")
@@ -641,11 +659,28 @@ func TestEveryRecordIsWhatTheCatalogAndTheStoreExpect(t *testing.T) {
 						if rec.Subject.Relation == catalog.PartOf && rec.Subject.B.Type() != catalog.K8sPod {
 							t.Errorf("a part_of to a %s", rec.Subject.B.Type())
 						}
+						if len(rec.Payload) != 0 {
+							t.Errorf("edge %s has payload %q", rec.Subject.Relation, rec.Payload)
+						}
 						continue
 					}
 					e, ok := cat.Entity(rec.Subject.A.Type())
 					if !ok || rec.Layer != e.Layer() {
 						t.Errorf("entity %s in %s", rec.Subject.A.Type(), rec.Layer)
+					}
+					// A service carries its description and an instance its version, if
+					// it has one.
+					var want []byte
+					switch rec.Subject.A.Type() {
+					case catalog.Service:
+						want = otlpmetrics.ServiceDescription(ns, "cart")
+					case catalog.ServiceInstance:
+						if version != "" {
+							want = []byte(`{"service.version":"` + version + `"}`)
+						}
+					}
+					if !bytes.Equal(rec.Payload, want) {
+						t.Errorf("%s (namespace %q, version %q): payload %q, want %q", rec.Subject.A.Type(), ns, version, rec.Payload, want)
 					}
 				}
 			}
