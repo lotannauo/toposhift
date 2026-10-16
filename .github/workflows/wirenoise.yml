@@ -1,0 +1,318 @@
+name: wirenoise
+
+# How noisy are the medians of Node decode times on the arm64 runner? The wire
+# format's decode gate sets its margin T3 from the answer. This workflow measures
+# it by an A/A design: the same decode runs in two slots of one Node process, each
+# with an independently loaded copy of the code, in a counterbalanced order, so any
+# difference between the slots is noise. It says nothing about which format is faster.
+# bench/wirenoise/README.md defines the protocol and the statistic; the rule that
+# turns the spread into a margin is registered in the gate log before any dispatch.
+#
+# A dispatch runs from a tag gate-freeze-YYYYMMDD that freezes a commit of main, and
+# names that commit in expected_sha. The tag is created by a maintainer. The check in
+# the setup job is a convention: a dispatch from another ref runs that ref's copy of
+# this file and can skip it. The enforcement is offline: every job records the commit
+# and the hashes of FILES.sha256 and of this file in env.json, and summarize.mjs
+# refuses a job whose record is not the registered one.
+#
+#   gh workflow run wirenoise.yml --ref gate-freeze-YYYYMMDD -f expected_sha=<sha> \
+#     -f jobs=6 -f processes=20
+#
+# A dispatch waits at its setup job for approval: that job runs in the environment
+# bench-approval, which a maintainer creates beforehand (Settings, Environments) with a
+# required approval and with deployment branches and tags unrestricted, so that the tag
+# can deploy. GitHub creates a missing environment unprotected on first use, so it
+# must exist first. Nothing else of a run starts before the approval.
+#
+# A change to this file or to bench/wirenoise gets a dry run: the files are checked,
+# the fixtures are made again and compared byte for byte, the tests run on the pinned
+# Node, and one trial runs in a form that has no time in it. The dry run times nothing
+# that is printed or kept.
+#
+# Standard GitHub-hosted runners are free for a public repository.
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: The 40-hexadecimal-digit commit the dispatch must run, which the tag it is dispatched from must point at.
+        type: string
+        required: true
+      jobs:
+        description: How many jobs, each on its own runner, an integer from 1 to 8.
+        type: string
+        default: "6"
+      processes:
+        description: How many fresh Node processes each job runs one after another, an integer from 1 to 20.
+        type: string
+        default: "20"
+  pull_request:
+    paths:
+      - .github/workflows/wirenoise.yml
+      - bench/wirenoise/**
+
+permissions: {}
+
+concurrency:
+  # A newer push to a pull request cancels its older dry run. A dispatch has a group
+  # of its own and is never cancelled: a measurement that is cancelled has measured
+  # nothing.
+  group: wirenoise-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for an
+    # unnamed bash step does not set pipefail).
+    shell: bash
+
+jobs:
+  # Checks the dispatch and turns its inputs into a matrix. Every input reaches a
+  # script only through env, and no message repeats one: its text is not trusted.
+  setup:
+    name: wirenoise setup
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: bench-approval
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      processes: ${{ steps.plan.outputs.processes }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The whole history, so that the check can see that the commit is on main.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the dispatch and plan the jobs
+        id: plan
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          JOBS: ${{ inputs.jobs }}
+          PROCESSES: ${{ inputs.processes }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+
+          hex40='^[0-9a-f]{40}$'
+          [[ $SHA =~ $hex40 ]] || fail "the run's commit is not 40 hexadecimal digits"
+          [[ $EXPECTED_SHA =~ $hex40 ]] || fail "expected_sha: 40 lowercase hexadecimal digits"
+
+          # A measured dispatch comes from a freeze tag, matched by an
+          # anchored expression, and the tag's commit is the one the dispatch names.
+          re='^refs/tags/gate-freeze-[0-9]{8}$'
+          [[ $REF =~ $re ]] || fail "the ref: a measured dispatch comes from a tag gate-freeze-YYYYMMDD"
+          [ "$EXPECTED_SHA" = "$SHA" ] || fail "expected_sha: not the commit this run was dispatched at"
+          git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null || fail "the ref: the tag's commit is not on origin/main"
+
+          re='^[1-8]$'
+          [[ $JOBS =~ $re ]] || fail "jobs: an integer from 1 to 8"
+          re='^([1-9]|1[0-9]|20)$'
+          [[ $PROCESSES =~ $re ]] || fail "processes: an integer from 1 to 20"
+
+          matrix='['
+          for ((i = 1; i <= JOBS; i++)); do
+            matrix+="$i"
+            if ((i < JOBS)); then matrix+=","; fi
+          done
+          matrix+=']'
+          {
+            echo "matrix=$matrix"
+            echo "processes=$PROCESSES"
+            echo "jobs=$JOBS"
+          } >>"$GITHUB_OUTPUT"
+          {
+            echo "### Planned: $JOBS jobs of $PROCESSES processes"
+            echo
+            echo "- ref: \`$REF\`; commit: \`$SHA\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # One job on its own runner: the processes one after another, each a fresh node.
+  measure:
+    name: wirenoise measure
+    needs: setup
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        job: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # The Node of the runner image is not used. It is recorded, and nothing more.
+      - name: Note the image's own Node
+        id: image
+        run: |
+          set -euo pipefail
+          image_node=""
+          if command -v node >/dev/null 2>&1; then
+            image_node="$(node --version)"
+          fi
+          echo "node=$image_node" >>"$GITHUB_OUTPUT"
+
+      - name: Install the pinned Node
+        run: bash bench/wirenoise/install-node.sh
+
+      - name: Install the packages
+        working-directory: bench/wirenoise
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check the files
+        working-directory: bench/wirenoise
+        run: sha256sum --check --strict FILES.sha256
+
+      - name: Measure
+        working-directory: bench/wirenoise
+        env:
+          IMAGE_NODE: ${{ steps.image.outputs.node }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          JOBS: ${{ needs.setup.outputs.jobs }}
+          PROCESSES: ${{ needs.setup.outputs.processes }}
+          JOB: ${{ matrix.job }}
+          OUT: ${{ runner.temp }}/out
+        run: node run.mjs --job "$JOB" --processes "$PROCESSES" --out "$OUT"
+
+      - name: Keep the results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wirenoise-${{ github.run_id }}-${{ matrix.job }}
+          path: ${{ runner.temp }}/out
+          if-no-files-found: error
+          retention-days: 30
+
+  # The spread of this dispatch alone. The two dispatches are read together offline.
+  # The registered values are checked there; here the commit is the one the dispatch
+  # named and the two hashes are those of the files this job checked out.
+  summary:
+    name: wirenoise summary
+    needs: [setup, measure]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the pinned Node
+        run: bash bench/wirenoise/install-node.sh
+
+      - name: Fetch the results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wirenoise-${{ github.run_id }}-*
+          path: ${{ runner.temp }}/artifacts
+
+      - name: Summarize
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          TAG: ${{ github.ref_name }}
+          PROCESSES: ${{ needs.setup.outputs.processes }}
+          ARTIFACTS: ${{ runner.temp }}/artifacts
+          OUT: ${{ runner.temp }}/summary
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          files="$(sha256sum bench/wirenoise/FILES.sha256 | cut -d' ' -f1)"
+          wf="$(sha256sum .github/workflows/wirenoise.yml | cut -d' ' -f1)"
+          node bench/wirenoise/summarize.mjs --dir "$ARTIFACTS" --sha "$EXPECTED_SHA" --files "$files" --wf "$wf" \
+            --tag "$TAG" --dispatches 1 --processes "$PROCESSES" --json "$OUT/summary.json" >"$OUT/report.txt"
+          cat "$OUT/report.txt"
+          {
+            echo '```'
+            cat "$OUT/report.txt"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wirenoise-summary-${{ github.run_id }}
+          path: ${{ runner.temp }}/summary/summary.json
+          if-no-files-found: error
+          retention-days: 30
+
+  # A change to this file or to bench/wirenoise. It prints no time and keeps nothing.
+  dry-run:
+    name: wirenoise dry run
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the pinned Node
+        run: bash bench/wirenoise/install-node.sh
+
+      - name: Install the packages
+        working-directory: bench/wirenoise
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check the files, and make the fixtures again
+        working-directory: bench/wirenoise
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict FILES.sha256
+          node gen.mjs check
+
+      - name: Run the tests
+        working-directory: bench/wirenoise
+        run: node --test
+
+      - name: Run one trial in its dry form
+        working-directory: bench/wirenoise
+        env:
+          OUT: ${{ runner.temp }}/dry
+        run: |
+          set -euo pipefail
+          node run.mjs --job 0 --processes 1 --out "$OUT" --dry
+          echo "dry run: ok"

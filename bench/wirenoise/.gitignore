@@ -1,0 +1,9 @@
+# Dependencies, installed by `npm ci`.
+node_modules/
+
+# What a measurement writes. Numbers from a laptop or a VM are never published, and
+# the artifacts of a dispatch are read from GitHub, not from the tree.
+results-*.json
+summary.json
+env.json
+out/

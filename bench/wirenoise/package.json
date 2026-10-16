@@ -1,0 +1,15 @@
+{
+  "name": "toposhift-wirenoise",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The run-to-run spread of Node decode medians on the arm64 runner, measured before the wire format's decode gate sets its margin. Not shipped.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@uwdata/flechette": "2.5.0",
+    "apache-arrow": "21.2.0"
+  }
+}

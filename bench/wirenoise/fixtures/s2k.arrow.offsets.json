@@ -1,0 +1,93 @@
+{
+  "provenance": "shape of bytesgate.Arrow at origin/main 3d92092; values synthetic; no output of bytesgate is used",
+  "size": "S2k",
+  "sections": [
+    {
+      "name": "header",
+      "start": 0,
+      "end": 2832,
+      "rows": 1
+    },
+    {
+      "name": "entities",
+      "start": 2832,
+      "end": 21352,
+      "rows": 1000
+    },
+    {
+      "name": "elements",
+      "start": 21352,
+      "end": 315128,
+      "rows": 2000
+    },
+    {
+      "name": "keyframes",
+      "start": 315128,
+      "end": 320128,
+      "rows": 1
+    },
+    {
+      "name": "deltas",
+      "start": 320128,
+      "end": 329104,
+      "rows": 600
+    },
+    {
+      "name": "quarantine",
+      "start": 329104,
+      "end": 339936,
+      "rows": 1
+    },
+    {
+      "name": "truncated",
+      "start": 339936,
+      "end": 343776,
+      "rows": 1
+    },
+    {
+      "name": "unattributed",
+      "start": 343776,
+      "end": 346496,
+      "rows": 20
+    },
+    {
+      "name": "unmapped",
+      "start": 346496,
+      "end": 348808,
+      "rows": 40
+    },
+    {
+      "name": "suppressed",
+      "start": 348808,
+      "end": 352344,
+      "rows": 25
+    },
+    {
+      "name": "pods",
+      "start": 352344,
+      "end": 366432,
+      "rows": 29
+    },
+    {
+      "name": "anchor",
+      "start": 366432,
+      "end": 367000,
+      "rows": 1
+    }
+  ],
+  "checksum": 2079196521,
+  "section_checksums": [
+    290955280,
+    288573010,
+    269639280,
+    4076247860,
+    1498287992,
+    4294269461,
+    3429559362,
+    1857226505,
+    3452611656,
+    4269401763,
+    1332256435,
+    3100377178
+  ]
+}

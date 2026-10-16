@@ -40,6 +40,11 @@
       ],
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The Node noise measurement's pins are registered (gate log); never bumped.",
+      "matchFileNames": ["bench/wirenoise/**"],
+      "enabled": false
     }
   ]
 }
