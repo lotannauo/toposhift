@@ -518,8 +518,11 @@ func TestCheckRetentionModeAcceptsSyncAndBackground(t *testing.T) {
 
 // The mode and the observer reach the store of a root variant: in background the
 // observer is told of the publication, the end of the rewrite and the end of the
-// settle of a retention, before WaitRetained returns; in sync (and with no mode) it is
-// never told, because the store does all its work under its lock.
+// settle of a retention, once each and at instants in that order, before WaitRetained
+// returns; in sync (and with no mode) it is never told, because the store does all its
+// work under its lock. The order the calls arrive in is not checked: the Retain tells
+// of the publication after it releases the store's lock, and the store's goroutine may
+// end the rewrite, and the settle, before it does (see pebblestore.RetainObserver).
 func TestTheObserverReachesTheStoreOfARootVariantInTheBackground(t *testing.T) {
 	t.Parallel()
 
@@ -540,9 +543,9 @@ func TestTheObserverReachesTheStoreOfARootVariantInTheBackground(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var told []string
+			var told []phaseCall
 			var mu sync.Mutex
-			obs := phaseLog(func(what string) { mu.Lock(); told = append(told, what); mu.Unlock() })
+			obs := phaseLog(func(c phaseCall) { mu.Lock(); told = append(told, c); mu.Unlock() })
 			e, err := v.Open("db", candidates.Options{FS: vfs.NewMem(), RetentionMode: c.mode, SettleRetention: true, RetainObserver: obs})
 			if err != nil {
 				t.Fatal(err)
@@ -561,12 +564,8 @@ func TestTheObserverReachesTheStoreOfARootVariantInTheBackground(t *testing.T) {
 			mu.Lock()
 			got := slices.Clone(told)
 			mu.Unlock()
-			want := []string(nil)
-			if c.told {
-				want = []string{"published", "rewrite", "settle"}
-			}
-			if !slices.Equal(got, want) {
-				t.Errorf("%s in mode %q: the observer was told %v, want %v", name, c.mode, got, want)
+			if err := toldOfOneRetention(got, c.told); err != nil {
+				t.Errorf("%s in mode %q: %v", name, c.mode, err)
 			}
 			if err := e.Close(); err != nil {
 				t.Errorf("%s in mode %q: Close = %v", name, c.mode, err)
@@ -575,12 +574,52 @@ func TestTheObserverReachesTheStoreOfARootVariantInTheBackground(t *testing.T) {
 	}
 }
 
-// phaseLog is a RetainObserver that names each call.
-type phaseLog func(what string)
+// phaseCall is one call of a RetainObserver: the phase, the generation and the
+// instant.
+type phaseCall struct {
+	what string
+	gen  uint64
+	at   time.Time
+}
 
-func (f phaseLog) Published(uint64, time.Time)    { f("published") }
-func (f phaseLog) RewriteEnded(uint64, time.Time) { f("rewrite") }
-func (f phaseLog) SettleEnded(uint64, time.Time)  { f("settle") }
+func (c phaseCall) String() string { return fmt.Sprintf("%s of %d", c.what, c.gen) }
+
+// phaseLog is a RetainObserver that passes each call on.
+type phaseLog func(phaseCall)
+
+func (f phaseLog) Published(gen uint64, at time.Time)    { f(phaseCall{"published", gen, at}) }
+func (f phaseLog) RewriteEnded(gen uint64, at time.Time) { f(phaseCall{"rewrite", gen, at}) }
+func (f phaseLog) SettleEnded(gen uint64, at time.Time)  { f(phaseCall{"settle", gen, at}) }
+
+// toldOfOneRetention says what is wrong with the calls an observer got for one
+// retention: none if told is false; else one call of each phase, all of one
+// generation, at instants in the order of the phases (the instants are read under
+// the store's lock, one phase after the other; the arrival order is not promised).
+func toldOfOneRetention(got []phaseCall, told bool) error {
+	if !told {
+		if len(got) != 0 {
+			return fmt.Errorf("the observer was told %v, want nothing", got)
+		}
+		return nil
+	}
+	at := map[string]time.Time{}
+	for _, c := range got {
+		if _, twice := at[c.what]; twice || c.gen != got[0].gen {
+			return fmt.Errorf("the observer was told %v, want each phase once, of one generation", got)
+		}
+		at[c.what] = c.at
+	}
+	pub, ok1 := at["published"]
+	rew, ok2 := at["rewrite"]
+	set, ok3 := at["settle"]
+	if !ok1 || !ok2 || !ok3 || len(got) != 3 {
+		return fmt.Errorf("the observer was told %v, want published, rewrite and settle", got)
+	}
+	if rew.Before(pub) || set.Before(rew) {
+		return fmt.Errorf("published at %v, rewrite ended at %v, settle ended at %v: want them in that order", pub, rew, set)
+	}
+	return nil
+}
 
 // External makes a candidate that is not in the registry, under a name that cannot be
 // taken for one that is.

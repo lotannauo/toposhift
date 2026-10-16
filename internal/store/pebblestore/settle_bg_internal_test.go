@@ -804,8 +804,15 @@ func TestRetainDuringSettle(t *testing.T) {
 		t.Error("two retentions, the second during the settle of the first, left other meta keys than two synchronous ones")
 	}
 	// The first generation was replaced while it settled: it is not told its settle ended.
-	if names := log.names(first); !slices.Equal(names, []string{"published", "rewrite"}) {
+	// The publication is told after the Retain releases the lock, so the rewriting may be
+	// told first: the names are compared in sorted order and the instants in the
+	// order of the phases.
+	if names := slices.Sorted(slices.Values(log.names(first))); !slices.Equal(names, []string{"published", "rewrite"}) {
 		t.Errorf("the replaced generation was told %v, want published and rewrite only", names)
+	}
+	firstPub, _ := log.at(first, "published")
+	if firstEnd, _ := log.at(first, "rewrite"); firstEnd.Before(firstPub) {
+		t.Errorf("the replaced generation's rewriting ended at %v, before its publication at %v", firstEnd, firstPub)
 	}
 	if names := log.names(second.generation); !slices.Equal(names, []string{"published", "rewrite", "settle"}) {
 		t.Errorf("the second generation was told %v", names)
