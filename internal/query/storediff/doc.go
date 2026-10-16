@@ -6,5 +6,5 @@
 // on both, reads included: package interval's entity, edge and description
 // reads, co-residency, blast radius and Around, extraction, graph diff, and the
 // subgraph builds. They also hold pebblestore's seed walks at a reference cell
-// to the budget fixed beside them, and each WindowSince to one iterator.
+// to the budget pebblestore fixes, and each WindowSince to one iterator.
 package storediff

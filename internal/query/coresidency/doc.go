@@ -104,6 +104,8 @@
 // in one batched store read (store.Store.WindowSince) that is counted as one
 // Window, or one EntityWindow, per entity. It returns the window's records and
 // each reference's seed just before From, never the history before it, so its
-// cost is bounded by the window and the store's walk to the seeds, whose budget
-// the store fixes.
+// cost is the window and the store's walk to the seeds. Only pebblestore bounds
+// that walk, and only under the conditions of its seed-walk budget (its
+// seeded.go), among them ingest's coalescer configuration; memstore has no such
+// bound.
 package coresidency

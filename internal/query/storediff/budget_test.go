@@ -9,22 +9,15 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/coalesce"
 	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
-)
-
-// The seed walk's budget, SW1, as pebblestore's seeded.go fixes it (2026-10-15):
-// at most three times the reference cell's policy gap G = 73 records, and one
-// stamp, per walk, at a token at or above the W of the checkpoint the walk uses,
-// in a prefix the retention pass has rewritten.
-const (
-	sw1Records = 3 * 73
-	sw1Stamps  = 1
 )
 
 func nth(typ catalog.EntityType, i int) identity.Fingerprint {
@@ -39,16 +32,21 @@ func nth(typ catalog.EntityType, i int) identity.Fingerprint {
 
 // referenceCell writes the reference cell to st: one node with 110 live pods
 // placed on it by the k8sobjects translator, refreshed by a pull every 5 minutes
-// with a 15 minute TTL, as serve's coalescer stores them (RunAgeFromTTL with an
-// extension fraction of a half): a run is never extended, and every second
-// refresh, every 10 minutes, starts a new run, an Observe at its own instant with
-// no Through. Each record carries the translator's edge payload, and the pods'
-// cadences are spread over the interval. It covers span from t0 and returns the
-// node, the pods and the instant of the last record.
+// with a 15 minute TTL, written through ingest's coalescer
+// (sequencer.CoalesceConfig) with a flush every coalesce.FlushPeriod, as serve
+// writes them. Under that configuration a run is never extended, and every second
+// pull, every 10 minutes, starts a new run, an Observe at its own instant with no
+// Through; the other pulls are absorbed, and no flush writes anything, because a
+// run is replaced at its next start before it comes within coalesce.FlushLead of
+// its deadline. The cell fails if the coalescer writes anything else. Each record
+// carries the translator's edge payload, and the pods' cadences are spread over
+// the interval. It covers span from t0 and returns the node, the pods and the
+// instant of the last record.
 func referenceCell(t *testing.T, st store.Store, t0 time.Time, span time.Duration) (identity.Fingerprint, []identity.Fingerprint, time.Time) {
 	t.Helper()
 	const pods = 110
-	ttl, every := 15*time.Minute, 10*time.Minute
+	pull, ttl := 5*time.Minute, 15*time.Minute
+	every := 2 * pull
 	node := nth(catalog.K8sNode, 1)
 	payload, err := json.Marshal(map[string]any{
 		"node_name":  "ip-10-0-12-34.eu-west-1.compute.internal",
@@ -58,18 +56,51 @@ func referenceCell(t *testing.T, st store.Store, t0 time.Time, span time.Duratio
 		t.Fatal(err)
 	}
 	var ps []identity.Fingerprint
-	var all []store.Record
+	var refreshes []store.Record
+	var pulls, want int
 	for i := range pods {
 		p := nth(catalog.K8sPod, i)
 		ps = append(ps, p)
-		for at := t0.Add(time.Duration(i) * every / pods); at.Before(t0.Add(span)); at = at.Add(every) {
-			all = append(all, store.Record{
+		n := 0
+		for at := t0.Add(time.Duration(i) * every / pods); at.Before(t0.Add(span)); at = at.Add(pull) {
+			refreshes = append(refreshes, store.Record{
 				Layer: catalog.L2, Subject: store.EdgeSubject(p, node, catalog.ScheduledOn), Producer: "k8sobjects/default",
 				EventTime: at, Kind: lifecycle.Observe, TTL: ttl, EventTimeBasis: store.BasisObjectField, Payload: payload,
 			})
+			n++
+		}
+		pulls += n
+		want += (n + 1) / 2
+	}
+	slices.SortStableFunc(refreshes, func(a, b store.Record) int { return a.EventTime.Compare(b.EventTime) })
+	// The sequencer's loop: a flush at every tick up to a refresh, then the refresh.
+	// FlushAll is not called, because serve keeps running.
+	co, err := coalesce.New(sequencer.CoalesceConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var all []store.Record
+	tick := t0
+	for _, r := range refreshes {
+		for !tick.After(r.EventTime) {
+			all = co.Flush(tick, all)
+			tick = tick.Add(coalesce.FlushPeriod)
+		}
+		all = co.Add(r, all)
+	}
+	for tick.Before(t0.Add(span)) {
+		all = co.Flush(tick, all)
+		tick = tick.Add(coalesce.FlushPeriod)
+	}
+	through := 0
+	for _, r := range all {
+		if !r.Through.IsZero() {
+			through++
 		}
 	}
-	slices.SortStableFunc(all, func(a, b store.Record) int { return a.EventTime.Compare(b.EventTime) })
+	if through != 0 || len(all) != want || slices.ContainsFunc(all, func(r store.Record) bool { return r.Kind != lifecycle.Observe }) {
+		t.Fatalf("ingest's coalescer (sequencer.CoalesceConfig) wrote %d records, %d with a Through, from %d pulls; SW1's precondition writes one Observe per two pulls at a 5-minute pull and a 15-minute TTL, with none: the cell no longer stands for serve (see pebblestore's seed-walk budget)", len(all), through, pulls)
+	}
 	for i := range all {
 		all[i].Seq = uint64(i + 1)
 	}
@@ -84,11 +115,16 @@ func referenceCell(t *testing.T, st store.Store, t0 time.Time, span time.Duratio
 // At the reference cell, with the default checkpoint policy, every seed walk of
 // the node's reverse prefix at the latest token stays within SW1, whatever
 // instant the window starts at; and the reads go through package interval's
-// call, as a query makes them.
+// call, as a query makes them. SW1 is pebblestore's and is read from it. It
+// holds at a token at or above the W of the checkpoint the walk uses, in a prefix
+// the retention pass has rewritten, and in a store written under ingest's
+// coalescer configuration, which the cell is.
 func TestTheSeedWalkKeepsItsBudgetAtTheReferenceCell(t *testing.T) {
 	t.Parallel()
 	rec := newRecorder()
 	st := openPebble(t, variant{checkpoint: pebblestore.DefaultCheckpoints()}, lifecycle.Policy{}, rec)
+	budgetRecords, budgetStamps := pebblestore.SeedWalkBudget()
+	sw1Records, sw1Stamps := int64(budgetRecords), int64(budgetStamps) // the recorder samples int64
 	t0 := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	span := 4 * time.Hour
 	if testing.Short() {

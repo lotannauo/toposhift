@@ -3,6 +3,7 @@ package sequencer
 import (
 	"context"
 
+	"github.com/lotannauo/toposhift/internal/coalesce"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -50,3 +51,6 @@ var NamespaceEvent = namespaceEvent
 // Runs is how many runs the coalescer remembers. It is read once Run has
 // returned.
 func Runs(s *Sequencer) int { return s.co.Runs() }
+
+// CoalescerConfigOf is the configuration the sequencer's coalescer was made with.
+func CoalescerConfigOf(s *Sequencer) coalesce.Config { return s.coCfg }
