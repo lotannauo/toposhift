@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -893,5 +894,252 @@ func TestTheGateReadsTheStallsAndTheSublevels(t *testing.T) {
 	}
 	if m, err = readStoreGateMetrics(old); err != nil || m.WriteStallsRead || m.L0SublevelsPeak != 2 {
 		t.Errorf("a file without stalls read as %+v, %v", m, err)
+	}
+}
+
+// obsCall is one call of the observer of a store that retains in the background: a
+// publication, the end of a rewrite, the end of a settle, or the store's count of a
+// settle (a call of its own, as when a Retain comes between the count and the report).
+type obsCall struct {
+	kind    byte // 'p' published, 'r' rewrite ended, 's' settle ended, 'c' settle counted
+	gen     uint64
+	ns      int64
+	counted bool  // a settle told with the count taken just before it
+	count   int64 // the count: 1 for a settle that reached its deadline, 0 for one that did not
+}
+
+func published(gen uint64, ns int64) obsCall  { return obsCall{kind: 'p', gen: gen, ns: ns} }
+func rewriteEnd(gen uint64, ns int64) obsCall { return obsCall{kind: 'r', gen: gen, ns: ns} }
+func settleEnd(gen uint64, ns int64) obsCall  { return obsCall{kind: 's', gen: gen, ns: ns} }
+func settleCount(count int64) obsCall         { return obsCall{kind: 'c', count: count} }
+func settleEndCounted(gen uint64, ns, count int64) obsCall {
+	return obsCall{kind: 's', gen: gen, ns: ns, counted: true, count: count}
+}
+
+func (c obsCall) String() string {
+	switch {
+	case c.kind == 'c':
+		return fmt.Sprintf("count(%d)", c.count)
+	case c.counted:
+		return fmt.Sprintf("s(%d,%d,count %d)", c.gen, c.ns, c.count)
+	}
+	return fmt.Sprintf("%c(%d,%d)", c.kind, c.gen, c.ns)
+}
+
+// tell makes the call. The store counts a settle just before it reports it, on one
+// goroutine, so a settle told with a count is preceded by it.
+func (c obsCall) tell(g *gateTracker) {
+	obs := gateObserver{g}
+	switch c.kind {
+	case 'p':
+		obs.Published(c.gen, at(c.ns))
+	case 'r':
+		obs.RewriteEnded(c.gen, at(c.ns))
+	case 's':
+		if c.counted {
+			g.settleCounted(c.count)
+		}
+		obs.SettleEnded(c.gen, at(c.ns))
+	case 'c':
+		g.settleCounted(c.count)
+	}
+}
+
+// withHit is w with the settle having reached its deadline.
+func (w GateWindow) withHit() GateWindow { w.SettleDeadlineHit = true; return w }
+
+// eachOrder calls visit with every order of the n indices in which, for each pair {a, b}
+// of before, a comes before b, in a fixed order and with no random draw, and returns how
+// many orders there are.
+func eachOrder(n int, before [][2]int, visit func(order []int)) int {
+	var count int
+	order := make([]int, 0, n)
+	used := make([]bool, n)
+	var rec func()
+	rec = func() {
+		if len(order) == n {
+			pos := make([]int, n)
+			for i, k := range order {
+				pos[k] = i
+			}
+			for _, b := range before {
+				if pos[b[0]] > pos[b[1]] {
+					return
+				}
+			}
+			count++
+			visit(order)
+			return
+		}
+		for k := 0; k < n; k++ {
+			if !used[k] {
+				used[k], order = true, append(order, k)
+				rec()
+				used[k], order = false, order[:len(order)-1]
+			}
+		}
+	}
+	rec()
+	return count
+}
+
+// everyOrderGives tells the calls to a new tracker in every order eachOrder gives and
+// reports each order whose windows are not want, or that after (if given) finds fault
+// with. It returns the number of orders, which the caller checks against the number it
+// expects, so that a change in the generator is not silent.
+func everyOrderGives(t *testing.T, name string, calls []obsCall, before [][2]int, want []GateWindow, after func(g *gateTracker) string) int {
+	t.Helper()
+	return eachOrder(len(calls), before, func(order []int) {
+		g := newGateTracker(epoch)
+		told := make([]string, len(order))
+		for i, k := range order {
+			calls[k].tell(g)
+			told[i] = calls[k].String()
+		}
+		if !slices.Equal(g.windows, want) {
+			t.Errorf("%s: told %s: windows %+v, want %+v", name, strings.Join(told, " "), g.windows, want)
+		} else if after != nil {
+			if msg := after(g); msg != "" {
+				t.Errorf("%s: told %s: %s", name, strings.Join(told, " "), msg)
+			}
+		}
+	})
+}
+
+func wantOrders(t *testing.T, name string, got, want int) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s: %d orders tried, want %d", name, got, want)
+	}
+}
+
+// The windows of one retention do not depend on the order its three calls arrive in:
+// every one of the six orders gives the same window, the settle reporting its count.
+func TestOneRetentionMakesTheSameWindowInEveryOrderOfItsCalls(t *testing.T) {
+	t.Parallel()
+
+	n := everyOrderGives(t, "one retention", []obsCall{published(1, 100), rewriteEnd(1, 200), settleEndCounted(1, 300, 1)},
+		nil, []GateWindow{win(100, 200, 300, 100).withHit()}, nil)
+	wantOrders(t, "one retention", n, 6)
+}
+
+// A retention that a later publication replaces in its rewrite, as the store reports
+// it (the rewrite ends at the instant of the publication that replaced it), is marked
+// replaced in every order of the five calls in which the publications are in order.
+func TestAReplacedRewriteIsMarkedInEveryOrderOfTheCalls(t *testing.T) {
+	t.Parallel()
+
+	n := everyOrderGives(t, "replaced in its rewrite",
+		[]obsCall{published(1, 100), rewriteEnd(1, 150), published(2, 150), rewriteEnd(2, 300), settleEndCounted(2, 400, 1)},
+		[][2]int{{0, 2}}, []GateWindow{win(100, 150, 150, 100).replaced(150), win(150, 300, 400, 150).withHit()}, nil)
+	wantOrders(t, "replaced in its rewrite", n, 60)
+}
+
+// A retention that a later publication replaces while it settles ends its settle at
+// that publication, in every order of the five calls in which the publications are in
+// order.
+func TestAReplacedSettleEndsAtTheNextPublicationInEveryOrderOfTheCalls(t *testing.T) {
+	t.Parallel()
+
+	n := everyOrderGives(t, "replaced while it settles",
+		[]obsCall{published(1, 100), rewriteEnd(1, 200), published(2, 250), rewriteEnd(2, 300), settleEndCounted(2, 400, 1)},
+		[][2]int{{0, 2}}, []GateWindow{win(100, 200, 250, 100), win(250, 300, 400, 250).withHit()}, nil)
+	wantOrders(t, "replaced while it settles", n, 60)
+}
+
+// A settle that ended before the next publication keeps its end and its count in every
+// order of the calls in which the publications are in order, whether the report of its
+// end arrives before the publication or after it, and the next settle, which counts none,
+// does not take it.
+func TestASettleThatEndedBeforeTheNextPublicationKeepsItsEndAndCountInEveryOrder(t *testing.T) {
+	t.Parallel()
+
+	n := everyOrderGives(t, "a Retain after the settle ended",
+		[]obsCall{published(1, 100), rewriteEnd(1, 200), settleEndCounted(1, 230, 1), published(2, 250), rewriteEnd(2, 300), settleEndCounted(2, 400, 0)},
+		[][2]int{{0, 3}}, []GateWindow{win(100, 200, 230, 100).withHit(), win(250, 300, 400, 250)}, nil)
+	wantOrders(t, "a Retain after the settle ended", n, 360)
+}
+
+// The calls of a pass an earlier process left (told for a generation whose publication
+// is never told) make no window, take no batch and give no count to the pass after
+// them, in every order: for a pass resumed in its rewrite and for one resumed in its
+// settle.
+func TestAPassOpenResumedMakesNoWindowInEveryOrderOfTheCalls(t *testing.T) {
+	t.Parallel()
+
+	noBatch := func(g *gateTracker) string {
+		g.batch(at(550), 10, 1)
+		if g.outside.Batches != 1 || g.inside.Batches != 0 || g.settling.Batches != 0 {
+			return fmt.Sprintf("a batch is inside %d, settling %d, outside %d, want it outside", g.inside.Batches, g.settling.Batches, g.outside.Batches)
+		}
+		return ""
+	}
+	own := []obsCall{published(10, 700), rewriteEnd(10, 800), settleEndCounted(10, 900, 0)}
+	want := []GateWindow{win(700, 800, 900, 700)}
+
+	resumedInRewrite := append([]obsCall{rewriteEnd(9, 500), settleEndCounted(9, 600, 1)}, own...)
+	n := everyOrderGives(t, "resumed in its rewrite", resumedInRewrite, nil, want, noBatch)
+	wantOrders(t, "resumed in its rewrite", n, 120)
+
+	resumedInSettle := append([]obsCall{settleEndCounted(9, 600, 1)}, own...)
+	n = everyOrderGives(t, "resumed in its settle", resumedInSettle, nil, want, noBatch)
+	wantOrders(t, "resumed in its settle", n, 24)
+}
+
+// A window that nothing ends stays open, and ends at the end of the stream, in the
+// judge; one that a later publication cuts is not left open, in every order.
+func TestAWindowStillOpenAtTheEndOfTheStreamStaysOpenInEveryOrder(t *testing.T) {
+	t.Parallel()
+
+	n := everyOrderGives(t, "rewrite ended, settle not", []obsCall{published(1, 100), rewriteEnd(1, 200)},
+		nil, []GateWindow{win(100, 200, gateWindowOpen, 100)}, nil)
+	wantOrders(t, "rewrite ended, settle not", n, 2)
+
+	n = everyOrderGives(t, "published only", []obsCall{published(1, 100)}, nil,
+		[]GateWindow{win(100, gateWindowOpen, gateWindowOpen, 100)},
+		func(g *gateTracker) string {
+			ps := g.trace(at(1000), "background", 0, nil).passes()
+			if len(ps) != 1 || !ps[0].bound || ps[0].why != "not ended when the stream ended" {
+				return fmt.Sprintf("passes %+v, want one with a lower bound, not ended when the stream ended", ps)
+			}
+			return ""
+		})
+	wantOrders(t, "published only", n, 1)
+
+	n = everyOrderGives(t, "cut by the next publication", []obsCall{published(1, 100), rewriteEnd(1, 200), published(2, 250)},
+		[][2]int{{0, 2}, {1, 2}}, []GateWindow{win(100, 200, 250, 100), win(250, gateWindowOpen, gateWindowOpen, 250)}, nil)
+	wantOrders(t, "cut by the next publication", n, 2)
+}
+
+// A Retain may come between the store's count of a settle and the report that it ended:
+// its publication does not take the count, so the settle that reached its deadline is
+// reported as it, and the next pass takes the count of its own settle.
+func TestAPublicationBetweenTheCountOfASettleAndItsReportKeepsTheCount(t *testing.T) {
+	t.Parallel()
+
+	g := newGateTracker(epoch)
+	for _, c := range []obsCall{
+		published(1, 100), rewriteEnd(1, 200), settleCount(1), published(2, 350), settleEnd(1, 300),
+		rewriteEnd(2, 400), settleCount(0), settleEnd(2, 500),
+	} {
+		c.tell(g)
+	}
+	want := []GateWindow{win(100, 200, 300, 100).withHit(), win(350, 400, 500, 350)}
+	if !slices.Equal(g.windows, want) {
+		t.Errorf("windows %+v, want %+v", g.windows, want)
+	}
+}
+
+// A settle told before the end of the rewrite, and after the publication, is kept: the
+// rewrite end told after it does not leave the settle open.
+func TestASettleToldBeforeTheEndOfTheRewriteIsKept(t *testing.T) {
+	t.Parallel()
+
+	g := newGateTracker(epoch)
+	for _, c := range []obsCall{published(1, 100), settleEnd(1, 300), rewriteEnd(1, 200)} {
+		c.tell(g)
+	}
+	if want := []GateWindow{win(100, 200, 300, 100)}; !slices.Equal(g.windows, want) {
+		t.Errorf("windows %+v, want %+v", g.windows, want)
 	}
 }
