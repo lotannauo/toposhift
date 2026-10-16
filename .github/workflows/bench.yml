@@ -648,6 +648,13 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # The runner's shell is bash -e -o pipefail (shell: bash), and a job may
+          # leave any of the files read below unwritten: a repetition without a
+          # read has no read.time.txt, and a job that failed or was cancelled
+          # before its build has no binary, time.txt or system.log. So each read
+          # of one ends in || true and falls back to its default (0, empty or
+          # unknown), which job.json and the summary then show; nothing here may
+          # end the step before job.json and the logs are kept.
           set -uo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
           OUT="$RUNNER_TEMP/out"
@@ -675,10 +682,10 @@ jobs:
           # the CPU model can differ from job to job, and a timing is only
           # comparable within one model. The offline judge must therefore compare
           # candidates only within one CPU model, or require reps >= 3.
-          cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }')"
+          cpu="$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ { print $2; exit }' || true)"
           cpu="${cpu:-unknown}"
           cpus="$(nproc 2>/dev/null || echo 0)"
-          mem_kb="$(awk '/^MemTotal/ { print $2 }' /proc/meminfo 2>/dev/null)"
+          mem_kb="$(awk '/^MemTotal/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
           mem_kb="${mem_kb:-0}"
           kernel="$(uname -r)"
           image_os="${ImageOS:-unknown}"
@@ -690,15 +697,15 @@ jobs:
           else
             bin="$RUNNER_TEMP/spikebench"
           fi
-          binary_sha256="$(sha256sum "$bin" 2>/dev/null | cut -d' ' -f1)"
+          binary_sha256="$(sha256sum "$bin" 2>/dev/null | cut -d' ' -f1 || true)"
           binary_sha256="${binary_sha256:-unknown}"
           # The peak resident set of the build process and of the read, in KiB, as
           # GNU time reports them; 0 where there is none (the RocksDB rule's judge
           # refuses a set with a manifest and no max_rss_kb). A build killed for
           # memory still has one, and no manifest.
-          max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/time.txt" 2>/dev/null)"
+          max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/time.txt" 2>/dev/null || true)"
           [[ $max_rss_kb =~ ^[0-9]+$ ]] || max_rss_kb=0
-          read_max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/read.time.txt" 2>/dev/null)"
+          read_max_rss_kb="$(awk -F': ' '/Maximum resident set size/ { print $2 }' "$LOGS/read.time.txt" 2>/dev/null || true)"
           [[ $read_max_rss_kb =~ ^[0-9]+$ ]] || read_max_rss_kb=0
           # Which RocksDB library the binary linked: its build stamp's sha256 (the
           # stamp itself is in the manifest's description), the cache entry it came
@@ -707,8 +714,8 @@ jobs:
           stamp_sha256=""
           libraries=""
           if [ "$ENGINE" = rocksdb ]; then
-            stamp_sha256="$(sha256sum "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp" 2>/dev/null | cut -d' ' -f1)"
-            libraries="$(dpkg-query --show liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev libstdc++6 g++ 2>/dev/null | tr '\t' '=' | paste -sd' ' -)"
+            stamp_sha256="$(sha256sum "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp" 2>/dev/null | cut -d' ' -f1 || true)"
+            libraries="$(dpkg-query --show liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev libstdc++6 g++ 2>/dev/null | tr '\t' '=' | paste -sd' ' - || true)"
           fi
           # go_mem_limit is the dispatch's for both engines: a RocksDB build ran
           # under that less the plan's cache and four memtables, which its manifest
@@ -735,11 +742,13 @@ jobs:
             '{sha: $sha, os: $os, arch: $arch, family: $family, window: $window, candidate: $candidate, rep: $rep, pins_window: $pins_window, sync: $sync, metrics_every: $metrics_every, go_mem_limit: $go_mem_limit, retention_mode: $retention_mode, pace: $pace, retain_flush_dels: $retain_flush_dels, ref: $ref, expected_sha: $expected_sha, cpu_model: $cpu_model, nproc: $nproc, mem_total_kb: $mem_total_kb, image_os: $image_os, image_version: $image_version, runner_name: $runner_name, kernel: $kernel, run_id: $run_id, run_attempt: $run_attempt, binary_sha256: $binary_sha256} + {engine: $engine, max_rss_kb: $max_rss_kb, read_max_rss_kb: $read_max_rss_kb, rocksdb_stamp_sha256: $rocksdb_stamp_sha256, rocksdb_cache_key: $rocksdb_cache_key, rocksdb_cache_hit: $rocksdb_cache_hit, rocksdb_libraries: $rocksdb_libraries}' \
             >"$OUT/job.json"
 
-          cp -r "$LOGS" "$OUT/logs"
+          if [ -d "$LOGS" ]; then
+            cp -r "$LOGS" "$OUT/logs"
+          fi
 
-          rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/time.txt" 2>/dev/null)"
-          read_rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/read.time.txt" 2>/dev/null)"
-          elapsed="$(awk '/Elapsed \(wall clock\)/ { print $NF }' "$LOGS/time.txt" 2>/dev/null)"
+          rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/time.txt" 2>/dev/null || true)"
+          read_rss="$(awk -F': ' '/Maximum resident set size/ { printf "%.0f MiB", $2 / 1024 }' "$LOGS/read.time.txt" 2>/dev/null || true)"
+          elapsed="$(awk '/Elapsed \(wall clock\)/ { print $NF }' "$LOGS/time.txt" 2>/dev/null || true)"
           # The data line after each df header, by the section the sampler wrote
           # it under: the used 1K-blocks of the root filesystem, of /mnt and of
           # the filesystem the build writes to.
@@ -751,7 +760,7 @@ jobs:
                 printf "%s%s %.1f GiB", sep, l, max[l] / 1048576
                 sep = ", "
               }
-            }' "$LOGS/system.log" 2>/dev/null)"
+            }' "$LOGS/system.log" 2>/dev/null || true)"
           {
             echo "### $CANDIDATE, $WINDOW days, $OS, repetition $REP"
             echo
