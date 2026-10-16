@@ -78,22 +78,32 @@ func TestSourceNeverWrites(t *testing.T) {
 	}
 }
 
-// Range reads are on only for memstore, and only when the caller sets them.
-func TestRangeReadsOnlyForMemstore(t *testing.T) {
+// Range reads are on for the module's two stores, memstore and pebblestore, and
+// only when the caller sets them. A wrapper of either store has none.
+func TestRangeReadsForTheModulesStores(t *testing.T) {
 	mem := openMem(t, memstore.Options{})
-	if !RangeReadsFor(mem) {
-		t.Error("memstore has no range reads")
-	}
 	peb, err := pebblestore.Open(t.TempDir(), pebblestore.DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = peb.Close() })
-	if RangeReadsFor(peb) {
-		t.Error("pebblestore has range reads")
+	if !RangeReadsFor(mem) {
+		t.Error("memstore has no range reads")
 	}
-	if RangeReadsFor(readOnly{mem}) || RangeReadsFor(&spyStore{Store: mem}) {
-		t.Error("a wrapped store has range reads")
+	if !RangeReadsFor(peb) {
+		t.Error("pebblestore has no range reads")
+	}
+	for name, st := range map[string]store.Store{
+		"readOnly over memstore":    readOnly{mem},
+		"readOnly over pebblestore": readOnly{peb},
+		"spy over memstore":         &spyStore{Store: mem},
+		"spy over pebblestore":      &spyStore{Store: peb},
+		"a nil store":               nil,
+		"readOnly over no store":    readOnly{},
+	} {
+		if RangeReadsFor(st) {
+			t.Errorf("%s has range reads", name)
+		}
 	}
 	// The zero configuration has none.
 	s, err := NewSource(Config{Store: mem})
@@ -103,20 +113,34 @@ func TestRangeReadsOnlyForMemstore(t *testing.T) {
 	if s.RangeReads() {
 		t.Error("a source has range reads without being told")
 	}
-	if _, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: numbered("host", 1).String(), At: w10}); !errors.Is(err, ErrNoRangeReads) {
+	host := numbered("host", 1).String()
+	if _, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: host, At: w10}); !errors.Is(err, ErrNoRangeReads) {
 		t.Errorf("%v", err)
 	}
-	// A source over pebblestore answers a point tool, and refuses a range tool.
+	// A source over pebblestore with the switch answers the range tools.
 	ps, err := NewSource(Config{Store: peb, RangeReads: RangeReadsFor(peb)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ps.NeighborsAt(ctx, NeighborsAtInput{Entity: numbered("host", 1).String(), At: w10}); err != nil {
+	if !ps.RangeReads() {
+		t.Fatal("a source over pebblestore has no range reads")
+	}
+	if _, err := ps.NeighborsAt(ctx, NeighborsAtInput{Entity: host, At: w10}); err != nil {
 		t.Errorf("neighbors_at on pebblestore: %v", err)
 	}
-	if _, err := ps.WhatChanged(ctx, WhatChangedInput{Scope: []string{numbered("host", 1).String()}, From: w10, To: w1030}); !errors.Is(err, ErrNoRangeReads) {
+	if _, err := ps.WhatChanged(ctx, WhatChangedInput{Scope: []string{host}, From: w10, To: w1030}); err != nil {
 		t.Errorf("what_changed on pebblestore: %v", err)
 	}
+	if _, err := ps.BlastRadius(ctx, BlastRadiusInput{Entity: host, From: w10, To: w1030}); err != nil {
+		t.Errorf("blast_radius on pebblestore: %v", err)
+	}
+	// A source over a wrapper of it refuses them, in the sentence for it.
+	ws, err := NewSource(Config{Store: &spyStore{Store: peb}, RangeReads: RangeReadsFor(&spyStore{Store: peb})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ws.BlastRadius(ctx, BlastRadiusInput{Entity: host, From: w10, To: w1030})
+	wantErr(t, "blast_radius on a wrapper", err, "Range answers are not available on this store.", ErrNoRangeReads)
 	if _, err := NewSource(Config{}); err == nil {
 		t.Error("a source without a store")
 	}

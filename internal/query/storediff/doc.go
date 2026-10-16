@@ -6,5 +6,8 @@
 // on both, reads included: package interval's entity, edge and description
 // reads, co-residency, blast radius and Around, extraction, graph diff, and the
 // subgraph builds. They also hold pebblestore's seed walks at a reference cell
-// to the budget pebblestore fixes, and each WindowSince to one iterator.
+// to the budget pebblestore fixes, and each WindowSince to one iterator. They
+// also count, through the MCP tools at a cell shaped as serve stores it, every
+// seed walk of the composed queries: edge walks against SW1, and entity walks,
+// which have no checkpoints under a boot key, apart.
 package storediff

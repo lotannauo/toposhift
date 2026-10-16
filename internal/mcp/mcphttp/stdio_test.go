@@ -64,7 +64,7 @@ func TestRunServesThePointToolsAndRefusesTheRangeToolsOverASession(t *testing.T)
 		}
 	}
 
-	const refusal = "Range answers are not available on this store until it has an interval read."
+	const refusal = "Range answers are not available on this store."
 	token := tokenOf(w.st)
 	var ranged, point int
 	for _, c := range callsOn(w) {

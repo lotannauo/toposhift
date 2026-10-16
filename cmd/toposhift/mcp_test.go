@@ -31,8 +31,6 @@ import (
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
-const rangeRefusal = "Range answers are not available on this store until it has an interval read."
-
 // replayed is a store that replay filled, and what is known to be in it.
 type replayed struct {
 	dir  string
@@ -200,10 +198,10 @@ func onlyFrames(t testing.TB, out string) int {
 }
 
 // The tools are served over the command's input and output from a store replay
-// filled: the point tools answer at one token, the range tools say this store
-// has no interval read, and when the client closes its input the command ends
-// with status 0, the store closed and the directory as it was.
-func TestMCPServesThePointToolsFromAReplayedStore(t *testing.T) {
+// filled: every tool answers at one token, the range tools included, and when
+// the client closes its input the command ends with status 0, the store closed
+// and the directory as it was.
+func TestMCPServesEveryToolFromAReplayedStore(t *testing.T) {
 	r := replayFixture(t)
 	before := snapshotDir(t, r.dir)
 	s := runSession(t, "--data-dir", r.dir)
@@ -219,8 +217,8 @@ func TestMCPServesThePointToolsFromAReplayedStore(t *testing.T) {
 	}
 
 	schema := structured(t, "describe_schema", call(t, cs, "describe_schema", map[string]any{}))
-	if schema["range_reads"] != false {
-		t.Errorf("describe_schema says range_reads %v, want false", schema["range_reads"])
+	if schema["range_reads"] != true {
+		t.Errorf("describe_schema says range_reads %v, want true", schema["range_reads"])
 	}
 
 	nb := structured(t, "neighbors_at", call(t, cs, "neighbors_at", map[string]any{"entity": r.pod.String(), "at": rfc(r.at)}))
@@ -238,10 +236,20 @@ func TestMCPServesThePointToolsFromAReplayedStore(t *testing.T) {
 		t.Errorf("an asof above the store: token %v, want %s", ahead["token"], token)
 	}
 
+	// The replayed payloads are not JSON objects: the descriptions are withheld
+	// whole, with a note, and the existence is read.
 	hist := structured(t, "entity_history", call(t, cs, "entity_history",
 		map[string]any{"entity": r.pod.String(), "from": rfc(r.at.Add(-24 * time.Hour)), "to": rfc(r.at.Add(24 * time.Hour))}))
-	if hist["existence"] != nil {
-		t.Errorf("entity_history: existence %v, want null without range reads", hist["existence"])
+	if hist["existence"] == nil {
+		t.Errorf("entity_history: existence is null, want the existence intervals")
+	}
+	ex, _ := hist["existence"].(map[string]any)
+	end, _ := ex["description_at_end"].(map[string]any)
+	if p, ok := end["payload"].(map[string]any); !ok || len(p) != 0 {
+		t.Errorf("entity_history: description_at_end payload %v, want the empty object", end["payload"])
+	}
+	if note, _ := end["note"].(string); !strings.Contains(note, "not a JSON object") {
+		t.Errorf("entity_history: description_at_end note %q, want the withheld-payload note", note)
 	}
 
 	res := call(t, cs, "resolve_entity", map[string]any{"type": "k8s.pod", "attributes": map[string]any{"k8s.pod.uid": "x"}, "at": rfc(r.at)})
@@ -256,8 +264,13 @@ func TestMCPServesThePointToolsFromAReplayedStore(t *testing.T) {
 		"what_changed": {"scope": []string{pod}, "from": win["from"], "to": win["to"]},
 		"co_residents": {"pod": pod, "from": win["from"], "to": win["to"]},
 	} {
-		if res := call(t, cs, name, args); !res.IsError || resultText(res) != rangeRefusal {
-			t.Errorf("%s: error %v, %q; want the refusal sentence", name, res.IsError, resultText(res))
+		res := call(t, cs, name, args)
+		if res.IsError {
+			t.Errorf("%s: error %q; want an answer", name, resultText(res))
+			continue
+		}
+		if got := structured(t, name, res)["token"]; got != token {
+			t.Errorf("%s: token %v, want the store's last seq %s", name, got, token)
 		}
 	}
 
@@ -723,11 +736,11 @@ func TestMCPAsAProcess(t *testing.T) {
 			t.Errorf("neighbors_at: %v, want an answer at token %d", m, r.last)
 		}
 		c.send(t, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"blast_radius","arguments":{"entity":"`+r.pod.String()+`","from":"`+rfc(r.at)+`","to":"`+rfc(r.at.Add(time.Hour))+`"}}}`)
-		res, _ = c.out.response(t, 3)["result"].(map[string]any)
-		content, _ := res["content"].([]any)
-		first, _ := content[0].(map[string]any)
-		if res["isError"] != true || first["text"] != rangeRefusal {
-			t.Errorf("blast_radius: %v, want the refusal sentence", res)
+		m = c.out.response(t, 3)
+		res, _ = m["result"].(map[string]any)
+		sc, _ = res["structuredContent"].(map[string]any)
+		if res["isError"] == true || sc["token"] != strconvU64(r.last) {
+			t.Errorf("blast_radius: %v, want an answer at token %d", m, r.last)
 		}
 
 		// Another process, while this one holds the directory.

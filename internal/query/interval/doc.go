@@ -116,9 +116,10 @@
 // A description is never guessed. When the winning producer's latest assertion
 // at the instant is a seed recorded before the retention horizon, whose payload
 // the store no longer keeps, the call fails with an error wrapping [ErrRetained].
-// For a producer that refreshes, that is a window starting within about one run
-// of the horizon; for one that asserts once, every window until it asserts
-// again.
+// The error is a [*RetainedError] naming the subject, the instant, the producer
+// and the seed. For a seed with a TTL, a window at the same token that starts at
+// or after its deadline does not need it; one with no TTL is needed by every
+// window until its producer asserts the subject again.
 //
 // # A multigraph of subjects
 //

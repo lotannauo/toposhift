@@ -41,8 +41,8 @@
 //
 // A failure is a [*Error] whose message is a plain sentence for the client.
 // The sentences are chosen in a fixed order: cancellation, a closing store, a
-// read before the retention horizon, a retained layer, an invalid argument, and
-// last an internal error.
+// read before the retention horizon, a description recorded before the horizon,
+// an invalid argument, and last an internal error.
 //
 // # Not exposed yet
 //
@@ -50,14 +50,16 @@
 // time on each host while its node was on one host. It is deliberately not
 // exposed yet; the unattributed placements that explain its gaps are.
 //
-// On a store whose layers have been retained, entity_history fails whole, like
-// the other range tools, even though its stored records could still be read
-// from the horizon on. A server whose range reads are off never meets this.
+// On a retained store, entity_history fails whole when a description at either
+// end of its window was recorded before the horizon, though its stored records
+// could still be read from the horizon on.
 //
 // # Read-only, and bounded
 //
 // A [Source] reads its store through a wrapper whose Write and Retain fail and
 // whose Close does nothing. At most [DefaultMaxConcurrent] calls run at once,
 // each has a deadline, and [Source.Drain] withdraws the store and waits for the
-// calls in flight.
+// calls in flight. The range tools run on memstore and pebblestore
+// ([RangeReadsFor]); on any other store they answer that range answers are not
+// available.
 package mcp

@@ -138,7 +138,7 @@ func (s *Source) EntityHistory(ctx context.Context, in EntityHistoryInput) (Enti
 			}
 			out.Counts.Spans = len(el.Pieces)
 		} else {
-			out.Notes = append(out.Notes, "Existence intervals need a range read, which this store does not offer yet; the stored records are shown.")
+			out.Notes = append(out.Notes, "Existence intervals need a range read, which this store does not offer; the stored records are shown.")
 		}
 
 		recs, err := s.st.EntityWindow(ctx, fp, from, to, store.Scope{Layer: ent.Layer(), AsOf: token})

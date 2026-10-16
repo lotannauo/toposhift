@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 const w1012 = "2026-01-01T10:12:00Z"
@@ -64,7 +66,7 @@ func idSet(fps ...identity.Fingerprint) map[string]bool {
 // Q is the pod a spy store quarantines: no pod or node can be quarantined through
 // a write, because only a host record carries a boot id.
 type addrWorld struct {
-	st                 *memstore.Store
+	st                 store.Store
 	feed               *feed
 	p, q, r, n, n2     identity.Fingerprint
 	e                  [9]identity.Fingerprint // e[1]..e[8]
@@ -74,7 +76,13 @@ type addrWorld struct {
 
 func newAddrWorld(tb testing.TB) *addrWorld {
 	tb.Helper()
-	st := openMem(tb, memstore.Options{Policy: lifecycle.Policy{Rank: rankObjs, BootKey: lifecycle.BootID}})
+	return newAddrWorldOn(tb, openMem(tb, memstore.Options{Policy: servePolicy(rankObjs)}))
+}
+
+// newAddrWorldOn is the fixture written to st, which must be empty and opened
+// with servePolicy(rankObjs).
+func newAddrWorldOn(tb testing.TB, st store.Store) *addrWorld {
+	tb.Helper()
 	w := &addrWorld{
 		st: st, feed: newFeed(tb, st),
 		p:  fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-p"),
@@ -433,14 +441,18 @@ func TestWithholdNegativeControl(t *testing.T) {
 // id the request did not name and none of the fixture's addresses, carry the
 // policy version, and name what was withheld.
 func TestWithholdEveryTool(t *testing.T) {
-	w := newAddrWorld(t)
-	srcs := w.sources(t, nil)
-	for _, a := range w.asks() {
-		b := askJSON(t, a, srcs)
+	wm := newAddrWorld(t)
+	wp := newAddrWorldOn(t, openPeb(t, servePolicy(rankObjs), pebblestore.DefaultCheckpoints(), pebblestore.Synchronous))
+	sm, sp := wm.sources(t, nil), wp.sources(t, nil)
+	for _, a := range wm.asks() {
+		b := askJSON(t, a, sm)
+		if bp := askJSON(t, a, sp); !bytes.Equal(b, bp) {
+			t.Errorf("%s differs:\nmemstore    %s\npebblestore %s", a.name, b, bp)
+		}
 		if got := unnamedEndpoints(b, idSet(a.named...)); len(got) > 0 {
 			t.Errorf("%s: the answer prints %v", a.name, got)
 		}
-		for _, addr := range w.addrs[1:] {
+		for _, addr := range wm.addrs[1:] {
 			if strings.Contains(string(b), addr) {
 				t.Errorf("%s: the answer prints the address %s", a.name, addr)
 			}
@@ -985,6 +997,14 @@ func TestWithholdErrorSentencesAndLogs(t *testing.T) {
 			name: "a key prefix in hex", err: fmt.Errorf("pebblestore: key %x is 20 bytes, want 37", key[:20]),
 			logged:      "pebblestore: key withheld is 20 bytes, want 37",
 			wantUnnamed: "Internal error: layer L2: pebblestore: key withheld is 20 bytes, want 37",
+		},
+		{
+			name: "a description recorded before the horizon", err: fmt.Errorf("graphdiff: Diff: %w", &interval.RetainedError{
+				Subject: ent(e1), At: hm(10, 0), Producer: objs, Seed: store.Record{EventTime: hm(9, 0)},
+			}),
+			cause:       interval.ErrRetained,
+			wantUnnamed: "The description of topo.endpoint:withheld at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. It cannot be described until its producer asserts it again.",
+			wantNamed:   "The description of " + e1.String() + " at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. It cannot be described until its producer asserts it again.",
 		},
 		{
 			name: "the id of another type is kept", err: fmt.Errorf("folding entity %s: %w", w.p, errBoom),

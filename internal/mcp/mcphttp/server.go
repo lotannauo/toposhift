@@ -107,8 +107,9 @@ func (s *Server) Handler() http.Handler { return s.handler }
 // Attach hands the server the open store its tools read. The store must have
 // been opened with the authority order given to [New], which the tools use
 // before and after, so the rank digest of an answer never differs between the
-// two. The range tools run only on a store that [core.RangeReadsFor] allows. It
-// fails if a store is already attached or the server is drained.
+// two. The range tools run on a store that [core.RangeReadsFor] allows, memstore
+// or pebblestore. It fails if a store is already attached or the server is
+// drained.
 func (s *Server) Attach(st store.Store) error {
 	return s.attach(st, core.RangeReadsFor(st))
 }

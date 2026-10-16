@@ -9,14 +9,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/store"
+	"github.com/lotannauo/toposhift/internal/store/memstore"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // The sentence for an error is chosen in a fixed order, whatever else the error
 // wraps: cancellation, a closing store, the retention horizon (before the
-// ErrInvalid it wraps), a retained layer, an invalid argument, and last an
+// ErrInvalid it wraps), a description recorded before the horizon, an invalid argument, and last an
 // internal error.
 func TestSentenceOrder(t *testing.T) {
 	w := newWorld(t, rankObjs)
@@ -41,10 +44,19 @@ func TestSentenceOrder(t *testing.T) {
 		{"the horizon", store.ErrBeforeHorizon, "The store no longer keeps history of layer "},
 		{"the horizon before invalid", both(store.ErrInvalid, store.ErrBeforeHorizon), "The store no longer keeps history of layer "},
 		{"the horizon before retained", both(interval.ErrRetained, store.ErrBeforeHorizon), "The store no longer keeps history of layer "},
-		{"retained", interval.ErrRetained, "Range answers for layer L0 are unavailable since retention began at 2026-01-01T09:30:00Z."},
-		{"retained before invalid", both(store.ErrInvalid, interval.ErrRetained), "Range answers for layer L0 are unavailable"},
+		{"retained", interval.ErrRetained, bareRetained},
+		{"retained before invalid", both(store.ErrInvalid, interval.ErrRetained), bareRetained},
+		{"retained with no TTL", fmt.Errorf("graphdiff: Diff: %w", &interval.RetainedError{
+			Subject: ent(w.p1), At: hm(10, 0), Producer: objs, Seed: store.Record{EventTime: hm(9, 0)},
+		}), "The description of " + w.p1.String() + " at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. It cannot be described until its producer asserts it again."},
+		{"retained with a TTL", fmt.Errorf("graphdiff: Diff: %w", &interval.RetainedError{
+			Subject: ent(w.p1), At: hm(10, 0), Producer: objs, Seed: store.Record{EventTime: hm(9, 50), TTL: 15 * time.Minute},
+		}), "The description of " + w.p1.String() + " at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. A window at this token that starts at or after 2026-01-01T10:05:00Z does not need it."},
+		{"retained edge", &interval.RetainedError{
+			Subject: edge(w.p1, w.n1, catalog.ScheduledOn), At: hm(10, 0), Producer: objs, Seed: store.Record{EventTime: hm(9, 0), Through: hm(9, 50), TTL: 15 * time.Minute},
+		}, "The description of the scheduled_on edge from " + w.p1.String() + " to " + w.n1.String() + " at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. A window at this token that starts at or after 2026-01-01T10:05:00Z does not need it."},
 		{"invalid", fmt.Errorf("x: %w", store.ErrInvalid), "The request was refused: x."},
-		{"no range reads", ErrNoRangeReads, "Range answers are not available on this store until it has an interval read."},
+		{"no range reads", ErrNoRangeReads, "Range answers are not available on this store."},
 		{"busy", ErrBusy, "The server is busy; try again shortly."},
 		{"internal", errors.New("disk on fire"), "Internal error: disk on fire"},
 	} {
@@ -58,40 +70,113 @@ func TestSentenceOrder(t *testing.T) {
 	}
 }
 
-// The order, end to end, on a retained store: a point read before the horizon is
-// refused for the horizon and not as an invalid argument, naming the layer; so is
-// a range read whose window starts before it. A range read from after the horizon
-// is answered, except that a description asserted before the horizon, whose
-// payload the store no longer keeps, is refused for retention.
-func TestRefusalsOnARetainedStore(t *testing.T) {
-	w := newWorld(t, rankObjs)
-	if err := w.st.Retain(ctx, hm(9, 30)); err != nil {
-		t.Fatal(err)
-	}
-	last := w.st.LastSeq()
-	s := w.source(t, rankObjs, true)
-	hz := fmt.Sprintf("or below token %d.", last)
+// bareRetained is the sentence for a retention refusal that carries no seed.
+const bareRetained = "A description this answer needs was recorded with an event time before the retention horizon and is no longer kept."
 
-	_, err := s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.n1.String(), At: "2026-01-01T09:00:00Z"})
-	wantErr(t, "neighbors_at before the horizon", err, "The store no longer keeps history of layer L1 before 2026-01-01T09:30:00Z "+hz, interval.ErrRetained, store.ErrBeforeHorizon)
-	if strings.Contains(err.Error(), "refused") {
-		t.Errorf("the horizon was reported as an invalid argument: %v", err)
+// The order, end to end, on a retained store, on memstore and on pebblestore
+// retaining both ways: a point read before the horizon is refused for the horizon
+// and not as an invalid argument, naming the layer; so is a range read whose
+// window starts before it. A range read from after the horizon is answered, except
+// that a description recorded before the horizon, whose payload the store no
+// longer keeps, is refused for retention, naming the entity, the instant and the
+// producer, and, for a seed with a TTL, the instant from which a window does not
+// need it.
+func TestRefusalsOnARetainedStore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(testing.TB) store.Store
+	}{
+		{"memstore", func(tb testing.TB) store.Store {
+			return openMem(tb, memstore.Options{Policy: servePolicy(rankObjs)})
+		}},
+		{"pebblestore, synchronous", func(tb testing.TB) store.Store {
+			return openPeb(tb, servePolicy(rankObjs), pebblestore.CheckpointOptions{On: true, KMin: 1}, pebblestore.Synchronous)
+		}},
+		{"pebblestore, background", func(tb testing.TB) store.Store {
+			return openPeb(tb, servePolicy(rankObjs), pebblestore.CheckpointOptions{On: true, KMin: 8, Alpha: 1, Lag: time.Minute}, pebblestore.Background)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorldOn(t, tc.open(t))
+			// Two pods whose last assertion is before the horizon, with a TTL: px
+			// lapses at 09:40, and py, asserted at 09:00 and refreshed through 09:45,
+			// at 10:00.
+			px, py := fpOf(t, catalog.K8sPod, catalog.K8sPodUID, "pod-uid-x"), fpOf(t, catalog.K8sPod, catalog.K8sPodUID, "pod-uid-y")
+			ry := observe(ent(py), objs, hm(9, 0), 15*time.Minute, `{"name":"web-y","namespace":"shop"}`)
+			ry.Through = hm(9, 45)
+			newFeed(t, w.st).write(observe(ent(px), objs, hm(9, 25), 15*time.Minute, `{"name":"web-x","namespace":"shop"}`), ry)
+			if err := w.st.Retain(ctx, hm(9, 30)); err != nil {
+				t.Fatal(err)
+			}
+			last := w.st.LastSeq()
+			s := w.source(t, rankObjs, RangeReadsFor(w.st))
+			check := func(t *testing.T) {
+				hz := fmt.Sprintf("or below token %d.", last)
+				note := " A window that starts at or just after a horizon can still be refused for a description recorded before it."
+
+				_, err := s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.n1.String(), At: "2026-01-01T09:00:00Z"})
+				wantErr(t, "neighbors_at before the horizon", err, "The store no longer keeps history of layer L1 before 2026-01-01T09:30:00Z "+hz+note, interval.ErrRetained, store.ErrBeforeHorizon)
+				if strings.Contains(err.Error(), "The request was refused") {
+					t.Errorf("the horizon was reported as an invalid argument: %v", err)
+				}
+				_, err = s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.n1.String(), At: "2026-01-01T10:00:00Z", AsOf: "1"})
+				wantErr(t, "neighbors_at below the horizon's token", err, "The store no longer keeps history of layer L1 before 2026-01-01T09:30:00Z "+hz+note, store.ErrBeforeHorizon)
+				_, err = s.ResolveEntity(ctx, ResolveEntityInput{Type: "host", Attributes: rawAttrs(`{"host.id":"x"}`), At: "2026-01-01T09:00:00Z"})
+				wantErr(t, "resolve_entity before the horizon", err, "The store no longer keeps history of layer L1 before", store.ErrBeforeHorizon)
+				if !strings.HasSuffix(err.Error(), note) {
+					t.Errorf("resolve_entity: the horizon sentence does not end with the note: %v", err)
+				}
+				_, err = s.EntityHistory(ctx, EntityHistoryInput{Entity: w.p1.String(), From: "2026-01-01T09:00:00Z", To: w1030})
+				wantErr(t, "entity_history from before the horizon", err, "The store no longer keeps history of layer L0 before 2026-01-01T09:30:00Z "+hz, store.ErrBeforeHorizon)
+				if !strings.HasSuffix(err.Error(), note) {
+					t.Errorf("entity_history from before the horizon: the horizon sentence does not end with the note: %v", err)
+				}
+				_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{w.p1.String()}, From: "2026-01-01T09:00:00Z", To: w1030})
+				wantErr(t, "what_changed from before the horizon", err, "The store no longer keeps history of layer L0 before 2026-01-01T09:30:00Z "+hz, store.ErrBeforeHorizon)
+				if !strings.HasSuffix(err.Error(), note) {
+					t.Errorf("what_changed from before the horizon: the horizon sentence does not end with the note: %v", err)
+				}
+
+				if _, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030}); err != nil {
+					t.Errorf("blast_radius after the horizon: %v", err)
+				}
+				if _, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030}); err != nil {
+					t.Errorf("co_residents after the horizon: %v", err)
+				}
+				// The diff describes p1 at From, by an assertion made once, before the
+				// horizon: only its producer asserting it again lets it be described.
+				_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{w.p1.String()}, From: w10, To: w1030})
+				wantErr(t, "what_changed of a description before the horizon", err,
+					"The description of "+w.p1.String()+" at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. It cannot be described until its producer asserts it again.",
+					interval.ErrRetained)
+				var re *interval.RetainedError
+				if !errors.As(err, &re) {
+					t.Errorf("the cause of the retention refusal carries no seed: %v", err)
+				}
+				// px has a TTL: a window from the instant it lapses does not need it.
+				_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{px.String()}, From: "2026-01-01T09:35:00Z", To: "2026-01-01T09:50:00Z"})
+				wantErr(t, "what_changed of a pod with a TTL", err,
+					"The description of "+px.String()+" at 2026-01-01T09:35:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. A window at this token that starts at or after 2026-01-01T09:40:00Z does not need it.",
+					interval.ErrRetained)
+				if _, err := s.WhatChanged(ctx, WhatChangedInput{Scope: []string{px.String()}, From: "2026-01-01T09:40:00Z", To: "2026-01-01T09:50:00Z"}); err != nil {
+					t.Errorf("what_changed of a pod with a TTL from its deadline: %v", err)
+				}
+				// py was asserted at 09:00 and refreshed through 09:45: it lapses at 10:00.
+				_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{py.String()}, From: "2026-01-01T09:35:00Z", To: "2026-01-01T09:50:00Z"})
+				wantErr(t, "what_changed of a backdated pod", err,
+					"The description of "+py.String()+" at 2026-01-01T09:35:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. A window at this token that starts at or after 2026-01-01T10:00:00Z does not need it.",
+					interval.ErrRetained)
+				if _, err := s.WhatChanged(ctx, WhatChangedInput{Scope: []string{py.String()}, From: "2026-01-01T10:00:00Z", To: "2026-01-01T10:15:00Z"}); err != nil {
+					t.Errorf("what_changed of a backdated pod from its deadline: %v", err)
+				}
+			}
+			check(t)
+			if _, ok := w.st.(*pebblestore.Store); ok {
+				settle(t, w.st)
+				t.Run("after the retention pass", check)
+			}
+		})
 	}
-	_, err = s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.n1.String(), At: "2026-01-01T10:00:00Z", AsOf: "1"})
-	wantErr(t, "neighbors_at below the horizon's token", err, "The store no longer keeps history of layer L1 before 2026-01-01T09:30:00Z "+hz, store.ErrBeforeHorizon)
-	_, err = s.ResolveEntity(ctx, ResolveEntityInput{Type: "host", Attributes: rawAttrs(`{"host.id":"x"}`), At: "2026-01-01T09:00:00Z"})
-	wantErr(t, "resolve_entity before the horizon", err, "The store no longer keeps history of layer L1 before", store.ErrBeforeHorizon)
-	_, err = s.EntityHistory(ctx, EntityHistoryInput{Entity: w.p1.String(), From: "2026-01-01T09:00:00Z", To: w1030})
-	wantErr(t, "entity_history from before the horizon", err, "The store no longer keeps history of layer L0 before 2026-01-01T09:30:00Z "+hz, store.ErrBeforeHorizon)
-	if _, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030}); err != nil {
-		t.Errorf("blast_radius after the horizon: %v", err)
-	}
-	if _, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030}); err != nil {
-		t.Errorf("co_residents after the horizon: %v", err)
-	}
-	// The diff describes p1 at From, by an assertion made before the horizon.
-	_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{w.p1.String()}, From: w10, To: w1030})
-	wantErr(t, "what_changed of a description before the horizon", err, "Range answers for layer L0 are unavailable since retention began", interval.ErrRetained)
 }
 
 func wantErr(t *testing.T, what string, err error, prefix string, is ...error) {
@@ -198,7 +283,7 @@ func TestRefusalsOfTheSource(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "Range answers are not available on this store until it has an interval read."
+		want := "Range answers are not available on this store."
 		_, err = s.BlastRadius(ctx, blast)
 		wantErr(t, "blast_radius", err, want, ErrNoRangeReads)
 		_, err = s.WhatChanged(ctx, WhatChangedInput{Scope: []string{w.p1.String()}, From: w10, To: w1030})
@@ -219,7 +304,7 @@ func TestRefusalsOfTheSource(t *testing.T) {
 		if out.Existence != nil || len(out.Records) != 3 || out.Derived {
 			t.Errorf("entity_history without range reads: existence %v, %d records, derived %t", out.Existence, len(out.Records), out.Derived)
 		}
-		if !contains(out.Notes, "Existence intervals need a range read, which this store does not offer yet; the stored records are shown.") {
+		if !contains(out.Notes, "Existence intervals need a range read, which this store does not offer; the stored records are shown.") {
 			t.Errorf("notes %q", out.Notes)
 		}
 	})
