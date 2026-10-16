@@ -113,21 +113,22 @@ type Word struct {
 
 // DescribeSchema describes the graph's types, relations and vocabulary.
 func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (DescribeSchemaOutput, error) {
+	req := s.newRequest()
 	if err := ctx.Err(); err != nil {
-		return DescribeSchemaOutput{}, s.fail(err)
+		return DescribeSchemaOutput{}, s.fail(err, req)
 	}
 	out := DescribeSchemaOutput{
 		RangeReads: s.rangeReads,
 		Policy: Policy{
 			Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
-			CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion,
+			CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 		},
 		Entities: []SchemaEntity{}, Relations: []SchemaRelation{},
 		Vocabulary: vocabulary,
 		Notes: []string{
 			"Every id is an entity type, a colon, and 32 lowercase hex digits: a hash of the exact identifying attributes. Use resolve_entity to compute one.",
 			"Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
-			"An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/<cluster>\". It is unnamed and has no description: its address is an identity attribute, printed only where the request gave it. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
+			"An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/<cluster>\". It is unnamed and has no description. Its id reveals its address, because the realm and the address can be enumerated and hashed, so an endpoint's id, or an edge to an endpoint, is printed only when the request named that endpoint: by its id, or through resolve_entity's realm and address. Elsewhere such an edge is withheld and counted under counts.withheld, and no error sentence prints such an id. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
 			"Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
 		},
 	}
@@ -181,6 +182,9 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 				Type: string(e.Type()), Allowed: slices.Clone(t.allowed), Withheld: orEmpty(t.withheld),
 			})
 		}
+	}
+	if err := s.egress(&out, req); err != nil {
+		return DescribeSchemaOutput{}, s.fail(err, req)
 	}
 	return out, nil
 }

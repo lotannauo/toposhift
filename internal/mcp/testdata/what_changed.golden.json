@@ -6,7 +6,8 @@
     "graphdiff": 1,
     "rank": "253c746577b09aba",
     "names": 1,
-    "payload": 1
+    "payload": 1,
+    "withhold": 1
   },
   "scope": [
     {
@@ -537,7 +538,30 @@
       "entities": 0,
       "relations": 0
     },
-    "events": 8
+    "events": 8,
+    "withheld": {
+      "created": {
+        "entities": 0,
+        "relations": 0
+      },
+      "deleted": {
+        "entities": 0,
+        "relations": 0
+      },
+      "changed": {
+        "entities": 0,
+        "relations": 0
+      },
+      "transient": {
+        "entities": 0,
+        "relations": 0
+      },
+      "quarantined": {
+        "entities": 0,
+        "relations": 0
+      },
+      "events": 0
+    }
   },
   "truncation": {
     "incomplete": false,

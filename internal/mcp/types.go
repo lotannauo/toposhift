@@ -17,6 +17,11 @@ const NameTableVersion = 1
 // carries it in its policy, and a change to the table raises it.
 const PayloadTableVersion = 1
 
+// WithholdVersion is the version of the rule that withholds an endpoint id the
+// request did not name; every answer carries it in its policy, and a change to the
+// rule (another type withheld, another way to name one) raises it.
+const WithholdVersion = 1
+
 // The labels of an element. basis says how a value was obtained; subject says
 // what it is about. An element that is a stored record is a fact. Every
 // range-read element is derived.
@@ -51,6 +56,7 @@ type Policy struct {
 	Rank        string `json:"rank,omitempty"`
 	Names       int    `json:"names,omitempty"`
 	Payload     int    `json:"payload,omitempty"`
+	Withhold    int    `json:"withhold,omitempty"`
 }
 
 // Ref is an entity id next to its name. The name is derived from a description

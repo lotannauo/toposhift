@@ -5,7 +5,8 @@
     "interval": 1,
     "coresidency": 1,
     "rank": "253c746577b09aba",
-    "names": 1
+    "names": 1,
+    "withhold": 1
   },
   "seed": {
     "id": "k8s.pod:b408e4c76f5a3033e7a43664b8980832",

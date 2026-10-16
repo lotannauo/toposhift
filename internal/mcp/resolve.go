@@ -63,19 +63,26 @@ type ExistenceAt struct {
 // It resolves exactly: a missing, extra, empty or mistyped attribute is refused
 // and named, and it never searches.
 func (s *Source) ResolveEntity(ctx context.Context, in ResolveEntityInput) (ResolveEntityOutput, error) {
+	req := s.newRequest()
 	needsStore := in.At != ""
 	if !needsStore {
-		// No store is read: neither a slot nor a deadline is needed.
-		out, err := s.resolve(ctx, in)
+		// No store is read: neither a slot nor a deadline is needed, and run does not
+		// frame the call, so the last check is made here.
+		out, err := s.resolve(ctx, in, req)
+		if err == nil {
+			err = s.egress(&out, req)
+		}
 		if err != nil {
-			return ResolveEntityOutput{}, s.fail(err)
+			return ResolveEntityOutput{}, s.fail(err, req)
 		}
 		return out, nil
 	}
-	return run(s, ctx, false, func(ctx context.Context) (ResolveEntityOutput, error) { return s.resolve(ctx, in) })
+	return run(s, ctx, false, req, func(ctx context.Context) (ResolveEntityOutput, error) { return s.resolve(ctx, in, req) })
 }
 
-func (s *Source) resolve(ctx context.Context, in ResolveEntityInput) (ResolveEntityOutput, error) {
+// resolve answers a call. It names, in req, the id it computes: the request gave
+// the realm and the address it was computed from.
+func (s *Source) resolve(ctx context.Context, in ResolveEntityInput, req *request) (ResolveEntityOutput, error) {
 	var zero ResolveEntityOutput
 	ent, ok := s.cat.Entity(catalog.EntityType(in.Type))
 	if !ok {
@@ -90,9 +97,10 @@ func (s *Source) resolve(ctx context.Context, in ResolveEntityInput) (ResolveEnt
 		return zero, attrError(ent.Type(), err)
 	}
 	fp := id.Fingerprint()
+	req.name(fp)
 
 	out := ResolveEntityOutput{
-		Policy: Policy{Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion},
+		Policy: Policy{Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion},
 		Entity: ref(fp), Attributes: echo, Notes: []string{},
 	}
 	if in.At == "" {

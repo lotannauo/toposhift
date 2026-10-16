@@ -19,7 +19,8 @@ import (
 // version NameTableVersion. The first key present wins; a type that is not here
 // has no name. A host is unnamed on purpose: the node agent drops host.name and
 // every address from the host's description, and the server never prints an
-// identity attribute it was not given in the request.
+// identity attribute it was not given in the request, nor an endpoint's id, which
+// reveals its address, unless the request named it.
 //
 // A name is never taken from an identity attribute, from a producer that lost
 // under the ranks, or from the description of a peer.
@@ -116,11 +117,8 @@ func (s *Source) fillNames(ctx context.Context, out any, token uint64, from, to 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return "", err
 		}
-		msg, internal := s.sentence(err)
-		if internal && s.logf != nil {
-			s.logf("mcp: internal error reading names: %v", err)
-		}
-		return "Names are unavailable: " + msg, nil
+		// The note is a client's text, and no request named an endpoint for it.
+		return "Names are unavailable: " + s.safeSentence(err, nil, " reading names"), nil
 	}
 	byFP := make(map[identity.Fingerprint]interval.Element, len(fps))
 	for i, fp := range fps {

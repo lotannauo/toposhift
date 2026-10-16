@@ -5,7 +5,8 @@
     "interval": 1,
     "blastradius": 1,
     "rank": "253c746577b09aba",
-    "names": 1
+    "names": 1,
+    "withhold": 1
   },
   "seed": {
     "id": "host:3c95ddc202c9c9179f85015702e4853b",

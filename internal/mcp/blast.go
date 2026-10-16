@@ -106,7 +106,9 @@ type FrontierCut struct {
 
 // BlastRadius lists what a failing entity reaches over a window.
 func (s *Source) BlastRadius(ctx context.Context, in BlastRadiusInput) (BlastRadiusOutput, error) {
-	return run(s, ctx, true, func(ctx context.Context) (BlastRadiusOutput, error) {
+	req := s.newRequest()
+	req.nameText(in.Entity)
+	return run(s, ctx, true, req, func(ctx context.Context) (BlastRadiusOutput, error) {
 		var zero BlastRadiusOutput
 		seed, err := s.parseEntity("entity", in.Entity)
 		if err != nil {
@@ -143,7 +145,7 @@ func (s *Source) BlastRadius(ctx context.Context, in BlastRadiusInput) (BlastRad
 			Token: tokenString(token), Derived: true,
 			Policy: Policy{
 				Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion,
-				Rank: s.rankDigest, Names: NameTableVersion,
+				Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion,
 			},
 			Seed: ref(seed), Window: windowOf(from, to), DepthLimit: depth,
 			Members: []Member{}, Unattributed: []UnattributedAt{}, Quarantined: []Quarantined{},

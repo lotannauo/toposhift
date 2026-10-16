@@ -71,6 +71,8 @@ type Source struct {
 	cat        *catalog.Catalog
 	resolver   *identity.Resolver
 	logf       func(format string, args ...any)
+	// hooks is for tests; it is nil in production.
+	hooks *egressHooks
 
 	gate        chan struct{}
 	busyAfter   time.Duration
@@ -227,21 +229,25 @@ func (s *Source) isDraining() bool {
 }
 
 // run is the frame of every tool that reads the store: take a slot, refuse a
-// range tool on a store without range reads, run f, and turn any error into a
-// sentence.
-func run[Out any](s *Source, ctx context.Context, needsRange bool, f func(context.Context) (Out, error)) (Out, error) {
+// range tool on a store without range reads, run f, check that the answer prints
+// no endpoint id the request did not name, and turn any error into a sentence.
+// req is what the request named; f may add to it.
+func run[Out any](s *Source, ctx context.Context, needsRange bool, req *request, f func(context.Context) (Out, error)) (Out, error) {
 	var zero Out
 	ctx, release, err := s.begin(ctx)
 	if err != nil {
-		return zero, s.fail(err)
+		return zero, s.fail(err, req)
 	}
 	defer release()
 	if needsRange && !s.rangeReads {
-		return zero, s.fail(ErrNoRangeReads)
+		return zero, s.fail(ErrNoRangeReads, req)
 	}
 	out, err := f(ctx)
 	if err != nil {
-		return zero, s.fail(err)
+		return zero, s.fail(err, req)
+	}
+	if err := s.egress(&out, req); err != nil {
+		return zero, s.fail(err, req)
 	}
 	return out, nil
 }

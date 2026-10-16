@@ -33,7 +33,7 @@ func TestDescribeSchema(t *testing.T) {
 	}
 	wantPolicy := Policy{
 		Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
-		CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion,
+		CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 	}
 	if out.Policy != wantPolicy || out.Names.Version != NameTableVersion || out.Payload.Version != PayloadTableVersion {
 		t.Errorf("policy %+v", out.Policy)

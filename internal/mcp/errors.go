@@ -30,6 +30,7 @@ var (
 
 // Error is the failure of a tool. Message is a plain sentence for the client;
 // Cause is the error it was made from, if any, for errors.Is and errors.As.
+// Cause may carry ids the Message withholds; print Message, never Cause.
 type Error struct {
 	Message string
 	Cause   error
@@ -78,17 +79,39 @@ func inLayer(l catalog.Layer, err error) error {
 }
 
 // fail turns an error into the [*Error] a tool returns. An error that already is
-// one passes through unchanged.
-func (s *Source) fail(err error) error {
+// one passes through with its sentence unchanged, unless the sentence prints an
+// endpoint id the request did not name.
+//
+// No sentence prints such an id. The sentence of an internal error also prints no
+// raw hex key, and the log line prints no endpoint id and no raw hex key at all:
+// a log can be shipped off the machine, which no request authorized. The cause
+// keeps the error as it was.
+func (s *Source) fail(err error, req *request) error {
 	var te *Error
 	if errors.As(err, &te) {
+		if msg := redactEndpoints(te.Message, req.named); msg != te.Message {
+			return &Error{Message: msg, Cause: te.Cause}
+		}
 		return te
 	}
+	return &Error{Message: s.safeSentence(err, req.named, ""), Cause: err}
+}
+
+// safeSentence is the sentence for an error that is not already a tool's: it
+// prints no endpoint id that named does not hold, and, for an internal error, no
+// raw hex key either. An internal error is logged, through redactLog, under the
+// label what ("" or " reading names", for example). Every place that turns an
+// error into text for a client or a log goes through here.
+func (s *Source) safeSentence(err error, named map[string]bool, what string) string {
 	msg, internal := s.sentence(err)
-	if internal && s.logf != nil {
-		s.logf("mcp: internal error: %v", err)
+	msg = redactEndpoints(msg, named)
+	if internal {
+		msg = redactHexRuns(msg)
+		if s.logf != nil {
+			s.logf("mcp: internal error%s: %s", what, redactLog(err.Error()))
+		}
 	}
-	return &Error{Message: msg, Cause: err}
+	return msg
 }
 
 // sentence chooses the sentence for an error, in this order:
@@ -101,8 +124,10 @@ func (s *Source) fail(err error) error {
 //     [store.ErrInvalid] it wraps;
 //  5. a retained layer ([interval.ErrRetained]);
 //  6. an invalid argument, or an identity error;
-//  7. anything else, an internal error.
+//  7. an answer the last check refused for an endpoint id, which has a sentence
+//     of its own, and anything else, an internal error.
 func (s *Source) sentence(err error) (msg string, internal bool) {
+	var ee *egressError
 	switch {
 	case errors.Is(err, ErrBusy):
 		return "The server is busy; try again shortly.", false
@@ -124,6 +149,8 @@ func (s *Source) sentence(err error) (msg string, internal bool) {
 		return s.retainedSentence(), false
 	case errors.Is(err, store.ErrInvalid), isIdentityError(err):
 		return "The request was refused: " + strings.TrimSuffix(err.Error(), ": "+store.ErrInvalid.Error()) + ".", false
+	case errors.As(err, &ee):
+		return egressSentence, true
 	}
 	return "Internal error: " + err.Error(), true
 }

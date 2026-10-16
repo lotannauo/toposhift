@@ -4,7 +4,8 @@
   "policy": {
     "interval": 1,
     "rank": "253c746577b09aba",
-    "names": 1
+    "names": 1,
+    "withhold": 1
   },
   "entity": {
     "id": "k8s.node:35d028d09e59d52304a335ec79b9a051",
@@ -92,7 +93,11 @@
   "quarantined": [],
   "counts": {
     "edges": 5,
-    "edges_shown": 5
+    "edges_shown": 5,
+    "withheld": {
+      "edges": 0,
+      "quarantined": 0
+    }
   },
   "notes": [
     "Pass asof=33 to see the same world, until the next retention (at most a day) or a restart with other ranks."
