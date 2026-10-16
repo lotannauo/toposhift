@@ -4,6 +4,7 @@
 //	toposhift query     ask a store that replay filled a question, as JSON lines
 //	toposhift mcp       serve the read-only topology tools over stdio from such a store
 //	toposhift replay    replay an activity file into a store
+//	toposhift demo      serve a seeded synthetic cluster from memory, with no setup
 //	toposhift version   print build information
 package main
 
@@ -79,6 +80,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		return mcpCmd(ctx, args[1:], mcpStdin, stdout, stderr)
 	case "replay":
 		return replayCmd(ctx, args[1:], stdout, stderr)
+	case "demo":
+		return demoCmd(ctx, args[1:], mcpStdin, stdout, stderr)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version())
 		return 0
@@ -277,6 +280,7 @@ Commands:
   query     ask a store that replay filled a question (run: toposhift query help)
   mcp       serve the read-only topology tools over stdio from such a store (run: toposhift mcp help)
   replay    replay an activity file into a store (run: toposhift replay help)
+  demo      serve a seeded synthetic cluster from memory, with no setup (run: toposhift demo help)
   version   print build information
 `)
 }
