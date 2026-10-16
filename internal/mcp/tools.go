@@ -25,7 +25,7 @@ func Tools() []Tool {
 		{
 			Name: "what_changed",
 			Description: "Diffs a scope of entities between two instants: what was created, deleted or changed, what came and went inside the window, and the source of every disappearance. " +
-				"A change in a description is reported by key, and a key that is withheld is named. The answer is derived and read at one token.",
+				"A change in a description is reported by key, and a key that is withheld is named. An entry naming an endpoint the scope does not name is withheld and counted. The answer is derived and read at one token.",
 			Range: true,
 		},
 		{
@@ -37,7 +37,7 @@ func Tools() []Tool {
 		{
 			Name: "neighbors_at",
 			Description: "Lists the edges of an entity at one instant, each only while both of its ends exist, with the entity at the other end of each. " +
-				"An edge with a quarantined end is listed and marked. The answer is read at one token.",
+				"An edge with a quarantined end is listed and marked. An edge to an endpoint the request did not name is withheld and counted. The answer is read at one token.",
 		},
 		{
 			Name: "entity_history",

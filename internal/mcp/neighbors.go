@@ -61,16 +61,24 @@ type NeighborEdge struct {
 }
 
 // NeighborCounts are the exact sizes of an answer.
+//
+// Edges is the number listed: it leaves out the edges withheld because they reach
+// an endpoint the request did not name, which Withheld counts. The edges listed
+// and the edges withheld together are the edges of the interval package over the
+// instant.
 type NeighborCounts struct {
-	Edges int `json:"edges"`
-	Shown int `json:"edges_shown"`
+	Edges    int              `json:"edges"`
+	Shown    int              `json:"edges_shown"`
+	Withheld NeighborWithheld `json:"withheld"`
 }
 
 // NeighborsAt lists the edges of an entity at one instant. It reads points, not
 // ranges, so it runs on any store. Its answer equals the edges of the interval
 // package over the window [at, at+1ns) with the cascade on.
 func (s *Source) NeighborsAt(ctx context.Context, in NeighborsAtInput) (NeighborsAtOutput, error) {
-	return run(s, ctx, false, func(ctx context.Context) (NeighborsAtOutput, error) {
+	req := s.newRequest()
+	req.nameText(in.Entity)
+	return run(s, ctx, false, req, func(ctx context.Context) (NeighborsAtOutput, error) {
 		var zero NeighborsAtOutput
 		fp, err := s.parseEntity("entity", in.Entity)
 		if err != nil {
@@ -112,11 +120,12 @@ func (s *Source) NeighborsAt(ctx context.Context, in NeighborsAtInput) (Neighbor
 		out := NeighborsAtOutput{
 			Token: tokenString(token), Derived: true,
 			Policy: Policy{
-				Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion,
+				Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion,
 			},
 			Entity: ref(fp), At: fmtTime(at), Direction: dirName,
 			Edges: []NeighborEdge{}, Quarantined: []Quarantined{}, Notes: notesFor(ahead),
 		}
+		var withheld NeighborWithheld
 		for _, f := range found {
 			src, dst := f.ends(fp)
 			// The rules of the interval package: a quarantined source lists the edge
@@ -129,6 +138,12 @@ func (s *Source) NeighborsAt(ctx context.Context, in NeighborsAtInput) (Neighbor
 			case state[dst].quarantine != nil:
 				q = state[dst].quarantine
 			case !state[src].alive || !state[dst].alive:
+				continue
+			}
+			// Counted after the cut above, so that the edges listed and the edges
+			// withheld together are the edges of the interval package.
+			if req.hides(f.peer) {
+				withheld.Edges++
 				continue
 			}
 			e := NeighborEdge{
@@ -144,6 +159,10 @@ func (s *Source) NeighborsAt(ctx context.Context, in NeighborsAtInput) (Neighbor
 		}
 		for _, x := range slices.SortedFunc(mapKeys(state), store.CompareFingerprints) {
 			if q := state[x].quarantine; q != nil {
+				if req.hides(x) {
+					withheld.Quarantined++
+					continue
+				}
 				e := Quarantined{
 					Kind: "entity", Subject: SubjectAsserted, Basis: BasisDerived, Rule: RuleExistence,
 					Quarantined: quarantineOf(q),
@@ -154,7 +173,10 @@ func (s *Source) NeighborsAt(ctx context.Context, in NeighborsAtInput) (Neighbor
 				out.Quarantined = append(out.Quarantined, e)
 			}
 		}
-		out.Counts = NeighborCounts{Edges: len(out.Edges), Shown: len(out.Edges)}
+		out.Counts = NeighborCounts{Edges: len(out.Edges), Shown: len(out.Edges), Withheld: withheld}
+		if note := neighborWithheldNote(withheld); note != "" {
+			out.Notes = append(out.Notes, note)
+		}
 
 		err = s.finish(ctx, &out, &out.Notes, token, at, at.Add(time.Nanosecond),
 			namedTail{"edges", listTail(&out.Edges)})

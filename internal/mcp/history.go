@@ -85,7 +85,9 @@ type HistoryCounts struct {
 // EntityHistory shows when an entity existed over a window, and the records that
 // say so.
 func (s *Source) EntityHistory(ctx context.Context, in EntityHistoryInput) (EntityHistoryOutput, error) {
-	return run(s, ctx, false, func(ctx context.Context) (EntityHistoryOutput, error) {
+	req := s.newRequest()
+	req.nameText(in.Entity)
+	return run(s, ctx, false, req, func(ctx context.Context) (EntityHistoryOutput, error) {
 		var zero EntityHistoryOutput
 		fp, err := s.parseEntity("entity", in.Entity)
 		if err != nil {
@@ -108,7 +110,7 @@ func (s *Source) EntityHistory(ctx context.Context, in EntityHistoryInput) (Enti
 		out := EntityHistoryOutput{
 			Token: tokenString(token), Derived: s.rangeReads,
 			Policy: Policy{
-				Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion, Payload: PayloadTableVersion,
+				Interval: interval.PolicyVersion, Rank: s.rankDigest, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 			},
 			Entity: ref(fp), Window: windowOf(from, to), Records: []HistoryRecord{}, Notes: notesFor(ahead),
 		}

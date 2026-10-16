@@ -27,8 +27,8 @@ import (
 //     Only name, labels (three well-known keys) and conditions are allowed.
 //   - host: cloud.resource_id identifies a cloud instance.
 //   - topo.endpoint: every key. An endpoint is an address, and a writer gives it
-//     no description; its address is an identity attribute, printed only where
-//     the request gave it.
+//     no description. Its id reveals the address too, so an answer prints an
+//     endpoint's id only where the request named it (withhold.go).
 //   - every key not listed, and every other entity type.
 //
 // A container's keys, from either producer, and every key of k8scluster are

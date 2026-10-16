@@ -122,7 +122,9 @@ type CoResidentCut struct {
 
 // CoResidents lists the pods that shared a place with a pod over a window.
 func (s *Source) CoResidents(ctx context.Context, in CoResidentsInput) (CoResidentsOutput, error) {
-	return run(s, ctx, true, func(ctx context.Context) (CoResidentsOutput, error) {
+	req := s.newRequest()
+	req.nameText(in.Pod)
+	return run(s, ctx, true, req, func(ctx context.Context) (CoResidentsOutput, error) {
 		var zero CoResidentsOutput
 		seed, err := s.parseEntity("pod", in.Pod)
 		if err != nil {
@@ -150,7 +152,7 @@ func (s *Source) CoResidents(ctx context.Context, in CoResidentsInput) (CoReside
 			Token: tokenString(token), Derived: true,
 			Policy: Policy{
 				Interval: interval.PolicyVersion, CoResidency: coresidency.PolicyVersion,
-				Rank: s.rankDigest, Names: NameTableVersion,
+				Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion,
 			},
 			Seed: ref(seed), Window: windowOf(from, to), NodeOnly: in.NodeOnly,
 			Placement: []Leg{}, CoResidents: []CoResident{}, Suppressed: []CoResident{},

@@ -4,7 +4,8 @@
   "policy": {
     "interval": 1,
     "rank": "253c746577b09aba",
-    "names": 1
+    "names": 1,
+    "withhold": 1
   },
   "entity": {
     "id": "host:3c95ddc202c9c9179f85015702e4853b",

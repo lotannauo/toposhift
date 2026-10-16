@@ -5,7 +5,8 @@
     "interval": 1,
     "rank": "253c746577b09aba",
     "names": 1,
-    "payload": 1
+    "payload": 1,
+    "withhold": 1
   },
   "entity": {
     "id": "k8s.pod:b408e4c76f5a3033e7a43664b8980832",

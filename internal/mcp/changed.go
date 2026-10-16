@@ -104,14 +104,19 @@ type Pair struct {
 	Relations int `json:"relations"`
 }
 
-// ChangeCounts are the exact sizes of the buckets, whatever the answer shows.
+// ChangeCounts are the exact sizes of the buckets, whatever the answer shows. The
+// buckets and the events count what changed, the entries withheld included;
+// Withheld says how much of it is not shown because it names an endpoint the scope
+// does not name. Under the diff's own cap it counts only the entries the diff
+// listed: the entries its cap left out are counted in the bucket only.
 type ChangeCounts struct {
-	Created     Pair `json:"created"`
-	Deleted     Pair `json:"deleted"`
-	Changed     Pair `json:"changed"`
-	Transient   Pair `json:"transient"`
-	Quarantined Pair `json:"quarantined"`
-	Events      int  `json:"events"`
+	Created     Pair           `json:"created"`
+	Deleted     Pair           `json:"deleted"`
+	Changed     Pair           `json:"changed"`
+	Transient   Pair           `json:"transient"`
+	Quarantined Pair           `json:"quarantined"`
+	Events      int            `json:"events"`
+	Withheld    ChangeWithheld `json:"withheld"`
 }
 
 // ChangeTruncation counts, per list, the entries the diff's own cap left out. The
@@ -127,7 +132,9 @@ type ChangeTruncation struct {
 
 // WhatChanged diffs a scope between two instants.
 func (s *Source) WhatChanged(ctx context.Context, in WhatChangedInput) (WhatChangedOutput, error) {
-	return run(s, ctx, true, func(ctx context.Context) (WhatChangedOutput, error) {
+	req := s.newRequest()
+	req.nameText(in.Scope...)
+	return run(s, ctx, true, req, func(ctx context.Context) (WhatChangedOutput, error) {
 		var zero WhatChangedOutput
 		if len(in.Scope) == 0 {
 			return zero, invalid("The argument \"scope\" must name at least one entity.")
@@ -162,11 +169,16 @@ func (s *Source) WhatChanged(ctx context.Context, in WhatChangedInput) (WhatChan
 		}
 		wTo := t2.Add(time.Nanosecond)
 
+		// What names an endpoint the scope does not name is dropped before the display
+		// cap, so that the cap shows only entries that can be printed.
+		events := graphdiff.Events(res)
+		kept, keptEvents, withheld := withholdDiff(res, events, req)
+
 		out := WhatChangedOutput{
 			Token: tokenString(token), Derived: true,
 			Policy: Policy{
 				Interval: interval.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
-				Rank: s.rankDigest, Names: NameTableVersion, Payload: PayloadTableVersion,
+				Rank: s.rankDigest, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 			},
 			Scope: refs(res.Scope), Window: windowOf(t1, wTo),
 			Created: []ChangeEntry{}, Deleted: []ChangeEntry{}, Changed: []ChangeEntry{}, Transient: []ChangeEntry{},
@@ -178,41 +190,44 @@ func (s *Source) WhatChanged(ctx context.Context, in WhatChangedInput) (WhatChan
 			from []graphdiff.Entry
 			to   *[]ChangeEntry
 			n    Pair
-			cut  int
+			not  Pair
 		}{
-			{"created", res.Created, &out.Created, pairOf(res.Counts.Created), res.Truncated.Created},
-			{"deleted", res.Deleted, &out.Deleted, pairOf(res.Counts.Deleted), res.Truncated.Deleted},
-			{"changed", res.Changed, &out.Changed, pairOf(res.Counts.Changed), res.Truncated.Changed},
-			{"transient", res.Transient, &out.Transient, pairOf(res.Counts.Transient), res.Truncated.Transient},
+			{"created", kept.Created, &out.Created, pairOf(res.Counts.Created), withheld.Created},
+			{"deleted", kept.Deleted, &out.Deleted, pairOf(res.Counts.Deleted), withheld.Deleted},
+			{"changed", kept.Changed, &out.Changed, pairOf(res.Counts.Changed), withheld.Changed},
+			{"transient", kept.Transient, &out.Transient, pairOf(res.Counts.Transient), withheld.Transient},
 		}
 		for _, b := range buckets {
 			for _, e := range head(b.from, limit) {
 				*b.to = append(*b.to, changeEntry(b.name, e, wTo))
 			}
-			if total := b.n.Entities + b.n.Relations; len(*b.to) < total {
+			// The total counts what can be printed: the entries withheld are not in it.
+			if total := b.n.total() - b.not.total(); len(*b.to) < total {
 				out.Notes = append(out.Notes, shown(len(*b.to), total, b.name+" entries", "entities first"))
 			}
 		}
-		events := graphdiff.Events(res)
-		for _, ev := range head(events, limit) {
+		for _, ev := range head(keptEvents, limit) {
 			out.Events = append(out.Events, changeEvent(ev))
 		}
-		if len(out.Events) < len(events) {
-			out.Notes = append(out.Notes, shown(len(out.Events), len(events), "events", "oldest first"))
+		if total := len(events) - withheld.Events; len(out.Events) < total {
+			out.Notes = append(out.Notes, shown(len(out.Events), total, "events", "oldest first"))
 		}
-		for _, el := range head(res.Quarantined, maxQuarantined) {
+		for _, el := range head(kept.Quarantined, maxQuarantined) {
 			if q, ok := quarantinedOf(el); ok {
 				out.Quarantined = append(out.Quarantined, q)
 			}
 		}
-		if n := res.Counts.Quarantined.Entities + res.Counts.Quarantined.Relations; len(out.Quarantined) < n {
+		if n := res.Counts.Quarantined.Entities + res.Counts.Quarantined.Relations - withheld.Quarantined.total(); len(out.Quarantined) < n {
 			out.Notes = append(out.Notes, shown(len(out.Quarantined), n, "quarantined elements", "in the package's order"))
+		}
+		if note := changeWithheldNote(withheld); note != "" {
+			out.Notes = append(out.Notes, note)
 		}
 
 		out.Counts = ChangeCounts{
 			Created: pairOf(res.Counts.Created), Deleted: pairOf(res.Counts.Deleted),
 			Changed: pairOf(res.Counts.Changed), Transient: pairOf(res.Counts.Transient),
-			Quarantined: pairOf(res.Counts.Quarantined), Events: len(events),
+			Quarantined: pairOf(res.Counts.Quarantined), Events: len(events), Withheld: withheld,
 		}
 		tr := res.Truncated
 		out.Truncation = ChangeTruncation{
@@ -220,6 +235,7 @@ func (s *Source) WhatChanged(ctx context.Context, in WhatChangedInput) (WhatChan
 			Incomplete: tr.Created+tr.Deleted+tr.Changed+tr.Transient+tr.Quarantined > 0,
 		}
 		out.Notes = append(out.Notes, diffNotes(tr)...)
+		out.Notes = append(out.Notes, changeCapNotes(res, withheld)...)
 
 		err = s.finish(ctx, &out, &out.Notes, token, t1, wTo,
 			namedTail{"transient entries", listTail(&out.Transient)},
