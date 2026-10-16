@@ -39,6 +39,9 @@ type Config struct {
 	Version string
 	// Logf receives one line for each internal error. Nil discards them.
 	Logf func(format string, args ...any)
+	// Instructions, when not empty, is appended after one space to the
+	// server's own instructions, which the protocol's initialize answer carries.
+	Instructions string
 }
 
 // A Server serves the tools over HTTP. Its zero value is not usable; start from
@@ -82,8 +85,12 @@ func New(cfg Config) (*Server, error) {
 	if version == "" {
 		version = "devel"
 	}
+	text := instructions
+	if cfg.Instructions != "" {
+		text += " " + cfg.Instructions
+	}
 	s.sdk = sdk.NewServer(&sdk.Implementation{Name: "toposhift", Title: "toposhift topology graph", Version: version}, &sdk.ServerOptions{
-		Instructions: instructions,
+		Instructions: text,
 		// Only tools, and no list-changed notification: the list never changes and
 		// there is no session to send one to.
 		Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
