@@ -1,10 +1,13 @@
 package svcgraph_test
 
 import (
+	"bytes"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/coalesce"
 	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
@@ -17,16 +20,21 @@ func at(k int) time.Time { return t0.Add(time.Duration(k) * flush) }
 
 // wantSighting checks that recs are exactly the records of one call of e at the
 // instant tm: the client's service, the server's, and the edge, each an Observe with
-// the expiry as TTL.
+// the expiry as TTL. A service carries its description, made of its own namespace
+// and name, and the edge carries nothing.
 func wantSighting(t *testing.T, recs []store.Record, e edgeID, tm time.Time) {
 	t.Helper()
 	client, server := serviceFP(t, e.clientNS, e.client), serviceFP(t, e.serverNS, e.server)
 	var want []store.Subject
+	var wantPayload [][]byte
 	want = append(want, store.EntitySubject(client))
+	wantPayload = append(wantPayload, otlpmetrics.ServiceDescription(e.clientNS, e.client))
 	if server != client {
 		want = append(want, store.EntitySubject(server))
+		wantPayload = append(wantPayload, otlpmetrics.ServiceDescription(e.serverNS, e.server))
 	}
 	want = append(want, store.EdgeSubject(client, server, catalog.DependsOn))
+	wantPayload = append(wantPayload, nil)
 	if len(recs) != len(want) {
 		t.Fatalf("%d records, want %d for %s:%s", len(recs), len(want), e, describe(recs))
 	}
@@ -38,8 +46,10 @@ func wantSighting(t *testing.T, recs []store.Record, e edgeID, tm time.Time) {
 			t.Errorf("record %d: at %s, want %s", i, r.EventTime, tm)
 		case r.Kind != lifecycle.Observe || r.TTL != expiry || r.Producer != testProducer || r.EventTimeBasis != store.BasisObserved:
 			t.Errorf("record %d: %v ttl %s producer %s basis %s", i, r.Kind, r.TTL, r.Producer, r.EventTimeBasis)
-		case !r.Through.IsZero() || len(r.Payload) != 0 || r.Seq != 0 || r.Boot != "":
-			t.Errorf("record %d: through %v payload %q seq %d boot %q", i, r.Through, r.Payload, r.Seq, r.Boot)
+		case !r.Through.IsZero() || r.Seq != 0 || r.Boot != "":
+			t.Errorf("record %d: through %v seq %d boot %q", i, r.Through, r.Seq, r.Boot)
+		case !bytes.Equal(r.Payload, wantPayload[i]):
+			t.Errorf("record %d: payload %q, want %q", i, r.Payload, wantPayload[i])
 		}
 	}
 }
@@ -591,14 +601,22 @@ func TestConnectionTypesThatAreNotCallsAreSkipped(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		attrs  []string // key, value pairs
+		extra  []capture.KeyValue
 		reason string
 	}{
-		{"database", []string{"connection_type", "database"}, svcgraph.SkipConnectionDatabase},
-		{"messaging", []string{"connection_type", "messaging_system"}, svcgraph.SkipConnectionMessaging},
-		{"virtual node", []string{"connection_type", "virtual_node"}, svcgraph.SkipConnectionVirtualNode},
-		{"unknown", []string{"connection_type", "grpc"}, svcgraph.SkipConnectionUnknown},
-		{"absent", []string{"connection_type", ""}, svcgraph.SkipNoConnectionType},
-		{"a virtual node label", []string{"virtual_node", "client"}, svcgraph.SkipVirtualNodeLabel},
+		{"database", []string{"connection_type", "database"}, nil, svcgraph.SkipConnectionDatabase},
+		{"messaging", []string{"connection_type", "messaging_system"}, nil, svcgraph.SkipConnectionMessaging},
+		{"virtual node", []string{"connection_type", "virtual_node"}, nil, svcgraph.SkipConnectionVirtualNode},
+		{"unknown", []string{"connection_type", "grpc"}, nil, svcgraph.SkipConnectionUnknown},
+		{"absent", []string{"connection_type", ""}, nil, svcgraph.SkipNoConnectionType},
+		{"a virtual node label", []string{"virtual_node", "client"}, nil, svcgraph.SkipVirtualNodeLabel},
+		{"a virtual node label of the server", []string{"virtual_node", "server"}, nil, svcgraph.SkipVirtualNodeLabel},
+		{"a virtual node label that is not text", []string{"connection_type", ""}, []capture.KeyValue{{Key: "virtual_node", Value: iv(1)}}, svcgraph.SkipVirtualNodeLabel},
+		{"a virtual node label of two values", []string{"connection_type", ""}, []capture.KeyValue{kv("virtual_node", "client"), kv("virtual_node", "server")}, svcgraph.SkipVirtualNodeLabel},
+		{"a virtual node label of an empty and a non-empty value", []string{"connection_type", ""}, []capture.KeyValue{kv("virtual_node", ""), kv("virtual_node", "client")}, svcgraph.SkipVirtualNodeLabel},
+		// The connection type is checked first.
+		{"a virtual node connection and label", []string{"connection_type", "virtual_node"}, []capture.KeyValue{kv("virtual_node", "client")}, svcgraph.SkipConnectionVirtualNode},
+		{"a database connection and a bad label", []string{"connection_type", "database"}, []capture.KeyValue{{Key: "virtual_node", Value: iv(1)}}, svcgraph.SkipConnectionDatabase},
 	} {
 		tr := newTranslator(t)
 		kvs := dropKey(base.Attributes, "connection_type")
@@ -610,6 +628,7 @@ func TestConnectionTypesThatAreNotCallsAreSkipped(t *testing.T) {
 		if tc.name == "absent" {
 			kvs = dropKey(kvs, "connection_type")
 		}
+		kvs = append(kvs, tc.extra...)
 		// A warm translator, so that a point that reached the state would be a sighting.
 		send(tr, rcv(t0), counter(edge("x", "y"), connStart, t0, 1))
 		p := withAttrs(counter(edge("a", "b"), connStart, at(3), 1), kvs...)
@@ -904,5 +923,122 @@ func TestAGapLongerThanRDoesNotLengthenTheWarmUp(t *testing.T) {
 		if sighted != tc.want {
 			t.Errorf("a gap of %s: %d sightings of a new series, want %d", tc.gap, sighted, tc.want)
 		}
+	}
+}
+
+// labelled is a point with the virtual_node label given the values, as the connector
+// does when it is configured with virtual_node_extra_label.
+func labelled(p otlpmetrics.SumPoint, values ...string) otlpmetrics.SumPoint {
+	p.Attributes = append([]capture.KeyValue(nil), p.Attributes...)
+	for _, v := range values {
+		p.Attributes = append(p.Attributes, kv("virtual_node", v))
+	}
+	return p
+}
+
+// With virtual_node_extra_label the connector puts the label on every point, empty for
+// a call between two services. Such a point is read like one without the label: it goes
+// through the warm-up and the cases of the rule the same, and a call is a sighting.
+func TestAnEmptyVirtualNodeLabelIsACall(t *testing.T) {
+	t.Parallel()
+	// Every label the connector gave a point in the recorded run: client, server,
+	// connection_type, failed, both namespaces and virtual_node.
+	demo := edgeID{client: "frontend", server: "checkout", clientNS: "opentelemetry-demo", serverNS: "opentelemetry-demo"}
+	if got := len(labelled(counter(demo, connStart, t0, 1), "").Attributes); got != 7 {
+		t.Fatalf("a point has %d labels, want the 7 of the recorded run", got)
+	}
+	side := edge("a", "b")
+
+	// One connector, seen by a translator that gets the points as they are and by one
+	// that gets the empty label on each: the results are the same at every flush.
+	plain, lab := newTranslator(t), newTranslator(t)
+	cn := newConn(connStart)
+	cn.call(side, 5, t0.Add(-time.Minute))
+	var sighted, warming int
+	for k := 0; k < 50; k++ {
+		switch k {
+		case 1:
+			cn.call(edge("early", "e2"), 1, at(k).Add(-time.Second)) // new in the warm-up
+		case 3, 8, 36:
+			cn.call(demo, 1, at(k).Add(-time.Second)) // new after the warm-up, then increases, then new again
+		case 10, 30:
+			cn.call(side, 1, at(k).Add(-time.Second))
+		}
+		pts := cn.flush(at(k), 0)
+		with := make([]otlpmetrics.SumPoint, len(pts))
+		for i, p := range pts {
+			with[i] = labelled(p, "")
+		}
+		rp, rl := plain.Translate(resource(pts...), rcv(at(k))), lab.Translate(resource(with...), rcv(at(k)))
+		plain.Commit()
+		lab.Commit()
+		if !reflect.DeepEqual(rp, rl) {
+			t.Fatalf("flush %d: the label changed the result:\n plain %+v\n label %+v", k, rp, rl)
+		}
+		if plain.Series() != lab.Series() {
+			t.Fatalf("flush %d: %d series with the label, %d without", k, lab.Series(), plain.Series())
+		}
+		warming += skipped(rl, svcgraph.SkipWarmUp)
+		if k == 3 {
+			wantSighting(t, rl.Records, demo, calls(rl.Records)[0].at)
+		}
+		sighted += len(calls(rl.Records))
+	}
+	// The new series at 3 and 36, and the increases at 8, 10 and 30.
+	if sighted != 5 || warming == 0 {
+		t.Errorf("%d sightings and %d series set aside in the warm-up, want 5 and some", sighted, warming)
+	}
+
+	// The label given twice with the same empty value is the empty value.
+	tr := newTranslator(t)
+	send(tr, rcv(t0), labelled(counter(side, connStart, t0, 1), ""))
+	r := send(tr, rcv(at(3)), labelled(counter(demo, connStart, at(3), 1), "", ""))
+	wantSighting(t, r.Records, demo, at(3))
+	if n := skipped(r, svcgraph.SkipVirtualNodeLabel); n != 0 {
+		t.Errorf("%d points set aside for the label", n)
+	}
+}
+
+// A sighting repeated by the same producer is one run of each subject once it has gone
+// through the coalescer ingest uses: the description of a service is a function of its
+// identity, so a repeat is the same record and is absorbed.
+func TestRepeatedSightingsCoalesceIntoOneRun(t *testing.T) {
+	t.Parallel()
+	co, err := coalesce.New(coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := edgeID{client: "frontend", server: "checkout", clientNS: "opentelemetry-demo"}
+	tr := newTranslator(t)
+	var out []store.Record
+	for k := 0; k < 3; k++ {
+		p := counter(e, at(k).Add(-time.Minute), at(k), 1)
+		p.Temporality = otlpmetrics.Delta
+		r := send(tr, rcv(at(k)), p)
+		wantSighting(t, r.Records, e, at(k))
+		for _, rec := range r.Records {
+			out = co.Add(rec, out)
+		}
+	}
+	client, server := serviceFP(t, e.clientNS, e.client), serviceFP(t, e.serverNS, e.server)
+	want := map[store.Subject][]byte{
+		store.EntitySubject(client):                          otlpmetrics.ServiceDescription(e.clientNS, e.client),
+		store.EntitySubject(server):                          otlpmetrics.ServiceDescription(e.serverNS, e.server),
+		store.EdgeSubject(client, server, catalog.DependsOn): nil,
+	}
+	got := map[store.Subject]int{}
+	for _, rec := range out {
+		got[rec.Subject]++
+		if w, ok := want[rec.Subject]; !ok || !bytes.Equal(rec.Payload, w) {
+			t.Errorf("a record of %+v with payload %q", rec.Subject, rec.Payload)
+		}
+	}
+	for subj := range want {
+		if got[subj] != 1 {
+			t.Errorf("%+v: %d records out of the coalescer, want 1", subj, got[subj])
+		}
+	}
+	if len(out) != 3 || co.Runs() != 3 {
+		t.Errorf("%d records and %d runs, want 3 and 3", len(out), co.Runs())
 	}
 }

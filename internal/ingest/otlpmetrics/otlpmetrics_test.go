@@ -1,6 +1,7 @@
 package otlpmetrics_test
 
 import (
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -238,6 +239,47 @@ func TestFingerprints(t *testing.T) {
 	if otlpmetrics.KeyServiceName != "service.name" || otlpmetrics.KeyServiceNamespace != "service.namespace" ||
 		otlpmetrics.KeyServiceInstanceID != "service.instance.id" || otlpmetrics.KeyPodUID != "k8s.pod.uid" {
 		t.Error("an attribute key")
+	}
+}
+
+// A service's description is its name and, when it has one, its namespace, as the
+// canonical JSON a payload is: keys in that order, no HTML escaping, no trailing
+// newline. Decoding it gives back the values its fingerprint is made of.
+func TestServiceDescription(t *testing.T) {
+	t.Parallel()
+	f := otlpmetrics.NewFingerprints(identity.NewResolver(catalog.Default()))
+	for _, tc := range []struct{ ns, name, want string }{
+		{"", "web", `{"name":"web"}`},
+		{"shop", "web", `{"name":"web","namespace":"shop"}`},
+		{"", "<&>", `{"name":"<&>"}`},
+		{"a>b", "<&>", `{"name":"<&>","namespace":"a>b"}`},
+		{"", "a\"b\\c\x01", `{"name":"a\"b\\c\u0001"}`},
+		{"n\n", "\u00e9 \u2028", "{\"name\":\"\u00e9 \\u2028\",\"namespace\":\"n\\n\"}"},
+	} {
+		got := otlpmetrics.ServiceDescription(tc.ns, tc.name)
+		if string(got) != tc.want {
+			t.Errorf("(%q, %q): %q, want %q", tc.ns, tc.name, got, tc.want)
+		}
+		var d struct{ Name, Namespace string }
+		if err := json.Unmarshal(got, &d); err != nil {
+			t.Errorf("(%q, %q): %v", tc.ns, tc.name, err)
+			continue
+		}
+		if d.Name != tc.name || d.Namespace != tc.ns {
+			t.Errorf("(%q, %q): decodes to %+v", tc.ns, tc.name, d)
+		}
+		want, err := f.Service(tc.ns, tc.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := f.Service(d.Namespace, d.Name); err != nil || got != want {
+			t.Errorf("(%q, %q): the decoded values give another fingerprint (%v)", tc.ns, tc.name, err)
+		}
+	}
+	// A description is a pure function of its values, and a different service has a
+	// different one.
+	if string(otlpmetrics.ServiceDescription("shop", "web")) == string(otlpmetrics.ServiceDescription("", "web")) {
+		t.Error("a namespace changed nothing")
 	}
 }
 

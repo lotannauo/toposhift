@@ -32,7 +32,8 @@
 // namespace is none. A resource with no usable service.name, service.instance.id or
 // namespace writes nothing, and is counted. Nothing else identifies anything: a pod
 // IP, a pod name, a host name and a network address never identify or join anything.
-// The services are the ones package svcgraph writes, with the same identity.
+// The services are the ones package svcgraph writes, with the same identity and the
+// same description.
 //
 // # The bridge
 //
@@ -54,7 +55,9 @@
 // renamed. A sighting is written as Observes with the TTL of [Config], at the point's
 // time, with basis producer_event (the application's clock):
 //
-//   - the service, in layer L3, with no payload;
+//   - the service, in layer L3, whose payload is its description, {"name":...,
+//     "namespace":...} with the namespace left out when it has none (see
+//     [otlpmetrics.ServiceDescription]);
 //   - the service instance, in layer L2, whose payload is the canonical JSON of its
 //     service.version if it has a usable one, and none otherwise, so that a new
 //     version ends the instance's run: that is the deploy signal;
@@ -270,7 +273,7 @@ func (t *Translator) sighting(tally *otlpmetrics.Tally, attrs otlpmetrics.Attrib
 		return otlpmetrics.Observe(t.producer, s, at, store.BasisProducerEvent, t.ttl, payload)
 	}
 	recs := []store.Record{
-		obs(store.EntitySubject(service), nil),
+		obs(store.EntitySubject(service), otlpmetrics.ServiceDescription(ns, name)),
 		obs(store.EntitySubject(instance), t.description(tally, attrs)),
 		obs(store.EdgeSubject(instance, service, catalog.InstanceOf), nil),
 	}

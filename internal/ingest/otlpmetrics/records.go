@@ -1,6 +1,8 @@
 package otlpmetrics
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -32,7 +34,8 @@ func UsableID(s string) bool {
 func UsableNamespace(s string) bool { return s == "" || UsableID(s) }
 
 // Fingerprints makes the fingerprints of the entities the two writers assert, so
-// that a service has the same identity whichever of them writes it.
+// that a service has the same identity and, with [ServiceDescription], the same
+// description whichever of them writes it.
 type Fingerprints struct {
 	r *identity.Resolver
 }
@@ -55,6 +58,28 @@ func (f Fingerprints) Instance(namespace, name, id string) (identity.Fingerprint
 // Pod is the fingerprint of the pod with a uid.
 func (f Fingerprints) Pod(uid string) (identity.Fingerprint, error) {
 	return f.resolve(catalog.K8sPod, []identity.Attr{{Key: catalog.K8sPodUID, Value: uid}})
+}
+
+// serviceDescription is the payload of a service.
+type serviceDescription struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+// ServiceDescription is the payload of a service: its name and, when it has one, its
+// namespace, the values its identity is made of, as canonical JSON: the keys in that
+// order, no HTML escaping and no trailing newline. Both writers build a service's
+// payload here, so one service has the same bytes from either. The values must be the
+// ones [Fingerprints.Service] accepted.
+func ServiceDescription(namespace, name string) []byte {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(serviceDescription{Name: name, Namespace: namespace}); err != nil {
+		// Only strings are encoded.
+		panic("otlpmetrics: encoding a service description: " + err.Error())
+	}
+	return bytes.TrimRight(b.Bytes(), "\n")
 }
 
 func namespaceAttrs(namespace, name string) []identity.Attr {

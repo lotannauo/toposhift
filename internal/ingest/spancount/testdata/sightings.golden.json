@@ -1,0 +1,243 @@
+[
+ {
+  "input": "an instance with a namespace, a version and a pod",
+  "received": "2026-10-15T09:00:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"cart\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "instance opentelemetry-demo/cart/cart-7d9f-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"service.version\":\"1.4.0\"}"
+   },
+   {
+    "subject": "instance_of instance opentelemetry-demo/cart/cart-7d9f-1 -> service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "part_of instance opentelemetry-demo/cart/cart-7d9f-1 -> pod uid-cart-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ]
+ },
+ {
+  "input": "an instance with no namespace, no version and no pod",
+  "received": "2026-10-15T09:01:01Z",
+  "records": [
+   {
+    "subject": "service checkout",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:01:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"checkout\"}"
+   },
+   {
+    "subject": "instance checkout/checkout-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:01:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "instance_of instance checkout/checkout-1 -> service checkout",
+    "kind": "observe",
+    "event_time": "2026-10-15T09:01:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ],
+  "skipped": {
+   "no pod uid: instance written without a bridge": 1
+  }
+ },
+ {
+  "input": "the same instance with a new version",
+  "received": "2026-10-15T10:00:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"cart\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "instance opentelemetry-demo/cart/cart-7d9f-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"service.version\":\"1.5.0\"}"
+   },
+   {
+    "subject": "instance_of instance opentelemetry-demo/cart/cart-7d9f-1 -> service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "part_of instance opentelemetry-demo/cart/cart-7d9f-1 -> pod uid-cart-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ]
+ },
+ {
+  "input": "a second instance of the service, in another pod",
+  "received": "2026-10-15T10:00:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"cart\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "instance opentelemetry-demo/cart/cart-7d9f-2",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"service.version\":\"1.5.0\"}"
+   },
+   {
+    "subject": "instance_of instance opentelemetry-demo/cart/cart-7d9f-2 -> service opentelemetry-demo/cart",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "part_of instance opentelemetry-demo/cart/cart-7d9f-2 -> pod uid-cart-2",
+    "kind": "observe",
+    "event_time": "2026-10-15T10:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ]
+ },
+ {
+  "input": "a name that needs escaping",
+  "received": "2026-10-15T11:00:01Z",
+  "records": [
+   {
+    "subject": "service quote\"<&>",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"quote\\\"<&>\"}"
+   },
+   {
+    "subject": "instance quote\"<&>/q-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "instance_of instance quote\"<&>/q-1 -> service quote\"<&>",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ],
+  "skipped": {
+   "no pod uid: instance written without a bridge": 1
+  }
+ },
+ {
+  "input": "an unusable version and a pod uid given twice",
+  "received": "2026-10-15T11:00:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/ad",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"ad\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "instance opentelemetry-demo/ad/ad-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "instance_of instance opentelemetry-demo/ad/ad-1 -> service opentelemetry-demo/ad",
+    "kind": "observe",
+    "event_time": "2026-10-15T11:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ],
+  "skipped": {
+   "unusable pod uid: instance written without a bridge": 1,
+   "unusable service version: instance written without one": 1
+  }
+ },
+ {
+  "input": "a service version that is not text",
+  "received": "2026-10-15T12:00:01Z",
+  "records": [
+   {
+    "subject": "service opentelemetry-demo/ad",
+    "kind": "observe",
+    "event_time": "2026-10-15T12:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s",
+    "payload": "{\"name\":\"ad\",\"namespace\":\"opentelemetry-demo\"}"
+   },
+   {
+    "subject": "instance opentelemetry-demo/ad/ad-1",
+    "kind": "observe",
+    "event_time": "2026-10-15T12:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   },
+   {
+    "subject": "instance_of instance opentelemetry-demo/ad/ad-1 -> service opentelemetry-demo/ad",
+    "kind": "observe",
+    "event_time": "2026-10-15T12:00:00Z",
+    "basis": "producer_event",
+    "ttl": "6h0m0s"
+   }
+  ],
+  "skipped": {
+   "no pod uid: instance written without a bridge": 1,
+   "unusable service version: instance written without one": 1
+  }
+ },
+ {
+  "input": "no service name",
+  "received": "2026-10-15T12:00:01Z",
+  "skipped": {
+   "no service name": 1
+  }
+ }
+]
