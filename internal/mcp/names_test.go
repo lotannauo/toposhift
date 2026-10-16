@@ -184,7 +184,7 @@ func TestNamesAfterRetention(t *testing.T) {
 	}
 	var found bool
 	for _, n := range out.Notes {
-		if strings.HasPrefix(n, "Names are unavailable: Range answers for layer ") && strings.Contains(n, "since retention began at 2026-01-01T09:30:00Z") {
+		if strings.HasPrefix(n, "Names are unavailable: The description of ") && strings.Contains(n, "was recorded with an event time before the retention horizon and is no longer kept.") {
 			found = true
 		}
 	}
@@ -213,7 +213,7 @@ func TestNamesNeedRangeReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !contains(out.Notes, "Names need a range read, which this store does not offer yet.") {
+	if !contains(out.Notes, "Names need a range read, which this store does not offer.") {
 		t.Errorf("notes %q", out.Notes)
 	}
 	for _, r := range append([]Ref{out.Entity}, edgePeers(out.Edges)...) {

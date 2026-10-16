@@ -125,11 +125,12 @@ func describe(typ catalog.EntityType, producer string, payload []byte) *Describe
 
 // filterPayload keeps the allowed top-level keys of a payload that is one JSON
 // object, and names the others, sorted. A payload that is not one object is
-// withheld whole, with a note. An empty payload is the empty object.
+// withheld whole, with a note, and printed as the empty object, never null: the
+// output schema says object. An empty payload is the empty object.
 func filterPayload(typ catalog.EntityType, payload []byte) (kept map[string]any, withheld []string, note string) {
 	obj, ok := payloadObject(payload)
 	if !ok {
-		return nil, nil, notAnObject
+		return map[string]any{}, nil, notAnObject
 	}
 	kept = map[string]any{}
 	for k, v := range obj {

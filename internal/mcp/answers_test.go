@@ -28,10 +28,18 @@ func marshal(t testing.TB, name, tool string, v any, err error) answer {
 	return answer{name: name, tool: tool, json: b}
 }
 
-// allAnswers asks every tool the questions of the fixture, the quarantined host
-// included, and returns the answers in name order.
-func allAnswers(t testing.TB, w *world, s *Source) []answer {
-	t.Helper()
+// question is one question of the fixture: the tool it asks, whether its answer
+// echoes the request's attributes, and how to ask a source.
+type question struct {
+	name string
+	tool string
+	echo bool
+	ask  func(*Source) (any, error)
+}
+
+// questions are the questions allAnswers asks, of the fixture w, in the order it
+// asks them.
+func questions(w *world) []question {
 	ids := func(fps ...interface{ String() string }) []string {
 		var out []string
 		for _, f := range fps {
@@ -39,67 +47,74 @@ func allAnswers(t testing.TB, w *world, s *Source) []answer {
 		}
 		return out
 	}
-	var out []answer
-	add := func(name, tool string, v any, err error) { out = append(out, marshal(t, name, tool, v, err)) }
-	{
-		v, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030})
-		add("blast host", "blast_radius", v, err)
+	var out []question
+	add := func(name, tool string, ask func(*Source) (any, error)) {
+		out = append(out, question{name: name, tool: tool, ask: ask})
 	}
-	{
-		v, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h2.String(), From: w10, To: w1030})
-		add("blast quarantined host", "blast_radius", v, err)
-	}
-	{
-		v, err := s.BlastRadius(ctx, BlastRadiusInput{Entity: w.n1.String(), At: "2026-01-01T10:08:00Z", Depth: 1})
-		add("blast node at an instant, depth 1", "blast_radius", v, err)
-	}
-	{
-		v, err := s.WhatChanged(ctx, WhatChangedInput{
+	add("blast host", "blast_radius", func(s *Source) (any, error) {
+		return s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h1.String(), From: w10, To: w1030})
+	})
+	add("blast quarantined host", "blast_radius", func(s *Source) (any, error) {
+		return s.BlastRadius(ctx, BlastRadiusInput{Entity: w.h2.String(), From: w10, To: w1030})
+	})
+	add("blast node at an instant, depth 1", "blast_radius", func(s *Source) (any, error) {
+		return s.BlastRadius(ctx, BlastRadiusInput{Entity: w.n1.String(), At: "2026-01-01T10:08:00Z", Depth: 1})
+	})
+	add("diff", "what_changed", func(s *Source) (any, error) {
+		return s.WhatChanged(ctx, WhatChangedInput{
 			Scope: ids(w.n1, w.p1, w.p2, w.p3, w.p4, w.p6, w.c1, w.h1), From: w10, To: w1030,
 		})
-		add("diff", "what_changed", v, err)
-	}
-	{
-		v, err := s.WhatChanged(ctx, WhatChangedInput{Scope: ids(w.h2, w.n3, w.p5), From: w10, To: w1030})
-		add("diff quarantined", "what_changed", v, err)
-	}
-	{
-		v, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030})
-		add("co-residents", "co_residents", v, err)
-	}
-	{
-		v, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p5.String(), From: w10, To: w1030})
-		add("co-residents on a quarantined host", "co_residents", v, err)
-	}
-	{
-		v, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030, NodeOnly: true})
-		add("co-residents, node only", "co_residents", v, err)
-	}
+	})
+	add("diff quarantined", "what_changed", func(s *Source) (any, error) {
+		return s.WhatChanged(ctx, WhatChangedInput{Scope: ids(w.h2, w.n3, w.p5), From: w10, To: w1030})
+	})
+	add("co-residents", "co_residents", func(s *Source) (any, error) {
+		return s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030})
+	})
+	add("co-residents on a quarantined host", "co_residents", func(s *Source) (any, error) {
+		return s.CoResidents(ctx, CoResidentsInput{Pod: w.p5.String(), From: w10, To: w1030})
+	})
+	add("co-residents, node only", "co_residents", func(s *Source) (any, error) {
+		return s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030, NodeOnly: true})
+	})
 	for _, e := range []struct {
 		name string
 		fp   interface{ String() string }
 	}{{"node", w.n1}, {"quarantined host", w.h2}, {"host", w.h1}, {"pod", w.p1}} {
-		v, err := s.NeighborsAt(ctx, NeighborsAtInput{Entity: e.fp.String(), At: "2026-01-01T10:08:00Z"})
-		add("neighbors of a "+e.name, "neighbors_at", v, err)
+		add("neighbors of a "+e.name, "neighbors_at", func(s *Source) (any, error) {
+			return s.NeighborsAt(ctx, NeighborsAtInput{Entity: e.fp.String(), At: "2026-01-01T10:08:00Z"})
+		})
 	}
 	for _, e := range []struct {
 		name string
 		fp   interface{ String() string }
 	}{{"pod", w.p1}, {"node", w.n1}, {"host", w.h1}, {"quarantined host", w.h2}, {"container", w.c1}, {"zone", w.z1}, {"deleted pod", w.p2}} {
-		v, err := s.EntityHistory(ctx, EntityHistoryInput{Entity: e.fp.String(), From: "2026-01-01T09:00:00Z", To: w1030})
-		add("history of a "+e.name, "entity_history", v, err)
+		add("history of a "+e.name, "entity_history", func(s *Source) (any, error) {
+			return s.EntityHistory(ctx, EntityHistoryInput{Entity: e.fp.String(), From: "2026-01-01T09:00:00Z", To: w1030})
+		})
 	}
-	{
-		v, err := s.ResolveEntity(ctx, ResolveEntityInput{
+	add("resolve a host", "resolve_entity", func(s *Source) (any, error) {
+		return s.ResolveEntity(ctx, ResolveEntityInput{
 			Type: "host", Attributes: map[string]json.RawMessage{"host.id": json.RawMessage(`"` + hostSecret + `"`)}, At: w10,
 		})
-		a := marshal(t, "resolve a host", "resolve_entity", v, err)
-		a.echo = true
+	})
+	out[len(out)-1].echo = true
+	add("schema", "describe_schema", func(s *Source) (any, error) {
+		return s.DescribeSchema(ctx, DescribeSchemaInput{})
+	})
+	return out
+}
+
+// allAnswers asks every tool the questions of the fixture, the quarantined host
+// included, and returns the answers in name order.
+func allAnswers(t testing.TB, w *world, s *Source) []answer {
+	t.Helper()
+	var out []answer
+	for _, q := range questions(w) {
+		v, err := q.ask(s)
+		a := marshal(t, q.name, q.tool, v, err)
+		a.echo = q.echo
 		out = append(out, a)
-	}
-	{
-		v, err := s.DescribeSchema(ctx, DescribeSchemaInput{})
-		add("schema", "describe_schema", v, err)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out

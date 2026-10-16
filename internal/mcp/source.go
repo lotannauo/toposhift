@@ -17,6 +17,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
+	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
 
 // The bounds on calls. All three numbers are placeholders until a read budget is
@@ -41,9 +42,9 @@ type Config struct {
 	// a payload comes from, so a source built with other ranks gives other names.
 	Rank map[lifecycle.Producer]int
 	// RangeReads says the range tools may run on Store. It is false unless the
-	// caller sets it, and [RangeReadsFor] is the policy: true only for memstore.
-	// While it is false each range tool answers that range answers are not
-	// available, and no name is read.
+	// caller sets it, and [RangeReadsFor] is the policy: true for memstore and
+	// pebblestore. While it is false each range tool answers that range answers
+	// are not available, and no name is read.
 	RangeReads bool
 	// MaxConcurrent, BusyAfter and CallTimeout bound the calls; zero means the
 	// default.
@@ -54,12 +55,19 @@ type Config struct {
 	Logf func(format string, args ...any)
 }
 
-// RangeReadsFor says whether the range tools may run on st: true only for the
-// in-memory reference store. Every other store, a pebblestore included, has no
-// interval read of its own yet, and a range query on it reads all of its history.
+// RangeReadsFor says whether the range tools may run on st: true for the two
+// stores of this module, memstore and pebblestore. Both read a window from each
+// reference's seed, so a range read costs its window and a walk to the seeds, not
+// the prefix's history; pebblestore's walk is bounded under the conditions of its
+// seed-walk budget, and memstore is the reference. Any other store, a wrapper of
+// one of these included, gets false: its reads are not known to be the inner
+// store's, and its range tools answer that range answers are not available.
 func RangeReadsFor(st store.Store) bool {
-	_, ok := st.(*memstore.Store)
-	return ok
+	switch st.(type) {
+	case *memstore.Store, *pebblestore.Store:
+		return true
+	}
+	return false
 }
 
 // Source answers the tools over one store. It is safe for concurrent use.

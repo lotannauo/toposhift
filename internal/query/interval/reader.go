@@ -24,6 +24,40 @@ import (
 // wrapping [store.ErrBeforeHorizon].
 var ErrRetained = fmt.Errorf("asserted before the retention horizon and no longer kept: %w", errors.ErrUnsupported)
 
+// RetainedError is the refusal of a description: the one a reader with
+// [Options].Describe must give of Subject at At is decided by Seed, Producer's
+// assertion before the window, recorded before the retention horizon of its layer,
+// whose payload the store no longer keeps. Seed has every field the store keeps,
+// both time axes included, and no payload. It wraps [ErrRetained]; the call's error
+// wraps it.
+type RetainedError struct {
+	Subject  store.Subject
+	At       time.Time
+	Producer lifecycle.Producer
+	Seed     store.Record
+}
+
+func (e *RetainedError) Error() string {
+	return fmt.Sprintf("the description of %s at %s by %s was %v", describeSubject(e.Subject), formatTime(e.At), e.Producer, ErrRetained)
+}
+
+func (e *RetainedError) Unwrap() error { return ErrRetained }
+
+// Deadline is when Seed's reference lapses: its last asserted instant (Through
+// for a run, else its event time) plus its TTL. A window read at the same token
+// that starts at or after it does not need this seed. ok is false for a seed with
+// no TTL, which lapses only when its producer asserts the subject again.
+func (e *RetainedError) Deadline() (time.Time, bool) {
+	if e.Seed.TTL <= 0 {
+		return time.Time{}, false
+	}
+	last := e.Seed.EventTime
+	if e.Seed.Through.After(last) {
+		last = e.Seed.Through
+	}
+	return last.Add(e.Seed.TTL), true
+}
+
 // Options configures a [Reader].
 type Options struct {
 	// Raw reads edges without the cascade: an edge's own intervals, with no read
@@ -192,9 +226,9 @@ type existence struct {
 	quarantine *store.QuarantineError
 	f          folded
 	recs       []store.Record
-	// unknown are the producers whose seed carries no payload: their assertion
+	// unknown are the seeds that carry no payload, by producer: their assertion
 	// before From was before the retention horizon.
-	unknown map[lifecycle.Producer]bool
+	unknown map[lifecycle.Producer]store.Record
 }
 
 // entity is the element of one entity the call has read (see existences): its
@@ -221,8 +255,8 @@ func (c *call) entity(fp identity.Fingerprint) (Element, error) {
 // instant, To-1ns, when the reader describes and a piece contains the
 // instant. recs are the subject's records the call has read, its seeds and its
 // window: they are folded again under the reader's Rank, and nothing more is
-// read. unknown are the producers whose seed has no payload.
-func (c *call) describe(el *Element, recs []store.Record, unknown map[lifecycle.Producer]bool) error {
+// read. unknown are the seeds that have no payload, by producer.
+func (c *call) describe(el *Element, recs []store.Record, unknown map[lifecycle.Producer]store.Record) error {
 	if !c.r.opts.Describe {
 		return nil
 	}
@@ -253,15 +287,15 @@ func (c *call) describe(el *Element, recs []store.Record, unknown map[lifecycle.
 // assertion was before the retention horizon, and its payload is not kept. A
 // seed is before From, so the producer's latest assertion at x is its seed
 // exactly when it has no window record at or before x.
-func (c *call) describedAt(tl lifecycle.Timeline, sub store.Subject, x time.Time, recs []store.Record, unknown map[lifecycle.Producer]bool) (*Description, error) {
+func (c *call) describedAt(tl lifecycle.Timeline, sub store.Subject, x time.Time, recs []store.Record, unknown map[lifecycle.Producer]store.Record) (*Description, error) {
 	d, err := describeAt(tl, sub, x)
 	if err != nil {
 		return nil, c.fail(err)
 	}
-	if unknown[d.Producer] && !slices.ContainsFunc(recs, func(r store.Record) bool {
+	if seed, ok := unknown[d.Producer]; ok && !slices.ContainsFunc(recs, func(r store.Record) bool {
 		return r.Producer == d.Producer && !r.EventTime.Before(c.from) && !r.EventTime.After(x)
 	}) {
-		return nil, c.fail(fmt.Errorf("the description of %s at %s by %s was %w", describeSubject(sub), formatTime(x), d.Producer, ErrRetained))
+		return nil, c.fail(&RetainedError{Subject: sub, At: x, Producer: d.Producer, Seed: seed})
 	}
 	return d, nil
 }
@@ -312,20 +346,20 @@ func (c *call) since(fps []identity.Fingerprint, dir store.Direction, l catalog.
 
 // sinceRecords are the records one answer of WindowSince gives to fold: the
 // seeds, which stand for everything before From, then the window. unknown lists,
-// per subject, the producers whose seed carries no payload, when payloads were
-// asked for.
-func sinceRecords(s store.Since) (recs []store.Record, unknown map[store.Subject]map[lifecycle.Producer]bool) {
+// per subject and producer, the seed that carries no payload, when payloads were
+// asked for (a reference has one seed, so there is one per subject and producer).
+func sinceRecords(s store.Since) (recs []store.Record, unknown map[store.Subject]map[lifecycle.Producer]store.Record) {
 	recs = make([]store.Record, 0, len(s.Seeds)+len(s.Window))
 	for _, sd := range s.Seeds {
 		recs = append(recs, sd.Record)
 		if !sd.PayloadKnown {
 			if unknown == nil {
-				unknown = map[store.Subject]map[lifecycle.Producer]bool{}
+				unknown = map[store.Subject]map[lifecycle.Producer]store.Record{}
 			}
 			if unknown[sd.Record.Subject] == nil {
-				unknown[sd.Record.Subject] = map[lifecycle.Producer]bool{}
+				unknown[sd.Record.Subject] = map[lifecycle.Producer]store.Record{}
 			}
-			unknown[sd.Record.Subject][sd.Record.Producer] = true
+			unknown[sd.Record.Subject][sd.Record.Producer] = sd.Record
 		}
 	}
 	return append(recs, s.Window...), unknown
@@ -383,11 +417,11 @@ func groupBySubject(recs []store.Record) []group {
 }
 
 // edgeRead is one edge a call has read and folded: its records (seeds and
-// window), the producers whose seed has no payload, and its fold.
+// window), the seeds that have no payload by producer, and its fold.
 type edgeRead struct {
 	g       group
 	layer   catalog.Layer
-	unknown map[lifecycle.Producer]bool
+	unknown map[lifecycle.Producer]store.Record
 	f       folded
 	// own says the edge has an interval of its own in the window.
 	own bool

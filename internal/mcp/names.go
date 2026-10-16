@@ -31,7 +31,7 @@ var nameTable = map[catalog.EntityType]struct{ name, namespace []string }{
 }
 
 const (
-	namesNeedRange = "Names need a range read, which this store does not offer yet."
+	namesNeedRange = "Names need a range read, which this store does not offer."
 	notPresent     = "not present at either end of the window"
 )
 

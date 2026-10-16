@@ -28,10 +28,10 @@ read-only, as toposhift query opens it, so nothing is written to it; Pebble's
 lock on the directory is still exclusive, so the command fails, saying so,
 while a replay, a query, a serve or another mcp has the directory open.
 
-This store has no interval read yet, so only the point tools answer:
-describe_schema, resolve_entity, neighbors_at and the fact records of
-entity_history. blast_radius, what_changed and co_residents answer that range
-answers are not available on this store until it has an interval read.
+Every tool answers, the range tools blast_radius, what_changed and
+co_residents included. On a retained store a window that starts before a
+layer's horizon is refused, and so is a description recorded before it, which
+the store no longer keeps; the refusal says from when a window does not need it.
 
 A server keeps its store in the store directory of its data directory: to read
 it, stop the server and give DIR/store, not DIR. Closing the input before the
@@ -131,8 +131,7 @@ func runMCP(ctx context.Context, dataDir string, stdin io.Reader, stdout, stderr
 }
 
 // newMCPServer is the tools over st, with the authority order a replayed store
-// is opened with. The store has no interval read, so the server serves the point
-// tools only.
+// is opened with. Every tool runs on it, the range tools included.
 func newMCPServer(st store.Store, log *slog.Logger) (*mcphttp.Server, error) {
 	reads, err := mcphttp.New(mcphttp.Config{
 		Rank:    storeOptions().Policy.Rank,

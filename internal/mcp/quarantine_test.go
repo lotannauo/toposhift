@@ -45,7 +45,7 @@ func TestQuarantineInEachTool(t *testing.T) {
 	h2 := w.h2
 	for _, withDetail := range []bool{true, false} {
 		name := "with a collision"
-		var st store.Store = w.st
+		st := w.st
 		if !withDetail {
 			name = "with a nil collision"
 			st = nilCollisionStore{w.st}

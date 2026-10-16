@@ -126,7 +126,7 @@ func openMem(tb testing.TB, opts memstore.Options) *memstore.Store {
 //	P6 on N1 from 10:00, silent from 10:10 (its TTL)
 //	P7 on N2
 type world struct {
-	st                         *memstore.Store
+	st                         store.Store
 	h1, h2, z1                 identity.Fingerprint
 	n1, n2, n3                 identity.Fingerprint
 	p1, p2, p3, p4, p5, p6, p7 identity.Fingerprint
@@ -136,7 +136,13 @@ type world struct {
 
 func newWorld(tb testing.TB, rank map[lifecycle.Producer]int) *world {
 	tb.Helper()
-	st := openMem(tb, memstore.Options{Policy: lifecycle.Policy{Rank: rank, BootKey: lifecycle.BootID}})
+	return newWorldOn(tb, openMem(tb, memstore.Options{Policy: lifecycle.Policy{Rank: rank, BootKey: lifecycle.BootID}}))
+}
+
+// newWorldOn is the fixture written to st, which must be empty and opened with the
+// policy of the test: a boot key of lifecycle.BootID and the ranks it asks with.
+func newWorldOn(tb testing.TB, st store.Store) *world {
+	tb.Helper()
 	w := &world{
 		st: st, feed: newFeed(tb, st),
 		h1: fpOf(tb, catalog.Host, catalog.HostID, hostSecret),

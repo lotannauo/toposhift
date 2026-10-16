@@ -94,7 +94,7 @@ func resolveAtArgs(uid string, at time.Time) map[string]any {
 
 // The tools are served on serve's own listener from the store ingest fills: a pod
 // that was answered 200 is alive to resolve_entity at the next call, at a token,
-// and the range tools say that this store has no interval read.
+// and the range tools answer on it, with names.
 func TestServeServesTheToolsFromTheStore(t *testing.T) {
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir))
@@ -118,11 +118,15 @@ func TestServeServesTheToolsFromTheStore(t *testing.T) {
 	}
 
 	schema := mcpOK(t, s.base, "describe_schema", map[string]any{})
-	if schema.IsError || schema.Structured["range_reads"] != false {
-		t.Errorf("describe_schema: %+v, want range_reads false on a pebblestore", schema)
+	if schema.IsError || schema.Structured["range_reads"] != true {
+		t.Errorf("describe_schema: %+v, want range_reads true on a pebblestore", schema)
 	}
 	id := resolveAtArgs("web-0", first)
-	pod := mcpOK(t, s.base, "resolve_entity", id).Structured["entity"].(map[string]any)["id"].(string)
+	resolved := mcpOK(t, s.base, "resolve_entity", id).Structured["entity"].(map[string]any)
+	pod := resolved["id"].(string)
+	if resolved["name"] != "web-0" {
+		t.Errorf("resolve_entity: name %v, want web-0 (names are read on a pebblestore)", resolved["name"])
+	}
 	for _, name := range []string{"blast_radius", "what_changed", "co_residents"} {
 		args := map[string]any{"entity": pod, "from": first.Format(time.RFC3339), "to": first.Add(time.Hour).Format(time.RFC3339)}
 		switch name {
@@ -132,8 +136,8 @@ func TestServeServesTheToolsFromTheStore(t *testing.T) {
 			args = map[string]any{"pod": pod, "from": args["from"], "to": args["to"]}
 		}
 		res := mcpOK(t, s.base, name, args)
-		if !res.IsError || res.Text != "Range answers are not available on this store until it has an interval read." {
-			t.Errorf("%s on a pebblestore: %+v, want the refusal", name, res)
+		if res.IsError || res.Structured["token"] != token {
+			t.Errorf("%s on a pebblestore: %+v, want an answer at token %s", name, res, token)
 		}
 	}
 	nb := mcpOK(t, s.base, "neighbors_at", map[string]any{"entity": pod, "at": first.Add(time.Minute).Format(time.RFC3339)})

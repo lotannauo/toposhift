@@ -178,7 +178,8 @@ func (n nilCollisionStore) Alive(ctx context.Context, fp identity.Fingerprint, t
 }
 
 // pointReadsOnly hides the in-memory store behind the interface, so that the
-// source does not run range tools on it, as on any store with no interval read.
+// source does not run range tools on it, as on any store [core.RangeReadsFor]
+// does not allow.
 type pointReadsOnly struct{ store.Store }
 
 // An answer that does not fit its output schema is a protocol error, not a tool
@@ -240,7 +241,7 @@ func TestEveryToolAnswersAgainstItsSchema(t *testing.T) {
 func TestStoreWithoutRangeReads(t *testing.T) {
 	w := newWorld(t, rankObjs)
 	cs := connect(t, attached(t, pointReadsOnly{w.st}, rankObjs))
-	const refusal = "Range answers are not available on this store until it has an interval read."
+	const refusal = "Range answers are not available on this store."
 	for _, c := range callsOn(w) {
 		res := callTool(t, cs, c.name, c.args)
 		if c.ranged {
