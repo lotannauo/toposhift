@@ -1,0 +1,122 @@
+{
+  "format": "toposhift.backup.manifest",
+  "version": 1,
+  "generation": 7,
+  "seq": 120,
+  "prev": "abababababababababababababababababababababababababababababababab",
+  "store": {
+    "cluster_name": "prod-eu",
+    "cluster_name_set": true,
+    "boot_key": "topo.host.boot.id",
+    "skew_ns": 2000000000,
+    "offsets_ns": [
+      0,
+      5184000000000000,
+      0,
+      0
+    ],
+    "keep": [
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "margin_ns": 86400000000000,
+  "max_clock_ahead_ns": 300000000000,
+  "retentions": [
+    {
+      "asked_ns": 1800000000000000000,
+      "seq": 90,
+      "horizons": [
+        {
+          "time_ns": 0,
+          "seq": 0
+        },
+        {
+          "time_ns": 1794816000000000000,
+          "seq": 90
+        },
+        {
+          "time_ns": 1800000000000000000,
+          "seq": 90
+        },
+        {
+          "time_ns": 1800000000000000000,
+          "seq": 90
+        }
+      ]
+    }
+  ],
+  "retired": [
+    {
+      "through_seq": 0,
+      "through_cut_seq": 0,
+      "records": 0,
+      "horizon_ns": 0
+    },
+    {
+      "through_seq": 40,
+      "through_cut_seq": 50,
+      "records": 12,
+      "horizon_ns": 1794816000000000000
+    },
+    {
+      "through_seq": 48,
+      "through_cut_seq": 50,
+      "records": 30,
+      "horizon_ns": 1800000000000000000
+    },
+    {
+      "through_seq": 0,
+      "through_cut_seq": 0,
+      "records": 0,
+      "horizon_ns": 0
+    },
+    {
+      "through_seq": 0,
+      "through_cut_seq": 0,
+      "records": 0,
+      "horizon_ns": 0
+    }
+  ],
+  "not_retirable": [
+    "",
+    "",
+    "",
+    "backup/v1/files/l3/00000000000000000051-00000000000000000060.parquet holds Observes with no TTL (1)",
+    ""
+  ],
+  "files": [
+    {
+      "class": "l2",
+      "name": "backup/v1/files/l2/00000000000000000051-00000000000000000120.parquet",
+      "first_seq": 51,
+      "last_seq": 120,
+      "after_seq": 48,
+      "records": 61,
+      "bytes": 4096,
+      "sha256": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "max_reach_ns": 1800003600000000000,
+      "min_shadowable_observe_event_ns": 1799999000000000000,
+      "wall_first_ns": 1800000060000000000,
+      "wall_last_ns": 1800003600000000000,
+      "wall_clamps": 1,
+      "max_observe_ttl_ns": 900000000000,
+      "ttl0_observes": 2
+    }
+  ],
+  "cuts": [
+    {
+      "first_seq": 51,
+      "last_seq": 120,
+      "records": [
+        3,
+        2,
+        61,
+        4,
+        0
+      ]
+    }
+  ]
+}
