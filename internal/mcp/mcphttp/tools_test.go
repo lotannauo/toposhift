@@ -36,8 +36,8 @@ func TestListsTheCoreTools(t *testing.T) {
 	if len(lt.Tools) != len(want) || len(got) != len(want) {
 		t.Fatalf("%d tools offered, the core has %d", len(lt.Tools), len(want))
 	}
-	if len(want) != 7 {
-		t.Errorf("the core has %d tools, want the seven of the design", len(want))
+	if len(want) != 8 {
+		t.Errorf("the core has %d tools, want the eight of the design", len(want))
 	}
 	for _, w := range want {
 		if !got[w.Name] {
@@ -84,6 +84,7 @@ func TestInputSchemasMatchTheInputTypes(t *testing.T) {
 		"co_residents":    core.CoResidentsInput{},
 		"neighbors_at":    core.NeighborsAtInput{},
 		"entity_history":  core.EntityHistoryInput{},
+		"find_entities":   core.FindEntitiesInput{},
 		"resolve_entity":  core.ResolveEntityInput{},
 		"describe_schema": core.DescribeSchemaInput{},
 	}
@@ -111,8 +112,17 @@ func TestInputSchemasMatchTheInputTypes(t *testing.T) {
 			}
 		}
 		var props []string
-		for k := range schema.Properties {
+		for k, raw := range schema.Properties {
 			props = append(props, k)
+			if tl.Name != "find_entities" {
+				continue
+			}
+			var p struct {
+				Description string `json:"description"`
+			}
+			if err := json.Unmarshal(raw, &p); err != nil || p.Description == "" {
+				t.Errorf("find_entities: the property %q has no description (%v)", k, err)
+			}
 		}
 		slices.Sort(keys)
 		slices.Sort(props)
@@ -157,6 +167,9 @@ func callsOn(w *world) []toolCall {
 		{"history of a pod, cut", "entity_history", map[string]any{"entity": id(w.p1), "from": "2026-01-01T09:00:00Z", "to": w1030, "limit": 1}, false},
 		{"history of a host", "entity_history", map[string]any{"entity": id(w.h1), "from": "2026-01-01T09:00:00Z", "to": w1030}, false},
 		{"history of a quarantined host", "entity_history", map[string]any{"entity": id(w.h2), "from": "2026-01-01T09:00:00Z", "to": w1030}, false},
+		{"find, every field", "find_entities", map[string]any{"type": "k8s.pod", "name": "WEB", "namespace": "shop", "from": w10, "to": w1030, "asof": tok, "after": numbered(catalog.K8sPod, 0).String(), "limit": 200}, true},
+		{"find nodes at an instant", "find_entities", map[string]any{"type": "k8s.node", "at": "2026-01-01T10:08:00Z"}, true},
+		{"find, cut", "find_entities", map[string]any{"type": "k8s.pod", "from": w10, "to": w1030, "limit": 1}, true},
 		{"resolve, every field", "resolve_entity", map[string]any{"type": "host", "attributes": map[string]any{"host.id": "host-two"}, "at": w10, "asof": tok}, false},
 		{"resolve a pod at an instant", "resolve_entity", map[string]any{"type": "k8s.pod", "attributes": map[string]any{"k8s.pod.uid": "pod-uid-1"}, "at": w10}, false},
 		{"resolve with no instant", "resolve_entity", map[string]any{"type": "host", "attributes": map[string]any{"host.id": "host-two"}}, false},
@@ -167,6 +180,12 @@ func callsOn(w *world) []toolCall {
 // nilCollisionStore reports every quarantine without detail, as the contract of the
 // store allows.
 type nilCollisionStore struct{ store.Store }
+
+// ListEntities keeps the listing read of the store underneath, so that the tool
+// that needs it answers.
+func (n nilCollisionStore) ListEntities(ctx context.Context, typ catalog.EntityType, after identity.Fingerprint, max int) ([]identity.Fingerprint, error) {
+	return n.Store.(core.Lister).ListEntities(ctx, typ, after, max)
+}
 
 func (n nilCollisionStore) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time, sc store.Scope) (bool, error) {
 	alive, err := n.Store.Alive(ctx, fp, t, sc)
@@ -206,6 +225,9 @@ func TestEveryToolAnswersAgainstItsSchema(t *testing.T) {
 				all.Write(b)
 				if _, ok := m["policy"]; !ok && c.name != "describe_schema" {
 					t.Errorf("%s: no policy in %s", c.label, b)
+				}
+				if c.label == "find, cut" && (m["next_after"] == nil || m["complete"] != false) {
+					t.Errorf("%s: next_after %v, complete %v; a cut answer says where to go on", c.label, m["next_after"], m["complete"])
 				}
 			}
 			got := all.String()

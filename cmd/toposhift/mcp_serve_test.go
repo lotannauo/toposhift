@@ -127,6 +127,15 @@ func TestServeServesTheToolsFromTheStore(t *testing.T) {
 	if resolved["name"] != "web-0" {
 		t.Errorf("resolve_entity: name %v, want web-0 (names are read on a pebblestore)", resolved["name"])
 	}
+	// A name leads back to the id, whatever its case.
+	f := mcpOK(t, s.base, "find_entities", map[string]any{"type": "k8s.pod", "name": "WEB-0", "at": first.Add(time.Minute).Format(time.RFC3339)})
+	matches, _ := f.Structured["matches"].([]any)
+	if f.IsError || f.Structured["token"] != token || len(matches) != 1 {
+		t.Fatalf("find_entities: %+v, want the one pod at token %s", f, token)
+	}
+	if e, _ := matches[0].(map[string]any)["entity"].(map[string]any); e["id"] != pod || e["name"] != "web-0" {
+		t.Errorf("find_entities found %v, want %s named web-0", matches[0], pod)
+	}
 	for _, name := range []string{"blast_radius", "what_changed", "co_residents"} {
 		args := map[string]any{"entity": pod, "from": first.Format(time.RFC3339), "to": first.Add(time.Hour).Format(time.RFC3339)}
 		switch name {

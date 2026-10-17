@@ -5,9 +5,10 @@
     "blastradius": 1,
     "graphdiff": 1,
     "coresidency": 1,
-    "names": 1,
-    "payload": 1,
-    "withhold": 1
+    "names": 2,
+    "payload": 2,
+    "withhold": 1,
+    "find": 1
   },
   "entities": [
     {
@@ -176,7 +177,7 @@
           "optional": false
         }
       ],
-      "named": false
+      "named": true
     },
     {
       "type": "topo.endpoint",
@@ -323,7 +324,7 @@
     }
   ],
   "names": {
-    "version": 1,
+    "version": 2,
     "keys": [
       {
         "type": "k8s.node",
@@ -353,9 +354,18 @@
         "namespace": [
           "k8s.namespace.name"
         ]
+      },
+      {
+        "type": "service",
+        "name": [
+          "name"
+        ],
+        "namespace": [
+          "namespace"
+        ]
       }
     ],
-    "how": "A name is read from the description of the producer that wins under the store's ranks, at the last instant of the answer's window, else at its first, from a top-level JSON string under the first of these keys. It is never taken from an identity attribute, from a losing producer or from a peer.",
+    "how": "A name is read from the description of the producer that wins under the store's ranks, at the last instant of the answer's window, else at its first, from a top-level JSON string under the first of these keys. It is never taken from an identity attribute (except a service's, whose description is its identity), from a losing producer or from a peer. A name or a namespace that is over 253 bytes, holds a control character (a newline, a tab, U+2028 and U+2029 included), holds a format character (Unicode Cf: zero-width, bidi controls, tag characters) or holds an endpoint id's text is not printed: it is null, with a name_note, and find_entities never matches it.",
     "unnamed_types": [
       "topo.rack",
       "topo.switch",
@@ -364,13 +374,12 @@
       "topo.zone",
       "process",
       "service.instance",
-      "service",
       "topo.endpoint"
     ],
     "note": "A type not listed has no name."
   },
   "payload": {
-    "version": 1,
+    "version": 2,
     "types": [
       {
         "type": "host",
@@ -453,9 +462,24 @@
           "container.creation_timestamp"
         ],
         "withheld": []
+      },
+      {
+        "type": "service.instance",
+        "allowed": [
+          "service.version"
+        ],
+        "withheld": []
+      },
+      {
+        "type": "service",
+        "allowed": [
+          "name",
+          "namespace"
+        ],
+        "withheld": []
       }
     ],
-    "how": "A description is printed only through this table of top-level keys. A key that is not allowed is withheld, and the answer names it; a payload that is not a JSON object is withheld whole."
+    "how": "A description is printed only through this table of top-level keys. A key that is not allowed is withheld, and the answer names it; a payload that is not a JSON object is withheld whole. A name, a namespace or a service instance's version in it that is over 253 bytes, holds a control character, holds a format character (Unicode Cf: zero-width, bidi controls, tag characters) or holds an endpoint id's text is null, and its key is named in withheld_keys."
   },
   "vocabulary": {
     "basis": [
@@ -565,6 +589,7 @@
     "Every id is an entity type, a colon, and 32 lowercase hex digits: a hash of the exact identifying attributes. Use resolve_entity to compute one.",
     "Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
     "An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/\u003ccluster\u003e\". It is unnamed and has no description. Its id reveals its address, because the realm and the address can be enumerated and hashed, so an endpoint's id, or an edge to an endpoint, is printed only when the request named that endpoint: by its id, or through resolve_entity's realm and address. Elsewhere such an edge is withheld and counted under counts.withheld, and no error sentence prints such an id. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
-    "Every range answer is read at one token, named in the answer; pass it as asof to read the same world again."
+    "Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
+    "To find an id from a name, call find_entities: it compares names only, never another key, and never lists an endpoint or a host."
   ]
 }

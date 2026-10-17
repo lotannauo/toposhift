@@ -22,7 +22,7 @@ const (
 
 func TestToolsTable(t *testing.T) {
 	tools := Tools()
-	want := []string{"blast_radius", "what_changed", "co_residents", "neighbors_at", "entity_history", "resolve_entity", "describe_schema"}
+	want := []string{"blast_radius", "what_changed", "co_residents", "neighbors_at", "entity_history", "find_entities", "resolve_entity", "describe_schema"}
 	if len(tools) != len(want) {
 		t.Fatalf("%d tools, want %d", len(tools), len(want))
 	}
@@ -40,7 +40,7 @@ func TestToolsTable(t *testing.T) {
 			}
 		}
 	}
-	isRange := map[string]bool{"blast_radius": true, "what_changed": true, "co_residents": true}
+	isRange := map[string]bool{"blast_radius": true, "what_changed": true, "co_residents": true, "find_entities": true}
 	for _, tl := range tools {
 		if tl.Range != isRange[tl.Name] {
 			t.Errorf("%s: Range is %t", tl.Name, tl.Range)
@@ -68,6 +68,7 @@ func goldenAnswers(t *testing.T, w *world, s *Source) map[string]any {
 		"co_residents":   must(s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030})),
 		"neighbors_at":   must(s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.n1.String(), At: "2026-01-01T10:08:00Z"})),
 		"entity_history": must(s.EntityHistory(ctx, EntityHistoryInput{Entity: w.p1.String(), From: "2026-01-01T09:00:00Z", To: w1030})),
+		"find_entities":  must(s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Name: "WEB", From: w10, To: w1030})),
 		"resolve_entity": must(s.ResolveEntity(ctx, ResolveEntityInput{
 			Type: "host", Attributes: map[string]json.RawMessage{"host.id": json.RawMessage(`"` + hostSecret + `"`)}, At: w10,
 		})),

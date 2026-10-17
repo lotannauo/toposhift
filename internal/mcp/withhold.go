@@ -168,6 +168,9 @@ func isTypeChar(c byte) bool {
 type egressHooks struct {
 	// noFilter keeps the per-tool filters from withholding anything.
 	noFilter bool
+	// noPrintRule keeps the print rule from withholding any name or namespace the
+	// name path reads, so that the backstops behind it can be reached.
+	noPrintRule bool
 	// noBackstop makes egress accept every answer.
 	noBackstop bool
 	// inject is called on the answer, a pointer to it, just before egress.

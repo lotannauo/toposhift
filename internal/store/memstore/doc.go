@@ -99,4 +99,13 @@
 // whose newest is an Observe still alive there, baseline only, with no payload,
 // which is what a retention would have folded into a baseline. It reads the
 // store as it is at each call, and never exhausts a bound.
+//
+// # Listing the entities of a type
+//
+// [Store.ListEntities] lists the ids of one type, ascending, outside [store.Store],
+// as the pebblestore's does. It takes no token, so it lists a superset of the
+// entities that exist at any token, retained ones included, and a read at the token
+// decides. After a retention its listing is a superset of the pebblestore's, which
+// lists a subset. It looks at every subject the store holds: it is the reference,
+// not a fast path.
 package memstore

@@ -45,6 +45,14 @@ func Tools() []Tool {
 				"A payload is printed through a table of allowed keys, and a key that is withheld is named.",
 		},
 		{
+			Name: "find_entities",
+			Description: "Finds the ids of the pods, nodes, containers or services whose name contains a text and that existed at an instant or in a window. " +
+				"The name is read from each entity's description and compared in lower case; hosts are unnamed and endpoints are never listed. " +
+				"A name or namespace that is not printed (over 253 bytes, or with a control character, a format character (Unicode Cf: zero-width, bidi controls, tag characters) or an endpoint id's text) is null, never matches, and is counted as not printed. " +
+				"A call checks at most 256 ids, in id order; when it stops early it says so and gives next_after, to pass as after. The answer is derived and read at one token.",
+			Range: true,
+		},
+		{
 			Name: "resolve_entity",
 			Description: "Computes the id of an entity from exactly its identifying attributes, and with an instant says whether it exists then. " +
 				"It never searches: a missing, extra or mistyped attribute is refused by name.",

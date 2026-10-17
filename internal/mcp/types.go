@@ -10,12 +10,17 @@ import (
 // NameTableVersion is the version of the table of keys a name is read from (see
 // names.go). Every answer that carries names carries it in its policy, and a
 // change to the table raises it.
-const NameTableVersion = 1
+const NameTableVersion = 2
 
 // PayloadTableVersion is the version of the per-type table of top-level keys a
 // description may print (see payload.go). Every answer that prints a description
 // carries it in its policy, and a change to the table raises it.
-const PayloadTableVersion = 1
+const PayloadTableVersion = 2
+
+// FindVersion is the version of the rules of find_entities: what matches, the scan
+// cap, the cursor and the order of the matches. Every find_entities answer carries
+// it in its policy, and a change to the rules raises it.
+const FindVersion = 1
 
 // WithholdVersion is the version of the rule that withholds an endpoint id the
 // request did not name; every answer carries it in its policy, and a change to the
@@ -57,11 +62,13 @@ type Policy struct {
 	Names       int    `json:"names,omitempty"`
 	Payload     int    `json:"payload,omitempty"`
 	Withhold    int    `json:"withhold,omitempty"`
+	Find        int    `json:"find,omitempty"`
 }
 
 // Ref is an entity id next to its name. The name is derived from a description
-// and never stored as a fact; it is null when the description has none, and for
-// a type that is unnamed on purpose.
+// and never stored as a fact; it is null when the description has none, for a
+// type that is unnamed on purpose, and when the print rule withheld it (names.go).
+// A namespace is omitted in the same cases.
 type Ref struct {
 	ID        string  `json:"id"`
 	Type      string  `json:"type"`
@@ -69,8 +76,9 @@ type Ref struct {
 	Namespace *string `json:"namespace,omitempty"`
 	// NameFrom is the producer whose description the name was read from.
 	NameFrom string `json:"name_from,omitempty"`
-	// NameNote says why a name is missing when the reason is that the entity was
-	// not there to describe.
+	// NameNote says why a name or a namespace is missing when the reason is that
+	// the entity was not there to describe, or that the print rule withheld the
+	// value. It is one of a few fixed sentences and holds none of the value.
 	NameNote string `json:"name_note,omitempty"`
 	// FP is the fingerprint, for the code that fills the names.
 	FP identity.Fingerprint `json:"-"`

@@ -30,6 +30,9 @@ func (s *Server) register() error {
 		"entity_history": func(t core.Tool) {
 			add(s, t, always, func(c *core.Source) call[core.EntityHistoryInput, core.EntityHistoryOutput] { return c.EntityHistory })
 		},
+		"find_entities": func(t core.Tool) {
+			add(s, t, always, func(c *core.Source) call[core.FindEntitiesInput, core.FindEntitiesOutput] { return c.FindEntities })
+		},
 		"resolve_entity": func(t core.Tool) {
 			// Without an instant no store is read: an id is a hash of the attributes.
 			addWithSchema(s, t, resolveEntitySchema, func(in core.ResolveEntityInput) bool { return in.At != "" },

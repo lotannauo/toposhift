@@ -218,7 +218,7 @@ func TestClientOverHTTP(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 	lt, err := cs.ListTools(ctx, nil)
-	if err != nil || len(lt.Tools) != 7 {
+	if err != nil || len(lt.Tools) != 8 {
 		t.Fatalf("%d tools, %v", len(lt.Tools), err)
 	}
 	res := callTool(t, cs, "neighbors_at", map[string]any{"entity": w.n1.String(), "at": "2026-01-01T10:08:00Z"})

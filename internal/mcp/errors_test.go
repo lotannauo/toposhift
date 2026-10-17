@@ -57,6 +57,7 @@ func TestSentenceOrder(t *testing.T) {
 		}, "The description of the scheduled_on edge from " + w.p1.String() + " to " + w.n1.String() + " at 2026-01-01T10:00:00Z by k8sobjects/c1 was recorded with an event time before the retention horizon and is no longer kept. A window at this token that starts at or after 2026-01-01T10:05:00Z does not need it."},
 		{"invalid", fmt.Errorf("x: %w", store.ErrInvalid), "The request was refused: x."},
 		{"no range reads", ErrNoRangeReads, "Range answers are not available on this store."},
+		{"no listing read", ErrNoListing, "find_entities needs a listing read, which this store does not offer."},
 		{"busy", ErrBusy, "The server is busy; try again shortly."},
 		{"internal", errors.New("disk on fire"), "Internal error: disk on fire"},
 	} {
@@ -410,6 +411,32 @@ func TestArgumentsAreNamed(t *testing.T) {
 			_, e := s.EntityHistory(ctx, EntityHistoryInput{Entity: good, From: w10})
 			return e
 		}, `"to" is required`},
+		{"find type missing", func() error { _, e := s.FindEntities(ctx, FindEntitiesInput{At: w10}); return e }, `The argument "type" names the entity type "", which is not in the catalog`},
+		{"find name blank", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Name: "  ", At: w10})
+			return e
+		}, `The argument "name" must be at most 256 bytes of UTF-8 text with a character that is not a space.`},
+		{"find namespace too long", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Namespace: strings.Repeat("a", 257), At: w10})
+			return e
+		}, `The argument "namespace" must be at most 256 bytes of UTF-8 text with a character that is not a space.`},
+		{"find no window", func() error { _, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod"}); return e }, `Give "at", or "from" and "to"`},
+		{"find limit too big", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w10, Limit: 201})
+			return e
+		}, `The argument "limit" must be between 1 and 200; got 201.`},
+		{"find after malformed", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w10, After: "x"})
+			return e
+		}, `"after" must be an entity id`},
+		{"find after of another type", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w10, After: w.n1.String()})
+			return e
+		}, `The argument "after" must be an id of type k8s.pod, from the next_after of an earlier answer.`},
+		{"find asof", func() error {
+			_, e := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w10, AsOf: "abc"})
+			return e
+		}, `"asof" must be a token`},
 	} {
 		err := tc.call()
 		var te *Error
@@ -417,7 +444,7 @@ func TestArgumentsAreNamed(t *testing.T) {
 			t.Errorf("%s: %v, want %q wrapping ErrInvalid", tc.name, err, tc.want)
 		}
 	}
-	if spy.reads != 0 {
-		t.Errorf("%d reads for refused arguments", spy.reads)
+	if spy.reads != 0 || spy.lists != 0 {
+		t.Errorf("%d reads and %d listings for refused arguments", spy.reads, spy.lists)
 	}
 }

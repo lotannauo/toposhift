@@ -153,9 +153,12 @@ func TestNameFields(t *testing.T) {
 		{"k8sobjects container", catalog.Container, `{"name":"c","pod_uid":"u"}`, "c", "<null>"},
 		{"k8scluster container", catalog.Container, `{"k8s.container.name":"c","k8s.namespace.name":"ns"}`, "c", "ns"},
 		{"a host has none", catalog.Host, `{"name":"h","host.name":"h","host.id":"h"}`, "<null>", "<null>"},
-		{"a service has none", catalog.Service, `{"name":"s","service.name":"s"}`, "<null>", "<null>"},
+		{"a service is named from its description", catalog.Service, `{"name":"s","service.name":"x"}`, "s", "<null>"},
+		{"a service with a namespace", catalog.Service, `{"name":"s","namespace":"ns"}`, "s", "ns"},
+		{"a service with no namespace", catalog.Service, `{"name":"s"}`, "s", "<null>"},
+		{"a service instance has none", catalog.ServiceInstance, `{"name":"s","service.version":"1"}`, "<null>", "<null>"},
 	} {
-		n, ns := nameFields(tc.typ, []byte(tc.payload))
+		n, ns, _ := nameFields(tc.typ, []byte(tc.payload), printable)
 		if str(n) != tc.wantN || str(ns) != tc.wantNS {
 			t.Errorf("%s: name %s, namespace %s; want %s, %s", tc.name, str(n), str(ns), tc.wantN, tc.wantNS)
 		}

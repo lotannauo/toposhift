@@ -25,6 +25,9 @@ var (
 	// ErrNoRangeReads is returned for a range tool on a store that [RangeReadsFor]
 	// does not allow.
 	ErrNoRangeReads = errors.New("range answers are not available on this store")
+	// ErrNoListing is returned by find_entities on a store whose source found no
+	// listing read (see [Lister]).
+	ErrNoListing = errors.New("listing is not available on this store")
 )
 
 // Error is the failure of a tool. Message is a plain sentence for the client;
@@ -115,7 +118,8 @@ func (s *Source) safeSentence(err error, named map[string]bool, what string) str
 
 // sentence chooses the sentence for an error, in this order:
 //
-//  1. the source is busy, or the store is not one [RangeReadsFor] allows;
+//  1. the source is busy, the store is not one [RangeReadsFor] allows, or it has
+//     no listing read;
 //  2. the context was cancelled or its deadline passed (or the source is
 //     draining, which is the cause of a cancellation it made);
 //  3. the store is closed, or the source withdrew it;
@@ -133,6 +137,8 @@ func (s *Source) sentence(err error) (msg string, internal bool) {
 		return "The server is busy; try again shortly.", false
 	case errors.Is(err, ErrNoRangeReads):
 		return "Range answers are not available on this store.", false
+	case errors.Is(err, ErrNoListing):
+		return "find_entities needs a listing read, which this store does not offer.", false
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		if s.isDraining() {
 			return "The server is shutting down.", false

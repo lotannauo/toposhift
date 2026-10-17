@@ -122,6 +122,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 		Policy: Policy{
 			Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
 			CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
+			Find: FindVersion,
 		},
 		Entities: []SchemaEntity{}, Relations: []SchemaRelation{},
 		Vocabulary: vocabulary,
@@ -130,6 +131,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 			"Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
 			"An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/<cluster>\". It is unnamed and has no description. Its id reveals its address, because the realm and the address can be enumerated and hashed, so an endpoint's id, or an edge to an endpoint, is printed only when the request named that endpoint: by its id, or through resolve_entity's realm and address. Elsewhere such an edge is withheld and counted under counts.withheld, and no error sentence prints such an id. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
 			"Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
+			"To find an id from a name, call find_entities: it compares names only, never another key, and never lists an endpoint or a host.",
 		},
 	}
 	for e := range s.cat.Entities() {
@@ -161,7 +163,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 
 	out.Names = SchemaNames{
 		Version: NameTableVersion, Keys: []NameKeys{}, Unnamed: []string{},
-		How:  "A name is read from the description of the producer that wins under the store's ranks, at the last instant of the answer's window, else at its first, from a top-level JSON string under the first of these keys. It is never taken from an identity attribute, from a losing producer or from a peer.",
+		How:  "A name is read from the description of the producer that wins under the store's ranks, at the last instant of the answer's window, else at its first, from a top-level JSON string under the first of these keys. It is never taken from an identity attribute (except a service's, whose description is its identity), from a losing producer or from a peer. A name or a namespace that is over 253 bytes, holds a control character (a newline, a tab, U+2028 and U+2029 included), holds a format character (Unicode Cf: zero-width, bidi controls, tag characters) or holds an endpoint id's text is not printed: it is null, with a name_note, and find_entities never matches it.",
 		Note: "A type not listed has no name.",
 	}
 	for e := range s.cat.Entities() {
@@ -174,7 +176,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 	}
 	out.Payload = SchemaPayload{
 		Version: PayloadTableVersion, Types: []PayloadKey{},
-		How: "A description is printed only through this table of top-level keys. A key that is not allowed is withheld, and the answer names it; a payload that is not a JSON object is withheld whole.",
+		How: "A description is printed only through this table of top-level keys. A key that is not allowed is withheld, and the answer names it; a payload that is not a JSON object is withheld whole. A name, a namespace or a service instance's version in it that is over 253 bytes, holds a control character, holds a format character (Unicode Cf: zero-width, bidi controls, tag characters) or holds an endpoint id's text is null, and its key is named in withheld_keys.",
 	}
 	for e := range s.cat.Entities() {
 		if t, ok := payloadTable[e.Type()]; ok {

@@ -17,6 +17,7 @@ var elementLists = map[string][]string{
 	"co_residents":   {"placement", "co_residents", "suppressed", "unattributed", "quarantined"},
 	"neighbors_at":   {"edges", "quarantined"},
 	"entity_history": {"records"},
+	"find_entities":  {"matches"},
 }
 
 var endVocabulary = []string{"producer", "liveness_expiry", "cascade", "unattributed", "reach_ended"}

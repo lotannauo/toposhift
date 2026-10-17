@@ -58,6 +58,16 @@
 // the reference's as the baseline the pass will write would, so the answer does not
 // depend on how far the pass is.
 //
+// # Listing the entities of a type
+//
+// [Store.ListEntities] lists the ids of one type, ascending, outside [store.Store],
+// which has no read that enumerates. It reads one key of each entity's group and
+// seeks past the rest, so it costs the entities it passes and not their records.
+// It takes no token, so it lists a superset of the entities that exist at any
+// token, and a read at the token decides. It reports to the [Recorder] a count,
+// "list.iterators", of the iterators it opened, and a sample, "list.keys_seen",
+// of the groups it visited.
+//
 // # The writer's memory
 //
 // The writer keeps, for the prefixes it touched most recently and within
