@@ -9,6 +9,7 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/datadir"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
 
@@ -16,8 +17,9 @@ const serveUsage = `Usage: toposhift serve [flags]
 
 Runs the ingest and query service. It needs no configuration: with none, it
 listens on loopback and serves health; it keeps its data in
-$HOME/.local/share/toposhift, takes OpenTelemetry logs at POST /v1/logs into
-the store there, and keeps ingest off when no data directory resolves.
+$HOME/.local/share/toposhift, takes OpenTelemetry logs at POST /v1/logs and
+metrics at POST /v1/metrics into the store there, and keeps ingest off when no
+data directory resolves.
 
 On a loopback listener it also serves read-only topology tools to MCP clients,
 at POST /mcp (streamable HTTP, no session). They answer from the same store,
@@ -51,7 +53,8 @@ Data directory
   refused.
 
   With no data directory, serve still boots and answers /healthz, and a POST
-  to /v1/logs answers 503 saying to set --data-dir or TOPOSHIFT_DATA_DIR.
+  to /v1/logs or /v1/metrics answers 503 saying to set --data-dir or
+  TOPOSHIFT_DATA_DIR.
   The same happens when the default directory under HOME cannot be opened
   (HOME is read-only or missing, or the directory has other files in it); a
   directory you asked for that cannot be opened ends serve with an error.
@@ -114,10 +117,15 @@ func bootDataDir(flagValue string, getenv func(string) string, log *slog.Logger,
 	return dir, ingestStarting, 0
 }
 
-// gateSink takes no logs: it answers 503 with Retry-After: 30 and the reason,
-// while ingest is off or the store is opening.
+// gateSink takes no logs and no metrics: it answers 503 with Retry-After: 30 and
+// the reason, while ingest is off or the store is opening.
 type gateSink struct{ message string }
 
 func (g gateSink) Accept(context.Context, capture.LogsData) error {
 	return &otlphttp.UnavailableError{Message: g.message}
+}
+
+// AcceptMetrics is Accept for the metrics route.
+func (g gateSink) AcceptMetrics(context.Context, otlpmetrics.Data) (otlphttp.Partial, error) {
+	return otlphttp.Partial{}, &otlphttp.UnavailableError{Message: g.message}
 }

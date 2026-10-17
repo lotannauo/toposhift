@@ -20,6 +20,8 @@ import (
 	"github.com/lotannauo/toposhift/internal/ingest/k8sobjects"
 	"github.com/lotannauo/toposhift/internal/ingest/nodeagent"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
+	"github.com/lotannauo/toposhift/internal/ingest/spancount"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -54,6 +56,10 @@ type cluster struct {
 	objects   *k8sobjects.Translator
 	cluster   *k8scluster.Translator
 	nodeagent *nodeagent.Translator
+	// svcgraph keeps the state of the service graph connector's series, committed
+	// and pending, and spancount keeps none (see metrics.go).
+	svcgraph  *svcgraph.Translator
+	spancount *spancount.Translator
 	// lastUsed is the ingest instant of the latest request that used the name.
 	lastUsed time.Time
 }
@@ -84,11 +90,39 @@ func (s *Sequencer) newCluster(name string) (*cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &cluster{objects: objects, cluster: cl, nodeagent: na}, nil
+	sg, err := svcgraph.New(svcgraph.Config{
+		Producer:  lifecycle.Producer(svcgraph.Source + "/" + name),
+		Resolver:  s.resolver,
+		Expiry:    s.cfg.DependencyExpiry,
+		MaxSeries: s.cfg.ServiceGraphMaxSeries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	sc, err := spancount.New(spancount.Config{
+		Producer: lifecycle.Producer(spancount.Source + "/" + name),
+		Resolver: s.resolver,
+		TTL:      s.cfg.InstanceTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &cluster{objects: objects, cluster: cl, nodeagent: na, svcgraph: sg, spancount: sc}, nil
 }
 
-// renewCluster makes the translators of a cluster name anew, keeping its slot.
-func (s *Sequencer) renewCluster(name string) {
+// renewCluster makes the translators of a cluster name anew, keeping its slot:
+// as a restart does, and as a panic while translating a request of the name
+// must, so the service graph translator loses its state and warms up again.
+func (s *Sequencer) renewCluster(name string) { s.replaceCluster(name, false) }
+
+// resetCluster is renewCluster for a group that failed: the k8s translators are
+// made anew, but the name's service graph translator is kept, rolled back to its
+// committed state. Its state is the connector's series, which nothing but the
+// metrics the collector sends again can rebuild, and a failed group must not lose
+// it (see "Failed writes" and "Metrics" in the package documentation).
+func (s *Sequencer) resetCluster(name string) { s.replaceCluster(name, true) }
+
+func (s *Sequencer) replaceCluster(name string, keepGraph bool) {
 	c, err := s.newCluster(name)
 	if err != nil {
 		// New made a pair with the same configuration.
@@ -96,6 +130,10 @@ func (s *Sequencer) renewCluster(name string) {
 	}
 	if old := s.clusters[name]; old != nil {
 		c.lastUsed = old.lastUsed
+		if keepGraph {
+			old.svcgraph.Rollback()
+			c.svcgraph = old.svcgraph
+		}
 	}
 	s.clusters[name] = c
 }
@@ -110,9 +148,12 @@ type work struct {
 	touched []string
 	// refused is the message of a refusal of the whole request; empty otherwise.
 	refused string
-	// out holds, for each log record in the order of the request, the store
-	// records it gave that passed the checks, or nil if it was rejected.
+	// out holds, for each slot in the order of the request (a log record, or for a
+	// metrics request what metrics.go says), the store records it gave that passed
+	// the checks, or nil if it was rejected. weights, when set, is what rejecting
+	// each slot rejects, in data points; none is 1.
 	out         [][]store.Record
+	weights     []int64
 	rejected    int64
 	firstReject string
 	// refusedClock is the newest event time stamped by another machine's clock
@@ -129,6 +170,10 @@ type work struct {
 	// added to the sequencer's counts only when the group is answered without
 	// error.
 	resumed resume.Stats
+	// metrics counts what the metrics path did with the request (see metrics.go).
+	// Like the node agents' counts, they are kept only when the request is answered
+	// without error.
+	metrics metricsWork
 }
 
 // call is one translator call of a request: the slot of its log record, the
@@ -155,13 +200,23 @@ func (w *work) coalesce(co *coalesce.Coalescer, batch []store.Record) []store.Re
 	return batch
 }
 
-// reject rejects the log record at slot into the request's partial success.
-func (w *work) reject(slot int, err error) {
+// reject rejects the slot, with the weight it has in the request's partial
+// success, into that partial success.
+func (w *work) reject(slot int, err error, weight int64) {
 	w.out[slot] = nil
 	if w.rejected == 0 {
 		w.firstReject = err.Error()
 	}
-	w.rejected++
+	w.rejected += weight
+}
+
+// weight is what rejecting the slot adds to the partial success: a log record
+// is 1, and a slot of a metrics request the data points it stands for.
+func (w *work) weight(slot int) int64 {
+	if w.weights == nil {
+		return 1
+	}
+	return w.weights[slot]
 }
 
 func (w *work) count(m *map[[3]string]int, producer, reason, detail string, n int) {
@@ -282,10 +337,30 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 			panicked, abort = p, nil
 		}
 	}()
-	if !s.resolveNames(w, now) {
+	r := w.r
+	if r.metrics {
+		attrs := make([][]capture.KeyValue, len(r.points.Resources))
+		for i, res := range r.points.Resources {
+			attrs[i] = res.Attributes
+		}
+		if !s.resolveNames(w, now, attrs) {
+			return nil, nil
+		}
+		w.out = make([][]store.Record, r.slots)
+		if s.detectorRefuses(w, now) {
+			return nil, nil
+		}
+		s.translateMetrics(w)
+		s.checkSlots(w)
 		return nil, nil
 	}
-	r := w.r
+	attrs := make([][]capture.KeyValue, len(r.data.ResourceLogs))
+	for i, rl := range r.data.ResourceLogs {
+		attrs[i] = rl.Resource.Attributes
+	}
+	if !s.resolveNames(w, now, attrs) {
+		return nil, nil
+	}
 	w.out = make([][]store.Record, r.records)
 	selected := make([]bool, r.records)
 	var calls []call
@@ -304,7 +379,7 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 					selected[slot] = true
 					res, err := s.translateCluster(c, name, rl.Resource, lr, r.received, w)
 					if err != nil {
-						w.reject(slot, err)
+						w.reject(slot, err, 1)
 					} else {
 						w.out[slot] = res.Records
 						calls = append(calls, call{slot: slot, name: name, kind: kindCluster, marks: res.Backdated})
@@ -317,12 +392,9 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 			}
 		}
 	}
-	for _, name := range w.touched {
-		if v := s.det.Check(name, now); v.Refuse {
-			// The rest of the request is never translated.
-			w.refused = v.Message
-			return nil, nil
-		}
+	if s.detectorRefuses(w, now) {
+		// The rest of the request is never translated.
+		return nil, nil
 	}
 
 	// The rest, by what the record is. A legacy entity event, the older form the
@@ -360,7 +432,7 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 						recs, marks = res.Records, res.Backdated
 					}
 					if err != nil {
-						w.reject(slot, err)
+						w.reject(slot, err, 1)
 					} else {
 						w.out[slot] = recs
 						calls = append(calls, call{slot: slot, name: name, kind: kind, marks: marks})
@@ -379,23 +451,41 @@ func (s *Sequencer) translate(ctx context.Context, w *work, now time.Time, lk re
 		}
 	}
 
-	// The checks: a log record is rejected if any of its store records would be
-	// refused by the store on any retry, and none of its records reaches the
-	// coalescer.
+	s.checkSlots(w)
+	return nil, nil
+}
+
+// detectorRefuses checks each cluster name the request touched with the detector,
+// and, when one is refused, refuses the whole request with its message.
+func (s *Sequencer) detectorRefuses(w *work, now time.Time) bool {
+	for _, name := range w.touched {
+		if v := s.det.Check(name, now); v.Refuse {
+			w.refused = v.Message
+			return true
+		}
+	}
+	return false
+}
+
+// checkSlots runs the checks: a slot (a log record, or what a sighting or a
+// resource of a metrics request gave) is rejected if any of its store records
+// would be refused by the store on any retry, and none of its records reaches the
+// coalescer.
+func (s *Sequencer) checkSlots(w *work) {
 	for slot, recs := range w.out {
 		for _, rec := range recs {
 			if err := s.check(rec); err != nil {
-				if errors.Is(err, store.ErrBeforeHorizon) && qualifies(rec.EventTimeBasis) && rec.EventTime.After(w.refusedClock) {
+				if errors.Is(err, store.ErrBeforeHorizon) && qualifies(rec.EventTimeBasis) && !isSpanCount(rec) && rec.EventTime.After(w.refusedClock) {
 					// A refusal says what the producer's clock reads as much as a
-					// commit does. See "Retention" in the package documentation.
+					// commit does. See "Retention" in the package documentation. The
+					// span counts' clocks are the applications', and do not count.
 					w.refusedClock = rec.EventTime
 				}
-				w.reject(slot, err)
+				w.reject(slot, err, w.weight(slot))
 				break
 			}
 		}
 	}
-	return nil, nil
 }
 
 // resumerOf is the translator of a cluster name's kind as the resume step wants
@@ -610,16 +700,15 @@ func (s *Sequencer) check(r store.Record) error {
 	return nil
 }
 
-// resolveNames gives each resource of the request its cluster name, and makes
+// resolveNames gives each resource of the request, by its attributes, its cluster name, and makes
 // the translators of a name not seen before. It refuses the whole request, and
 // returns false, for a k8s.cluster.name that differs from the configured name,
 // for a name a store cannot write, and for a name beyond MaxClusters.
-func (s *Sequencer) resolveNames(w *work, now time.Time) bool {
-	rls := w.r.data.ResourceLogs
-	names := make([]string, len(rls))
+func (s *Sequencer) resolveNames(w *work, now time.Time, resources [][]capture.KeyValue) bool {
+	names := make([]string, len(resources))
 	var fresh []string
-	for i, rl := range rls {
-		v, ok := clusterAttr(rl.Resource)
+	for i, attrs := range resources {
+		v, ok := clusterAttr(attrs)
 		if s.cfg.ClusterNameSet {
 			if ok && v != s.cfg.ClusterName {
 				w.refused = fmt.Sprintf("k8s.cluster.name %s differs from the configured cluster name %s: set k8s.cluster.name to %s in the collector, or remove it",
@@ -665,9 +754,9 @@ func (s *Sequencer) resolveNames(w *work, now time.Time) bool {
 
 // clusterAttr is the resource's k8s.cluster.name: the last attribute of that key
 // with a string value, when it is not empty.
-func clusterAttr(res capture.Resource) (string, bool) {
+func clusterAttr(attrs []capture.KeyValue) (string, bool) {
 	v := ""
-	for _, kv := range res.Attributes {
+	for _, kv := range attrs {
 		if kv.Key == attrClusterName && kv.Value.StringValue != nil {
 			v = *kv.Value.StringValue
 		}

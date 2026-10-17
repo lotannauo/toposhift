@@ -144,7 +144,7 @@ func convertAttributes(kvs []*commonpb.KeyValue) ([]capture.KeyValue, error) {
 	out := make([]capture.KeyValue, 0, len(kvs))
 	for _, kv := range kvs {
 		if kv.GetKeyStrindex() != 0 {
-			return nil, fmt.Errorf("key %s: key_strindex needs a string table, which logs do not carry: %w", snippet(kv.GetKey()), errUnsupported)
+			return nil, fmt.Errorf("key %s: key_strindex needs a string table, which OTLP logs and metrics do not carry: %w", snippet(kv.GetKey()), errUnsupported)
 		}
 		var v capture.AnyValue
 		if kv.GetValue() != nil {
@@ -196,7 +196,7 @@ func convertValue(v *commonpb.AnyValue) (capture.AnyValue, error) {
 		}
 		out.BytesValue = &b
 	case *commonpb.AnyValue_StringValueStrindex:
-		return capture.AnyValue{}, fmt.Errorf("string_value_strindex needs a string table, which logs do not carry: %w", errUnsupported)
+		return capture.AnyValue{}, fmt.Errorf("string_value_strindex needs a string table, which OTLP logs and metrics do not carry: %w", errUnsupported)
 	default:
 		return capture.AnyValue{}, fmt.Errorf("value of an unknown kind %T: %w", x, errUnsupported)
 	}

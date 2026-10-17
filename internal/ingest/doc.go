@@ -5,10 +5,11 @@
 // number. The sequencer that orders the records and writes them to the store is
 // separate.
 //
-// A translator translates and nothing else. It takes one log record at a time,
-// keeps only what it needs to tell a changed description from an unchanged one,
-// and returns the records the record stands for. It never reads a clock: every
-// time it returns comes from the record it was given. Two translators given the
+// A translator translates and nothing else. It takes one log record at a time (or
+// the points of one resource, for the metric translators), keeps only what it
+// needs to tell a changed description from an unchanged one, and returns the
+// records the record stands for. It never reads a clock: every time it returns
+// comes from the record it was given. Two translators given the
 // same records in the same order return the same records.
 //
 // A receiver decodes and nothing else. It checks that a request is well formed
@@ -17,20 +18,27 @@
 // bounds them: the bytes the requests being served hold.
 //
 //   - otlphttp receives OpenTelemetry logs over OTLP/HTTP, as protobuf or JSON,
-//     as an http.Handler with no gRPC in the build.
+//     and metrics, as protobuf, as http.Handlers with no gRPC in the build.
+//   - otlpmetrics is the narrow model of metrics that the metric translators read:
+//     the sum points, and the counts of the points the receiver dropped.
 //   - k8sobjects translates the records of the Kubernetes objects receiver: watch
 //     events and list items for pods and nodes.
 //   - k8scluster translates the entity events of the Kubernetes cluster receiver
 //     into records of nodes, pods and containers and their edges.
 //   - nodeagent translates the host entity events of node-level collectors into
 //     records of hosts and of the placement of Kubernetes nodes on them.
+//   - svcgraph translates the request counter of the service graph connector into
+//     services and the calls between them, keeping the connector's series so that
+//     a point that is not evidence of a new call is not taken for one.
+//   - spancount translates the span counter of the count connector into service
+//     instances, the services they are instances of, and the pods they run in.
 //   - resume times the records a translator backdates (the first sighting of a
 //     subject after the translator lost its state) from the producer's last
 //     assertion the store holds, so that a restart or a reset does not re-assert
 //     history from each object's creation. The sequencer calls it before its
 //     checks and the coalescer.
-//   - sequencer is the sink of the receiver: one goroutine that owns the
-//     translators, the coalescer and the detector, and commits the records of
-//     the requests waiting, in arrival order, in one synced write before it
-//     answers them.
+//   - sequencer is the sink of the receiver, for logs and for metrics: one
+//     goroutine that owns the translators, the coalescer and the detector, and
+//     commits the records of the requests waiting, in arrival order, in one
+//     synced write before it answers them.
 package ingest

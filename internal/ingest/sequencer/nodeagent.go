@@ -218,7 +218,7 @@ func (s *Sequencer) checkAgentsSilent(now time.Time) {
 // forgetWarned drops the throttles of the warnings of a cluster name, which the
 // loop alone keeps.
 func (s *Sequencer) forgetWarned(name string) {
-	for _, kind := range []string{"no_host_id/", "no_node_uid/", "legacy/"} {
+	for _, kind := range []string{"no_host_id/", "no_node_uid/", "legacy/", "svcgraph_overflow/", "no_instance_id/"} {
 		delete(s.resumeWarned, kind+name)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,11 +16,13 @@ import (
 	"github.com/lotannauo/toposhift/internal/datadir"
 	"github.com/lotannauo/toposhift/internal/ingest/clustername"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/mcp/mcphttp"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
+	"github.com/lotannauo/toposhift/internal/server"
 	"github.com/lotannauo/toposhift/internal/store"
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
@@ -32,6 +35,46 @@ const envRetain = "TOPOSHIFT_RETAIN"
 
 // envNodeInterval is the environment twin of --node-interval.
 const envNodeInterval = "TOPOSHIFT_NODE_INTERVAL"
+
+// envDependencyExpiry and envInstanceTTL are the environment twins of
+// --dependency-expiry and --instance-ttl.
+const (
+	envDependencyExpiry = "TOPOSHIFT_DEPENDENCY_EXPIRY"
+	envInstanceTTL      = "TOPOSHIFT_INSTANCE_TTL"
+)
+
+// The bounds of --dependency-expiry and --instance-ttl: a whole number of seconds,
+// at least two connector flushes, below which a call that is made steadily would
+// lapse between two sightings, and at most the translators' own bound of 366 days.
+const (
+	minTTLFlag = 2 * time.Minute
+	maxTTLFlag = 366 * 24 * time.Hour
+)
+
+// envDuration reads a duration from the environment: an empty variable is unset,
+// and gives def.
+func envDuration(getenv func(string) string, name string, def time.Duration) (time.Duration, error) {
+	v := getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: %w", name, v, err)
+	}
+	return d, nil
+}
+
+// checkTTLFlag refuses a TTL outside the bounds, or with a part of a second.
+func checkTTLFlag(name string, d time.Duration) error {
+	switch {
+	case d%time.Second != 0:
+		return usagef("%s %s is not a whole number of seconds", name, d)
+	case d < minTTLFlag || d > maxTTLFlag:
+		return usagef("%s %s is outside %s to %s", name, d, minTTLFlag, maxTTLFlag)
+	}
+	return nil
+}
 
 // The bounds of --node-interval: a whole number of seconds, at least a minute and
 // at most an hour.
@@ -102,6 +145,9 @@ type ingestConfig struct {
 	pullInterval time.Duration
 	// nodeInterval is the report interval the node agents are configured with.
 	nodeInterval time.Duration
+	// dependencyExpiry and instanceTTL are the TTLs of the service graph and the
+	// span count producers.
+	dependencyExpiry, instanceTTL time.Duration
 	// retain is --retain on: the sequencer retains the store once a day.
 	retain bool
 }
@@ -160,6 +206,29 @@ func (w *switchSink) AcceptPartial(ctx context.Context, d capture.LogsData) (otl
 		return p.AcceptPartial(ctx, d)
 	}
 	return otlphttp.Partial{}, s.Accept(ctx, d)
+}
+
+// AcceptMetrics hands the metrics to the current sink when it takes them: the gate
+// and the sequencer both do. A sink that does not is reachable only in tests.
+func (w *switchSink) AcceptMetrics(ctx context.Context, d otlpmetrics.Data) (otlphttp.Partial, error) {
+	if m, ok := w.cur.Load().Sink.(otlphttp.MetricsSink); ok {
+		return m.AcceptMetrics(ctx, d)
+	}
+	return otlphttp.Partial{}, errors.New("the current sink takes no metrics")
+}
+
+// receiverRoutes are the two routes of the receiver, both on the one in-flight
+// budget: OTLP logs at POST /v1/logs and OTLP metrics at POST /v1/metrics. They
+// are served on every listen address, as the receiver has no authentication on
+// any: a non-loopback address is warned about by the server.
+func receiverRoutes(sink *switchSink, budget *otlphttp.Budget) []server.Route {
+	return []server.Route{{
+		Pattern: "POST " + otlphttp.Path,
+		Handler: otlphttp.Handler(sink, otlphttp.Options{Budget: budget}),
+	}, {
+		Pattern: "POST " + otlphttp.MetricsPath,
+		Handler: otlphttp.MetricsHandler(sink, otlphttp.Options{Budget: budget}),
+	}}
 }
 
 // retainLog is the store's retention observer, which logs the phases of each
@@ -301,6 +370,48 @@ func nodeAgentOf(seq *sequencer.Sequencer) nodeAgentStatus {
 	return out
 }
 
+// metricsStatus is the metrics path's status: on with the TTLs of the two
+// producers, the counters, and the latest points of each cluster that has had
+// any, or off while ingest is not running.
+type metricsStatus struct {
+	Mode             string                      `json:"mode"`
+	DependencyExpiry string                      `json:"dependency_expiry,omitempty"`
+	InstanceTTL      string                      `json:"instance_ttl,omitempty"`
+	Counters         map[string]int64            `json:"counters,omitempty"`
+	Clusters         map[string]metricsClusterOf `json:"clusters,omitempty"`
+}
+
+// metricsClusterOf is one cluster's latest service graph and span count points,
+// as ingest instants. Silent is true once more than three connector flushes have
+// passed since the latest service graph point, as of the latest flush tick, and
+// Series is the number of series the cluster's service graph translator held.
+type metricsClusterOf struct {
+	LastServiceGraphPoint *time.Time `json:"last_service_graph_point,omitempty"`
+	LastSpanCountPoint    *time.Time `json:"last_span_count_point,omitempty"`
+	Silent                bool       `json:"silent"`
+	Series                int        `json:"series"`
+}
+
+// metricsOf is the metrics status of the sequencer, off when ingest is not
+// running.
+func metricsOf(seq *sequencer.Sequencer) metricsStatus {
+	if seq == nil {
+		return metricsStatus{Mode: "off"}
+	}
+	st := seq.MetricsStatus()
+	out := metricsStatus{
+		Mode: "on", DependencyExpiry: st.DependencyExpiry.String(), InstanceTTL: st.InstanceTTL.String(),
+		Counters: st.Counters, Clusters: make(map[string]metricsClusterOf, len(st.Clusters)),
+	}
+	for name, c := range st.Clusters {
+		out.Clusters[name] = metricsClusterOf{
+			LastServiceGraphPoint: orNull(c.LastServiceGraphPoint), LastSpanCountPoint: orNull(c.LastSpanCountPoint),
+			Silent: c.Silent, Series: c.Series,
+		}
+	}
+	return out
+}
+
 // resumeStatus is the resume step's status: on with its counters, disabled when
 // the sequencer was given no lookup, or off while ingest is not running.
 type resumeStatus struct {
@@ -375,7 +486,7 @@ func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	seq := s.seq.Load()
-	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(seq), "nodeagent": nodeAgentOf(seq)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(seq), "nodeagent": nodeAgentOf(seq), "metrics": metricsOf(seq)})
 }
 
 // ingest is what boot opened for ingest: the store, and the sequencer with its
@@ -471,9 +582,12 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		ClusterNameSet: ic.set,
 		PullInterval:   ic.pullInterval,
 		NodeInterval:   ic.nodeInterval,
-		Logger:         log,
-		Retain:         retain,
-		Lookup:         lookup,
+
+		DependencyExpiry: ic.dependencyExpiry,
+		InstanceTTL:      ic.instanceTTL,
+		Logger:           log,
+		Retain:           retain,
+		Lookup:           lookup,
 	})
 	if err != nil {
 		log.Error("ingest is off: the sequencer could not be made", "err", err)
@@ -556,7 +670,8 @@ Ingest
 
   With a data directory, serve opens the store in it and takes OpenTelemetry
   logs at POST /v1/logs: the Kubernetes objects receiver's pods and nodes, and
-  the cluster receiver's entity events. A request is answered 200 only once
+  the cluster receiver's entity events. It takes metrics at POST /v1/metrics
+  too (see Services and their calls). A request is answered 200 only once
   its records are committed to disk. While the store opens, and whenever
   ingest is off, the receiver answers 503 with Retry-After and says why; health
   is served all the same.
@@ -586,6 +701,7 @@ Retention
   --retain off asks for no retention, and nothing more is discarded, though a
   pass an earlier boot started still completes below the horizon it already
   published. Any other value is refused.
+  L3 (services and their calls) is retained with L2.
 
   This server's clock decides what is old, so it is checked against the
   clocks of the producers on other hosts: the times their records carry must
@@ -638,4 +754,42 @@ Node agents
   translated: the collector was started without the feature gate. The log warns
   of the refused and legacy events at most once a minute for each cluster, and
   once each time a cluster's host events stop for three intervals.
+
+Services and their calls
+
+  The trace collector (deploy/otel-collector/README.md) sends two metrics to
+  POST /v1/metrics: the service graph connector's request counter, which says
+  that one service called another, and the count connector's span counter,
+  which says that an instance of a service ran. The body is protobuf
+  (application/x-protobuf), gzip or not; JSON is answered 415, because JSON
+  metrics are not received. The same request limits, the same cluster name
+  rules, and the same single in-flight budget apply as for logs. The producers
+  are svcgraph/<cluster name> and spancount/<cluster name>.
+
+  A call between two services stays until its last sighting plus
+  --dependency-expiry (or $TOPOSHIFT_DEPENDENCY_EXPIRY; default 6h), and an
+  instance until its last span count plus --instance-ttl (or
+  $TOPOSHIFT_INSTANCE_TTL; default 6h); each is a whole number of seconds from
+  2m to 8784h, and an end shows as liveness_expiry. A counter that does not
+  rise is not a call. No count, rate or latency is stored.
+
+  GET /status also answers "metrics": the counters (skipped_* is a point set
+  aside, refused_* a part of a record that was not stored), and for each cluster
+  when its latest service graph point and span count point arrived, whether it is
+  silent, and the series held. The log warns, at most once a minute for each
+  cluster, when the table of call series is full and of span counts with no
+  service.instance.id (which write nothing), and once each time a cluster's
+  service graph points stop for three minutes.
+
+  Memory: each cluster name holds up to 200,000 call series, which is
+  tens of MB per cluster name, not measured.
+  Without --cluster-name, a sender that reaches the receiver directly, or
+  through a collector whose resource processor was deleted, chooses up to 16
+  cluster names, which also take the slots the logs route needs; set
+  --cluster-name where senders are not trusted.
+
+  The receiver has no authentication: anything that reaches it can add services,
+  instances and calls, and bridge an instance to any pod whose uid it knows, so
+  restrict who reaches it with the network. It serves both routes on every
+  listen address; the read-only tools stay on loopback.
 `
