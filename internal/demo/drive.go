@@ -17,8 +17,10 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -252,8 +254,12 @@ type driver struct {
 	tick chan time.Time
 	seq  *sequencer.Sequencer
 	logs logCounts
-	// nsEvents is how many namespace events the requests accepted so far held.
-	nsEvents int
+	// nsEvents is how many namespace events the requests accepted so far held,
+	// databasePoints how many service graph points of calls to a database, and
+	// warmUpSeries how many series of other calls the first service graph flush
+	// held: the translator sets these aside while it warms up.
+	nsEvents, databasePoints, warmUpSeries int
+	flushSeen                              bool
 	// stop ends the loop's context; done receives Run's result.
 	stop context.CancelFunc
 	done chan error
@@ -274,12 +280,14 @@ func newDriver(o Options) (*driver, error) {
 		next = o.Logger.Handler()
 	}
 	dr.seq, err = sequencer.New(sequencer.Config{
-		Store:          dr.d,
-		Now:            dr.clk.now,
-		Tick:           func(time.Duration) <-chan time.Time { return dr.tick },
-		ClusterName:    ClusterName,
-		ClusterNameSet: true,
-		Logger:         slog.New(lineCounter{next: next, c: &dr.logs}),
+		Store:            dr.d,
+		Now:              dr.clk.now,
+		Tick:             func(time.Duration) <-chan time.Time { return dr.tick },
+		ClusterName:      ClusterName,
+		ClusterNameSet:   true,
+		Logger:           slog.New(lineCounter{next: next, c: &dr.logs}),
+		DependencyExpiry: Expiry,
+		InstanceTTL:      Expiry,
 		Lookup: func() (resume.Lookup, error) {
 			lk, err := st.NewLookup()
 			if err != nil {
@@ -306,24 +314,63 @@ func (dr *driver) abort() {
 	_ = dr.st.Close()
 }
 
-// accept sends a request. A request answered busy is sent again at the same
-// instant, up to busyRetries times; any other refusal, and any record rejected, is
-// an error that names the request.
-func (dr *driver) accept(ctx context.Context, data capture.LogsData, what string, at time.Time) error {
+// send runs one call to the sequencer for a request. A request answered busy is
+// sent again at the same instant, up to busyRetries times; any other refusal, and
+// any record or data point rejected, is an error that names the request.
+func (dr *driver) send(ctx context.Context, what string, at time.Time, unit string, call func() (otlphttp.Partial, error)) error {
 	for attempt := 0; ; attempt++ {
-		p, err := dr.seq.AcceptPartial(ctx, data)
+		p, err := call()
 		switch {
 		case err == nil && p.Rejected == 0:
-			dr.nsEvents += namespaceEvents(data)
 			return nil
 		case err == nil:
-			return fmt.Errorf("demo: the %s at %s had %d log records rejected: %s", what, at.Format(time.RFC3339), p.Rejected, p.Message)
+			return fmt.Errorf("demo: the %s at %s had %d %s rejected: %s", what, at.Format(time.RFC3339), p.Rejected, unit, p.Message)
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case errors.Is(err, otlphttp.ErrBusy) && attempt < busyRetries:
 			continue
 		}
 		return fmt.Errorf("demo: the %s at %s was refused: %w", what, at.Format(time.RFC3339), err)
+	}
+}
+
+// accept sends a logs request.
+func (dr *driver) accept(ctx context.Context, data capture.LogsData, what string, at time.Time) error {
+	err := dr.send(ctx, what, at, "log records", func() (otlphttp.Partial, error) { return dr.seq.AcceptPartial(ctx, data) })
+	if err == nil {
+		dr.nsEvents += namespaceEvents(data)
+	}
+	return err
+}
+
+// acceptMetrics sends a metrics request, through the sequencer's metrics path:
+// the queue, the claim and the answers of a logs request.
+func (dr *driver) acceptMetrics(ctx context.Context, data otlpmetrics.Data, what string, at time.Time) error {
+	err := dr.send(ctx, what, at, "data points", func() (otlphttp.Partial, error) { return dr.seq.AcceptMetrics(ctx, data) })
+	if err == nil {
+		dr.countMetrics(data)
+	}
+	return err
+}
+
+// countMetrics counts what a metrics request that was taken in whole holds, for the
+// skips it explains: the calls to databases, and the series the first service graph
+// flush made, which the translator sets aside while it warms up.
+func (dr *driver) countMetrics(data otlpmetrics.Data) {
+	points, databases := 0, 0
+	for _, res := range data.Resources {
+		for _, p := range res.Points {
+			if p.Scope == svcgraph.Scope && p.Metric == svcgraph.Metric {
+				points++
+				if isDatabasePoint(p) {
+					databases++
+				}
+			}
+		}
+	}
+	dr.databasePoints += databases
+	if points > 0 && !dr.flushSeen {
+		dr.flushSeen, dr.warmUpSeries = true, points-databases
 	}
 }
 
@@ -373,7 +420,14 @@ func Build(ctx context.Context, w *World, o Options) (*Built, error) {
 			r := reqs[sent]
 			sent++
 			dr.clk.set(r.At)
-			if err := dr.accept(ctx, r.Data(), r.Emitter.String()+" ("+r.What+")", r.At); err != nil {
+			what := r.Emitter.String() + " (" + r.What + ")"
+			var err error
+			if r.IsMetrics() {
+				err = dr.acceptMetrics(ctx, r.Metrics(), what, r.At)
+			} else {
+				err = dr.accept(ctx, r.Data(), what, r.At)
+			}
+			if err != nil {
 				dr.abort()
 				return nil, err
 			}
@@ -404,6 +458,9 @@ func Build(ctx context.Context, w *World, o Options) (*Built, error) {
 		Skips:           dr.logs.counts(dr.logs.skips),
 		Notes:           dr.logs.counts(dr.logs.notes),
 		NamespaceEvents: dr.nsEvents,
+		DatabasePoints:  dr.databasePoints,
+		WarmUpSeries:    dr.warmUpSeries,
+		Metrics:         dr.seq.MetricsStatus().Counters,
 		Took:            time.Since(began),
 		Story:           w.Story(),
 	}, nil

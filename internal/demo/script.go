@@ -50,6 +50,15 @@ const (
 
 	// jitter bounds the seconds drawn onto a pod-level instant: up to twenty.
 	jitter = 21
+
+	// The service layer's story, in the calls of services.go: at 2h00m checkout
+	// starts calling payments-api, and its last call to legacy-pay is at 2h10m. The
+	// question about a service fault asks what a failure of ledger from 4h00m to
+	// 4h20m would reach.
+	migrateAfter        = 2 * time.Hour
+	legacyLastCallAfter = 2*time.Hour + 10*time.Minute
+	faultAfter          = 4 * time.Hour
+	faultFor            = 20 * time.Minute
 )
 
 // outage is node-2 not ready, from T3 to its recovery.
@@ -144,6 +153,10 @@ type PodRef struct {
 	Created, Deleted                         time.Time
 }
 
+// ServiceRef names a service: its namespace and name, and the id the tools print
+// for it.
+type ServiceRef struct{ Namespace, Name, ID string }
+
 // Story is what the script does, by name and by id: the facts the banner, the
 // tools' instructions and the tests read. It holds no pod or node that the script
 // does not touch, and is derived from the world, never drawn.
@@ -164,6 +177,28 @@ type Story struct {
 	// Evicted are the pods deleted when the eviction's seconds pass, in the order
 	// they are deleted; Replacements are their replacements, in the same order.
 	Evicted, Replacements []PodRef
+
+	// Services are the world's services, in the order of their workloads. Migrate
+	// is when checkout starts calling payments-api, LastLegacyCall the instant of
+	// its last call to legacy-pay, and LegacyCallEnds when the connector's last
+	// sighting of that call, one flush after, plus the expiry, ends it. FaultFrom
+	// and FaultTo are the window of the question about a failure of ledger. All are
+	// zero in a world without a service layer.
+	Services                []ServiceRef
+	Migrate, LastLegacyCall time.Time
+	LegacyCallEnds          time.Time
+	FaultFrom, FaultTo      time.Time
+}
+
+// Service is the service of the name in the namespace; the zero value if there is
+// none.
+func (s Story) Service(namespace, name string) ServiceRef {
+	for _, r := range s.Services {
+		if r.Namespace == namespace && r.Name == name {
+			return r
+		}
+	}
+	return ServiceRef{}
 }
 
 func (w *World) nodeRef(i int) NodeRef {
@@ -210,5 +245,6 @@ func (w *World) Story() Story {
 			s.Replacements = append(s.Replacements, w.podRef(p.ReplacedBy))
 		}
 	}
+	w.serviceStory(&s)
 	return s
 }

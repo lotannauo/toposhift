@@ -112,8 +112,8 @@
       }
     },
     "counts": {
-      "members": 20,
-      "members_shown": 20,
+      "members": 27,
+      "members_shown": 27,
       "quarantined": 0,
       "unattributed": 0
     },
@@ -138,7 +138,14 @@
         "depth 2 | container payments-api | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended) | via part_of k8s.pod payments-api-1f68b1e786-vz8np [payments]",
         "depth 2 | container recommend | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended) | via part_of k8s.pod recommend-ceb22420e9-hfqd5 [shop]",
         "depth 2 | container redis | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via part_of k8s.pod redis-9fb0a958fe-wz7dp [data]",
-        "depth 2 | container search | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended) | via part_of k8s.pod search-a713e3cbf1-m4xxr [shop]"
+        "depth 2 | container search | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended) | via part_of k8s.pod search-a713e3cbf1-m4xxr [shop]",
+        "depth 2 | service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended) | via part_of k8s.pod legacy-pay-00947b3f72-xpjpl [payments]",
+        "depth 2 | service.instance payments.payments-api-1f68b1e786-vz8np.payments-api (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended) | via part_of k8s.pod payments-api-1f68b1e786-vz8np [payments]",
+        "depth 2 | service.instance platform.ingress-08bf8f73d1-tbw2r.ingress (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended) | via part_of k8s.pod ingress-08bf8f73d1-tbw2r [platform]",
+        "depth 2 | service.instance shop.catalog-0efb8ee864-md74k.catalog (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via part_of k8s.pod catalog-0efb8ee864-md74k [shop]",
+        "depth 2 | service.instance shop.checkout-7372434c33-9nk6z.checkout (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended) | via part_of k8s.pod checkout-7372434c33-9nk6z [shop]",
+        "depth 2 | service.instance shop.recommend-ceb22420e9-hfqd5.recommend (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended) | via part_of k8s.pod recommend-ceb22420e9-hfqd5 [shop]",
+        "depth 2 | service.instance shop.search-a713e3cbf1-m4xxr.search (unnamed) | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended) | via part_of k8s.pod search-a713e3cbf1-m4xxr [shop]"
       ],
       "quarantined": [],
       "unattributed": []
@@ -262,13 +269,13 @@
       },
       "created": {
         "entities": 8,
-        "relations": 24
+        "relations": 31
       },
       "deleted": {
         "entities": 8,
-        "relations": 24
+        "relations": 31
       },
-      "events": 64,
+      "events": 78,
       "quarantined": {
         "entities": 0,
         "relations": 0
@@ -327,7 +334,14 @@
         "relation | k8s.pod payments-api-1f68b1e786-9rrnf [payments] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:22Z..2026-10-01T03:15:00.000000001Z",
         "relation | k8s.pod recommend-ceb22420e9-bm5cx [shop] scheduled_on k8s.node node-3 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:15Z..2026-10-01T03:15:00.000000001Z",
         "relation | k8s.pod redis-9fb0a958fe-bv68q [data] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:06Z..2026-10-01T03:15:00.000000001Z",
-        "relation | k8s.pod search-a713e3cbf1-zw88m [shop] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:23Z..2026-10-01T03:15:00.000000001Z"
+        "relation | k8s.pod search-a713e3cbf1-zw88m [shop] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:23Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance payments.legacy-pay-00947b3f72-vkkmm.legacy-pay (unnamed) part_of k8s.pod legacy-pay-00947b3f72-vkkmm [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance payments.payments-api-1f68b1e786-9rrnf.payments-api (unnamed) part_of k8s.pod payments-api-1f68b1e786-9rrnf [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:06:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance platform.ingress-08bf8f73d1-ck4ff.ingress (unnamed) part_of k8s.pod ingress-08bf8f73d1-ck4ff [platform] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance shop.catalog-0efb8ee864-q9wkf.catalog (unnamed) part_of k8s.pod catalog-0efb8ee864-q9wkf [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance shop.checkout-7372434c33-tmj5j.checkout (unnamed) part_of k8s.pod checkout-7372434c33-tmj5j [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance shop.recommend-ceb22420e9-bm5cx.recommend (unnamed) part_of k8s.pod recommend-ceb22420e9-bm5cx [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | service.instance shop.search-a713e3cbf1-zw88m.search (unnamed) part_of k8s.pod search-a713e3cbf1-zw88m [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:06:50Z..2026-10-01T03:15:00.000000001Z"
       ],
       "deleted": [
         "entity | k8s.pod catalog-0efb8ee864-md74k [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
@@ -353,7 +367,14 @@
         "relation | k8s.pod payments-api-1f68b1e786-vz8np [payments] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) | deleted_at 2026-10-01T03:05:20Z",
         "relation | k8s.pod recommend-ceb22420e9-hfqd5 [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) | deleted_at 2026-10-01T03:05:12Z",
         "relation | k8s.pod redis-9fb0a958fe-wz7dp [data] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
-        "relation | k8s.pod search-a713e3cbf1-m4xxr [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) | deleted_at 2026-10-01T03:05:21Z"
+        "relation | k8s.pod search-a713e3cbf1-m4xxr [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) | deleted_at 2026-10-01T03:05:21Z",
+        "relation | service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay (unnamed) part_of k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (cascade) | deleted_at 2026-10-01T03:05:10Z",
+        "relation | service.instance payments.payments-api-1f68b1e786-vz8np.payments-api (unnamed) part_of k8s.pod payments-api-1f68b1e786-vz8np [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (cascade) | deleted_at 2026-10-01T03:05:20Z",
+        "relation | service.instance platform.ingress-08bf8f73d1-tbw2r.ingress (unnamed) part_of k8s.pod ingress-08bf8f73d1-tbw2r [platform] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (cascade) | deleted_at 2026-10-01T03:05:15Z",
+        "relation | service.instance shop.catalog-0efb8ee864-md74k.catalog (unnamed) part_of k8s.pod catalog-0efb8ee864-md74k [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (cascade) | deleted_at 2026-10-01T03:05:03Z",
+        "relation | service.instance shop.checkout-7372434c33-9nk6z.checkout (unnamed) part_of k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (cascade) | deleted_at 2026-10-01T03:05:13Z",
+        "relation | service.instance shop.recommend-ceb22420e9-hfqd5.recommend (unnamed) part_of k8s.pod recommend-ceb22420e9-hfqd5 [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (cascade) | deleted_at 2026-10-01T03:05:12Z",
+        "relation | service.instance shop.search-a713e3cbf1-m4xxr.search (unnamed) part_of k8s.pod search-a713e3cbf1-m4xxr [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (cascade) | deleted_at 2026-10-01T03:05:21Z"
       ],
       "quarantined": [],
       "scope": [
@@ -396,8 +417,8 @@
       "entity": "k8s.pod checkout-7372434c33-9nk6z [shop]"
     },
     "counts": {
-      "edges": 2,
-      "edges_shown": 2,
+      "edges": 3,
+      "edges_shown": 3,
       "withheld": {
         "edges": 1,
         "quarantined": 0
@@ -406,7 +427,8 @@
     "lists": {
       "edges": [
         "forward | scheduled_on | L2 | k8s.node node-2 | asserted/derived/existence",
-        "reverse | part_of | L2 | container checkout | asserted/derived/existence"
+        "reverse | part_of | L2 | container checkout | asserted/derived/existence",
+        "reverse | part_of | L2 | service.instance shop.checkout-7372434c33-9nk6z.checkout (unnamed) | asserted/derived/existence"
       ],
       "quarantined": []
     }
@@ -473,6 +495,263 @@
         "reverse | has_address | L2 | k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/existence"
       ],
       "quarantined": []
+    }
+  },
+  "q6_find_services": {
+    "tool": "find_entities",
+    "args": {
+      "at": "2026-10-01T01:00:00Z",
+      "name": "pay",
+      "type": "service"
+    },
+    "policy": {
+      "find": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "complete": true,
+      "next_after": null,
+      "type": "service",
+      "window": {
+        "from": "2026-10-01T01:00:00Z",
+        "to": "2026-10-01T01:00:00.000000001Z"
+      }
+    },
+    "counts": {
+      "checked": 10,
+      "matched": 2,
+      "not_printed": 0,
+      "quarantined": 0,
+      "retained": 0,
+      "undescribed": 0
+    },
+    "lists": {
+      "matches": [
+        "service legacy-pay [payments] | asserted/derived/existence | stable 0 | 2026-10-01T01:00:00Z..2026-10-01T01:00:00.000000001Z",
+        "service payments-api [payments] | asserted/derived/existence | stable 0 | 2026-10-01T01:00:00Z..2026-10-01T01:00:00.000000001Z"
+      ]
+    }
+  },
+  "q7_blast_ledger": {
+    "tool": "blast_radius",
+    "args": {
+      "entity": "<service ledger>",
+      "from": "2026-10-01T04:00:00Z",
+      "to": "2026-10-01T04:20:00Z"
+    },
+    "policy": {
+      "blastradius": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "depth_limit": 6,
+      "seed": "service ledger [payments]",
+      "truncation": {
+        "depth_cut": 0,
+        "frontier_cuts": [],
+        "incomplete": false,
+        "members_unlisted": 0
+      },
+      "window": {
+        "from": "2026-10-01T04:00:00Z",
+        "to": "2026-10-01T04:20:00Z"
+      }
+    },
+    "counts": {
+      "members": 5,
+      "members_shown": 5,
+      "quarantined": 0,
+      "unattributed": 0
+    },
+    "lists": {
+      "members": [
+        "depth 1 | service legacy-pay [payments] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T04:00:00Z..2026-10-01T04:20:00Z | via depends_on service ledger [payments]",
+        "depth 1 | service payments-api [payments] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T04:00:00Z..2026-10-01T04:20:00Z | via depends_on service ledger [payments]",
+        "depth 2 | service checkout [shop] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T04:00:00Z..2026-10-01T04:20:00Z | via depends_on service payments-api [payments]",
+        "depth 3 | service frontend [shop] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T04:00:00Z..2026-10-01T04:20:00Z | via depends_on service checkout [shop]",
+        "depth 4 | service ingress [platform] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T04:00:00Z..2026-10-01T04:20:00Z | via depends_on service frontend [shop]"
+      ],
+      "quarantined": [],
+      "unattributed": []
+    }
+  },
+  "q8a_blast_legacy_pay_while_called": {
+    "tool": "blast_radius",
+    "args": {
+      "entity": "<service legacy-pay>",
+      "from": "2026-10-01T01:00:00Z",
+      "to": "2026-10-01T01:30:00Z"
+    },
+    "policy": {
+      "blastradius": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "depth_limit": 6,
+      "seed": "service legacy-pay [payments]",
+      "truncation": {
+        "depth_cut": 0,
+        "frontier_cuts": [],
+        "incomplete": false,
+        "members_unlisted": 0
+      },
+      "window": {
+        "from": "2026-10-01T01:00:00Z",
+        "to": "2026-10-01T01:30:00Z"
+      }
+    },
+    "counts": {
+      "members": 3,
+      "members_shown": 3,
+      "quarantined": 0,
+      "unattributed": 0
+    },
+    "lists": {
+      "members": [
+        "depth 1 | service checkout [shop] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T01:00:00Z..2026-10-01T01:30:00Z | via depends_on service legacy-pay [payments]",
+        "depth 2 | service frontend [shop] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T01:00:00Z..2026-10-01T01:30:00Z | via depends_on service checkout [shop]",
+        "depth 3 | service ingress [platform] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T01:00:00Z..2026-10-01T01:30:00Z | via depends_on service frontend [shop]"
+      ],
+      "quarantined": [],
+      "unattributed": []
+    }
+  },
+  "q8b_blast_legacy_pay_after": {
+    "tool": "blast_radius",
+    "args": {
+      "entity": "<service legacy-pay>",
+      "from": "2026-10-01T03:00:00Z",
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "policy": {
+      "blastradius": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "depth_limit": 6,
+      "seed": "service legacy-pay [payments]",
+      "truncation": {
+        "depth_cut": 0,
+        "frontier_cuts": [],
+        "incomplete": false,
+        "members_unlisted": 0
+      },
+      "window": {
+        "from": "2026-10-01T03:00:00Z",
+        "to": "2026-10-01T03:30:00Z"
+      }
+    },
+    "counts": {
+      "members": 0,
+      "members_shown": 0,
+      "quarantined": 0,
+      "unattributed": 0
+    },
+    "lists": {
+      "members": [],
+      "quarantined": [],
+      "unattributed": []
+    }
+  },
+  "q9_changed_checkout": {
+    "tool": "what_changed",
+    "args": {
+      "from": "2026-10-01T01:55:00Z",
+      "scope": [
+        "<service checkout>"
+      ],
+      "to": "2026-10-01T02:35:00Z"
+    },
+    "policy": {
+      "graphdiff": 1,
+      "interval": 1,
+      "names": 2,
+      "payload": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "window": {
+        "from": "2026-10-01T01:55:00Z",
+        "to": "2026-10-01T02:35:00.000000001Z"
+      }
+    },
+    "counts": {
+      "changed": {
+        "entities": 0,
+        "relations": 0
+      },
+      "created": {
+        "entities": 0,
+        "relations": 1
+      },
+      "deleted": {
+        "entities": 0,
+        "relations": 1
+      },
+      "events": 2,
+      "quarantined": {
+        "entities": 0,
+        "relations": 0
+      },
+      "transient": {
+        "entities": 0,
+        "relations": 0
+      },
+      "withheld": {
+        "changed": {
+          "entities": 0,
+          "relations": 0
+        },
+        "created": {
+          "entities": 0,
+          "relations": 0
+        },
+        "deleted": {
+          "entities": 0,
+          "relations": 0
+        },
+        "events": 0,
+        "quarantined": {
+          "entities": 0,
+          "relations": 0
+        },
+        "transient": {
+          "entities": 0,
+          "relations": 0
+        }
+      }
+    },
+    "lists": {
+      "changed": [],
+      "created": [
+        "relation | service checkout [shop] depends_on service payments-api [payments] | asserted/derived/diff.created | appeared | 2026-10-01T02:00:20Z..2026-10-01T02:35:00.000000001Z"
+      ],
+      "deleted": [
+        "relation | service checkout [shop] depends_on service legacy-pay [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T01:55:00Z..2026-10-01T02:25:20Z (liveness_expiry) | deleted_at 2026-10-01T02:25:20Z"
+      ],
+      "quarantined": [],
+      "scope": [
+        "service checkout [shop]"
+      ],
+      "transient": []
     }
   }
 }

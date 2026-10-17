@@ -100,6 +100,7 @@ func TestDemoHelp(t *testing.T) {
 			"127.0.0.1:7070", "POST /mcp", "GET /healthz", "--stdio", "--no-serve", "--listen",
 			"2026-10-01T00:00:00Z", "2026-10-01T06:00:00Z", "synthetic", "deleted at once",
 			"reads no environment variable", "writes nothing to disk", "toposhift serve",
+			"15 minutes", "services", "/v1/metrics",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("demo %v: the help lacks %q", args, want)
@@ -203,11 +204,21 @@ func TestDemoHTTPAnswersRangeQuestions(t *testing.T) {
 		"entity": story.Failed.ID, "from": rfc(story.NotReady), "to": rfc(story.NotReady.Add(30 * time.Minute)),
 	})
 	names := map[string]bool{}
+	instances := 0
 	for _, m := range asList(t, blast["members"], "members") {
 		names[refName(m)] = true
-		if typ := refType(m); typ != "k8s.pod" && typ != "container" {
-			t.Errorf("the blast radius of node-2 reaches a %s, want pods and containers only", typ)
+		switch typ := refType(m); typ {
+		case "k8s.pod", "container":
+		case "service.instance":
+			instances++
+		default:
+			// A node's failure reaches what runs on it, and the instances in its pods,
+			// and no service: an instance is never followed to its service.
+			t.Errorf("the blast radius of node-2 reaches a %s, want pods, containers and service instances only", typ)
 		}
+	}
+	if instances == 0 {
+		t.Error("the blast radius of node-2 reaches no service instance")
 	}
 	for _, v := range story.Evicted {
 		if !names[v.Name] {
@@ -294,6 +305,7 @@ func TestDemoServesOnlyTheToolsAndTheirInstructions(t *testing.T) {
 	}{
 		{http.MethodGet, "/healthz", http.StatusOK},
 		{http.MethodPost, "/v1/logs", http.StatusNotFound},
+		{http.MethodPost, "/v1/metrics", http.StatusNotFound},
 		{http.MethodGet, "/status", http.StatusNotFound},
 	} {
 		req, _ := http.NewRequestWithContext(t.Context(), tc.method, s.base+tc.path, strings.NewReader("{}"))
@@ -423,7 +435,7 @@ func TestDemoStdioSmoke(t *testing.T) {
 		t.Fatalf("find_entities over stdio failed: %v", found["content"])
 	}
 	structured, _ := found["structuredContent"].(map[string]any)
-	got := reader{t, o}.find(structured, q.findArgs(), q)
+	got := reader{t, o}.find(structured, q.findArgs(), q.i1)
 	got.Policy = nil
 	if a, b := encode(t, got), encode(t, o.wantFind(q)); !bytes.Equal(a, b) {
 		t.Errorf("find_entities over stdio differs from what the world says:\n%s", firstDifference(a, b))

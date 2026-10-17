@@ -33,7 +33,8 @@ func TestNewWorldIsAFunctionOfItsSeed(t *testing.T) {
 		t.Fatalf("%d requests and %d", len(ra), len(rb))
 	}
 	for i := range ra {
-		if !ra[i].At.Equal(rb[i].At) || ra[i].What != rb[i].What || !reflect.DeepEqual(ra[i].Data(), rb[i].Data()) {
+		if !ra[i].At.Equal(rb[i].At) || ra[i].What != rb[i].What || ra[i].IsMetrics() != rb[i].IsMetrics() ||
+			!reflect.DeepEqual(ra[i].Data(), rb[i].Data()) || !reflect.DeepEqual(ra[i].Metrics(), rb[i].Metrics()) {
 			t.Fatalf("request %d (%s at %s) differs between two worlds of seed 1", i, ra[i].What, ra[i].At)
 		}
 	}
@@ -276,7 +277,7 @@ func TestRequestsAreInOrderInTheWindow(t *testing.T) {
 		}
 	}
 	// 73 instants of the five-minute cadence, from the anchor to the end.
-	for e, want := range map[Emitter]int{EmitObjectsPull: 2 * 73, EmitClusterReport: 73, EmitNodeAgent: 4 * 73} {
+	for e, want := range map[Emitter]int{EmitObjectsPull: 2 * 73, EmitClusterReport: 73, EmitNodeAgent: 4 * 73, EmitServiceGraph: 360, EmitSpanCount: 360} {
 		if counts[e] != want {
 			t.Errorf("%d requests of %s, want %d", counts[e], e, want)
 		}

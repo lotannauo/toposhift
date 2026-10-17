@@ -46,9 +46,9 @@ type Workload struct {
 	// NextReplicaSet the one a rollout moves them to; both are empty for any other
 	// kind.
 	ReplicaSet, NextReplicaSet string
-	// Service is the service the workload implements. It is empty in this world,
-	// which has no service layer; a world that has one sets it, and the emitters
-	// that name services read it.
+	// Service is the name of the service the workload implements, in the
+	// workload's namespace, or empty for a workload that sends no traces. The
+	// pods of a service are its instances: see services.go.
 	Service string
 }
 
@@ -96,6 +96,9 @@ type World struct {
 	// of the anchor first, then those the script creates.
 	Pods    []*Pod
 	Outages []Outage
+	// Calls are the calls between the services and to the databases, as the trace
+	// collector would count them: see services.go.
+	Calls []Call
 }
 
 // The phases of a pod over its life.
@@ -176,9 +179,14 @@ type builder struct {
 }
 
 // NewWorld draws the cluster of a seed: two machines, four nodes, five
-// namespaces and forty pods at the anchor, and then the script of script.go. It
-// reads no clock and does no I/O.
-func NewWorld(seed uint64) *World {
+// namespaces and forty pods at the anchor, and then the script of script.go, and
+// lays the service layer of services.go over it. It reads no clock and does no I/O.
+func NewWorld(seed uint64) *World { return newWorld(seed, true) }
+
+// newWorld is [NewWorld], with the service layer left out when services is false.
+// The layer is data laid over the cluster after it is drawn and draws nothing, so
+// the cluster is the same either way: a test compares the two.
+func newWorld(seed uint64, services bool) *World {
 	b := &builder{
 		r:    rand.New(rand.NewPCG(seed, 0x64656d6f)),
 		w:    &World{Seed: seed},
@@ -196,6 +204,9 @@ func NewWorld(seed uint64) *World {
 	b.rollout()
 	b.jobs()
 	b.evict()
+	if services {
+		b.services()
+	}
 	return b.w
 }
 

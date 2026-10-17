@@ -25,18 +25,25 @@ in which a rollout runs, a report job runs every hour, node-2 stops being ready,
 its pods are evicted and created again on the other nodes (the pods a DaemonSet
 keeps on node-2 stay), and node-2 is ready again. The same build always gives the same cluster.
 
+Ten of its workloads are services that send traces. Their calls and instances
+arrive as the trace collector's metrics would, through the same translators:
+checkout moves from legacy-pay to payments-api at 02:00. A call or an instance
+ends 15 minutes after it was last sighted, the demo's expiry; toposhift serve's
+default is 6 hours.
+
 The cluster is built the way a real one is read: synthetic requests in the shapes
 the collectors send go through the same translators and sequencer that
 toposhift serve runs, on a clock the command sets, into a store in memory. The
 one simplification is that an evicted pod is deleted at once; the API would keep
 it terminating until its kubelet confirms. What is built is printed first: the
-window, the number of records, a digest of them, and two questions to ask.
+window, the number of records, a digest of them, and three questions to ask.
 
 The tools are served at POST /mcp, on the loopback listener only (the server has
-no authentication), beside GET /healthz. There is no ingest: POST /v1/logs is
-not served. With --stdio the tools are served to one client on standard input
-and output instead, one JSON-RPC message per line, and nothing else is written
-to the output. With --no-serve the command prints what it built and ends.
+no authentication), beside GET /healthz. There is no ingest: POST /v1/logs and
+POST /v1/metrics are not served. With --stdio the tools are served to one client
+on standard input and output instead, one JSON-RPC message per line, and nothing
+else is written to the output. With --no-serve the command prints what it built
+and ends.
 
 The command reads no environment variable (TOPOSHIFT_LISTEN does not apply),
 has no data directory, and writes nothing to disk. It ends, with exit status 0,
