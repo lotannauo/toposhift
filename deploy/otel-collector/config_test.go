@@ -1,6 +1,7 @@
 // Package otelcollector holds no code. Its test checks the collector
-// configurations shipped beside it, toposhift.yaml and the optional
-// nodeagent.yaml, and the README that explains them.
+// configurations shipped beside it, toposhift.yaml with its two opt-in forms and
+// the optional nodeagent.yaml and tracemetrics.yaml, and the README that explains
+// them.
 //
 // The repository has no YAML module, so the test reads the file with the
 // standard library. It understands only the small subset of YAML this file uses
@@ -13,6 +14,7 @@ package otelcollector
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"slices"
@@ -24,6 +26,8 @@ import (
 
 	"github.com/lotannauo/toposhift/internal/ingest/nodeagent"
 	"github.com/lotannauo/toposhift/internal/ingest/sequencer"
+	"github.com/lotannauo/toposhift/internal/ingest/spancount"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 )
 
 // doc is the file flattened to one entry per scalar, keyed by its path. A
@@ -279,14 +283,17 @@ func TestConfig(t *testing.T) {
 
 	// No port is open by default: an otlp receiver would take records from anything
 	// that can reach the collector, and the pipeline routes them by what they are.
-	// The node agents' receiver is the opt-in step of the README, in comments.
+	// The node agents' receiver and the trace collector's are the opt-in steps of
+	// the README, in comments.
 	for k := range d {
 		if strings.HasPrefix(k, "receivers.otlp") {
-			t.Errorf("%s is set: the node agents' receiver is off by default", k)
+			t.Errorf("%s is set: the node agents' and the trace collector's receivers are off by default", k)
 		}
 	}
-	if without := strings.ReplaceAll(text, optInPrefix+"        endpoint: 0.0.0.0:4318", ""); strings.Contains(without, "0.0.0.0") {
-		t.Error("toposhift.yaml names 0.0.0.0 outside the opt-in line")
+	without := strings.ReplaceAll(text, optInPrefix+"        endpoint: 0.0.0.0:4318", "")
+	without = strings.ReplaceAll(without, traceMetricsPrefix+"        endpoint: 0.0.0.0:4319", "")
+	if strings.Contains(without, "0.0.0.0") {
+		t.Error("toposhift.yaml names 0.0.0.0 outside the two opt-in lines")
 	}
 
 	// The cluster name: the one value a user sets, in a placeholder that the README
@@ -474,7 +481,7 @@ func TestNodeAgentOptIn(t *testing.T) {
 // and not the other.
 func TestReadmeNamesEveryPlaceholder(t *testing.T) {
 	readme := read(t, "README.md")
-	for _, name := range []string{"toposhift.yaml", "nodeagent.yaml"} {
+	for _, name := range []string{"toposhift.yaml", "nodeagent.yaml", "tracemetrics.yaml"} {
 		cfg := read(t, name)
 		found := regexp.MustCompile(`<[A-Z][A-Z_]*>`).FindAllString(cfg, -1)
 		if len(found) == 0 {
@@ -689,5 +696,486 @@ func TestReadmeDescribesTheNodeAgents(t *testing.T) {
 	// The constants the README states are the code's.
 	if nodeagent.DefaultTTLMultiple != 3 || sequencer.DefaultNodeInterval != 300*time.Second {
 		t.Errorf("the README says three times 300 seconds; the code has %d times %s", nodeagent.DefaultTTLMultiple, sequencer.DefaultNodeInterval)
+	}
+}
+
+// traceMetricsPrefix starts each line of toposhift.yaml that is the trace metrics
+// opt-in: the receiver, the filter, the exporter and the pipeline, commented out.
+// Removing the prefix, with the one space after it, gives the line as it is when
+// enabled.
+const traceMetricsPrefix = "#TRACEMETRICS "
+
+// metricsFilter is the condition of both filters, the trace collector's and the
+// cluster collector's: the two metrics toposhift reads, and nothing else. It is
+// built from the names the translators read, so a rename there fails here.
+func metricsFilter() string {
+	return `'name != "` + svcgraph.Metric + `" and name != "` + spancount.Metric + `"'`
+}
+
+// traceMetricsLines are the lines that carry the trace metrics prefix, without it.
+func traceMetricsLines(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if rest, ok := strings.CutPrefix(line, traceMetricsPrefix); ok {
+			out = append(out, rest)
+		}
+	}
+	return out
+}
+
+// withoutPrefixes returns text with each given prefix (and the space it ends in)
+// removed from the lines that start with it.
+func withoutPrefixes(text string, prefixes ...string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		for _, p := range prefixes {
+			lines[i] = strings.TrimPrefix(lines[i], p)
+			if lines[i] != line {
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// listAt returns the items of the list at path, in order.
+func listAt(d doc, path string) []string {
+	var out []string
+	for i := 0; ; i++ {
+		v, ok := d[path+"["+strconv.Itoa(i)+"]"]
+		if !ok {
+			return out
+		}
+		out = append(out, v)
+	}
+}
+
+// pipelineNames returns the names of the pipelines the file declares, sorted.
+func pipelineNames(d doc) []string {
+	seen := map[string]bool{}
+	for k := range d {
+		if rest, ok := strings.CutPrefix(k, "service.pipelines."); ok {
+			name, _, _ := strings.Cut(rest, ".")
+			seen[name] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
+// TestTraceCollectorConfig checks tracemetrics.yaml: the trace collector keeps the
+// connector settings the translators assume, makes no pod or address association,
+// sends only the connectors' two metrics, and only to the cluster collector.
+func TestTraceCollectorConfig(t *testing.T) {
+	text := read(t, "tracemetrics.yaml")
+	d, err := parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The connector settings the translators assume: toposhift has no flag for them.
+	const sg = "connectors.service_graph"
+	for path, want := range map[string]time.Duration{
+		sg + ".metrics_flush_interval":        svcgraph.DefaultFlush,
+		sg + ".cache_loop":                    svcgraph.DefaultCacheLoop,
+		sg + ".metrics_timestamp_offset":      0,
+		sg + ".store.ttl":                     2 * time.Second,
+		"exporters.otlp_http/gateway.timeout": 30 * time.Second,
+	} {
+		got, err := time.ParseDuration(d[path])
+		if err != nil {
+			t.Errorf("%s = %q: %v", path, d[path], err)
+		} else if got != want {
+			t.Errorf("%s is %s, want %s", path, got, want)
+		}
+	}
+
+	// The namespace is the one dimension, and the file spells the lists out in blocks.
+	if got := listAt(d, sg+".dimensions"); !slices.Equal(got, []string{"service.namespace"}) {
+		t.Errorf("dimensions are %v, want [service.namespace]", got)
+	}
+
+	// The pipelines: traces make the two metrics, the metrics pipeline carries those
+	// and nothing an application sends, and the SDKs' own metrics and logs are
+	// accepted and dropped.
+	pipes := map[string]struct{ receivers, processors, exporters []string }{
+		"traces":      {[]string{"otlp"}, []string{"memory_limiter", "batch"}, []string{"service_graph", "count"}},
+		"metrics":     {[]string{"service_graph", "count"}, []string{"memory_limiter", "filter/tracemetrics"}, []string{"otlp_http/gateway"}},
+		"metrics/sdk": {[]string{"otlp"}, nil, []string{"nop"}},
+		"logs/sdk":    {[]string{"otlp"}, nil, []string{"nop"}},
+	}
+	if got := pipelineNames(d); !slices.Equal(got, []string{"logs/sdk", "metrics", "metrics/sdk", "traces"}) {
+		t.Errorf("pipelines are %v", got)
+	}
+	for name, want := range pipes {
+		base := "service.pipelines." + name
+		for part, w := range map[string][]string{"receivers": want.receivers, "processors": want.processors, "exporters": want.exporters} {
+			if got := listAt(d, base+"."+part); !slices.Equal(got, w) {
+				t.Errorf("%s.%s is %v, want %v", base, part, got, w)
+			}
+		}
+		// The otlp receiver is in the traces pipeline and in the two that drop what else
+		// the SDKs send. It is not in the pipeline that sends on, so no application can
+		// send a metric through it.
+		if slices.Contains(listAt(d, base+".receivers"), "otlp") && !slices.Contains([]string{"traces", "metrics/sdk", "logs/sdk"}, name) {
+			t.Errorf("the otlp receiver is in the %s pipeline: an application could send metrics through it", name)
+		}
+	}
+	for _, name := range []string{"metrics/sdk", "logs/sdk"} {
+		if got := listAt(d, "service.pipelines."+name+".exporters"); !slices.Equal(got, []string{"nop"}) {
+			t.Errorf("the %s pipeline exports to %v, want only nop", name, got)
+		}
+	}
+
+	// The filter is the cluster collector's, built from the translators' names.
+	if got := d["processors.filter/tracemetrics.metrics.metric[0]"]; got != metricsFilter() {
+		t.Errorf("the filter is %s, want %s", got, metricsFilter())
+	}
+
+	// Only to the cluster collector's trace metrics port, on a placeholder host; the
+	// queue is in memory, in bytes, and sends in order.
+	const ex = "exporters.otlp_http/gateway"
+	if m := regexp.MustCompile(`^http://<[A-Z][A-Z_]*>:4319$`); !m.MatchString(d[ex+".endpoint"]) {
+		t.Errorf("%s.endpoint = %q, want the cluster collector's port 4319 on a placeholder host", ex, d[ex+".endpoint"])
+	}
+	if got := regexp.MustCompile(`<[A-Z][A-Z_]*>`).FindAllString(text, -1); !slices.Equal(slices.Compact(got), []string{"<GATEWAY_HOST>"}) {
+		t.Errorf("the placeholders are %v, want <GATEWAY_HOST> only", got)
+	}
+	if _, has := d[ex+".sending_queue.storage"]; has {
+		t.Error("the trace collector's queue is on disk: it keeps no state")
+	}
+
+	// No pod or address association, and no resource detection, anywhere in the file.
+	for _, banned := range []string{"k8sattributes", "k8s_attributes", "resourcedetection", "resource_detection", "k8s.pod.ip"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("tracemetrics.yaml names %q: a pod uid is never derived from an address", banned)
+		}
+	}
+	if !strings.Contains(strings.ToLower(text), "one replica") {
+		t.Error("tracemetrics.yaml does not say it runs as one replica")
+	}
+
+	// Nothing else is in the file: every key is one of these, with this value.
+	want := map[string]string{
+		"receivers.otlp.protocols.grpc.endpoint":           "0.0.0.0:4317",
+		"receivers.otlp.protocols.http.endpoint":           "0.0.0.0:4318",
+		"processors.memory_limiter.check_interval":         "1s",
+		"processors.memory_limiter.limit_mib":              "600",
+		"processors.memory_limiter.spike_limit_mib":        "150",
+		"processors.batch.timeout":                         "1s",
+		"processors.filter/tracemetrics.error_mode":        "ignore",
+		"processors.filter/tracemetrics.metrics.metric[0]": metricsFilter(),
+		sg + ".dimensions[0]":                              "service.namespace",
+		sg + ".virtual_node_peer_attributes":               "[]",
+		sg + ".virtual_node_extra_label":                   "true",
+		sg + ".metrics_flush_interval":                     d[sg+".metrics_flush_interval"],
+		sg + ".metrics_timestamp_offset":                   d[sg+".metrics_timestamp_offset"],
+		sg + ".cache_loop":                                 d[sg+".cache_loop"],
+		sg + ".store.ttl":                                  d[sg+".store.ttl"],
+		sg + ".store.max_items":                            "1000",
+		"connectors.count":                                 "{}",
+		ex + ".endpoint":                                   d[ex+".endpoint"],
+		ex + ".encoding":                                   "proto",
+		ex + ".compression":                                "gzip",
+		ex + ".timeout":                                    d[ex+".timeout"],
+		ex + ".retry_on_failure.enabled":                   "true",
+		ex + ".retry_on_failure.initial_interval":          "5s",
+		ex + ".retry_on_failure.max_interval":              "30s",
+		ex + ".retry_on_failure.max_elapsed_time":          "0",
+		ex + ".sending_queue.enabled":                      "true",
+		ex + ".sending_queue.num_consumers":                "1",
+		ex + ".sending_queue.sizer":                        "bytes",
+		ex + ".sending_queue.queue_size":                   "100000000",
+		"exporters.nop":                                    "{}",
+		"service.telemetry.metrics.level":                  "none",
+		"service.pipelines.traces.receivers[0]":            "otlp",
+		"service.pipelines.traces.processors[0]":           "memory_limiter",
+		"service.pipelines.traces.processors[1]":           "batch",
+		"service.pipelines.traces.exporters[0]":            "service_graph",
+		"service.pipelines.traces.exporters[1]":            "count",
+		"service.pipelines.metrics.receivers[0]":           "service_graph",
+		"service.pipelines.metrics.receivers[1]":           "count",
+		"service.pipelines.metrics.processors[0]":          "memory_limiter",
+		"service.pipelines.metrics.processors[1]":          "filter/tracemetrics",
+		"service.pipelines.metrics.exporters[0]":           "otlp_http/gateway",
+		"service.pipelines.metrics/sdk.receivers[0]":       "otlp",
+		"service.pipelines.metrics/sdk.exporters[0]":       "nop",
+		"service.pipelines.logs/sdk.receivers[0]":          "otlp",
+		"service.pipelines.logs/sdk.exporters[0]":          "nop",
+	}
+	for k, w := range want {
+		if got, ok := d[k]; !ok {
+			t.Errorf("%s is missing", k)
+		} else if got != w {
+			t.Errorf("%s = %q, want %q", k, got, w)
+		}
+	}
+	var extra []string
+	for k := range d {
+		if _, ok := want[k]; !ok {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) > 0 {
+		t.Errorf("keys no check looks at: %v", extra)
+	}
+}
+
+// TestTraceMetricsOptIn checks the trace metrics opt-in form of toposhift.yaml: the
+// commented lines are the receiver on its own port, the filter, the exporter with
+// its own queue and the metrics pipeline; uncommented, alone or with the node
+// agents', the file still parses and leaves the logs pipeline as it is; and the
+// README shows the step and says what enabling it opens.
+func TestTraceMetricsOptIn(t *testing.T) {
+	text := read(t, "toposhift.yaml")
+	lines := traceMetricsLines(text)
+	want := []string{
+		"  otlp/tracemetrics:",
+		"    protocols:",
+		"      http:",
+		"        endpoint: 0.0.0.0:4319",
+		"  filter/tracemetrics:",
+		"    error_mode: ignore",
+		"    metrics:",
+		"      metric:",
+		"        - " + metricsFilter(),
+		"  otlphttp/toposhift_metrics:",
+		"    endpoint: http://<TOPOSHIFT_HOST>:7070",
+		"    encoding: proto",
+		"    compression: gzip",
+		"    timeout: 30s",
+		"    retry_on_failure:",
+		"      enabled: true",
+		"      initial_interval: 5s",
+		"      max_interval: 30s",
+		"      max_elapsed_time: 0",
+		"    sending_queue:",
+		"      enabled: true",
+		"      storage: file_storage/toposhift",
+		"      num_consumers: 1",
+		"      sizer: bytes",
+		"      queue_size: 500000000",
+		"      batch:",
+		"        sizer: bytes",
+		"        max_size: 16000000",
+		"        flush_timeout: 1s",
+		"    metrics:",
+		"      receivers:",
+		"        - otlp/tracemetrics",
+		"      processors:",
+		"        - filter/tracemetrics",
+		"        - resource",
+		"      exporters:",
+		"        - otlphttp/toposhift_metrics",
+	}
+	if len(want) != 37 {
+		t.Fatalf("the test lists %d opt-in lines, want 37", len(want))
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("the opt-in lines are %q, want %q", lines, want)
+	}
+
+	// Off by default: no line that is not a comment names the opt-in or its port.
+	for i, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		for _, on := range []string{"tracemetrics", "toposhift_metrics", "4319"} {
+			if strings.Contains(line, on) {
+				t.Errorf("toposhift.yaml line %d names %q outside the opt-in: it is off by default", i+1, on)
+			}
+		}
+	}
+
+	// Enabled: the marker and its space removed, nothing else changed. The keys the
+	// default file has keep their values, and the keys the 37 lines add are these.
+	def, err := parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := parse(withoutPrefixes(text, traceMetricsPrefix))
+	if err != nil {
+		t.Fatalf("the enabled form does not parse: %v", err)
+	}
+	const ex = "exporters.otlphttp/toposhift_metrics"
+	added := map[string]string{
+		"receivers.otlp/tracemetrics.protocols.http.endpoint": "0.0.0.0:4319",
+		"processors.filter/tracemetrics.error_mode":           "ignore",
+		"processors.filter/tracemetrics.metrics.metric[0]":    metricsFilter(),
+		ex + ".endpoint":                          "http://<TOPOSHIFT_HOST>:7070",
+		ex + ".encoding":                          "proto",
+		ex + ".compression":                       "gzip",
+		ex + ".timeout":                           "30s",
+		ex + ".retry_on_failure.enabled":          "true",
+		ex + ".retry_on_failure.initial_interval": "5s",
+		ex + ".retry_on_failure.max_interval":     "30s",
+		ex + ".retry_on_failure.max_elapsed_time": "0",
+		ex + ".sending_queue.enabled":             "true",
+		ex + ".sending_queue.storage":             "file_storage/toposhift",
+		ex + ".sending_queue.num_consumers":       "1",
+		ex + ".sending_queue.sizer":               "bytes",
+		ex + ".sending_queue.queue_size":          "500000000",
+		ex + ".sending_queue.batch.sizer":         "bytes",
+		ex + ".sending_queue.batch.max_size":      "16000000",
+		ex + ".sending_queue.batch.flush_timeout": "1s",
+		"service.pipelines.metrics.receivers[0]":  "otlp/tracemetrics",
+		"service.pipelines.metrics.processors[0]": "filter/tracemetrics",
+		"service.pipelines.metrics.processors[1]": "resource",
+		"service.pipelines.metrics.exporters[0]":  "otlphttp/toposhift_metrics",
+	}
+	if len(d) != len(def)+len(added) {
+		t.Errorf("the enabled form has %d keys, want the default file's %d and the opt-in's %d", len(d), len(def), len(added))
+	}
+	for k, v := range def {
+		if d[k] != v {
+			t.Errorf("%s = %q enabled, %q by default: the opt-in changes a key it does not add", k, d[k], v)
+		}
+	}
+	for k, v := range added {
+		if got, ok := d[k]; !ok {
+			t.Errorf("%s is missing", k)
+		} else if got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
+		}
+		if _, has := def[k]; has {
+			t.Errorf("%s is in the default file", k)
+		}
+	}
+	var extra []string
+	for k := range d {
+		_, isDef := def[k]
+		_, isAdded := added[k]
+		if !isDef && !isAdded {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	if len(extra) > 0 {
+		t.Errorf("keys no check looks at: %v", extra)
+	}
+
+	// One consumer on each queue, so the shipped collector has one sender for logs and
+	// one for metrics (the exporter's own default is ten). The default file has the one
+	// uncommented num_consumers line that check:collector's control misspells; the
+	// opt-in's is a commented line, which the enabled form makes a second.
+	if n := len(regexp.MustCompile(`(?m)^ *num_consumers:`).FindAllString(text, -1)); n != 1 {
+		t.Errorf("the default file has %d uncommented num_consumers lines, want 1", n)
+	}
+	for _, key := range []string{"exporters.otlphttp/toposhift.sending_queue.num_consumers", ex + ".sending_queue.num_consumers"} {
+		if d[key] != "1" {
+			t.Errorf("%s = %q in the enabled form, want 1", key, d[key])
+		}
+	}
+
+	// The receiver is HTTP only, and the exporter is the logs one with a queue of its
+	// own: same place, same encoding, same retry, same storage directory (each exporter gets its own file in it), one consumer.
+	if _, has := d["receivers.otlp/tracemetrics.protocols.grpc.endpoint"]; has {
+		t.Error("the trace metrics receiver listens on grpc too")
+	}
+	const logs = "exporters.otlphttp/toposhift"
+	for _, key := range []string{
+		"endpoint", "encoding", "compression", "timeout", "retry_on_failure.max_elapsed_time",
+		"sending_queue.storage", "sending_queue.num_consumers", "sending_queue.sizer", "sending_queue.batch.max_size",
+	} {
+		if d[ex+"."+key] != d[logs+"."+key] {
+			t.Errorf("%s.%s = %q, but the logs exporter's is %q", ex, key, d[ex+"."+key], d[logs+"."+key])
+		}
+	}
+	if d[ex+".encoding"] != "proto" {
+		t.Errorf("the metrics exporter's encoding is %q, want proto: toposhift's metrics path takes protobuf only", d[ex+".encoding"])
+	}
+
+	// The pipelines: logs unchanged, and metrics fed by the new receiver only. The
+	// receiver is in no other pipeline, so a sender on its port cannot write what the
+	// logs pipeline takes. With the node agents' receiver too, each is in its own.
+	both, err := parse(withoutPrefixes(text, optInPrefix, traceMetricsPrefix))
+	if err != nil {
+		t.Fatalf("both opt-ins together do not parse: %v", err)
+	}
+	for form, dd := range map[string]doc{"trace metrics alone": d, "both opt-ins": both} {
+		if got, w := listAt(dd, "service.pipelines.logs.processors"), []string{"resource"}; !slices.Equal(got, w) {
+			t.Errorf("%s: the logs processors are %v, want %v", form, got, w)
+		}
+		if got, w := listAt(dd, "service.pipelines.logs.exporters"), []string{"otlphttp/toposhift"}; !slices.Equal(got, w) {
+			t.Errorf("%s: the logs exporters are %v, want %v", form, got, w)
+		}
+		if got, w := listAt(dd, "service.pipelines.metrics.receivers"), []string{"otlp/tracemetrics"}; !slices.Equal(got, w) {
+			t.Errorf("%s: the metrics receivers are %v, want %v", form, got, w)
+		}
+		if got := pipelineNames(dd); !slices.Equal(got, []string{"logs", "metrics"}) {
+			t.Errorf("%s: the pipelines are %v, want logs and metrics", form, got)
+		}
+	}
+	if got, w := listAt(d, "service.pipelines.logs.receivers"), []string{"k8s_objects", "k8s_cluster"}; !slices.Equal(got, w) {
+		t.Errorf("trace metrics alone: the logs receivers are %v, want %v", got, w)
+	}
+	if got, w := listAt(both, "service.pipelines.logs.receivers"), []string{"k8s_objects", "k8s_cluster", "otlp"}; !slices.Equal(got, w) {
+		t.Errorf("both opt-ins: the logs receivers are %v, want %v", got, w)
+	}
+	for _, dd := range []doc{d, both} {
+		for k, v := range dd {
+			switch {
+			case v == "otlp" && strings.HasPrefix(k, "service.pipelines.") && !strings.HasPrefix(k, "service.pipelines.logs."):
+				t.Errorf("%s: the node agents' receiver is in a pipeline besides logs", k)
+			case v == "otlp/tracemetrics" && strings.HasPrefix(k, "service.pipelines.") && !strings.HasPrefix(k, "service.pipelines.metrics."):
+				t.Errorf("%s: the trace metrics receiver is in a pipeline besides metrics", k)
+			}
+		}
+	}
+
+	// The README carries the step, and says plainly what enabling it opens.
+	readme := read(t, "README.md")
+	for _, must := range []string{
+		"sed 's/^" + traceMetricsPrefix + "//' toposhift.yaml", traceMetricsPrefix, "4319",
+		"unauthenticated", "network policy", "off by default", "otlp/tracemetrics", "otlphttp/toposhift_metrics",
+	} {
+		if !strings.Contains(readme, must) {
+			t.Errorf("README.md does not mention %q in the trace metrics opt-in step", must)
+		}
+	}
+}
+
+// TestReadmeDescribesTheTraceCollector fails when the README leaves out what an
+// operator of the optional trace collector has to know, or says what it must not.
+func TestReadmeDescribesTheTraceCollector(t *testing.T) {
+	readme := read(t, "README.md")
+	for _, must := range []string{
+		"tracemetrics.yaml", "one replica", "<GATEWAY_HOST>", "POD_UID", "k8s.pod.uid", "service.instance.id",
+		"k8sattributes", "--dependency-expiry", "--instance-ttl", "liveness_expiry",
+		"spancount.skipped_no_instance_id", "POST /v1/metrics",
+		// Restriction (d) holds only while the resource processor does.
+		"only while the `resource` processor stays", "--cluster-name",
+		// The first policy names a namespace for the trace collector, and a policy
+		// only works where the network plugin enforces it.
+		"namespaceSelector: {matchLabels: {kubernetes.io/metadata.name:", "enforces them", "depends on that",
+		// The empty peer-attribute list turns the conversion of expired edges into
+		// virtual nodes off; a deployment that sets attributes gets points the
+		// translator sets aside under this counter.
+		"empty list", "no other switch", "no expired edge", "svcgraph.skipped_connection_virtual_node", "peer attributes were set",
+	} {
+		if !strings.Contains(readme, must) {
+			t.Errorf("README.md does not mention %q", must)
+		}
+	}
+	// POD_UID must come first in the list, since Kubernetes expands $(VAR) only for a
+	// variable defined earlier.
+	if !regexp.MustCompile("`POD_UID` from `fieldRef: metadata.uid`, defined \\*\\*before\\*\\* `OTEL_RESOURCE_ATTRIBUTES`").MatchString(readme) {
+		t.Error("README.md does not say that POD_UID is defined before OTEL_RESOURCE_ATTRIBUTES")
+	}
+	// This version has no other switch, but the empty list converts no expired edge,
+	// so the README names neither a node the collector does not make nor a count in
+	// the shipped setting that is called normal.
+	for _, bad := range []string{
+		"cannot be told not to make virtual nodes", "named `unknown`", "`user`",
+		"virtual nodes are off", "cannot be switched off", "means a misconfiguration", "is not a misconfiguration",
+	} {
+		if strings.Contains(readme, bad) {
+			t.Errorf("README.md says %q: the empty peer-attribute list makes the collector convert no expired edge into a virtual node", bad)
+		}
+	}
+	// The README is published: it gives reasons and settings, no measurement and no
+	// reference to the notes that are not.
+	if m := regexp.MustCompile(`\bS0\b|\bADR[- ]?\d`).FindString(readme); m != "" {
+		t.Errorf("README.md cites %q", m)
 	}
 }

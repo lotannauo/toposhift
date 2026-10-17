@@ -9,7 +9,8 @@
 #
 # Edit three things and nothing else:
 #   <CLUSTER_NAME>    the processor below: a name for this cluster
-#   <TOPOSHIFT_HOST>  the exporter below: where toposhift listens
+#   <TOPOSHIFT_HOST>  the exporter below: where toposhift listens (and in the trace
+#                     metrics exporter, if you enable that opt-in)
 #   the storage directory, only if the default path is not writable
 #
 # The collector is the buffer. The settings below make it hold data durably while
@@ -51,6 +52,19 @@ receivers:
 #NODEAGENTS       http:
 #NODEAGENTS         endpoint: 0.0.0.0:4318
 
+  # The trace collector's port: OFF by default, and the opt-in step of README.md
+  # ("Services and their calls"). Read that section first: enabling it opens an
+  # unauthenticated port, and anything that can reach it can send metrics named like
+  # the two it keeps. It feeds the metrics pipeline only, never the logs one. To
+  # enable it, remove the prefix "#TRACEMETRICS " (with its space) from the lines
+  # that carry it: 37 in all, in the receivers, the processors, the exporters and
+  # the pipelines.
+  #
+#TRACEMETRICS   otlp/tracemetrics:
+#TRACEMETRICS     protocols:
+#TRACEMETRICS       http:
+#TRACEMETRICS         endpoint: 0.0.0.0:4319
+
 processors:
   # The name of this cluster. Set it once per cluster. It is at most 21 bytes of
   # the characters A-Z a-z 0-9 . _ : / and -. Delete this processor, and its entry
@@ -62,6 +76,14 @@ processors:
       - key: k8s.cluster.name
         value: <CLUSTER_NAME>
         action: upsert
+
+  # The trace metrics opt-in: only the two metrics the trace collector makes go on.
+  # The resource processor above still sets the cluster name on them.
+#TRACEMETRICS   filter/tracemetrics:
+#TRACEMETRICS     error_mode: ignore
+#TRACEMETRICS     metrics:
+#TRACEMETRICS       metric:
+#TRACEMETRICS         - 'name != "traces_service_graph_request_total" and name != "trace.span.count"'
 
 exporters:
   otlphttp/toposhift:
@@ -106,6 +128,31 @@ exporters:
         max_size: 16000000
         flush_timeout: 1s
 
+  # The trace metrics opt-in: its own exporter and its own queue on the same volume,
+  # so that the queue's bound is stated here and the 2 GB above is not doubled. The
+  # queue is smaller, because these metrics are small, and it keeps the same
+  # order: one consumer.
+#TRACEMETRICS   otlphttp/toposhift_metrics:
+#TRACEMETRICS     endpoint: http://<TOPOSHIFT_HOST>:7070
+#TRACEMETRICS     encoding: proto
+#TRACEMETRICS     compression: gzip
+#TRACEMETRICS     timeout: 30s
+#TRACEMETRICS     retry_on_failure:
+#TRACEMETRICS       enabled: true
+#TRACEMETRICS       initial_interval: 5s
+#TRACEMETRICS       max_interval: 30s
+#TRACEMETRICS       max_elapsed_time: 0
+#TRACEMETRICS     sending_queue:
+#TRACEMETRICS       enabled: true
+#TRACEMETRICS       storage: file_storage/toposhift
+#TRACEMETRICS       num_consumers: 1
+#TRACEMETRICS       sizer: bytes
+#TRACEMETRICS       queue_size: 500000000
+#TRACEMETRICS       batch:
+#TRACEMETRICS         sizer: bytes
+#TRACEMETRICS         max_size: 16000000
+#TRACEMETRICS         flush_timeout: 1s
+
 extensions:
   # Disk storage for the sending queue.
   file_storage/toposhift:
@@ -133,3 +180,11 @@ service:
         - resource
       exporters:
         - otlphttp/toposhift
+#TRACEMETRICS     metrics:
+#TRACEMETRICS       receivers:
+#TRACEMETRICS         - otlp/tracemetrics
+#TRACEMETRICS       processors:
+#TRACEMETRICS         - filter/tracemetrics
+#TRACEMETRICS         - resource
+#TRACEMETRICS       exporters:
+#TRACEMETRICS         - otlphttp/toposhift_metrics
