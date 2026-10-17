@@ -252,7 +252,7 @@ func TestEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewReader: %v", err)
 	}
-	if got, want := r.Info(), (activity.Info{Version: 1}); got != want {
+	if got, want := r.Info(), (activity.Info{Version: 1, Digest: footerDigest(t, data)}); got != want {
 		t.Errorf("Info() = %+v, want %+v", got, want)
 	}
 	for range 2 {
@@ -296,6 +296,17 @@ func footerMetadata(pf *file.Reader) map[string]string {
 		}
 	}
 	return kv
+}
+
+// footerDigest is the content digest in the footer of an activity file, read
+// with the Parquet library and not with the reader.
+func footerDigest(tb fataler, data []byte) string {
+	tb.Helper()
+	pf, err := file2reader(data)
+	if err != nil {
+		tb.Fatalf("reading the footer: %v", err)
+	}
+	return footerMetadata(pf)["toposhift.activity.digest"]
 }
 
 func TestFileProperties(t *testing.T) {

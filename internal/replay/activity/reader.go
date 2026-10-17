@@ -92,6 +92,13 @@ type Info struct {
 	MinSeq, MaxSeq uint64
 	// RowGroups is the number of row groups.
 	RowGroups int
+	// Digest is the content digest in the footer: "sha256:" and 64 lowercase hex
+	// digits. NewReader has checked it against the row group digests the footer
+	// lists; the rows are checked against those as they are read, and the last Next
+	// before io.EOF checks the whole file. It depends on the records and on how they
+	// are divided into row groups, not on how the file is compressed or laid out, so
+	// two files of the same records in the same groups have the same Digest.
+	Digest string
 }
 
 // internedFP is a fingerprint parsed once for a row group, with its text.
@@ -338,6 +345,7 @@ func (r *Reader) checkFooter(md *metadata.FileMetaData) error {
 	if want := fileDigest(r.groupWant); want != r.digest {
 		return formatErr("footer metadata %s is %s, but the row group digests in %s give %s", keyDigest, r.digest, keyGroups, want)
 	}
+	r.info.Digest = r.digest
 	return nil
 }
 
