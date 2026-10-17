@@ -1179,3 +1179,189 @@ func TestReadmeDescribesTheTraceCollector(t *testing.T) {
 		t.Errorf("README.md cites %q", m)
 	}
 }
+
+// section returns the README text under the heading "## name", up to the next
+// "## " heading.
+func section(t *testing.T, readme, name string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(readme, "\n## "+name+"\n")
+	if !ok {
+		t.Fatalf("README.md has no section %q", name)
+	}
+	body, _, _ := strings.Cut(rest, "\n## ")
+	return body
+}
+
+// readOnly is the verb set of every rule in the README's ClusterRole: the
+// collector reads and never writes.
+var readOnly = []string{"get", "list", "watch"}
+
+// clusterRoleResources are the resources the cluster collector's service account
+// must be allowed to read, as "group/resource" with the core group empty: the
+// kinds k8s_cluster and k8s_objects watch, which are refused with "forbidden"
+// when missing, plus events and four subresources from the upstream example,
+// which this configuration does not read. It is listed here, apart from the
+// README, so that an edit to the README's example fails this test instead of
+// passing.
+var clusterRoleResources = []string{
+	"/events", "/namespaces", "/namespaces/status", "/nodes", "/nodes/spec",
+	"/pods", "/pods/status", "/replicationcontrollers", "/replicationcontrollers/status",
+	"/resourcequotas", "/services", "/persistentvolumeclaims", "/persistentvolumes",
+	"apps/daemonsets", "apps/deployments", "apps/replicasets", "apps/statefulsets",
+	"batch/jobs", "batch/cronjobs",
+	"autoscaling/horizontalpodautoscalers",
+}
+
+// clusterRoleGrants returns every "group/resource:verb" grant the rules of d make,
+// sorted and with repeats kept, so a resource or a verb listed twice, or a rule
+// that grants more than the list, shows.
+func clusterRoleGrants(t *testing.T, d doc) []string {
+	t.Helper()
+	var grants []string
+	for i := 0; ; i++ {
+		rule := "rules[" + strconv.Itoa(i) + "]"
+		groups := listAt(d, rule+".apiGroups")
+		resources := listAt(d, rule+".resources")
+		verbs := listAt(d, rule+".verbs")
+		if len(groups)+len(resources)+len(verbs) == 0 {
+			break
+		}
+		// A rule may carry only these three keys: resourceNames or nonResourceURLs
+		// would change what the grants mean.
+		for k := range d {
+			rest, ok := strings.CutPrefix(k, rule+".")
+			if !ok {
+				continue
+			}
+			if key, _, _ := strings.Cut(rest, "["); key != "apiGroups" && key != "resources" && key != "verbs" {
+				t.Errorf("%s has the key %q, which this check does not model", rule, k)
+			}
+		}
+		if len(groups) == 0 || len(resources) == 0 || len(verbs) == 0 {
+			t.Fatalf("%s lacks apiGroups, resources or verbs", rule)
+		}
+		for _, g := range groups {
+			for _, r := range resources {
+				for _, v := range verbs {
+					grants = append(grants, strings.Trim(g, `"`)+"/"+r+":"+v)
+				}
+			}
+		}
+	}
+	slices.Sort(grants)
+	return grants
+}
+
+// TestReadmeClusterRole pins the read access the README says the cluster
+// collector needs. The README's example is parsed, and its ClusterRole must grant
+// get, list and watch on exactly the resources above and nothing else, so the
+// list cannot drift from what the receivers ask for, and the binding must tie the
+// role to the service account in the namespace the placeholder names.
+func TestReadmeClusterRole(t *testing.T) {
+	readme := read(t, "README.md")
+	sec := section(t, readme, "Read access the collector needs")
+	_, block, ok := strings.Cut(sec, "```yaml\n")
+	if !ok {
+		t.Fatal("the section shows no YAML example")
+	}
+	block, _, _ = strings.Cut(block, "```")
+
+	docs := map[string]doc{}
+	for _, text := range strings.Split(block, "\n---\n") {
+		d, err := parse(text)
+		if err != nil {
+			t.Fatalf("the example does not parse: %v", err)
+		}
+		kind := d["kind"]
+		if _, dup := docs[kind]; dup {
+			t.Fatalf("the example has two %s objects", kind)
+		}
+		docs[kind] = d
+	}
+	if len(docs) != 3 {
+		t.Fatalf("the example has %d kinds of object, want ServiceAccount, ClusterRole and ClusterRoleBinding", len(docs))
+	}
+	sa, role, binding := docs["ServiceAccount"], docs["ClusterRole"], docs["ClusterRoleBinding"]
+	if sa == nil || role == nil || binding == nil {
+		t.Fatalf("the example has %v, want ServiceAccount, ClusterRole and ClusterRoleBinding", slices.Sorted(maps.Keys(docs)))
+	}
+	if sa["apiVersion"] != "v1" {
+		t.Errorf("the ServiceAccount apiVersion is %q, want v1", sa["apiVersion"])
+	}
+	for what, d := range map[string]doc{"ClusterRole": role, "ClusterRoleBinding": binding} {
+		if d["apiVersion"] != "rbac.authorization.k8s.io/v1" {
+			t.Errorf("the %s apiVersion is %q, want rbac.authorization.k8s.io/v1", what, d["apiVersion"])
+		}
+	}
+
+	// The rules: exactly the list, each with exactly the read verbs.
+	var want []string
+	for _, r := range clusterRoleResources {
+		for _, v := range readOnly {
+			want = append(want, r+":"+v)
+		}
+	}
+	slices.Sort(want)
+	if got := clusterRoleGrants(t, role); !slices.Equal(got, want) {
+		t.Errorf("the ClusterRole grants\n%q\nwant\n%q", got, want)
+	}
+
+	// Every kind the shipped configuration reads with k8s_objects is in the list.
+	cfg, err := parse(read(t, "toposhift.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := 0
+	for i := 0; ; i++ {
+		name, ok := cfg["receivers.k8s_objects.objects["+strconv.Itoa(i)+"].name"]
+		if !ok {
+			break
+		}
+		objects++
+		if !slices.Contains(clusterRoleResources, "/"+name) {
+			t.Errorf("toposhift.yaml reads %s with k8s_objects, and the ClusterRole does not grant it", name)
+		}
+	}
+	if objects == 0 {
+		t.Error("toposhift.yaml reads no k8s_objects")
+	}
+
+	// The three objects belong together: one name, the binding names the role and
+	// the account, and the account's namespace is the placeholder in both places.
+	const ns = "<COLLECTOR_NAMESPACE>"
+	name := role["metadata.name"]
+	if name == "" {
+		t.Error("the ClusterRole has no name")
+	}
+	if _, namespaced := role["metadata.namespace"]; namespaced {
+		t.Error("a ClusterRole has no namespace")
+	}
+	for what, pair := range map[string][2]string{
+		"ServiceAccount name":              {sa["metadata.name"], name},
+		"ServiceAccount namespace":         {sa["metadata.namespace"], ns},
+		"binding role kind":                {binding["roleRef.kind"], "ClusterRole"},
+		"binding role name":                {binding["roleRef.name"], name},
+		"binding role group":               {binding["roleRef.apiGroup"], "rbac.authorization.k8s.io"},
+		"binding subject kind":             {binding["subjects[0].kind"], "ServiceAccount"},
+		"binding subject name":             {binding["subjects[0].name"], name},
+		"binding subject namespace":        {binding["subjects[0].namespace"], ns},
+		"binding has one subject, no more": {binding["subjects[1].kind"], ""},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s is %q, want %q", what, pair[0], pair[1])
+		}
+	}
+
+	// The prose around the example: the placeholder is explained, the collector is
+	// said to write nothing, and a missing resource is said to show as "forbidden".
+	prose := strings.Replace(sec, "```yaml\n"+block+"```", "", 1)
+	for _, must := range []string{
+		ns, "writes nothing to the cluster", "`forbidden` lines in the collector's log", "no entities for that kind",
+		// The other kinds wait out the receiver's initial sync and then flow.
+		"Timed out waiting for initial cache sync",
+	} {
+		if !strings.Contains(prose, must) {
+			t.Errorf("the section does not say %q outside its example", must)
+		}
+	}
+}
