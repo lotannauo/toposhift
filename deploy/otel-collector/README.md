@@ -33,6 +33,8 @@ The store records the cluster name toposhift was first started with. If toposhif
 
 **Reaching toposhift.** toposhift listens on `127.0.0.1:7070` and nowhere else unless told to. A collector in a cluster cannot reach that. Start toposhift with `TOPOSHIFT_LISTEN` set to an address the cluster can reach (for example `TOPOSHIFT_LISTEN=0.0.0.0:7070`), and put that host in `<TOPOSHIFT_HOST>`. Listening beyond loopback exposes the port to whatever can route to it, so restrict it with the network.
 
+With an address that is not loopback, `serve` does not serve the read-only tools at `/mcp` (its log says so at start). To ingest from a cluster and use the tools from one `serve`, keep it on loopback and bring the collector to it: a collector on the same machine, or a forwarded port (whatever reaches the forward reaches every route).
+
 toposhift also needs a data directory to ingest: by default one under `$HOME/.local/share/toposhift`, or the one named by `--data-dir` or `TOPOSHIFT_DATA_DIR`. Without one it answers `503` with `Retry-After: 30`, which the collector retries, so the data waits in the queue.
 
 ## Start the collector with the feature gate
