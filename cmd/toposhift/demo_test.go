@@ -8,11 +8,13 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/demo"
+	"github.com/lotannauo/toposhift/internal/mcp"
 )
 
 // demoRun runs `toposhift demo args...` to its end in this process, with no
@@ -389,6 +391,47 @@ func TestDemoStdioSmoke(t *testing.T) {
 		t.Errorf("blast_radius over stdio has no members: %v", sc)
 	}
 
+	// The tools a client is offered are the tools the package lists, each with an
+	// input schema of type object.
+	send(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
+	list, _ := reply()["result"].(map[string]any)
+	var offered, listed []string
+	for _, tl := range asList(t, list["tools"], "tools") {
+		name, _ := tl["name"].(string)
+		offered = append(offered, name)
+		if schema, _ := tl["inputSchema"].(map[string]any); schema["type"] != "object" {
+			t.Errorf("tool %s has input schema %v, want one of type object", name, tl["inputSchema"])
+		}
+	}
+	for _, tl := range mcp.Tools() {
+		listed = append(listed, tl.Name)
+	}
+	slices.Sort(offered)
+	slices.Sort(listed)
+	if !slices.Equal(offered, listed) {
+		t.Errorf("tools/list offers %v, want %v", offered, listed)
+	}
+
+	// The first tool an agent calls: from a name to ids. The answer is the one the
+	// end-to-end test checks over HTTP, at the banner's token.
+	o := newOracle(t)
+	q := askedAbout(o)
+	findArgs, _ := json.Marshal(q.findArgs())
+	send(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"find_entities","arguments":` + string(findArgs) + `}}`)
+	found, _ := reply()["result"].(map[string]any)
+	if isErr, _ := found["isError"].(bool); isErr {
+		t.Fatalf("find_entities over stdio failed: %v", found["content"])
+	}
+	structured, _ := found["structuredContent"].(map[string]any)
+	got := reader{t, o}.find(structured, q.findArgs(), q)
+	got.Policy = nil
+	if a, b := encode(t, got), encode(t, o.wantFind(q)); !bytes.Equal(a, b) {
+		t.Errorf("find_entities over stdio differs from what the world says:\n%s", firstDifference(a, b))
+	}
+	if m := tokenInBanner.FindStringSubmatch(stderr.String()); m == nil || structured["token"] != m[1] {
+		t.Errorf("find_entities token %v, want the banner's", structured["token"])
+	}
+
 	_ = inW.Close()
 	select {
 	case code := <-done:
@@ -398,8 +441,8 @@ func TestDemoStdioSmoke(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatalf("demo did not end:\n%s", stderr)
 	}
-	if n := onlyFrames(t, stdout.String()); n != 2 {
-		t.Errorf("%d messages on stdout, want the two replies", n)
+	if n := onlyFrames(t, stdout.String()); n != 4 {
+		t.Errorf("%d messages on stdout, want the four replies", n)
 	}
 	if strings.Contains(stdout.String(), "topo.endpoint:") || strings.Contains(stderr.String(), "topo.endpoint:") {
 		t.Error("an endpoint id is printed")

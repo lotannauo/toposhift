@@ -24,6 +24,13 @@
 // store in memory. Nothing derived is written: no checkpoint, no blast radius, no
 // co-residency, no host of a pod.
 //
+// The build counts what the translators set aside and remarked on, by producer
+// and reason ([Built.Skips], [Built.Notes]). The cluster receiver sends the state
+// of every namespace in each report, for the detector of cluster identity, and the
+// cluster translator sets each one aside, since a namespace is not in the catalog:
+// those are the only skips, as many as the world sent ([Built.NamespaceEvents]),
+// and there is no note. [Built.UnexplainedSkips] is what those do not account for.
+//
 // # The script
 //
 // The story is in script.go. In short: the frontend is rolled out one pod at a

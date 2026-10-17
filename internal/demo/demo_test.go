@@ -5,12 +5,14 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
@@ -225,5 +227,88 @@ func TestBuildStopsWhenItsContextIsDone(t *testing.T) {
 	b, err := Build(ctx, NewWorld(DefaultSeed), Options{Policy: testPolicy()})
 	if !errors.Is(err, context.Canceled) || b != nil {
 		t.Fatalf("Build with a done context: %v, %v; want the context's error and no result", b, err)
+	}
+}
+
+// The only thing the translators set aside is the namespace event the cluster
+// receiver sends in every report, which the world sends on purpose for the
+// detector of cluster identity and which is not in the catalog. So the skips are
+// that one reason of that one producer, as many as the world sent, which is
+// every report's every namespace; and there is no note. The count is compared
+// with the world's own: a message the sequencer worded otherwise would show as
+// no skip at all.
+func TestEverySkipIsANamespaceEventTheWorldSent(t *testing.T) {
+	b := canonicalBuild(t)
+	w := NewWorld(DefaultSeed)
+	reports := 0
+	for _, r := range w.Requests() {
+		if r.Emitter == EmitClusterReport {
+			reports++
+		}
+	}
+	want := reports * len(w.Namespaces)
+	if want == 0 || b.NamespaceEvents != want {
+		t.Errorf("the driver counted %d namespace events, want %d reports of %d namespaces = %d", b.NamespaceEvents, reports, len(w.Namespaces), want)
+	}
+	wantSkips := []Count{{Producer: "k8scluster/" + ClusterName, Reason: k8scluster.SkipTypeNotInCatalog, N: want}}
+	if !slices.Equal(b.Skips, wantSkips) {
+		t.Errorf("skips %v, want %v", b.Skips, wantSkips)
+	}
+	if u := b.UnexplainedSkips(); u != 0 {
+		t.Errorf("%d skips unexplained", u)
+	}
+	if len(b.Notes) != 0 {
+		t.Errorf("notes %v, want none", b.Notes)
+	}
+}
+
+// A skip beyond the namespace events, of the same reason or another, and a
+// namespace event that was not set aside, are each unexplained.
+func TestUnexplainedSkips(t *testing.T) {
+	cluster := "k8scluster/" + ClusterName
+	for _, tc := range []struct {
+		name  string
+		skips []Count
+		sent  int
+		want  int
+	}{
+		{"the namespace events alone", []Count{{cluster, k8scluster.SkipTypeNotInCatalog, 10}}, 10, 0},
+		{"one more of the same reason", []Count{{cluster, k8scluster.SkipTypeNotInCatalog, 11}}, 10, 1},
+		{"one fewer", []Count{{cluster, k8scluster.SkipTypeNotInCatalog, 9}}, 10, 1},
+		{"another reason beside them", []Count{{cluster, k8scluster.SkipTypeNotInCatalog, 10}, {cluster, "x", 2}}, 10, 2},
+		{"another producer beside them", []Count{{"k8sobjects/" + ClusterName, k8scluster.SkipTypeNotInCatalog, 10}}, 10, 20},
+		{"none counted", nil, 10, 10},
+	} {
+		if got := (&Built{Skips: tc.skips, NamespaceEvents: tc.sent}).UnexplainedSkips(); got != tc.want {
+			t.Errorf("%s: %d unexplained, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The sequencer's logger reads the skip and note lines at the levels they are
+// logged at, counts the lines of warn level or above, and passes on those lines
+// and no others.
+func TestTheLoggerCountsSkipsAndPassesOnWarnings(t *testing.T) {
+	var passed atomic.Int64
+	c := &logCounts{}
+	log := slog.New(lineCounter{next: countHandler{&passed}, c: c})
+	log.Debug(skipMessage, "producer", "p", "reason", "r", "count", 3)
+	log.Debug(skipMessage, "producer", "p", "reason", "r", "count", 4)
+	log.Info(noteMessage, "producer", "p", "reason", "n", "detail", "d", "count", 2)
+	log.Info("something else", "count", 9)
+	log.Debug("something else", "count", 9)
+	if got := c.counts(c.skips); !slices.Equal(got, []Count{{"p", "r", 7}}) {
+		t.Errorf("skips %v", got)
+	}
+	if got := c.counts(c.notes); !slices.Equal(got, []Count{{"p", "n", 2}}) {
+		t.Errorf("notes %v", got)
+	}
+	if c.warns.Load() != 0 || passed.Load() != 0 {
+		t.Errorf("%d warnings counted and %d passed on before any was logged", c.warns.Load(), passed.Load())
+	}
+	log.Warn("a warning")
+	log.Error("an error")
+	if c.warns.Load() != 2 || passed.Load() != 2 {
+		t.Errorf("%d warnings counted and %d passed on, want 2 and 2", c.warns.Load(), passed.Load())
 	}
 }

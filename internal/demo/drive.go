@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,11 +50,19 @@ type digestWriter struct {
 	records int
 	// producers are the producers of the records written.
 	producers map[lifecycle.Producer]bool
+	// tee, if set, is written each batch after the store has committed it, so that
+	// it holds the same records in the same order. Only tests set it.
+	tee store.Store
 }
 
 func (d *digestWriter) Write(ctx context.Context, batch []store.Record) error {
 	if err := d.inner.Write(ctx, batch); err != nil {
 		return err
+	}
+	if d.tee != nil {
+		if err := d.tee.Write(ctx, batch); err != nil {
+			return fmt.Errorf("demo: the second store: %w", err)
+		}
 	}
 	for i := range batch {
 		d.feed(batch[i])
@@ -76,35 +86,145 @@ func (d *digestWriter) feed(r store.Record) {
 	d.producers[r.Producer] = true
 }
 
-// warnCounter is the sequencer's logger: it keeps only the lines at warn level or
-// above, counts them, and passes them on to the logger the caller gave, if any.
-type warnCounter struct {
-	next slog.Handler
-	n    *atomic.Int64
+// Count is how many records a translator set aside or remarked on, for one
+// producer and one reason.
+type Count struct {
+	Producer, Reason string
+	N                int
 }
 
-func (h warnCounter) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelWarn }
+// Total is the sum of the counts.
+func Total(cs []Count) int {
+	n := 0
+	for _, c := range cs {
+		n += c.N
+	}
+	return n
+}
 
-func (h warnCounter) Handle(ctx context.Context, r slog.Record) error {
-	h.n.Add(1)
+// The messages with which the sequencer logs what its translators set aside (at
+// debug level) and remarked on (at info level), once for each producer and reason
+// of each request, with the number as the attribute count. The sequencer's own
+// package owns the text; the build below reads them back, and a text that changed
+// would show as no skip counted at all, which the namespace events it sends make
+// an error (see [Built.UnexplainedSkips]).
+const (
+	skipMessage = "sequencer: translator skip"
+	noteMessage = "sequencer: translator note"
+)
+
+// logCounts is what the sequencer's logger keeps of the lines it was given.
+type logCounts struct {
+	// warns counts the lines of warn level or above.
+	warns atomic.Int64
+
+	mu           sync.Mutex
+	skips, notes map[[2]string]int
+}
+
+func (c *logCounts) add(r slog.Record) {
+	var producer, reason string
+	var n int64
+	r.Attrs(func(a slog.Attr) bool {
+		switch a.Key {
+		case "producer":
+			producer = a.Value.String()
+		case "reason":
+			reason = a.Value.String()
+		case "count":
+			if a.Value.Kind() == slog.KindInt64 {
+				n = a.Value.Int64()
+			}
+		}
+		return true
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := &c.skips
+	if r.Message == noteMessage {
+		m = &c.notes
+	}
+	if *m == nil {
+		*m = map[[2]string]int{}
+	}
+	(*m)[[2]string{producer, reason}] += int(n)
+}
+
+func (c *logCounts) counts(m map[[2]string]int) []Count {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []Count
+	for k, n := range m {
+		out = append(out, Count{Producer: k[0], Reason: k[1], N: n})
+	}
+	slices.SortFunc(out, func(a, b Count) int {
+		if c := strings.Compare(a.Producer, b.Producer); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Reason, b.Reason)
+	})
+	return out
+}
+
+// lineCounter is the sequencer's logger. It reads the lines that say what the
+// translators set aside or remarked on, counts the lines of warn level or above,
+// and passes on to the logger the caller gave, if any, those of warn level or
+// above and no others: what is below stays out of the caller's log.
+type lineCounter struct {
+	next slog.Handler
+	c    *logCounts
+}
+
+func (h lineCounter) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelDebug }
+
+func (h lineCounter) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == skipMessage || r.Message == noteMessage {
+		h.c.add(r)
+	}
+	if r.Level < slog.LevelWarn {
+		return nil
+	}
+	h.c.warns.Add(1)
 	if h.next != nil && h.next.Enabled(ctx, r.Level) {
 		return h.next.Handle(ctx, r)
 	}
 	return nil
 }
 
-func (h warnCounter) WithAttrs(a []slog.Attr) slog.Handler {
+func (h lineCounter) WithAttrs(a []slog.Attr) slog.Handler {
 	if h.next != nil {
 		h.next = h.next.WithAttrs(a)
 	}
 	return h
 }
 
-func (h warnCounter) WithGroup(name string) slog.Handler {
+func (h lineCounter) WithGroup(name string) slog.Handler {
 	if h.next != nil {
 		h.next = h.next.WithGroup(name)
 	}
 	return h
+}
+
+// namespaceType is the entity type of the namespace events the cluster receiver
+// sends. A namespace is not in the catalog: the cluster translator sets each such
+// event aside, and the world sends them for the detector of cluster identity.
+const namespaceType = "k8s.namespace"
+
+// namespaceEvents counts the namespace events of a request.
+func namespaceEvents(data capture.LogsData) int {
+	n := 0
+	for _, rl := range data.ResourceLogs {
+		for _, sl := range rl.ScopeLogs {
+			for _, lr := range sl.LogRecords {
+				for _, kv := range lr.Attributes {
+					if kv.Key == "entity.type" && kv.Value.StringValue != nil && *kv.Value.StringValue == namespaceType {
+						n++
+					}
+				}
+			}
+		}
+	}
+	return n
 }
 
 // Options configures [Build].
@@ -117,17 +237,23 @@ type Options struct {
 	// Logger receives the lines of the sequencer at warn level and above; there
 	// should be none. Nil discards them.
 	Logger *slog.Logger
+
+	// tee, if set, receives every batch the store has committed, in order. A test
+	// gives it a second store, to compare the two.
+	tee store.Store
 }
 
 // driver is a sequencer over a new in-memory store, with the clock and the tick the
 // driver moves, and the loop running.
 type driver struct {
-	st    *memstore.Store
-	d     *digestWriter
-	clk   *clock
-	tick  chan time.Time
-	seq   *sequencer.Sequencer
-	warns atomic.Int64
+	st   *memstore.Store
+	d    *digestWriter
+	clk  *clock
+	tick chan time.Time
+	seq  *sequencer.Sequencer
+	logs logCounts
+	// nsEvents is how many namespace events the requests accepted so far held.
+	nsEvents int
 	// stop ends the loop's context; done receives Run's result.
 	stop context.CancelFunc
 	done chan error
@@ -141,7 +267,7 @@ func newDriver(o Options) (*driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("demo: %w", err)
 	}
-	dr := &driver{st: st, d: &digestWriter{inner: st, h: sha256.New(), producers: map[lifecycle.Producer]bool{}}, clk: &clock{}, tick: make(chan time.Time), done: make(chan error, 1)}
+	dr := &driver{st: st, d: &digestWriter{inner: st, h: sha256.New(), producers: map[lifecycle.Producer]bool{}, tee: o.tee}, clk: &clock{}, tick: make(chan time.Time), done: make(chan error, 1)}
 	dr.clk.set(anchor)
 	var next slog.Handler
 	if o.Logger != nil {
@@ -153,7 +279,7 @@ func newDriver(o Options) (*driver, error) {
 		Tick:           func(time.Duration) <-chan time.Time { return dr.tick },
 		ClusterName:    ClusterName,
 		ClusterNameSet: true,
-		Logger:         slog.New(warnCounter{next: next, n: &dr.warns}),
+		Logger:         slog.New(lineCounter{next: next, c: &dr.logs}),
 		Lookup: func() (resume.Lookup, error) {
 			lk, err := st.NewLookup()
 			if err != nil {
@@ -188,6 +314,7 @@ func (dr *driver) accept(ctx context.Context, data capture.LogsData, what string
 		p, err := dr.seq.AcceptPartial(ctx, data)
 		switch {
 		case err == nil && p.Rejected == 0:
+			dr.nsEvents += namespaceEvents(data)
 			return nil
 		case err == nil:
 			return fmt.Errorf("demo: the %s at %s had %d log records rejected: %s", what, at.Format(time.RFC3339), p.Rejected, p.Message)
@@ -268,13 +395,16 @@ func Build(ctx context.Context, w *World, o Options) (*Built, error) {
 	}
 	dr.stop()
 	return &Built{
-		Store:     dr.st,
-		LastSeq:   dr.st.LastSeq(),
-		Records:   dr.d.records,
-		Digest:    hex.EncodeToString(dr.d.h.Sum(nil)),
-		Producers: slices.Sorted(maps.Keys(dr.d.producers)),
-		Warnings:  int(dr.warns.Load()),
-		Took:      time.Since(began),
-		Story:     w.Story(),
+		Store:           dr.st,
+		LastSeq:         dr.st.LastSeq(),
+		Records:         dr.d.records,
+		Digest:          hex.EncodeToString(dr.d.h.Sum(nil)),
+		Producers:       slices.Sorted(maps.Keys(dr.d.producers)),
+		Warnings:        int(dr.logs.warns.Load()),
+		Skips:           dr.logs.counts(dr.logs.skips),
+		Notes:           dr.logs.counts(dr.logs.notes),
+		NamespaceEvents: dr.nsEvents,
+		Took:            time.Since(began),
+		Story:           w.Story(),
 	}, nil
 }

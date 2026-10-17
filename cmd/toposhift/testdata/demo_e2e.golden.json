@@ -1,0 +1,478 @@
+{
+  "q0_find": {
+    "tool": "find_entities",
+    "args": {
+      "at": "2026-10-01T02:45:00Z",
+      "name": "checkout",
+      "type": "k8s.pod"
+    },
+    "policy": {
+      "find": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "complete": true,
+      "next_after": null,
+      "type": "k8s.pod",
+      "window": {
+        "from": "2026-10-01T02:45:00Z",
+        "to": "2026-10-01T02:45:00.000000001Z"
+      }
+    },
+    "counts": {
+      "checked": 57,
+      "matched": 3,
+      "not_printed": 0,
+      "quarantined": 0,
+      "retained": 0,
+      "undescribed": 0
+    },
+    "lists": {
+      "matches": [
+        "k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/existence | stable 0 | 2026-10-01T02:45:00Z..2026-10-01T02:45:00.000000001Z",
+        "k8s.pod checkout-7372434c33-m4t5n [shop] | asserted/derived/existence | stable 0 | 2026-10-01T02:45:00Z..2026-10-01T02:45:00.000000001Z",
+        "k8s.pod checkout-7372434c33-sg6s6 [shop] | asserted/derived/existence | stable 0 | 2026-10-01T02:45:00Z..2026-10-01T02:45:00.000000001Z"
+      ]
+    }
+  },
+  "q1_neighbors": {
+    "tool": "neighbors_at",
+    "args": {
+      "at": "2026-10-01T02:45:00Z",
+      "entity": "<k8s.node node-2>"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "at": "2026-10-01T02:45:00Z",
+      "direction": "both",
+      "entity": "k8s.node node-2"
+    },
+    "counts": {
+      "edges": 11,
+      "edges_shown": 11,
+      "withheld": {
+        "edges": 1,
+        "quarantined": 0
+      }
+    },
+    "lists": {
+      "edges": [
+        "forward | runs_on | L1 | host machine-1 (unnamed) | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod catalog-0efb8ee864-md74k [shop] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod ingress-08bf8f73d1-tbw2r [platform] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod kube-proxy-475wv [kube-system] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod metrics-agent-s4xvn [platform] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod payments-api-1f68b1e786-vz8np [payments] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod recommend-ceb22420e9-hfqd5 [shop] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod redis-9fb0a958fe-wz7dp [data] | asserted/derived/existence",
+        "reverse | scheduled_on | L2 | k8s.pod search-a713e3cbf1-m4xxr [shop] | asserted/derived/existence"
+      ],
+      "quarantined": []
+    }
+  },
+  "q2_blast_radius": {
+    "tool": "blast_radius",
+    "args": {
+      "entity": "<k8s.node node-2>",
+      "from": "2026-10-01T02:55:00Z",
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "policy": {
+      "blastradius": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "depth_limit": 6,
+      "seed": "k8s.node node-2",
+      "truncation": {
+        "depth_cut": 0,
+        "frontier_cuts": [],
+        "incomplete": false,
+        "members_unlisted": 0
+      },
+      "window": {
+        "from": "2026-10-01T02:55:00Z",
+        "to": "2026-10-01T03:30:00Z"
+      }
+    },
+    "counts": {
+      "members": 20,
+      "members_shown": 20,
+      "quarantined": 0,
+      "unattributed": 0
+    },
+    "lists": {
+      "members": [
+        "depth 1 | k8s.pod catalog-0efb8ee864-md74k [shop] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod checkout-7372434c33-9nk6z [shop] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod ingress-08bf8f73d1-tbw2r [platform] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod kube-proxy-475wv [kube-system] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod metrics-agent-s4xvn [platform] | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod payments-api-1f68b1e786-vz8np [payments] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod recommend-ceb22420e9-hfqd5 [shop] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod redis-9fb0a958fe-wz7dp [data] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 1 | k8s.pod search-a713e3cbf1-m4xxr [shop] | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended) | via scheduled_on k8s.node node-2",
+        "depth 2 | container catalog | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via part_of k8s.pod catalog-0efb8ee864-md74k [shop]",
+        "depth 2 | container checkout | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended) | via part_of k8s.pod checkout-7372434c33-9nk6z [shop]",
+        "depth 2 | container ingress | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended) | via part_of k8s.pod ingress-08bf8f73d1-tbw2r [platform]",
+        "depth 2 | container kube-proxy | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z | via part_of k8s.pod kube-proxy-475wv [kube-system]",
+        "depth 2 | container legacy-pay | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended) | via part_of k8s.pod legacy-pay-00947b3f72-xpjpl [payments]",
+        "depth 2 | container metrics-agent | stable 0 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z | via part_of k8s.pod metrics-agent-s4xvn [platform]",
+        "depth 2 | container payments-api | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended) | via part_of k8s.pod payments-api-1f68b1e786-vz8np [payments]",
+        "depth 2 | container recommend | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended) | via part_of k8s.pod recommend-ceb22420e9-hfqd5 [shop]",
+        "depth 2 | container redis | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended) | via part_of k8s.pod redis-9fb0a958fe-wz7dp [data]",
+        "depth 2 | container search | disappeared 1 | derived/derived/blast_radius.reach | reach 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended) | via part_of k8s.pod search-a713e3cbf1-m4xxr [shop]"
+      ],
+      "quarantined": [],
+      "unattributed": []
+    }
+  },
+  "q3_co_residents": {
+    "tool": "co_residents",
+    "args": {
+      "from": "2026-10-01T00:00:00Z",
+      "pod": "<k8s.pod checkout-7372434c33-9nk6z>",
+      "to": "2026-10-01T02:55:00Z"
+    },
+    "policy": {
+      "coresidency": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "node_only": false,
+      "seed": "k8s.pod checkout-7372434c33-9nk6z [shop]",
+      "truncation": {
+        "hosts_not_read": 0,
+        "incomplete": false,
+        "nodes_not_read": 0,
+        "per_via_dropped": 0,
+        "results_dropped": 0,
+        "suppressed_dropped": 0
+      },
+      "window": {
+        "from": "2026-10-01T00:00:00Z",
+        "to": "2026-10-01T02:55:00Z"
+      }
+    },
+    "counts": {
+      "co_residents": 23,
+      "co_residents_shown": 23,
+      "quarantined": 0,
+      "suppressed": 0,
+      "unattributed": 0
+    },
+    "lists": {
+      "co_residents": [
+        "shared_host | k8s.pod catalog-0efb8ee864-7pql8 [shop] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod checkout-7372434c33-m4t5n [shop] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod coredns-e23b9a4a77-cmvc5 [kube-system] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod frontend-7a447eb5f5-c4wh7 [shop] | appeared 1 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T01:33:10Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod frontend-7a447eb5f5-gscrx [shop] | appeared 1 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T01:30:22Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod frontend-88217155a6-btdq4 [shop] | disappeared 1 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T01:30:48Z (reach_ended)",
+        "shared_host | k8s.pod kube-proxy-9lfx8 [kube-system] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod ledger-1e33b0bd18-k2q22 [payments] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod metrics-agent-6jbx5 [platform] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod payments-api-1f68b1e786-xtfpk [payments] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod recommend-ceb22420e9-6r98s [shop] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod redis-9fb0a958fe-8hxrk [data] | stable 0 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_host | k8s.pod report-1-pwfx6 (unnamed) | transient 2 | derived/derived/co_residency.shared_host | via host machine-1 (unnamed) | nodes node-1,node-2 | overlap 2026-10-01T00:15:03Z..2026-10-01T00:29:09Z (reach_ended)",
+        "shared_node | k8s.pod catalog-0efb8ee864-md74k [shop] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod ingress-08bf8f73d1-tbw2r [platform] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod kube-proxy-475wv [kube-system] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod metrics-agent-s4xvn [platform] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod payments-api-1f68b1e786-vz8np [payments] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod recommend-ceb22420e9-hfqd5 [shop] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod redis-9fb0a958fe-wz7dp [data] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z",
+        "shared_node | k8s.pod report-2-5rx7w (unnamed) | transient 2 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T01:15:16Z..2026-10-01T01:29:24Z (reach_ended)",
+        "shared_node | k8s.pod search-a713e3cbf1-m4xxr [shop] | stable 0 | derived/derived/co_residency.shared_node | via k8s.node node-2 | nodes node-2 | overlap 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z"
+      ],
+      "placement": [
+        "k8s.pod checkout-7372434c33-9nk6z [shop] scheduled_on k8s.node node-2 | asserted/derived/existence | 2026-10-01T00:00:00Z..2026-10-01T02:55:00Z"
+      ],
+      "quarantined": [],
+      "suppressed": [],
+      "unattributed": []
+    }
+  },
+  "q4_what_changed": {
+    "tool": "what_changed",
+    "args": {
+      "from": "2026-10-01T02:55:00Z",
+      "scope": [
+        "<k8s.pod checkout-7372434c33-9nk6z>",
+        "<k8s.pod checkout-7372434c33-tmj5j>",
+        "<k8s.pod catalog-0efb8ee864-md74k>",
+        "<k8s.pod catalog-0efb8ee864-q9wkf>",
+        "<k8s.pod search-a713e3cbf1-m4xxr>",
+        "<k8s.pod search-a713e3cbf1-zw88m>",
+        "<k8s.pod recommend-ceb22420e9-hfqd5>",
+        "<k8s.pod recommend-ceb22420e9-bm5cx>",
+        "<k8s.pod payments-api-1f68b1e786-vz8np>",
+        "<k8s.pod payments-api-1f68b1e786-9rrnf>",
+        "<k8s.pod legacy-pay-00947b3f72-xpjpl>",
+        "<k8s.pod legacy-pay-00947b3f72-vkkmm>",
+        "<k8s.pod redis-9fb0a958fe-wz7dp>",
+        "<k8s.pod redis-9fb0a958fe-bv68q>",
+        "<k8s.pod ingress-08bf8f73d1-tbw2r>",
+        "<k8s.pod ingress-08bf8f73d1-ck4ff>"
+      ],
+      "to": "2026-10-01T03:15:00Z"
+    },
+    "policy": {
+      "graphdiff": 1,
+      "interval": 1,
+      "names": 2,
+      "payload": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "window": {
+        "from": "2026-10-01T02:55:00Z",
+        "to": "2026-10-01T03:15:00.000000001Z"
+      }
+    },
+    "counts": {
+      "changed": {
+        "entities": 0,
+        "relations": 0
+      },
+      "created": {
+        "entities": 8,
+        "relations": 24
+      },
+      "deleted": {
+        "entities": 8,
+        "relations": 24
+      },
+      "events": 64,
+      "quarantined": {
+        "entities": 0,
+        "relations": 0
+      },
+      "transient": {
+        "entities": 0,
+        "relations": 0
+      },
+      "withheld": {
+        "changed": {
+          "entities": 0,
+          "relations": 0
+        },
+        "created": {
+          "entities": 0,
+          "relations": 8
+        },
+        "deleted": {
+          "entities": 0,
+          "relations": 8
+        },
+        "events": 16,
+        "quarantined": {
+          "entities": 0,
+          "relations": 0
+        },
+        "transient": {
+          "entities": 0,
+          "relations": 0
+        }
+      }
+    },
+    "lists": {
+      "changed": [],
+      "created": [
+        "entity | k8s.pod catalog-0efb8ee864-q9wkf [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:03Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod checkout-7372434c33-tmj5j [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:13Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod ingress-08bf8f73d1-ck4ff [platform] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:15Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod legacy-pay-00947b3f72-vkkmm [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:10Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod payments-api-1f68b1e786-9rrnf [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:20Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod recommend-ceb22420e9-bm5cx [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:12Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod redis-9fb0a958fe-bv68q [data] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:03Z..2026-10-01T03:15:00.000000001Z",
+        "entity | k8s.pod search-a713e3cbf1-zw88m [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:21Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container catalog part_of k8s.pod catalog-0efb8ee864-q9wkf [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:38Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container checkout part_of k8s.pod checkout-7372434c33-tmj5j [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:46Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container ingress part_of k8s.pod ingress-08bf8f73d1-ck4ff [platform] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:50Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container legacy-pay part_of k8s.pod legacy-pay-00947b3f72-vkkmm [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:47Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container payments-api part_of k8s.pod payments-api-1f68b1e786-9rrnf [payments] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:54Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container recommend part_of k8s.pod recommend-ceb22420e9-bm5cx [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:48Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container redis part_of k8s.pod redis-9fb0a958fe-bv68q [data] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:38Z..2026-10-01T03:15:00.000000001Z",
+        "relation | container search part_of k8s.pod search-a713e3cbf1-zw88m [shop] | asserted/derived/diff.created | appeared | 2026-10-01T03:05:53Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod catalog-0efb8ee864-q9wkf [shop] scheduled_on k8s.node node-3 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:06Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod checkout-7372434c33-tmj5j [shop] scheduled_on k8s.node node-3 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:14Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod ingress-08bf8f73d1-ck4ff [platform] scheduled_on k8s.node node-1 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:16Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod legacy-pay-00947b3f72-vkkmm [payments] scheduled_on k8s.node node-3 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:12Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod payments-api-1f68b1e786-9rrnf [payments] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:22Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod recommend-ceb22420e9-bm5cx [shop] scheduled_on k8s.node node-3 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:15Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod redis-9fb0a958fe-bv68q [data] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:06Z..2026-10-01T03:15:00.000000001Z",
+        "relation | k8s.pod search-a713e3cbf1-zw88m [shop] scheduled_on k8s.node node-4 | asserted/derived/diff.created | appeared | 2026-10-01T03:05:23Z..2026-10-01T03:15:00.000000001Z"
+      ],
+      "deleted": [
+        "entity | k8s.pod catalog-0efb8ee864-md74k [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "entity | k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) | deleted_at 2026-10-01T03:05:13Z",
+        "entity | k8s.pod ingress-08bf8f73d1-tbw2r [platform] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) | deleted_at 2026-10-01T03:05:15Z",
+        "entity | k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) | deleted_at 2026-10-01T03:05:10Z",
+        "entity | k8s.pod payments-api-1f68b1e786-vz8np [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) | deleted_at 2026-10-01T03:05:20Z",
+        "entity | k8s.pod recommend-ceb22420e9-hfqd5 [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) | deleted_at 2026-10-01T03:05:12Z",
+        "entity | k8s.pod redis-9fb0a958fe-wz7dp [data] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "entity | k8s.pod search-a713e3cbf1-m4xxr [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) | deleted_at 2026-10-01T03:05:21Z",
+        "relation | container catalog part_of k8s.pod catalog-0efb8ee864-md74k [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "relation | container checkout part_of k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) | deleted_at 2026-10-01T03:05:13Z",
+        "relation | container ingress part_of k8s.pod ingress-08bf8f73d1-tbw2r [platform] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) | deleted_at 2026-10-01T03:05:15Z",
+        "relation | container legacy-pay part_of k8s.pod legacy-pay-00947b3f72-xpjpl [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) | deleted_at 2026-10-01T03:05:10Z",
+        "relation | container payments-api part_of k8s.pod payments-api-1f68b1e786-vz8np [payments] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) | deleted_at 2026-10-01T03:05:20Z",
+        "relation | container recommend part_of k8s.pod recommend-ceb22420e9-hfqd5 [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) | deleted_at 2026-10-01T03:05:12Z",
+        "relation | container redis part_of k8s.pod redis-9fb0a958fe-wz7dp [data] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "relation | container search part_of k8s.pod search-a713e3cbf1-m4xxr [shop] | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) | deleted_at 2026-10-01T03:05:21Z",
+        "relation | k8s.pod catalog-0efb8ee864-md74k [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "relation | k8s.pod checkout-7372434c33-9nk6z [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) | deleted_at 2026-10-01T03:05:13Z",
+        "relation | k8s.pod ingress-08bf8f73d1-tbw2r [platform] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) | deleted_at 2026-10-01T03:05:15Z",
+        "relation | k8s.pod legacy-pay-00947b3f72-xpjpl [payments] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) | deleted_at 2026-10-01T03:05:10Z",
+        "relation | k8s.pod payments-api-1f68b1e786-vz8np [payments] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) | deleted_at 2026-10-01T03:05:20Z",
+        "relation | k8s.pod recommend-ceb22420e9-hfqd5 [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) | deleted_at 2026-10-01T03:05:12Z",
+        "relation | k8s.pod redis-9fb0a958fe-wz7dp [data] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) | deleted_at 2026-10-01T03:05:03Z",
+        "relation | k8s.pod search-a713e3cbf1-m4xxr [shop] scheduled_on k8s.node node-2 | asserted/derived/diff.deleted | disappeared | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) | deleted_at 2026-10-01T03:05:21Z"
+      ],
+      "quarantined": [],
+      "scope": [
+        "k8s.pod catalog-0efb8ee864-md74k [shop]",
+        "k8s.pod catalog-0efb8ee864-q9wkf [shop]",
+        "k8s.pod checkout-7372434c33-9nk6z [shop]",
+        "k8s.pod checkout-7372434c33-tmj5j [shop]",
+        "k8s.pod ingress-08bf8f73d1-ck4ff [platform]",
+        "k8s.pod ingress-08bf8f73d1-tbw2r [platform]",
+        "k8s.pod legacy-pay-00947b3f72-vkkmm [payments]",
+        "k8s.pod legacy-pay-00947b3f72-xpjpl [payments]",
+        "k8s.pod payments-api-1f68b1e786-9rrnf [payments]",
+        "k8s.pod payments-api-1f68b1e786-vz8np [payments]",
+        "k8s.pod recommend-ceb22420e9-bm5cx [shop]",
+        "k8s.pod recommend-ceb22420e9-hfqd5 [shop]",
+        "k8s.pod redis-9fb0a958fe-bv68q [data]",
+        "k8s.pod redis-9fb0a958fe-wz7dp [data]",
+        "k8s.pod search-a713e3cbf1-m4xxr [shop]",
+        "k8s.pod search-a713e3cbf1-zw88m [shop]"
+      ],
+      "transient": []
+    }
+  },
+  "q5a_pod_neighbors": {
+    "tool": "neighbors_at",
+    "args": {
+      "at": "2026-10-01T02:45:00Z",
+      "entity": "<k8s.pod checkout-7372434c33-9nk6z>"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "at": "2026-10-01T02:45:00Z",
+      "direction": "both",
+      "entity": "k8s.pod checkout-7372434c33-9nk6z [shop]"
+    },
+    "counts": {
+      "edges": 2,
+      "edges_shown": 2,
+      "withheld": {
+        "edges": 1,
+        "quarantined": 0
+      }
+    },
+    "lists": {
+      "edges": [
+        "forward | scheduled_on | L2 | k8s.node node-2 | asserted/derived/existence",
+        "reverse | part_of | L2 | container checkout | asserted/derived/existence"
+      ],
+      "quarantined": []
+    }
+  },
+  "q5b_resolve_endpoint": {
+    "tool": "resolve_entity",
+    "args": {
+      "at": "2026-10-01T02:45:00Z",
+      "attributes": {
+        "topo.endpoint.address": "10.244.2.10",
+        "topo.endpoint.realm": "k8s/demo"
+      },
+      "type": "topo.endpoint"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "attributes": {
+        "topo.endpoint.address": "10.244.2.10",
+        "topo.endpoint.realm": "k8s/demo"
+      },
+      "entity": "topo.endpoint 10.244.2.10 in k8s/demo (unnamed)",
+      "existence": {
+        "at": "2026-10-01T02:45:00Z",
+        "labels": "asserted/derived/existence",
+        "status": "alive"
+      }
+    },
+    "lists": {}
+  },
+  "q5c_endpoint_neighbors": {
+    "tool": "neighbors_at",
+    "args": {
+      "at": "2026-10-01T02:45:00Z",
+      "entity": "<topo.endpoint 10.244.2.10 in k8s/demo>"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "at": "2026-10-01T02:45:00Z",
+      "direction": "both",
+      "entity": "topo.endpoint 10.244.2.10 in k8s/demo (unnamed)"
+    },
+    "counts": {
+      "edges": 1,
+      "edges_shown": 1,
+      "withheld": {
+        "edges": 0,
+        "quarantined": 0
+      }
+    },
+    "lists": {
+      "edges": [
+        "reverse | has_address | L2 | k8s.pod checkout-7372434c33-9nk6z [shop] | asserted/derived/existence"
+      ],
+      "quarantined": []
+    }
+  }
+}
