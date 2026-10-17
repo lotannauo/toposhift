@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,6 +149,24 @@ func TestServeServesTheToolsFromTheStore(t *testing.T) {
 		if res.IsError || res.Structured["token"] != token {
 			t.Errorf("%s on a pebblestore: %+v, want an answer at token %s", name, res, token)
 		}
+	}
+	// A service id computed by resolve_entity, for a service the store has no record
+	// of: an answer at the store's token that says so, not an error.
+	svcID := mcpOK(t, s.base, "resolve_entity", map[string]any{
+		"type": "service", "attributes": map[string]any{"service.name": "checkout"},
+	}).Structured["entity"].(map[string]any)["id"].(string)
+	sc := mcpOK(t, s.base, "service_context", map[string]any{
+		"service": svcID, "from": first.Format(time.RFC3339), "to": first.Add(time.Hour).Format(time.RFC3339),
+	})
+	if sc.IsError || sc.Structured["token"] != token || sc.Structured["derived"] != true {
+		t.Errorf("service_context on a pebblestore: %+v, want an answer at token %s", sc, token)
+	}
+	if callers, _ := sc.Structured["callers"].([]any); len(callers) != 0 {
+		t.Errorf("service_context: callers %v for a service with no record", callers)
+	}
+	scNotes, _ := sc.Structured["notes"].([]any)
+	if !slices.Contains(scNotes, any("No instance of the service was read in the window, so no pod of it is known and it has no pair.")) {
+		t.Errorf("service_context: notes %v", scNotes)
 	}
 	nb := mcpOK(t, s.base, "neighbors_at", map[string]any{"entity": pod, "at": first.Add(time.Minute).Format(time.RFC3339)})
 	if nb.IsError || nb.Structured["token"] != token {

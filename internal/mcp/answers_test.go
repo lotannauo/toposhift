@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sort"
 	"testing"
+
+	"github.com/lotannauo/toposhift/internal/catalog"
+	"github.com/lotannauo/toposhift/internal/identity"
 )
 
 // answer is one tool's answer to one question, as the client receives it.
@@ -76,6 +79,9 @@ func questions(w *world) []question {
 	})
 	add("co-residents, node only", "co_residents", func(s *Source) (any, error) {
 		return s.CoResidents(ctx, CoResidentsInput{Pod: w.p1.String(), From: w10, To: w1030, NodeOnly: true})
+	})
+	add("service context of an unknown service", "service_context", func(s *Source) (any, error) {
+		return s.ServiceContext(ctx, ServiceContextInput{Service: unknownService().String(), From: w10, To: w1030})
 	})
 	for _, e := range []struct {
 		name string
@@ -156,4 +162,13 @@ func rawAttrs(js string) map[string]json.RawMessage {
 		panic(err)
 	}
 	return m
+}
+
+// unknownService is the id of a service the fixture has no record of.
+func unknownService() identity.Fingerprint {
+	id, err := testResolver.Resolve(catalog.Service, []identity.Attr{{Key: catalog.ServiceName, Value: "no-such-service"}})
+	if err != nil {
+		panic(err)
+	}
+	return id.Fingerprint()
 }

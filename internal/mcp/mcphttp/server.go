@@ -106,7 +106,8 @@ func New(cfg Config) (*Server, error) {
 const instructions = "Read-only questions about a temporal graph of infrastructure. " +
 	"Every answer is read at one snapshot token, named in the answer; pass it as asof to read the same world again. " +
 	"Call describe_schema first for the entity types, the relations and the words every answer uses. " +
-	"To go from a name to an id, call find_entities."
+	"To go from a name to an id, call find_entities." +
+	" For a service's callers, callees and co-resident services, call service_context."
 
 // Handler is the handler of the MCP endpoint. Mount it for POST only, on a
 // loopback listener, and not at all on any other.

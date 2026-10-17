@@ -22,7 +22,7 @@ const (
 
 func TestToolsTable(t *testing.T) {
 	tools := Tools()
-	want := []string{"blast_radius", "what_changed", "co_residents", "neighbors_at", "entity_history", "find_entities", "resolve_entity", "describe_schema"}
+	want := []string{"blast_radius", "what_changed", "co_residents", "service_context", "neighbors_at", "entity_history", "find_entities", "resolve_entity", "describe_schema"}
 	if len(tools) != len(want) {
 		t.Fatalf("%d tools, want %d", len(tools), len(want))
 	}
@@ -40,7 +40,7 @@ func TestToolsTable(t *testing.T) {
 			}
 		}
 	}
-	isRange := map[string]bool{"blast_radius": true, "what_changed": true, "co_residents": true, "find_entities": true}
+	isRange := map[string]bool{"blast_radius": true, "what_changed": true, "co_residents": true, "service_context": true, "find_entities": true}
 	for _, tl := range tools {
 		if tl.Range != isRange[tl.Name] {
 			t.Errorf("%s: Range is %t", tl.Name, tl.Range)

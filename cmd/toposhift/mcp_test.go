@@ -212,8 +212,8 @@ func TestMCPServesEveryToolFromAReplayedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lt.Tools) != 8 {
-		t.Errorf("%d tools offered, want 8", len(lt.Tools))
+	if len(lt.Tools) != 9 {
+		t.Errorf("%d tools offered, want 9", len(lt.Tools))
 	}
 
 	schema := structured(t, "describe_schema", call(t, cs, "describe_schema", map[string]any{}))
@@ -280,6 +280,8 @@ func TestMCPServesEveryToolFromAReplayedStore(t *testing.T) {
 		"blast_radius": {"entity": pod, "from": win["from"], "to": win["to"]},
 		"what_changed": {"scope": []string{pod}, "from": win["from"], "to": win["to"]},
 		"co_residents": {"pod": pod, "from": win["from"], "to": win["to"]},
+		// A service the replayed store has no record of: an answer, whole and empty.
+		"service_context": {"service": serviceID(t, "checkout"), "from": win["from"], "to": win["to"]},
 	} {
 		res := call(t, cs, name, args)
 		if res.IsError {
@@ -509,6 +511,7 @@ func TestMCPNeverWritesToTheStore(t *testing.T) {
 		"blast_radius":    map[string]any{"entity": pod, "from": from, "to": to},
 		"what_changed":    map[string]any{"scope": []string{pod}, "from": from, "to": to},
 		"co_residents":    map[string]any{"pod": pod, "from": from, "to": to},
+		"service_context": map[string]any{"service": serviceID(t, "checkout"), "from": from, "to": to},
 		"neighbors_at":    map[string]any{"entity": pod, "at": rfc(r.at)},
 		"entity_history":  map[string]any{"entity": pod, "from": from, "to": to},
 		"resolve_entity":  resolveAtArgs("x", r.at),
@@ -811,3 +814,14 @@ func TestMCPAsAProcess(t *testing.T) {
 }
 
 func strconvU64(n uint64) string { return strconv.FormatUint(n, 10) }
+
+// serviceID is the id of the service with a name and no namespace, as resolve_entity
+// computes it.
+func serviceID(t *testing.T, name string) string {
+	t.Helper()
+	id, err := identity.NewResolver(catalog.Default()).Resolve(catalog.Service, []identity.Attr{{Key: catalog.ServiceName, Value: name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id.Fingerprint().String()
+}

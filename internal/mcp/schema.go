@@ -7,6 +7,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/graphdiff"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 )
@@ -121,7 +122,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 		RangeReads: s.rangeReads,
 		Policy: Policy{
 			Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
-			CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
+			CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 			Find: FindVersion,
 		},
 		Entities: []SchemaEntity{}, Relations: []SchemaRelation{},
@@ -132,6 +133,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 			"An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/<cluster>\". It is unnamed and has no description. Its id reveals its address, because the realm and the address can be enumerated and hashed, so an endpoint's id, or an edge to an endpoint, is printed only when the request named that endpoint: by its id, or through resolve_entity's realm and address. Elsewhere such an edge is withheld and counted under counts.withheld, and no error sentence prints such an id. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
 			"Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
 			"To find an id from a name, call find_entities: it compares names only, never another key, and never lists an endpoint or a host.",
+			"service_context runs the extraction of one service: its callers and callees, one depends_on hop, and the services that shared a pod, a node or a host with them, each pair checked by interval intersection over instances. A pair span's ends name the leg that ended: member_instance_of, member_part_of, peer_part_of, peer_instance_of or placement.",
 		},
 	}
 	for e := range s.cat.Entities() {
@@ -238,7 +240,11 @@ var vocabulary = Vocabulary{
 		{RuleReach, "an entity a failing seed reaches over a chain of edges that all exist at once"},
 		{RuleSharedNode, "two pods scheduled on one node at once"},
 		{RuleSharedHost, "two pods on two nodes at once, each node placed on one host by an asserted runs_on"},
-		{RuleUnattributed + "<reason>", "a placement the server refuses to guess; the reason says why"},
+		{RulePairSharedPod, "two services, each through an instance mapped singly, that shared one pod"},
+		{RulePairSharedNode, "two services, each through an instance mapped singly, that had a pod on one node at once"},
+		{RulePairSharedHost, "two services, each through an instance mapped singly, that had pods on two nodes at once, each node placed on one host by an asserted runs_on"},
+		{RuleUnmapped, "a co-resident pod with no instance mapped singly to a service over these spans; shown, never guessed"},
+		{RuleUnattributed + "<reason>", "a placement or a mapping the server refuses to guess; the reason says why"},
 		{RuleDiff + "<bucket>", "an element of a diff bucket: created, deleted, changed, transient, or event"},
 	},
 	EndReasons: []Word{

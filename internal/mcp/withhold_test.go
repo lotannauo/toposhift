@@ -69,6 +69,7 @@ type addrWorld struct {
 	st                 store.Store
 	feed               *feed
 	p, q, r, n, n2     identity.Fingerprint
+	svc                identity.Fingerprint    // a service with an instance part of P
 	e                  [9]identity.Fingerprint // e[1]..e[8]
 	addrs              [9]string
 	pPayload, nPayload string
@@ -85,11 +86,12 @@ func newAddrWorldOn(tb testing.TB, st store.Store) *addrWorld {
 	tb.Helper()
 	w := &addrWorld{
 		st: st, feed: newFeed(tb, st),
-		p:  fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-p"),
-		q:  fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-q"),
-		r:  fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-r"),
-		n:  fpOf(tb, catalog.K8sNode, catalog.K8sNodeUID, "addr-node-n"),
-		n2: fpOf(tb, catalog.K8sNode, catalog.K8sNodeUID, "addr-node-n2"),
+		p:   fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-p"),
+		q:   fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-q"),
+		r:   fpOf(tb, catalog.K8sPod, catalog.K8sPodUID, "addr-pod-r"),
+		n:   fpOf(tb, catalog.K8sNode, catalog.K8sNodeUID, "addr-node-n"),
+		n2:  fpOf(tb, catalog.K8sNode, catalog.K8sNodeUID, "addr-node-n2"),
+		svc: fpOf(tb, catalog.Service, catalog.ServiceName, "addr-svc"),
 	}
 	w.addrs = [9]string{"", "10.42.0.7", "10.42.0.8", "10.12.0.3", "1.2.3.4", "10.42.0.9", "10.42.0.10", "10.42.0.11", "10.12.0.4"}
 	for i := 1; i <= 8; i++ {
@@ -130,6 +132,13 @@ func newAddrWorldOn(tb testing.TB, st store.Store) *addrWorld {
 		observe(edge(w.r, w.n, catalog.ScheduledOn), objs, hm(10, 10), 0, `{}`),
 		deleted(edge(w.p, e[2], catalog.HasAddress), objs, hm(10, 15)),
 		deleted(edge(w.p, e[6], catalog.HasAddress), objs, hm(10, 20)),
+	)
+	inst := fpOf(tb, catalog.ServiceInstance, catalog.ServiceName, "addr-svc", catalog.ServiceInstanceID, "addr-svc-0")
+	recs = append(recs,
+		observe(ent(w.svc), spanProducer, nine, 0, `{"name":"addr-svc"}`),
+		observe(ent(inst), spanProducer, nine, 0, `{}`),
+		observe(edge(inst, w.svc, catalog.InstanceOf), spanProducer, nine, 0, `{}`),
+		observe(edge(inst, w.p, catalog.PartOf), spanProducer, nine, 0, `{}`),
 	)
 	w.feed.write(recs...)
 	return w
@@ -268,6 +277,9 @@ func (w *addrWorld) asks() []ask {
 		}},
 		{name: "co-residents of P", tool: "co_residents", do: func(s *Source) (any, error) {
 			return s.CoResidents(ctx, CoResidentsInput{Pod: w.p.String(), From: w10, To: w1030})
+		}},
+		{name: "service context of the service on P", tool: "service_context", do: func(s *Source) (any, error) {
+			return s.ServiceContext(ctx, ServiceContextInput{Service: w.svc.String(), From: w10, To: w1030})
 		}},
 		nb("neighbors of P, forward", onPlain, w.p, "forward", e[1], e[2], e[5], e[6]),
 		nb("neighbors of P, reverse", onPlain, w.p, "reverse"),
@@ -1181,6 +1193,10 @@ func TestWithholdBackstop(t *testing.T) {
 			_, err := s.CoResidents(ctx, CoResidentsInput{Pod: w.p.String(), From: w10, To: w1030})
 			return err
 		}},
+		{"service_context", func(s *Source) error {
+			_, err := s.ServiceContext(ctx, ServiceContextInput{Service: w.svc.String(), From: w10, To: w1030})
+			return err
+		}},
 		{"neighbors_at", func(s *Source) error {
 			_, err := s.NeighborsAt(ctx, NeighborsAtInput{Entity: w.p.String(), At: w1012})
 			return err
@@ -1252,6 +1268,19 @@ func TestWithholdBackstop(t *testing.T) {
 		}
 		if b, _ := json.Marshal(out); strings.Contains(string(b), w.e[1].String()) {
 			t.Errorf("the answer echoes the name asked for: %s", b)
+		}
+	})
+
+	t.Run("an id injected into service_context is refused and logged by type", func(t *testing.T) {
+		var logs logSink
+		s := sourceOn(t, w.st, &egressHooks{inject: appendNote("see " + w.e[3].String())}, logs.logf)
+		_, err := s.ServiceContext(ctx, ServiceContextInput{Service: w.svc.String(), From: w10, To: w1030})
+		if te := askErr(t, err); te.Message != egressSentence {
+			t.Errorf("service_context: %q", te.Message)
+		}
+		lines := logs.all()
+		if len(lines) != 1 || lines[0] != "mcp: internal error: an answer of type mcp.ServiceContextOutput would have printed 1 endpoint ids the request did not name" {
+			t.Errorf("log lines %q", lines)
 		}
 	})
 

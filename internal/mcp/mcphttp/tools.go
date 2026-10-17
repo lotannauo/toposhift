@@ -24,6 +24,11 @@ func (s *Server) register() error {
 		"co_residents": func(t core.Tool) {
 			add(s, t, always, func(c *core.Source) call[core.CoResidentsInput, core.CoResidentsOutput] { return c.CoResidents })
 		},
+		"service_context": func(t core.Tool) {
+			add(s, t, always, func(c *core.Source) call[core.ServiceContextInput, core.ServiceContextOutput] {
+				return c.ServiceContext
+			})
+		},
 		"neighbors_at": func(t core.Tool) {
 			add(s, t, always, func(c *core.Source) call[core.NeighborsAtInput, core.NeighborsAtOutput] { return c.NeighborsAt })
 		},

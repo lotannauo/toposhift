@@ -1,0 +1,1473 @@
+{
+  "token": "2687",
+  "derived": true,
+  "policy": {
+    "interval": 1,
+    "coresidency": 1,
+    "extract": 1,
+    "rank": "253c746577b09aba",
+    "names": 2,
+    "withhold": 1
+  },
+  "service": {
+    "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+    "type": "service",
+    "name": "checkout",
+    "namespace": "shop",
+    "name_from": "spancount/c1"
+  },
+  "window": {
+    "from": "2026-01-01T10:00:00Z",
+    "to": "2026-01-01T10:30:00Z"
+  },
+  "node_only": false,
+  "callers": [
+    {
+      "service": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:7e5b175fa11abc658a334642ae44fb41",
+          "type": "service",
+          "name": "cart",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "30m0s",
+      "instances": 1
+    },
+    {
+      "service": {
+        "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+        "type": "service",
+        "name": "frontend",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+          "type": "service",
+          "name": "frontend",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "30m0s",
+      "instances": 1
+    },
+    {
+      "service": {
+        "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+        "type": "service",
+        "name": "legacy-pay",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+          "type": "service",
+          "name": "legacy-pay",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:15:00Z",
+          "end_reason": "liveness_expiry",
+          "end_sentence": "its producer went silent past its TTL (not known to be gone)",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "15m0s",
+      "instances": 1
+    }
+  ],
+  "callees": [
+    {
+      "service": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:7e5b175fa11abc658a334642ae44fb41",
+          "type": "service",
+          "name": "cart",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "30m0s",
+      "instances": 1
+    },
+    {
+      "service": {
+        "id": "service:e3e854a6560233885f53f341fdf39a6e",
+        "type": "service",
+        "name": "payments",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:e3e854a6560233885f53f341fdf39a6e",
+          "type": "service",
+          "name": "payments",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "30m0s",
+      "instances": 2
+    }
+  ],
+  "pairs": [
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:a0902409db2c7e7ed226cb9831b027ee",
+        "type": "service",
+        "name": "envoy",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_pod",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_pod",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.pod:18fa6e5fff440e78d1f765c7bc1e5180",
+            "type": "k8s.pod",
+            "name": "checkout-0",
+            "namespace": "shop",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 1,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:ac6a412084adfce493060dc028d92fd0",
+        "type": "service",
+        "name": null,
+        "namespace": "shop",
+        "name_note": "name withheld: over 253 bytes, or it holds a control character, a format character (Unicode Cf: zero-width, bidi controls, tag characters) or an endpoint id's text"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:575f27f3df6d508a7d8706b723ab17ff",
+            "type": "k8s.node",
+            "name": "node-3",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 1,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+        "type": "service",
+        "name": "legacy-pay",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller",
+      "peer": {
+        "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+        "type": "service",
+        "name": "frontend",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "caller",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:408843c2ea7baed705fda1dd1b3eef88",
+            "type": "k8s.node",
+            "name": "node-4",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 2,
+      "coverage": {
+        "covered": 0,
+        "frontier": 0
+      }
+    },
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:c62c752c64e0f964fb3fad2aaab5eb8d",
+        "type": "service",
+        "name": "search",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_host",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_host",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "host:c78ad20b000a2b06fa11bf24de0347b7",
+            "type": "host",
+            "name": null
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 0,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "seed",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "began_before_window": true,
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            }
+          ]
+        }
+      ],
+      "duration": "25m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 2,
+      "coverage": {
+        "covered": 0,
+        "frontier": 0
+      }
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:a0902409db2c7e7ed226cb9831b027ee",
+        "type": "service",
+        "name": "envoy",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "began_before_window": true,
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            }
+          ]
+        }
+      ],
+      "duration": "25m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 1,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:c62c752c64e0f964fb3fad2aaab5eb8d",
+        "type": "service",
+        "name": "search",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_host",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_host",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "began_before_window": true,
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            }
+          ]
+        }
+      ],
+      "duration": "25m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "vias": [
+        {
+          "via": {
+            "id": "host:c78ad20b000a2b06fa11bf24de0347b7",
+            "type": "host",
+            "name": null
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 0,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:c713241c30e0f18801be7a0d42e4aff1",
+        "type": "service",
+        "name": "redis",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:05:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "ends": [
+            {
+              "leg": "placement",
+              "end_reason": "producer",
+              "end_sentence": "deleted by its producer"
+            }
+          ]
+        }
+      ],
+      "duration": "20m0s",
+      "class": "transient",
+      "transitions": 2,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:05:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 1,
+        "frontier": 5
+      }
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:c713241c30e0f18801be7a0d42e4aff1",
+        "type": "service",
+        "name": "redis",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:05:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "placement",
+              "end_reason": "producer",
+              "end_sentence": "deleted by its producer"
+            }
+          ]
+        }
+      ],
+      "duration": "20m0s",
+      "class": "transient",
+      "transitions": 2,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:05:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 1,
+        "frontier": 5
+      }
+    }
+  ],
+  "suppressed": [
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:575f27f3df6d508a7d8706b723ab17ff",
+            "type": "k8s.node",
+            "name": "node-3",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        },
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 2,
+      "paths": 2,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+        "type": "service",
+        "name": "frontend",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:408843c2ea7baed705fda1dd1b3eef88",
+            "type": "k8s.node",
+            "name": "node-4",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:e3e854a6560233885f53f341fdf39a6e",
+        "type": "service",
+        "name": "payments",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "callee",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:35ff84ef05a1b032f01c259572a8ab9d",
+            "type": "k8s.node",
+            "name": "node-6",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        },
+        {
+          "via": {
+            "id": "k8s.node:538b5810cce2e41f3338ae93e5e09658",
+            "type": "k8s.node",
+            "name": "node-5",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 2,
+      "paths": 2,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+        "type": "service",
+        "name": "legacy-pay",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:408843c2ea7baed705fda1dd1b3eef88",
+            "type": "k8s.node",
+            "name": "node-4",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+        "type": "service",
+        "name": "checkout",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "seed",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_host",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_host",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "ends": []
+        }
+      ],
+      "duration": "30m0s",
+      "class": "stable",
+      "transitions": 0,
+      "vias": [
+        {
+          "via": {
+            "id": "host:c78ad20b000a2b06fa11bf24de0347b7",
+            "type": "host",
+            "name": null
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:30:00Z",
+              "end_reason": null,
+              "end_sentence": "still present at the window's end"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_node",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_node",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "began_before_window": true,
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            }
+          ]
+        }
+      ],
+      "duration": "25m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "vias": [
+        {
+          "via": {
+            "id": "k8s.node:8dcff243eac204e2f0e128b8730f65df",
+            "type": "k8s.node",
+            "name": "node-1",
+            "name_from": "k8sobjects/c1"
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    },
+    {
+      "member": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "member_role": "caller|callee",
+      "peer": {
+        "id": "service:1b49405c771b53398192ad71d618c37e",
+        "type": "service",
+        "name": "node-exporter",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "peer_role": "none",
+      "mechanism": "shared_host",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "pair.shared_host",
+      "overlaps": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:25:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "pair ended; see the legs' ends",
+          "began_before_window": true,
+          "ends": [
+            {
+              "leg": "member_instance_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            },
+            {
+              "leg": "member_part_of",
+              "end_reason": "liveness_expiry",
+              "end_sentence": "its producer went silent past its TTL (not known to be gone)"
+            }
+          ]
+        }
+      ],
+      "duration": "25m0s",
+      "class": "disappeared",
+      "transitions": 1,
+      "vias": [
+        {
+          "via": {
+            "id": "host:c78ad20b000a2b06fa11bf24de0347b7",
+            "type": "host",
+            "name": null
+          },
+          "spans": [
+            {
+              "start": "2026-01-01T10:00:00Z",
+              "end": "2026-01-01T10:25:00Z",
+              "end_reason": "reach_ended",
+              "end_sentence": "co-residence through it ended; see the legs' ends"
+            }
+          ]
+        }
+      ],
+      "vias_total": 1,
+      "paths": 1,
+      "coverage": {
+        "covered": 5,
+        "frontier": 5
+      },
+      "suppressed_reason": "ubiquitous"
+    }
+  ],
+  "unattributed": [
+    {
+      "entity": {
+        "id": "service.instance:0a198f6b05973e5432ab5cb44a85b8dd",
+        "type": "service.instance",
+        "name": null
+      },
+      "reason": "several_pods",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "unattributed.several_pods",
+      "relation": "part_of",
+      "target_type": "k8s.pod",
+      "spans": [
+        {
+          "start": "2026-01-01T10:12:00Z",
+          "end": "2026-01-01T10:17:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "the ambiguity ended"
+        }
+      ],
+      "candidates": [
+        {
+          "id": "k8s.pod:667211363e4c4ab17623e146c5189e38",
+          "type": "k8s.pod",
+          "name": "redis-x",
+          "namespace": "shop",
+          "name_from": "k8sobjects/c1"
+        },
+        {
+          "id": "k8s.pod:eb8d1ac0733e52d6b864d80df134c948",
+          "type": "k8s.pod",
+          "name": "redis-0",
+          "namespace": "shop",
+          "name_from": "k8sobjects/c1"
+        }
+      ],
+      "note": "The instance was part of two or more pods at once, so it counts for none of them."
+    },
+    {
+      "entity": {
+        "id": "k8s.node:408843c2ea7baed705fda1dd1b3eef88",
+        "type": "k8s.node",
+        "name": "node-4",
+        "name_from": "k8sobjects/c1"
+      },
+      "reason": "no_host",
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "unattributed.no_host",
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ],
+      "candidates": [],
+      "note": "The node has no live runs_on, so its host is not known; only pods on the same node are co-resident."
+    }
+  ],
+  "unmapped": [
+    {
+      "pod": {
+        "id": "k8s.pod:667211363e4c4ab17623e146c5189e38",
+        "type": "k8s.pod",
+        "name": "redis-x",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "unmapped",
+      "spans": [
+        {
+          "start": "2026-01-01T10:12:00Z",
+          "end": "2026-01-01T10:17:00Z",
+          "end_reason": "reach_ended",
+          "end_sentence": "the pod's instances became mapped again, or the co-residency ended"
+        }
+      ]
+    },
+    {
+      "pod": {
+        "id": "k8s.pod:ce932e5ae83fc2cc7ec400c7e55474cc",
+        "type": "k8s.pod",
+        "name": "bare-0",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "unmapped",
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ]
+    },
+    {
+      "pod": {
+        "id": "k8s.pod:e411e41e8c352d31ffdcae0cdc554de8",
+        "type": "k8s.pod",
+        "name": "cart-0",
+        "namespace": "shop",
+        "name_from": "k8sobjects/c1"
+      },
+      "subject": "derived",
+      "basis": "derived",
+      "rule": "unmapped",
+      "spans": [
+        {
+          "start": "2026-01-01T10:25:00Z",
+          "end": "2026-01-01T10:30:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end"
+        }
+      ]
+    }
+  ],
+  "quarantined": [],
+  "ubiquity": {
+    "judged": true,
+    "frontier_nodes": 5,
+    "statement": "a service outside the hop that shares a node with the seed pods on at least 4/5 of the frontier, judged only on a frontier of at least 5 nodes, is suppressed as ubiquitous"
+  },
+  "counts": {
+    "callers": 3,
+    "callees": 2,
+    "pairs": 9,
+    "pairs_shown": 9,
+    "suppressed": 7,
+    "unattributed": 2,
+    "unmapped": 3,
+    "quarantined": 0,
+    "seed_pods": 7,
+    "pod_quarantined": 0
+  },
+  "truncation": {
+    "incomplete": false,
+    "members_dropped": 0,
+    "instances_dropped": 0,
+    "seed_pods_dropped": 0,
+    "pairs_dropped": 0,
+    "suppressed_dropped": 0,
+    "pod_searches_cut": 0
+  },
+  "notes": [
+    "A dependency, an instance and its pod mapping are sightings with a TTL: a span that ends by liveness_expiry ends one TTL after the last sighting, so a service that stopped calling, or an instance that stopped reporting, is shown until then.",
+    "Suppressed pairs are with a service that shares a node with the seed pods on most of the frontier, such as a DaemonSet's; they are shown, never dropped.",
+    "Pass asof=2687 to see the same world, until the next retention (at most a day) or a restart with other ranks."
+  ]
+}

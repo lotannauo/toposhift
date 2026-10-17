@@ -28,11 +28,12 @@ read-only, as toposhift query opens it, so nothing is written to it; Pebble's
 lock on the directory is still exclusive, so the command fails, saying so,
 while a replay, a query, a serve or another mcp has the directory open.
 
-Every tool answers, the range tools blast_radius, what_changed and
-co_residents included. On a retained store a window that starts before a
+Every tool answers, the range tools blast_radius, what_changed, co_residents
+and service_context included. On a retained store a window that starts before a
 layer's horizon is refused, and so is a description recorded before it, which
 the store no longer keeps; the refusal says from when a window does not need it.
 find_entities finds pods, nodes, containers and services by name, 256 ids a call.
+service_context shows a service's callers, callees and co-resident services over a window.
 
 A server keeps its store in the store directory of its data directory: to read
 it, stop the server and give DIR/store, not DIR. Closing the input before the
