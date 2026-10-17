@@ -286,6 +286,15 @@ func (w *addrWorld) asks() []ask {
 		}},
 		diff("changes of P and N", []identity.Fingerprint{w.p, w.n}, e[2], e[5], e[6], e[8]),
 		diff("changes of P", []identity.Fingerprint{w.p}, e[2], e[5], e[6]),
+		{name: "find pods at 10:12", tool: "find_entities", do: func(s *Source) (any, error) {
+			return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w1012})
+		}},
+		{name: "find pods named p", tool: "find_entities", do: func(s *Source) (any, error) {
+			return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Name: "p", From: w10, To: w1030})
+		}},
+		{name: "find nodes over the window", tool: "find_entities", do: func(s *Source) (any, error) {
+			return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.node", From: w10, To: w1030})
+		}},
 		{name: "resolve P", tool: "resolve_entity", do: func(s *Source) (any, error) {
 			return s.ResolveEntity(ctx, ResolveEntityInput{
 				Type: "k8s.pod", Attributes: rawAttrs(`{"k8s.pod.uid":"addr-pod-p"}`), At: w1012,
@@ -1180,6 +1189,10 @@ func TestWithholdBackstop(t *testing.T) {
 			_, err := s.EntityHistory(ctx, EntityHistoryInput{Entity: w.p.String(), From: w10, To: w1030})
 			return err
 		}},
+		{"find_entities", func(s *Source) error {
+			_, err := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w1012})
+			return err
+		}},
 		{"resolve_entity with an instant", func(s *Source) error {
 			_, err := s.ResolveEntity(ctx, ResolveEntityInput{Type: "k8s.pod", Attributes: rawAttrs(`{"k8s.pod.uid":"addr-pod-p"}`), At: w1012})
 			return err
@@ -1216,6 +1229,29 @@ func TestWithholdBackstop(t *testing.T) {
 			if endpointID.MatchString(line) {
 				t.Errorf("the log line prints an id: %q", line)
 			}
+		}
+	})
+
+	t.Run("an id injected into find_entities is refused and logged by type", func(t *testing.T) {
+		var logs logSink
+		s := sourceOn(t, w.st, &egressHooks{inject: appendNote("see " + w.e[3].String())}, logs.logf)
+		_, err := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", At: w1012})
+		if te := askErr(t, err); te.Message != egressSentence {
+			t.Errorf("find_entities: %q", te.Message)
+		}
+		lines := logs.all()
+		if len(lines) != 1 || lines[0] != "mcp: internal error: an answer of type mcp.FindEntitiesOutput would have printed 1 endpoint ids the request did not name" {
+			t.Errorf("log lines %q", lines)
+		}
+		// find_entities names no endpoint, whatever the request holds: an id in "name"
+		// or "after" is not named by it, and the answer does not echo the request.
+		s = sourceOn(t, w.st, nil, nil)
+		out, err := s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Name: w.e[1].String(), At: w1012})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := json.Marshal(out); strings.Contains(string(b), w.e[1].String()) {
+			t.Errorf("the answer echoes the name asked for: %s", b)
 		}
 	})
 

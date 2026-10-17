@@ -212,8 +212,8 @@ func TestMCPServesEveryToolFromAReplayedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lt.Tools) != 7 {
-		t.Errorf("%d tools offered, want 7", len(lt.Tools))
+	if len(lt.Tools) != 8 {
+		t.Errorf("%d tools offered, want 8", len(lt.Tools))
 	}
 
 	schema := structured(t, "describe_schema", call(t, cs, "describe_schema", map[string]any{}))
@@ -255,6 +255,23 @@ func TestMCPServesEveryToolFromAReplayedStore(t *testing.T) {
 	res := call(t, cs, "resolve_entity", map[string]any{"type": "k8s.pod", "attributes": map[string]any{"k8s.pod.uid": "x"}, "at": rfc(r.at)})
 	if ex, _ := structured(t, "resolve_entity", res)["existence"].(map[string]any); ex["status"] != "not_alive" {
 		t.Errorf("resolve_entity of an unknown pod: %v", ex)
+	}
+
+	// A listing of the pods at the instant of the fixture lists the pod, at the
+	// store's token: the payloads are not JSON objects, so no name is known.
+	found := structured(t, "find_entities", call(t, cs, "find_entities", map[string]any{"type": "k8s.pod", "at": rfc(r.at)}))
+	if found["token"] != token {
+		t.Errorf("find_entities: token %v, want the store's last seq %s", found["token"], token)
+	}
+	listed := false
+	matches, _ := found["matches"].([]any)
+	for _, m := range matches {
+		if e, _ := m.(map[string]any)["entity"].(map[string]any); e["id"] == r.pod.String() {
+			listed = true
+		}
+	}
+	if !listed || found["derived"] != true {
+		t.Errorf("find_entities: the pod %s is not among %d matches (derived %v)", r.pod, len(matches), found["derived"])
 	}
 
 	pod := r.pod.String()

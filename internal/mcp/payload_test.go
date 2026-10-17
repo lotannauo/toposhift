@@ -74,7 +74,9 @@ func TestFilterFailsClosed(t *testing.T) {
 		{"a known withheld key", catalog.K8sPod, `{"name":"a","host_ip":"1.2.3.4"}`, []string{"name"}, []string{"host_ip"}, false},
 		{"the case of a key counts", catalog.K8sPod, `{"Name":"a","NAME":"b"}`, nil, []string{"NAME", "Name"}, false},
 		{"a type not in the table", catalog.Zone, `{"zone":"eu-1a"}`, nil, []string{"zone"}, false},
-		{"a type not in the table, even for a key another type allows", catalog.Service, `{"name":"x"}`, nil, []string{"name"}, false},
+		{"a type not in the table, even for a key another type allows", catalog.Process, `{"name":"x"}`, nil, []string{"name"}, false},
+		{"a service keeps its name and namespace only", catalog.Service, `{"name":"x","namespace":"n","service.version":"1"}`, []string{"name", "namespace"}, []string{"service.version"}, false},
+		{"an instance keeps its version only", catalog.ServiceInstance, `{"service.version":"1","name":"x"}`, []string{"service.version"}, []string{"name"}, false},
 		{"the empty payload", catalog.K8sPod, ``, nil, nil, false},
 		{"the empty object", catalog.K8sPod, `{}`, nil, nil, false},
 		{"an array", catalog.K8sPod, `["name"]`, nil, nil, true},
@@ -160,8 +162,8 @@ func TestChangedKeysThroughTheTable(t *testing.T) {
 }
 
 // The table is O2's: pinned here so that a change to it is a change to this test.
-func TestPayloadTableIsVersion1(t *testing.T) {
-	if PayloadTableVersion != 1 || NameTableVersion != 1 {
+func TestPayloadTableIsVersion2(t *testing.T) {
+	if PayloadTableVersion != 2 || NameTableVersion != 2 {
 		t.Fatalf("versions %d, %d: a new table needs this test updated on purpose", PayloadTableVersion, NameTableVersion)
 	}
 	for typ, tbl := range payloadTable {
@@ -209,6 +211,25 @@ func TestPayloadTableIsVersion1(t *testing.T) {
 			t.Errorf("host key %q is not unlisted", k)
 		}
 	}
+	// A service is its name and namespace, and an instance of it prints its version.
+	for _, k := range []string{"name", "namespace"} {
+		if !allowed(catalog.Service, k) {
+			t.Errorf("service key %q is not allowed", k)
+		}
+	}
+	if !allowed(catalog.ServiceInstance, "service.version") {
+		t.Error("service.version is not allowed for an instance")
+	}
+	for typ, keys := range map[catalog.EntityType][]string{
+		catalog.Service:         {"service.name", "service.namespace", "service.version", "k8s.pod.name"},
+		catalog.ServiceInstance: {"name", "namespace", "service.instance.id", "service.name"},
+	} {
+		for _, k := range keys {
+			if payloadClass(typ, k) != keyUnlisted {
+				t.Errorf("%s key %q is not unlisted", typ, k)
+			}
+		}
+	}
 }
 
 // The translators' golden files list every key they write. Every key of an
@@ -219,10 +240,13 @@ func TestPayloadTableCoversTheTranslators(t *testing.T) {
 	typeOf := map[string]catalog.EntityType{
 		"pod": catalog.K8sPod, "node": catalog.K8sNode, "container": catalog.Container,
 		"host": catalog.Host, "zone": catalog.Zone, "endpoint": catalog.NetworkEndpoint,
+		"service": catalog.Service, "instance": catalog.ServiceInstance,
 	}
-	edges := []string{"scheduled_on", "runs_on", "located_in", "part_of", "has_address"}
+	edges := []string{"scheduled_on", "runs_on", "located_in", "part_of", "has_address", "depends_on", "instance_of"}
 	var files []string
-	for _, pat := range []string{"k8sobjects", "k8scluster", "nodeagent"} {
+	pkgOf := map[string]string{}
+	pkgs := []string{"k8sobjects", "k8scluster", "nodeagent", "svcgraph", "spancount"}
+	for _, pat := range pkgs {
 		m, err := filepath.Glob(filepath.Join("..", "ingest", pat, "testdata", "*.golden.json"))
 		if err != nil {
 			t.Fatal(err)
@@ -231,8 +255,12 @@ func TestPayloadTableCoversTheTranslators(t *testing.T) {
 			t.Fatalf("no golden files of %s", pat)
 		}
 		files = append(files, m...)
+		for _, f := range m {
+			pkgOf[f] = pat
+		}
 	}
 	keysSeen := 0
+	keysOf := map[string]int{}
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
@@ -259,9 +287,10 @@ func TestPayloadTableCoversTheTranslators(t *testing.T) {
 				t.Errorf("%s %s: the golden file has a subject %q this test does not know; classify its type", f, path, subject)
 				return
 			}
-			payload, _ := obj["payload"].(map[string]any)
+			payload := goldenPayload(t, f, path, obj["payload"])
 			for k := range payload {
 				keysSeen++
+				keysOf[pkgOf[f]]++
 				if payloadClass(typ, k) == keyUnlisted {
 					t.Errorf("%s: the key %q of a %s is neither allowed nor withheld by the payload table", filepath.Base(f), k, typ)
 				}
@@ -271,4 +300,31 @@ func TestPayloadTableCoversTheTranslators(t *testing.T) {
 	if keysSeen < 50 {
 		t.Errorf("only %d keys read from %d golden files; the test lost its input", keysSeen, len(files))
 	}
+	for _, pkg := range pkgs {
+		if keysOf[pkg] == 0 {
+			t.Errorf("no key read from the golden files of %s; the test checks nothing of its payloads", pkg)
+		}
+	}
+}
+
+// goldenPayload is the payload of a record in a golden file as an object. The
+// translators of the first three packages print it as an object, and those of the
+// service packages as a JSON string that holds one: that must be one object, or the
+// test would silently check nothing.
+func goldenPayload(t *testing.T, file, path string, v any) map[string]any {
+	t.Helper()
+	switch p := v.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		return p
+	case string:
+		obj, ok := payloadObject([]byte(p))
+		if !ok {
+			t.Errorf("%s %s: the payload %q is a string that is not one JSON object", filepath.Base(file), path, p)
+		}
+		return obj
+	}
+	t.Errorf("%s %s: the payload is a %T, not an object or a string that holds one", filepath.Base(file), path, v)
+	return nil
 }

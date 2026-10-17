@@ -49,6 +49,9 @@ func calls(w *world) []call {
 		{"entity_history", func(s *Source, asof string) (any, error) {
 			return s.EntityHistory(ctx, EntityHistoryInput{Entity: w.n1.String(), From: "2026-01-01T09:00:00Z", To: w1030, AsOf: asof})
 		}},
+		{"find_entities", func(s *Source, asof string) (any, error) {
+			return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.node", Name: "worker", At: "2026-01-01T10:25:00Z", AsOf: asof})
+		}},
 		{"resolve_entity", func(s *Source, asof string) (any, error) {
 			return s.ResolveEntity(ctx, ResolveEntityInput{
 				Type: "host", Attributes: map[string]json.RawMessage{"host.id": json.RawMessage(`"` + hostSecret + `"`)}, At: w10, AsOf: asof,

@@ -93,6 +93,15 @@ func questions(w *world) []question {
 			return s.EntityHistory(ctx, EntityHistoryInput{Entity: e.fp.String(), From: "2026-01-01T09:00:00Z", To: w1030})
 		})
 	}
+	add("find pods by name at an instant", "find_entities", func(s *Source) (any, error) {
+		return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.pod", Name: "web", At: "2026-01-01T10:08:00Z"})
+	})
+	add("find every node at an instant", "find_entities", func(s *Source) (any, error) {
+		return s.FindEntities(ctx, FindEntitiesInput{Type: "k8s.node", At: w10})
+	})
+	add("find containers by namespace in the window", "find_entities", func(s *Source) (any, error) {
+		return s.FindEntities(ctx, FindEntitiesInput{Type: "container", Namespace: "shop-cluster", From: w10, To: w1030})
+	})
 	add("resolve a host", "resolve_entity", func(s *Source) (any, error) {
 		return s.ResolveEntity(ctx, ResolveEntityInput{
 			Type: "host", Attributes: map[string]json.RawMessage{"host.id": json.RawMessage(`"` + hostSecret + `"`)}, At: w10,

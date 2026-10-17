@@ -31,11 +31,32 @@
 // Every entity id is an object that carries the entity's name when its
 // description has one. A name is derived from the description of the producer
 // that wins under the store's ranks, and from a fixed table of keys
-// ([NameTableVersion]); it is never taken from an identity attribute, from a
-// losing producer or from a peer. A description or payload is printed only
-// through a per-type table of allowed top-level keys ([PayloadTableVersion]).
-// The table fails closed: a key it does not list is withheld, and the answer
-// names it.
+// ([NameTableVersion]); it is never taken from an identity attribute, except a
+// service's, whose description is its identity, nor from a losing producer or
+// from a peer. A description or payload is printed only through a per-type table
+// of allowed top-level keys ([PayloadTableVersion]). The table fails closed: a key
+// it does not list is withheld, and the answer names it.
+//
+// A name or a namespace is also bounded when it is printed, in every answer: one
+// that is over 253 bytes, holds a control character (a newline and a tab among
+// them, and U+2028 and U+2029), holds a format character (Unicode Cf: zero-width,
+// bidi controls, tag characters) or holds an endpoint id's text is withheld. It
+// is null, with a fixed note that holds none of it; in a description payload its
+// key stays, as null, and is named among the withheld keys; and find_entities
+// never matches it, and counts it as not printed. The same rule applies to the
+// other allowed payload keys that hold text a sender chose: a service instance's
+// version. The bound applies to what is printed, never to what is stored.
+//
+// # Finding ids by name
+//
+// Every other tool takes ids. [Source.FindEntities] goes from a name to ids: it
+// lists the ids of one type from the store's listing read ([Lister]), which is
+// outside [store.Store] and takes no token, and decides at the answer's token
+// which of them existed in the window and whose name, read as every name is,
+// contains the text. A call checks at most 256 ids, in id order, and says how to
+// continue from the last one it checked, so a page at one token is exact. It reads
+// only a name and a namespace, indexes nothing, and never lists a host or an
+// endpoint; a store without the listing read refuses it in a sentence.
 //
 // # Refusals
 //

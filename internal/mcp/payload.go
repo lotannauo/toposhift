@@ -14,10 +14,10 @@ import (
 // printed only through this table of top-level keys per entity type, version
 // PayloadTableVersion. It fails closed: a key that is not listed as allowed is
 // withheld, and the answer names it. The listed keys are every key the
-// translators write today (k8sobjects, k8scluster and nodeagent), classified as
-// allowed or withheld; a test reads their golden files and fails on a key that
-// is in neither list, so a new key has to be classified before it can be
-// printed.
+// translators write today (k8sobjects, k8scluster, nodeagent, svcgraph and
+// spancount), classified as allowed or withheld; a test reads their golden files
+// and fails on a key that is in neither list, so a new key has to be classified
+// before it can be printed.
 //
 // What is withheld, and why:
 //
@@ -30,6 +30,19 @@ import (
 //     no description. Its id reveals the address too, so an answer prints an
 //     endpoint's id only where the request named it (withhold.go).
 //   - every key not listed, and every other entity type.
+//
+// A service's name and namespace are allowed: they are its identity, and the name
+// table reads them. A service instance's version is allowed, because the
+// translators write it and it is neither an address nor a machine's identity; the
+// instance's other keys are not listed, so they are withheld.
+//
+// The print rule of names.go applies to the value of every allowed key that holds
+// text a sender chose: an object's name or namespace, and a service instance's
+// version ([printRuleKeys]). A string value that is over 253 bytes, holds a
+// control character, holds a format character (Unicode Cf: zero-width, bidi controls, tag characters)
+// or holds an endpoint id's text is printed as null, the key is named in
+// withheld_keys, and a fixed note says why. The rule reaches the top-level string
+// values only, not the objects and lists inside a value.
 //
 // A container's keys, from either producer, and every key of k8scluster are
 // allowed. The table applies to every description the server prints, in
@@ -78,7 +91,32 @@ var payloadTable = map[catalog.EntityType]struct{ allowed, withheld []string }{
 			"container.status.reason", "container.creation_timestamp",
 		},
 	},
+	catalog.Service:         {allowed: []string{"name", "namespace"}},
+	catalog.ServiceInstance: {allowed: []string{"service.version"}},
 }
+
+// printRuleKeys are the allowed keys whose value is text a sender chose: the name
+// or the namespace of an object, and a service instance's version (the spancount
+// translator accepts any valid UTF-8 of up to 256 bytes for it). They are the keys
+// the print rule is applied to when a description is printed. A test fails on an
+// allowed key that ends in name or namespace and is in neither this table nor
+// [notNameKeys], and on a sender-text key that is not in this table.
+var printRuleKeys = map[catalog.EntityType][]string{
+	catalog.K8sPod: {
+		"name", "namespace", "node_name",
+		"k8s.pod.name", "k8s.namespace.name", "k8s.node.name", "k8s.workload.name",
+		"k8s.deployment.name", "k8s.replicaset.name", "k8s.statefulset.name",
+	},
+	catalog.K8sNode:         {"name", "k8s.node.name"},
+	catalog.Container:       {"name", "k8s.container.name", "k8s.pod.name", "k8s.namespace.name", "k8s.node.name"},
+	catalog.Service:         {"name", "namespace"},
+	catalog.ServiceInstance: {"service.version"},
+}
+
+// notNameKeys are allowed keys that end in name and are not the name of an
+// object of the graph: an image's name, which a container's runtime reports, and
+// the model name of a host's processor, which the node agent reports.
+var notNameKeys = []string{"container.image.name", "host.cpu.model.name"}
 
 // keyClass says how the table classifies a top-level key of a type.
 type keyClass uint8
@@ -106,8 +144,10 @@ func payloadClass(typ catalog.EntityType, key string) keyClass {
 }
 
 // Described is a description printed through the table: the winning producer's
-// payload, less the keys the table withholds, which are named. A description is
-// derived: it is merged by rank at an instant, and never stored as a fact.
+// payload, less the keys the table withholds, which are named. A name or a
+// namespace the print rule withholds stays in the payload as null and is named
+// among the withheld keys too. A description is derived: it is merged by rank at
+// an instant, and never stored as a fact.
 type Described struct {
 	Producer     string         `json:"producer"`
 	Payload      map[string]any `json:"payload"`
@@ -115,7 +155,12 @@ type Described struct {
 	Note         string         `json:"note,omitempty"`
 }
 
-const notAnObject = "The payload is not a JSON object, so all of it is withheld."
+const (
+	notAnObject = "The payload is not a JSON object, so all of it is withheld."
+	// valueWithheld is the note of a payload in which the print rule withheld a
+	// value. It holds none of the value.
+	valueWithheld = "A name, namespace or version value is null in the payload and its key is named in withheld_keys: the value is over 253 bytes, or it holds a control character, a format character (Unicode Cf: zero-width, bidi controls, tag characters) or an endpoint id's text."
+)
 
 // describe prints a payload of an entity of type typ through the table.
 func describe(typ catalog.EntityType, producer string, payload []byte) *Described {
@@ -124,9 +169,11 @@ func describe(typ catalog.EntityType, producer string, payload []byte) *Describe
 }
 
 // filterPayload keeps the allowed top-level keys of a payload that is one JSON
-// object, and names the others, sorted. A payload that is not one object is
-// withheld whole, with a note, and printed as the empty object, never null: the
-// output schema says object. An empty payload is the empty object.
+// object, and names the others, sorted. A string value of a print-rule key
+// ([printRuleKeys]) that the print rule refuses is kept as null and named too, with a
+// note. A payload that is not one object is withheld whole, with a note, and
+// printed as the empty object, never null: the output schema says object. An empty
+// payload is the empty object.
 func filterPayload(typ catalog.EntityType, payload []byte) (kept map[string]any, withheld []string, note string) {
 	obj, ok := payloadObject(payload)
 	if !ok {
@@ -134,14 +181,20 @@ func filterPayload(typ catalog.EntityType, payload []byte) (kept map[string]any,
 	}
 	kept = map[string]any{}
 	for k, v := range obj {
-		if payloadClass(typ, k) == keyAllowed {
-			kept[k] = v
+		if payloadClass(typ, k) != keyAllowed {
+			withheld = append(withheld, k)
 			continue
 		}
-		withheld = append(withheld, k)
+		if str, isString := v.(string); isString && slices.Contains(printRuleKeys[typ], k) && !printable(str) {
+			kept[k] = nil
+			withheld = append(withheld, k)
+			note = valueWithheld
+			continue
+		}
+		kept[k] = v
 	}
 	slices.Sort(withheld)
-	return kept, withheld, ""
+	return kept, withheld, note
 }
 
 // payloadObject decodes a payload that is one JSON object, numbers kept as their

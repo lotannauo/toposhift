@@ -30,6 +30,7 @@ func TestGateBeforeTheStore(t *testing.T) {
 		{name: "co_residents", args: map[string]any{"pod": w.p1.String(), "from": w10, "to": w1030}},
 		{name: "neighbors_at", args: neighborsArgs(w)},
 		{name: "entity_history", args: map[string]any{"entity": w.p1.String(), "from": w10, "to": w1030}},
+		{name: "find_entities", args: map[string]any{"type": "k8s.pod", "at": w10}},
 		{name: "resolve_entity", args: map[string]any{"type": "host", "attributes": map[string]any{"host.id": "host-two"}, "at": w10}},
 	}
 	const starting = "ingest is starting: the store is opening; send the request again later"

@@ -22,6 +22,7 @@ type spyStore struct {
 	writes     int
 	retains    int
 	closes     int
+	lists      int
 	afterFirst func()
 	fired      bool
 }
@@ -107,3 +108,12 @@ func (s *spyStore) WindowSince(ctx context.Context, fps []identity.Fingerprint, 
 }
 
 func (s *spyStore) LayerHorizon(l catalog.Layer) store.Horizon { return s.Store.LayerHorizon(l) }
+
+// ListEntities passes the listing read of the store underneath through, and counts
+// it. It is not a read at a token, so it records none and fires nothing.
+func (s *spyStore) ListEntities(ctx context.Context, typ catalog.EntityType, after identity.Fingerprint, n int) ([]identity.Fingerprint, error) {
+	s.mu.Lock()
+	s.lists++
+	s.mu.Unlock()
+	return s.Store.(Lister).ListEntities(ctx, typ, after, n)
+}

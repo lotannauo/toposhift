@@ -34,6 +34,7 @@ func TestDescribeSchema(t *testing.T) {
 	wantPolicy := Policy{
 		Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
 		CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
+		Find: FindVersion,
 	}
 	if out.Policy != wantPolicy || out.Names.Version != NameTableVersion || out.Payload.Version != PayloadTableVersion {
 		t.Errorf("policy %+v", out.Policy)
@@ -80,17 +81,17 @@ func TestDescribeSchema(t *testing.T) {
 	for _, e := range out.Entities {
 		named[e.Type] = e.Named
 	}
-	if !named["k8s.pod"] || !named["k8s.node"] || !named["container"] || named["host"] || named["service"] {
+	if !named["k8s.pod"] || !named["k8s.node"] || !named["container"] || !named["service"] || named["host"] || named["service.instance"] || named["topo.endpoint"] {
 		t.Errorf("named types %v", named)
 	}
-	if !slices.Contains(out.Names.Unnamed, "host") {
+	if !slices.Contains(out.Names.Unnamed, "host") || slices.Contains(out.Names.Unnamed, "service") {
 		t.Errorf("unnamed %v", out.Names.Unnamed)
 	}
 	var payloadTypes []string
 	for _, p := range out.Payload.Types {
 		payloadTypes = append(payloadTypes, p.Type)
 	}
-	if !slices.Equal(payloadTypes, []string{"host", "k8s.node", "k8s.pod", "container"}) {
+	if !slices.Equal(payloadTypes, []string{"host", "k8s.node", "k8s.pod", "container", "service.instance", "service"}) {
 		t.Errorf("payload types %v", payloadTypes)
 	}
 

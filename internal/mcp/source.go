@@ -73,6 +73,7 @@ func RangeReadsFor(st store.Store) bool {
 // Source answers the tools over one store. It is safe for concurrent use.
 type Source struct {
 	st         store.Store
+	lister     Lister
 	rank       map[lifecycle.Producer]int
 	rankDigest string
 	rangeReads bool
@@ -123,6 +124,10 @@ func NewSource(cfg Config) (*Source, error) {
 	}
 	if s.callTimeout == 0 {
 		s.callTimeout = DefaultCallTimeout
+	}
+	// The store given, not the read-only wrapper, which hides the method.
+	if l, ok := cfg.Store.(Lister); ok {
+		s.lister = l
 	}
 	s.rankDigest = digestRank(s.rank)
 	s.base, s.cancel = context.WithCancel(context.Background())

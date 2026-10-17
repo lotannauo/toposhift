@@ -105,7 +105,7 @@ func TestToolsAnswerAsTheirTwin(t *testing.T) {
 	t.Cleanup(func() {
 		t.Logf("twin: %d questions compared; answers by tool on unretained stores %v; %d retention refusals with a seed, %d before the horizon",
 			cov.compared, cov.answered, cov.retained, cov.beforeHorizon)
-		for _, tool := range []string{"blast_radius", "what_changed", "co_residents", "neighbors_at", "entity_history", "resolve_entity", "describe_schema"} {
+		for _, tool := range []string{"blast_radius", "what_changed", "co_residents", "neighbors_at", "entity_history", "find_entities", "resolve_entity", "describe_schema"} {
 			if cov.answered[tool] == 0 {
 				t.Errorf("no %s answer on an unretained store", tool)
 			}
