@@ -402,6 +402,26 @@ func TestArgumentsAreNamed(t *testing.T) {
 			return e
 		}, `"scope[1]" must be an entity id`},
 		{"pod missing", func() error { _, e := s.CoResidents(ctx, CoResidentsInput{From: w10, To: w1030}); return e }, `"pod" is required`},
+		{"service missing", func() error {
+			_, e := s.ServiceContext(ctx, ServiceContextInput{From: w10, To: w1030})
+			return e
+		}, `The argument "service" is required.`},
+		{"service is a host", func() error {
+			_, e := s.ServiceContext(ctx, ServiceContextInput{Service: good, From: w10, To: w1030})
+			return e
+		}, `The argument "service" must be a service id; got a host id.`},
+		{"service context window", func() error {
+			_, e := s.ServiceContext(ctx, ServiceContextInput{Service: unknownService().String(), From: w1030, To: w10})
+			return e
+		}, `The argument "from" (2026-01-01T10:30:00Z) must be before "to" (2026-01-01T10:00:00Z).`},
+		{"service context limit", func() error {
+			_, e := s.ServiceContext(ctx, ServiceContextInput{Service: unknownService().String(), From: w10, To: w1030, Limit: 501})
+			return e
+		}, `The argument "limit" must be between 1 and 500; got 501.`},
+		{"service context asof", func() error {
+			_, e := s.ServiceContext(ctx, ServiceContextInput{Service: unknownService().String(), From: w10, To: w1030, AsOf: "abc"})
+			return e
+		}, `"asof" must be a token`},
 		{"direction", func() error {
 			_, e := s.NeighborsAt(ctx, NeighborsAtInput{Entity: good, At: w10, Direction: "sideways"})
 			return e

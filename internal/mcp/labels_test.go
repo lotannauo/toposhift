@@ -12,12 +12,13 @@ import (
 // elementLists are the lists of each tool whose entries are elements: each must
 // carry basis and subject, and rule when derived.
 var elementLists = map[string][]string{
-	"blast_radius":   {"members", "unattributed", "quarantined"},
-	"what_changed":   {"created", "deleted", "changed", "transient", "events", "quarantined"},
-	"co_residents":   {"placement", "co_residents", "suppressed", "unattributed", "quarantined"},
-	"neighbors_at":   {"edges", "quarantined"},
-	"entity_history": {"records"},
-	"find_entities":  {"matches"},
+	"blast_radius":    {"members", "unattributed", "quarantined"},
+	"what_changed":    {"created", "deleted", "changed", "transient", "events", "quarantined"},
+	"co_residents":    {"placement", "co_residents", "suppressed", "unattributed", "quarantined"},
+	"service_context": {"callers", "callees", "pairs", "suppressed", "unattributed", "unmapped", "quarantined"},
+	"neighbors_at":    {"edges", "quarantined"},
+	"entity_history":  {"records"},
+	"find_entities":   {"matches"},
 }
 
 var endVocabulary = []string{"producer", "liveness_expiry", "cascade", "unattributed", "reach_ended"}
@@ -40,7 +41,8 @@ func walk(v any, path string, f func(path string, obj map[string]any)) {
 func TestLabels(t *testing.T) {
 	w := newWorld(t, rankObjs)
 	s := w.source(t, rankObjs, true)
-	for _, a := range allAnswers(t, w, s) {
+	sw := newSvcWorld(t, newSvcMem(t))
+	for _, a := range append(allAnswers(t, w, s), svcAnswers(t, sw, sw.source(t))...) {
 		t.Run(a.name, func(t *testing.T) {
 			ans := decode(t, a.json)
 
@@ -204,7 +206,8 @@ func TestRulesAreInTheVocabulary(t *testing.T) {
 		terms = append(terms, r.Term)
 	}
 	used := map[string]bool{}
-	for _, a := range allAnswers(t, w, s) {
+	sw := newSvcWorld(t, newSvcMem(t))
+	for _, a := range append(allAnswers(t, w, s), svcAnswers(t, sw, sw.source(t))...) {
 		walk(decode(t, a.json), "$", func(path string, obj map[string]any) {
 			rule, ok := obj["rule"].(string)
 			if !ok {
@@ -222,7 +225,10 @@ func TestRulesAreInTheVocabulary(t *testing.T) {
 			}
 		})
 	}
-	for _, want := range []string{"existence", "blast_radius.reach", "co_residency.shared_node", "co_residency.shared_host", "unattributed.no_host", "unattributed.quarantined_host", "diff.created", "diff.deleted", "diff.changed", "diff.transient", "diff.event"} {
+	for _, want := range []string{
+		"existence", "blast_radius.reach", "co_residency.shared_node", "co_residency.shared_host", "unattributed.no_host", "unattributed.quarantined_host", "diff.created", "diff.deleted", "diff.changed", "diff.transient", "diff.event",
+		"pair.shared_pod", "pair.shared_node", "pair.shared_host", "unmapped", "unattributed.several_pods",
+	} {
 		if !used[want] && want != "unattributed.no_host" {
 			t.Errorf("no answer of the fixture uses the rule %q", want)
 		}

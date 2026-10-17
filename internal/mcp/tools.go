@@ -35,6 +35,13 @@ func Tools() []Tool {
 			Range: true,
 		},
 		{
+			Name: "service_context",
+			Description: "Shows a service's callers and callees over a time window, one depends_on hop, and every service that shared a pod, a node or a host with a pod of the service or of those neighbours, each pair checked by interval intersection over instances. " +
+				"A mapping that cannot be told and a pod with no mapped service are listed, never guessed. Give a service id; find_entities finds one by name. " +
+				"A long window on a large service may exceed the call's deadline; a shorter window or node_only answers sooner. The answer is derived and read at one token.",
+			Range: true,
+		},
+		{
 			Name: "neighbors_at",
 			Description: "Lists the edges of an entity at one instant, each only while both of its ends exist, with the entity at the other end of each. " +
 				"An edge with a quarantined end is listed and marked. An edge to an endpoint the request did not name is withheld and counted. The answer is read at one token.",

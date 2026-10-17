@@ -7,6 +7,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/graphdiff"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 )
@@ -33,7 +34,7 @@ func TestDescribeSchema(t *testing.T) {
 	}
 	wantPolicy := Policy{
 		Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
-		CoResidency: coresidency.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
+		CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
 		Find: FindVersion,
 	}
 	if out.Policy != wantPolicy || out.Names.Version != NameTableVersion || out.Payload.Version != PayloadTableVersion {

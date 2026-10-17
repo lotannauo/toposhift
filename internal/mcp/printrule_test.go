@@ -408,6 +408,7 @@ func TestEveryToolPrintsAWithheldNameAsNull(t *testing.T) {
 			pod1 := fpOf(t, catalog.K8sPod, catalog.K8sPodUID, "pod-1")
 			pod2 := fpOf(t, catalog.K8sPod, catalog.K8sPodUID, "pod-2")
 			longNS := strings.Repeat("n", 254)
+			inst := fpOf(t, catalog.ServiceInstance, catalog.ServiceName, "caller", catalog.ServiceInstanceID, "caller-0")
 			f.write(
 				observe(ent(caller), "svcgraph/c1", hm(9, 0), 0, jsonObject("name", "caller\tone", "namespace", "shop")),
 				observe(ent(callee), "svcgraph/c1", hm(9, 0), 0, jsonObject("name", hexName, "namespace", longNS)),
@@ -420,6 +421,11 @@ func TestEveryToolPrintsAWithheldNameAsNull(t *testing.T) {
 				observe(ent(pod2), objs, hm(9, 0), 0, jsonObject("name", "pod two", "namespace", "shop")),
 				observe(edge(pod1, ns, catalog.ScheduledOn), objs, hm(9, 0), 0, `{}`),
 				observe(edge(pod2, ns, catalog.ScheduledOn), objs, hm(9, 0), 0, `{}`),
+
+				// An instance of caller on pod1: pod2 shares its node and has no instance.
+				observe(ent(inst), "spancount/c1", hm(9, 0), 0, `{}`),
+				observe(edge(inst, caller, catalog.InstanceOf), "spancount/c1", hm(9, 0), 0, `{}`),
+				observe(edge(inst, pod1, catalog.PartOf), "spancount/c1", hm(9, 0), 0, `{}`),
 			)
 			s := sourceOn(t, st, nil, nil)
 
@@ -479,6 +485,14 @@ func TestEveryToolPrintsAWithheldNameAsNull(t *testing.T) {
 				t.Fatal(err)
 			}
 			check("co_residents", &co)
+			sc, err := s.ServiceContext(ctx, ServiceContextInput{Service: caller.String(), From: w10, To: w1030})
+			if err != nil {
+				t.Fatalf("service_context of a service whose name is withheld: %v", err)
+			}
+			check("service_context", &sc)
+			if len(sc.Callers) != 1 || len(sc.Callees) != 1 || len(sc.Unmapped) != 1 || sc.Unmapped[0].Pod.FP != pod2 {
+				t.Errorf("service_context: %d callers, %d callees, unmapped %+v", len(sc.Callers), len(sc.Callees), sc.Unmapped)
+			}
 			eh, err := s.EntityHistory(ctx, EntityHistoryInput{Entity: callee.String(), From: "2026-01-01T09:00:00Z", To: w1030})
 			if err != nil {
 				t.Fatalf("entity_history of a service whose name holds an endpoint id's text: %v", err)

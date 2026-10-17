@@ -28,6 +28,7 @@ func TestGateBeforeTheStore(t *testing.T) {
 		{name: "blast_radius", args: map[string]any{"entity": w.h1.String(), "from": w10, "to": w1030}},
 		{name: "what_changed", args: map[string]any{"scope": []string{w.h1.String()}, "from": w10, "to": w1030}},
 		{name: "co_residents", args: map[string]any{"pod": w.p1.String(), "from": w10, "to": w1030}},
+		{name: "service_context", args: map[string]any{"service": w.checkout.String(), "from": w10, "to": w1030}},
 		{name: "neighbors_at", args: neighborsArgs(w)},
 		{name: "entity_history", args: map[string]any{"entity": w.p1.String(), "from": w10, "to": w1030}},
 		{name: "find_entities", args: map[string]any{"type": "k8s.pod", "at": w10}},

@@ -106,3 +106,22 @@ func TestVocabularyListsEveryEndReason(t *testing.T) {
 		}
 	})
 }
+
+// The rules of a pair are the wire's: a pair of services prints exactly the
+// strings the wire's derived kinds are named by, and no other.
+func TestPairRulesMatchTheWire(t *testing.T) {
+	for _, c := range []struct{ mcp, wire string }{
+		{RulePairSharedPod, subgraph.RulePairSharedPod},
+		{RulePairSharedNode, subgraph.RulePairSharedNode},
+		{RulePairSharedHost, subgraph.RulePairSharedHost},
+	} {
+		if c.mcp != c.wire {
+			t.Errorf("MCP prints %q, the wire names %q", c.mcp, c.wire)
+		}
+	}
+	for _, r := range []string{RulePairSharedPod, RulePairSharedNode, RulePairSharedHost, RuleUnmapped} {
+		if !slices.ContainsFunc(vocabulary.Rules, func(w Word) bool { return w.Term == r }) {
+			t.Errorf("the rule %q is not in the vocabulary", r)
+		}
+	}
+}

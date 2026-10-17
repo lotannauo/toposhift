@@ -58,6 +58,26 @@
 // only a name and a namespace, indexes nothing, and never lists a host or an
 // endpoint; a store without the listing read refuses it in a sentence.
 //
+// # A service's context
+//
+// [Source.ServiceContext] serves the exploratory extraction of package extract
+// for one service id over a window: the service's callers (a depends_on into
+// it) and callees (a depends_on from it), one hop, and every other service that
+// shared a pod, a node or a host with a pod of that hop. It takes an id and
+// never a name, and a window and never an instant. It runs one extraction under
+// the package's default policy and reads nothing else but the names, so every
+// pair is the union over instances of the intersection of every leg, as the
+// package derives it. A mapping that cannot be told is listed as unattributed,
+// and a pod with no instance mapped singly to a service as unmapped, never
+// guessed. The pairs carry the rules the wire uses (pair.shared_pod,
+// pair.shared_node, pair.shared_host), and the policy carries the extraction's
+// version. A service that shares a node with the seed pods on most of the
+// frontier is suppressed as ubiquitous and listed apart, with its coverage. The
+// caps of the extraction mark the answer incomplete, each with a sentence; the
+// display limit and the hard cap give exact counts, and the hard cap drops the
+// callers and callees last. The service is the only entity the request names:
+// no endpoint id is printed.
+//
 // # Refusals
 //
 // A failure is a [*Error] whose message is a plain sentence for the client.

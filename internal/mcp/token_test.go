@@ -175,3 +175,62 @@ func TestEarlierToken(t *testing.T) {
 		t.Errorf("token %s, %d members at token 0", out.Token, len(out.Members))
 	}
 }
+
+// service_context reads one token too: a write while it runs, that adds a caller
+// and an instance of the service, changes nothing in the answer, and the token
+// reads the same world again.
+func TestServiceContextOneToken(t *testing.T) {
+	w := newSvcWorld(t, newSvcMem(t))
+	in := ServiceContextInput{Service: w.id("checkout"), From: w10, To: w1030}
+	token := w.st.LastSeq()
+	before := asJSON(t, serviceContext(t, w.source(t), in))
+
+	spy := &spyStore{Store: w.st}
+	spy.afterFirst = func() { w.lateWrites(t) }
+	s, err := NewSource(Config{Store: spy, Rank: rankObjs, RangeReads: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	during := asJSON(t, serviceContext(t, s, in))
+	if w.st.LastSeq() == token {
+		t.Fatal("the late writes did not happen")
+	}
+	if spy.reads == 0 {
+		t.Fatal("the call read nothing")
+	}
+	for i, got := range spy.asOf {
+		if got != token {
+			t.Fatalf("read %d of %d used the token %d, want %d", i+1, len(spy.asOf), got, token)
+		}
+	}
+	if !bytes.Equal(before, during) {
+		t.Errorf("the answer changed with a write during the call:\nbefore: %s\nduring: %s", before, during)
+	}
+
+	in.AsOf = strconv.FormatUint(token, 10)
+	if again := asJSON(t, serviceContext(t, s, in)); !bytes.Equal(before, again) {
+		t.Errorf("asof=%d gave another answer:\nfirst: %s\nagain: %s", token, before, again)
+	}
+	in.AsOf = ""
+	now := serviceContext(t, s, in)
+	if bytes.Equal(before, asJSON(t, now)) || len(now.Callers) != 4 {
+		t.Errorf("the late writes changed nothing in the answer (%d callers); the test cannot tell a pinned token from a moving one", len(now.Callers))
+	}
+
+	// A token ahead of the store is clamped to it, and the answer says so.
+	last := w.st.LastSeq()
+	in.AsOf = strconv.FormatUint(last+100, 10)
+	ahead := serviceContext(t, s, in)
+	if want := "Token " + in.AsOf + " is ahead of the store; answered at " + strconv.FormatUint(last, 10) + "."; ahead.Token != strconv.FormatUint(last, 10) || !contains(ahead.Notes, want) {
+		t.Errorf("token %q, notes %q", ahead.Token, ahead.Notes)
+	}
+}
+
+func asJSON(t testing.TB, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

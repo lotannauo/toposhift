@@ -131,7 +131,10 @@ type world struct {
 	n1, n2, n3                 identity.Fingerprint
 	p1, p2, p3, p4, p5, p6, p7 identity.Fingerprint
 	c1                         identity.Fingerprint
-	feed                       *feed
+	// checkout is a service with an instance part of P1; cache has one part of P3;
+	// frontend calls checkout.
+	checkout, cache, frontend identity.Fingerprint
+	feed                      *feed
 }
 
 func newWorld(tb testing.TB, rank map[lifecycle.Producer]int) *world {
@@ -202,5 +205,42 @@ func newWorld(tb testing.TB, rank map[lifecycle.Producer]int) *world {
 
 		observe(ent(w.p1), objs, hm(10, 12), 0, `{"host_ip":"`+podHostIP+`","name":"web-0","namespace":"shop","phase":"Running","pod_ips":["`+podIP+`"]}`),
 	)
+	w.writeServices(tb)
 	return w
+}
+
+const (
+	spancount lifecycle.Producer = "spancount/c1"
+	svcgraph  lifecycle.Producer = "svcgraph/c1"
+)
+
+// writeServices writes the services of the world as the translators write them: a
+// description of each, an instance of checkout part of P1 and one of cache part of
+// P3, and frontend's dependency on checkout.
+func (w *world) writeServices(tb testing.TB) {
+	tb.Helper()
+	svc := func(name string) identity.Fingerprint {
+		return fpOf(tb, catalog.Service, catalog.ServiceNamespace, "shop", catalog.ServiceName, name)
+	}
+	inst := func(name string) identity.Fingerprint {
+		return fpOf(tb, catalog.ServiceInstance, catalog.ServiceNamespace, "shop", catalog.ServiceName, name, catalog.ServiceInstanceID, name+"-0")
+	}
+	w.checkout, w.cache, w.frontend = svc("checkout"), svc("cache"), svc("frontend")
+	nine := hm(9, 0)
+	var recs []store.Record
+	for _, name := range []string{"checkout", "cache", "frontend"} {
+		recs = append(recs, observe(ent(svc(name)), svcgraph, nine, 0, `{"name":"`+name+`","namespace":"shop"}`))
+	}
+	for _, in := range []struct {
+		name string
+		pod  identity.Fingerprint
+	}{{"checkout", w.p1}, {"cache", w.p3}} {
+		recs = append(recs,
+			observe(ent(inst(in.name)), spancount, nine, 0, `{}`),
+			observe(edge(inst(in.name), svc(in.name), catalog.InstanceOf), spancount, nine, 0, `{}`),
+			observe(edge(inst(in.name), in.pod, catalog.PartOf), spancount, nine, 0, `{}`),
+		)
+	}
+	recs = append(recs, observe(edge(w.frontend, w.checkout, catalog.DependsOn), svcgraph, nine, 0, `{}`))
+	w.feed.write(recs...)
 }

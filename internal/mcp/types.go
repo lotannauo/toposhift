@@ -44,6 +44,10 @@ const (
 	RuleReach           = "blast_radius.reach"
 	RuleSharedNode      = "co_residency.shared_node"
 	RuleSharedHost      = "co_residency.shared_host"
+	RulePairSharedPod   = "pair.shared_pod"
+	RulePairSharedNode  = "pair.shared_node"
+	RulePairSharedHost  = "pair.shared_host"
+	RuleUnmapped        = "unmapped"
 	RuleUnattributed    = "unattributed."
 	RuleDiff            = "diff."
 	endReasonReachEnded = "reach_ended"
@@ -58,6 +62,7 @@ type Policy struct {
 	BlastRadius int    `json:"blastradius,omitempty"`
 	GraphDiff   int    `json:"graphdiff,omitempty"`
 	CoResidency int    `json:"coresidency,omitempty"`
+	Extract     int    `json:"extract,omitempty"`
 	Rank        string `json:"rank,omitempty"`
 	Names       int    `json:"names,omitempty"`
 	Payload     int    `json:"payload,omitempty"`

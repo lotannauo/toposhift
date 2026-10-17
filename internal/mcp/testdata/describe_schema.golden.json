@@ -5,6 +5,7 @@
     "blastradius": 1,
     "graphdiff": 1,
     "coresidency": 1,
+    "extract": 1,
     "names": 2,
     "payload": 2,
     "withhold": 1,
@@ -520,8 +521,24 @@
         "meaning": "two pods on two nodes at once, each node placed on one host by an asserted runs_on"
       },
       {
+        "term": "pair.shared_pod",
+        "meaning": "two services, each through an instance mapped singly, that shared one pod"
+      },
+      {
+        "term": "pair.shared_node",
+        "meaning": "two services, each through an instance mapped singly, that had a pod on one node at once"
+      },
+      {
+        "term": "pair.shared_host",
+        "meaning": "two services, each through an instance mapped singly, that had pods on two nodes at once, each node placed on one host by an asserted runs_on"
+      },
+      {
+        "term": "unmapped",
+        "meaning": "a co-resident pod with no instance mapped singly to a service over these spans; shown, never guessed"
+      },
+      {
         "term": "unattributed.\u003creason\u003e",
-        "meaning": "a placement the server refuses to guess; the reason says why"
+        "meaning": "a placement or a mapping the server refuses to guess; the reason says why"
       },
       {
         "term": "diff.\u003cbucket\u003e",
@@ -590,6 +607,7 @@
     "Hosts are unnamed on purpose: the node agent drops the host's name and every address from its description.",
     "An endpoint (topo.endpoint) is an address within its realm, \"global\" or \"k8s/\u003ccluster\u003e\". It is unnamed and has no description. Its id reveals its address, because the realm and the address can be enumerated and hashed, so an endpoint's id, or an edge to an endpoint, is printed only when the request named that endpoint: by its id, or through resolve_entity's realm and address. Elsewhere such an edge is withheld and counted under counts.withheld, and no error sentence prints such an id. resolve_entity takes the realm and the address exactly as stored: IPv4 in dotted decimal, IPv6 in lowercase compressed form, an IPv4-mapped address as IPv4.",
     "Every range answer is read at one token, named in the answer; pass it as asof to read the same world again.",
-    "To find an id from a name, call find_entities: it compares names only, never another key, and never lists an endpoint or a host."
+    "To find an id from a name, call find_entities: it compares names only, never another key, and never lists an endpoint or a host.",
+    "service_context runs the extraction of one service: its callers and callees, one depends_on hop, and the services that shared a pod, a node or a host with them, each pair checked by interval intersection over instances. A pair span's ends name the leg that ended: member_instance_of, member_part_of, peer_part_of, peer_instance_of or placement."
   ]
 }

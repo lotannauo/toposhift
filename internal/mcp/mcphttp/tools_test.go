@@ -36,8 +36,8 @@ func TestListsTheCoreTools(t *testing.T) {
 	if len(lt.Tools) != len(want) || len(got) != len(want) {
 		t.Fatalf("%d tools offered, the core has %d", len(lt.Tools), len(want))
 	}
-	if len(want) != 8 {
-		t.Errorf("the core has %d tools, want the eight of the design", len(want))
+	if len(want) != 9 {
+		t.Errorf("the core has %d tools, want the nine of the design", len(want))
 	}
 	for _, w := range want {
 		if !got[w.Name] {
@@ -82,6 +82,7 @@ func TestInputSchemasMatchTheInputTypes(t *testing.T) {
 		"blast_radius":    core.BlastRadiusInput{},
 		"what_changed":    core.WhatChangedInput{},
 		"co_residents":    core.CoResidentsInput{},
+		"service_context": core.ServiceContextInput{},
 		"neighbors_at":    core.NeighborsAtInput{},
 		"entity_history":  core.EntityHistoryInput{},
 		"find_entities":   core.FindEntitiesInput{},
@@ -114,15 +115,18 @@ func TestInputSchemasMatchTheInputTypes(t *testing.T) {
 		var props []string
 		for k, raw := range schema.Properties {
 			props = append(props, k)
-			if tl.Name != "find_entities" {
+			if tl.Name != "find_entities" && tl.Name != "service_context" {
 				continue
 			}
 			var p struct {
 				Description string `json:"description"`
 			}
 			if err := json.Unmarshal(raw, &p); err != nil || p.Description == "" {
-				t.Errorf("find_entities: the property %q has no description (%v)", k, err)
+				t.Errorf("%s: the property %q has no description (%v)", tl.Name, k, err)
 			}
+		}
+		if tl.Name == "service_context" && slices.Contains(props, "at") {
+			t.Error("service_context takes a window, never an instant, and its schema offers \"at\"")
 		}
 		slices.Sort(keys)
 		slices.Sort(props)
@@ -160,6 +164,8 @@ func callsOn(w *world) []toolCall {
 		{"co-residents, every field", "co_residents", map[string]any{"pod": id(w.p1), "from": w10, "to": w1030, "node_only": false, "asof": tok, "limit": 500}, true},
 		{"co-residents, node only and cut", "co_residents", map[string]any{"pod": id(w.p1), "from": w10, "to": w1030, "node_only": true, "limit": 1}, true},
 		{"co-residents on a quarantined host", "co_residents", map[string]any{"pod": id(w.p5), "from": w10, "to": w1030}, true},
+		{"service context, every field", "service_context", map[string]any{"service": id(w.checkout), "from": w10, "to": w1030, "node_only": false, "asof": tok, "limit": 500}, true},
+		{"service context, node only and cut", "service_context", map[string]any{"service": id(w.checkout), "from": w10, "to": w1030, "node_only": true, "limit": 1}, true},
 		{"neighbors, every field", "neighbors_at", map[string]any{"entity": id(w.n1), "at": "2026-01-01T10:08:00Z", "direction": "both", "asof": tok}, false},
 		{"neighbors forward", "neighbors_at", map[string]any{"entity": id(w.n3), "at": "2026-01-01T10:08:00Z", "direction": "forward"}, false},
 		{"neighbors of a quarantined host", "neighbors_at", map[string]any{"entity": id(w.h2), "at": "2026-01-01T10:08:00Z"}, false},
