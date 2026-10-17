@@ -5,13 +5,15 @@ import (
 	"slices"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
 
 // The emitters write what the collectors of the shipped configuration send: the
 // Kubernetes objects receiver in pull mode and in watch mode, the cluster
-// receiver, and a collector on every node. Each is a pure function of the world
-// and an instant; none reads a clock, draws, or keeps state between calls.
+// receiver, a collector on every node, and the trace collector, whose metrics are
+// in connector.go. Each is a pure function of the world and an instant; none reads
+// a clock, draws, or keeps state between calls.
 
 // ReportEvery is the interval of the objects receiver's pulls, of the cluster
 // receiver's reports and of the node agents' reports: five minutes, the interval
@@ -31,6 +33,10 @@ const (
 	EmitNodeAgent
 	// EmitObjectsWatch is the objects receiver's watch event for one change.
 	EmitObjectsWatch
+	// EmitServiceGraph is the trace collector's service graph flush, and
+	// EmitSpanCount its span counts: metrics, and not logs.
+	EmitServiceGraph
+	EmitSpanCount
 )
 
 func (e Emitter) String() string {
@@ -43,21 +49,45 @@ func (e Emitter) String() string {
 		return "node agent"
 	case EmitObjectsWatch:
 		return "objects watch"
+	case EmitServiceGraph:
+		return "service graph"
+	case EmitSpanCount:
+		return "span count"
 	}
 	return fmt.Sprintf("emitter %d", int(e))
 }
 
-// Request is one export of a collector, at the instant it is sent.
+// Request is one export of a collector, at the instant it is sent. It is a logs
+// request, built by build, or a metrics request, built by metrics.
 type Request struct {
 	At      time.Time
 	Emitter Emitter
 	// What says which request it is, for a message.
-	What  string
-	build func() capture.LogsData
+	What    string
+	build   func() capture.LogsData
+	metrics func() otlpmetrics.Data
 }
 
-// Data builds the request's OTLP logs.
-func (r Request) Data() capture.LogsData { return r.build() }
+// IsMetrics says whether the request carries metrics: the trace collector's. Its
+// body is [Request.Metrics], and [Request.Data] is empty.
+func (r Request) IsMetrics() bool { return r.metrics != nil }
+
+// Data builds the request's OTLP logs. A metrics request has none.
+func (r Request) Data() capture.LogsData {
+	if r.build == nil {
+		return capture.LogsData{}
+	}
+	return r.build()
+}
+
+// Metrics builds the request's OTLP metrics, in the narrow model the receiver
+// hands the sequencer. A logs request has none.
+func (r Request) Metrics() otlpmetrics.Data {
+	if r.metrics == nil {
+		return otlpmetrics.Data{}
+	}
+	return r.metrics()
+}
 
 // Requests lists every request of the window, ordered by instant, then emitter,
 // then the order they are listed in. anchor to anchor+Span is covered, both ends
@@ -67,17 +97,24 @@ func (w *World) Requests() []Request {
 	var out []Request
 	for p := anchor; !p.After(end); p = p.Add(ReportEvery) {
 		out = append(out,
-			Request{p, EmitObjectsPull, "pull of nodes", func() capture.LogsData { return w.pullNodes(p) }},
-			Request{p, EmitObjectsPull, "pull of pods", func() capture.LogsData { return w.pullPods(p) }},
-			Request{p, EmitClusterReport, "report", func() capture.LogsData { return w.report(p) }},
+			Request{At: p, Emitter: EmitObjectsPull, What: "pull of nodes", build: func() capture.LogsData { return w.pullNodes(p) }},
+			Request{At: p, Emitter: EmitObjectsPull, What: "pull of pods", build: func() capture.LogsData { return w.pullPods(p) }},
+			Request{At: p, Emitter: EmitClusterReport, What: "report", build: func() capture.LogsData { return w.report(p) }},
 		)
 		for n := range w.Nodes {
-			out = append(out, Request{p, EmitNodeAgent, "host event of " + w.Nodes[n].Name, func() capture.LogsData { return w.agent(n, p) }})
+			out = append(out, Request{At: p, Emitter: EmitNodeAgent, What: "host event of " + w.Nodes[n].Name, build: func() capture.LogsData { return w.agent(n, p) }})
 		}
 	}
 	for _, c := range w.changes() {
 		what := fmt.Sprintf("watch %s of %s", c.typ, c.name(w))
-		out = append(out, Request{c.at, EmitObjectsWatch, what, func() capture.LogsData { return w.watch(c) }})
+		out = append(out, Request{At: c.at, Emitter: EmitObjectsWatch, What: what, build: func() capture.LogsData { return w.watch(c) }})
+	}
+	if len(w.Calls) > 0 {
+		for k := range flushes {
+			out = append(out,
+				Request{At: flushTime(k).Add(arrives), Emitter: EmitServiceGraph, What: "service graph flush", metrics: func() otlpmetrics.Data { return w.serviceGraph(k) }},
+				Request{At: spanTime(k).Add(arrives), Emitter: EmitSpanCount, What: "span counts", metrics: func() otlpmetrics.Data { return w.spanCounts(k) }})
+		}
 	}
 	slices.SortStableFunc(out, func(a, b Request) int {
 		if c := a.At.Compare(b.At); c != 0 {

@@ -279,10 +279,11 @@ func TestTheRolloutEndsTheOldFrontendPods(t *testing.T) {
 }
 
 // Nothing derived is stored: every record in the store is a producer's assertion,
-// and the producers are the three translators of the cluster name.
+// and the producers are the translators of the cluster name: the three of the
+// cluster's collectors, and the two of the trace collector's metrics.
 func TestOnlyTheTranslatorsWrite(t *testing.T) {
 	b := canonicalBuild(t)
-	want := []lifecycle.Producer{"k8scluster/" + ClusterName, "k8sobjects/" + ClusterName, "nodeagent/" + ClusterName}
+	want := []lifecycle.Producer{"k8scluster/" + ClusterName, "k8sobjects/" + ClusterName, "nodeagent/" + ClusterName, "spancount/" + ClusterName, "svcgraph/" + ClusterName}
 	if !slices.Equal(b.Producers, want) {
 		t.Errorf("the records are of %v, want %v", b.Producers, want)
 	}

@@ -2,7 +2,7 @@
 
 A temporal topology graph for infrastructure. For each entity (a pod, a node, a container, a host, a service) it keeps a log of what producers asserted about it, with the time each thing happened and the time toposhift learned of it. Whatever it works out from that log, such as a blast radius or the pods that shared a node, is computed when you ask, labelled as derived, and never written back as a fact.
 
-Today it answers these questions, read-only, over MCP: which entities have a name containing some text, at an instant or over a window; what an entity is connected to at an instant; the blast radius of a failing entity over a window (from a host, the nodes on it and everything placed on them; from a node, the pods, containers and service instances placed on it; from a service, the services that call it, directly or through others); which pods shared a node, or a host, with a pod; what changed in a set of entities between two instants; when an entity existed and why each span ended; the id of an entity from its identifying attributes; and the schema, which says how each relation carries failure.
+Today it answers these questions, read-only, over MCP: which entities have a name containing some text, at an instant or over a window; what an entity is connected to at an instant; the blast radius of a failing entity over a window (from a host, the nodes on it and everything placed on them; from a node, the pods, containers and service instances placed on it; from a service, the services that call it, directly or through others); which pods shared a node, or a host, with a pod; the context of a service over a window: the services one call away, as callers or callees, and the services that shared a pod, a node or a host with it; what changed in a set of entities between two instants; when an entity existed and why each span ended; the id of an entity from its identifying attributes; and the schema, which says how each relation carries failure.
 
 ## Status
 
@@ -19,7 +19,7 @@ CGO_ENABLED=0 go build -trimpath -o bin/toposhift ./cmd/toposhift
 ./bin/toposhift demo
 ```
 
-`demo` builds a synthetic Kubernetes cluster in memory, prints a banner on stderr, and serves the tools at `http://127.0.0.1:7070/mcp` (loopback only, nothing written to disk) until you stop it. Nothing in it is real: its history runs from 2026-10-01T00:00:00Z to 2026-10-01T06:00:00Z, and the banner says what happens in it and prints two questions to try. At 2026-10-01T03:00:00Z the node `node-2` stops being ready.
+`demo` builds a synthetic Kubernetes cluster in memory, prints a banner on stderr, and serves the tools at `http://127.0.0.1:7070/mcp` (loopback only, nothing written to disk) until you stop it. Nothing in it is real: its history runs from 2026-10-01T00:00:00Z to 2026-10-01T06:00:00Z, and the banner says what happens in it and prints three questions to try. At 2026-10-01T03:00:00Z the node `node-2` stops being ready.
 
 In a second terminal, ask three questions. The server keeps no session, so each is a single `tools/call` request. Send both headers: the server answers 415 to a request whose `Content-Type` is not `application/json`, and 400 to one whose `Accept` does not admit both `application/json` and `text/event-stream` (curl's default, `*/*`, admits both; a request with no `Accept` at all is refused).
 
@@ -107,12 +107,12 @@ What toposhift does not do yet:
 - There is no authentication. The tools are served on loopback only, and the ingest routes accept whatever reaches them.
 - One `serve` either takes ingest from a remote collector or serves the tools, not both (see "Run it on a cluster").
 - There is no UI and no HTTP query API besides MCP.
-- No tool answers which services shared a host with a given service.
+- A call is stopped after 30 seconds with no partial answer; `service_context` on a large service over a long window can reach it.
 - Range answers on a long-lived store cost more as it ages, because an entity's history is folded from the start of retention.
 - `find_entities` checks at most 256 ids a call and says how to continue.
 - A producer's text that contains an endpoint's id is not printed: an answer that would print it is refused, not shown.
 - A container has no namespace under `serve`'s ranks, so a namespace filter finds no container.
-- The demo has no services, and it deletes evicted pods at once.
+- The demo deletes evicted pods at once.
 - Checkpoint holes left by late records are not repaired.
 - Translator resets can still raise read work in watch-only mode.
 - Native sidecars are not read.

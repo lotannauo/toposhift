@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
 )
@@ -16,6 +17,12 @@ const ClusterName = "demo"
 
 // Span is how long the history is: from the anchor to the anchor plus Span.
 const Span = 6 * time.Hour
+
+// Expiry is how long after its last sighting a call or an instance ends in the
+// demo: fifteen minutes, which is the dependency expiry and the instance TTL the
+// sequencer is given. It is a constant of the demo; serve's defaults are six hours,
+// at which no call would end inside the window.
+const Expiry = 15 * time.Minute
 
 // DefaultSeed is the seed of the one canonical world.
 const DefaultSeed uint64 = 1
@@ -50,6 +57,14 @@ type Built struct {
 	// has no note.
 	Skips, Notes    []Count
 	NamespaceEvents int
+	// DatabasePoints is how many service graph points of calls to a database the
+	// trace collector sent, and WarmUpSeries how many series of other calls its
+	// first flush held: the service graph translator sets the first aside, as the
+	// database is an endpoint and not a service, and the second while it warms up.
+	DatabasePoints, WarmUpSeries int
+	// Metrics are the sequencer's counters of the metrics path (as GET /status
+	// names them), a copy taken when the build ended.
+	Metrics map[string]int64
 	// Took is how long the build took, by the wall clock. It is not part of the
 	// history.
 	Took  time.Duration
@@ -58,26 +73,39 @@ type Built struct {
 
 func rfc(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// UnexplainedSkips is how many skips the namespace events the world sent do not
-// explain. The cluster translator sets aside every one of them, as an entity type
-// the catalog does not have, and nothing else: so the skips for that reason of that
-// producer must be exactly NamespaceEvents, and there must be no other. It counts
-// the skips beyond that and the namespace events not set aside, so it is 0 only
-// when both hold. A world that sent a namespace event while the skips were not
-// read at all is not explained either.
+// UnexplainedSkips is how many skips the world's own requests do not explain. Three
+// things are set aside on purpose, each for one reason of one producer and in a
+// number the world knows: the namespace events the cluster receiver sends for the
+// detector of cluster identity, which are not in the catalog; the series of calls
+// that are live when the trace collector's first flush arrives, which the service
+// graph translator sets aside while it warms up; and the points of calls to a
+// database, which are endpoints and not services. It counts the skips beyond those,
+// and the number of each of those that is not what the world sent, so it is 0 only
+// when every skip is explained and every one that should be there is. A world that
+// sent a namespace event while the skips were not read at all is not explained
+// either.
 func (b *Built) UnexplainedSkips() int {
-	producer := "k8scluster/" + ClusterName
+	cluster, graph := "k8scluster/"+ClusterName, "svcgraph/"+ClusterName
 	explained := 0
-	for _, c := range b.Skips {
-		if c.Producer == producer && c.Reason == k8scluster.SkipTypeNotInCatalog {
-			explained += c.N
+	unexplained := 0
+	for _, e := range []struct {
+		producer, reason string
+		sent             int
+	}{
+		{cluster, k8scluster.SkipTypeNotInCatalog, b.NamespaceEvents},
+		{graph, svcgraph.SkipWarmUp, b.WarmUpSeries},
+		{graph, svcgraph.SkipConnectionDatabase, b.DatabasePoints},
+	} {
+		got := 0
+		for _, c := range b.Skips {
+			if c.Producer == e.producer && c.Reason == e.reason {
+				got += c.N
+			}
 		}
+		explained += got
+		unexplained += max(got-e.sent, e.sent-got)
 	}
-	gap := explained - b.NamespaceEvents
-	if gap < 0 {
-		gap = -gap
-	}
-	return Total(b.Skips) - explained + gap
+	return Total(b.Skips) - explained + unexplained
 }
 
 // Instructions is what the tools say about the demo to the client that connects:
@@ -111,12 +139,14 @@ func (b *Built) Instructions() string {
 		sb.WriteString(strings.Join(byMachine[m], " and ") + " share a host")
 	}
 	sb.WriteString(". neighbors_at on a node lists the pods scheduled on it.")
+	fmt.Fprintf(&sb, " Services come from the trace pipeline's metrics; find_entities with type service finds them by name. A call or an instance is known from its first sighting and ends %d minutes after its last, the demo's expiry (serve's default is 6 hours). blast_radius from a service reaches the services that call it; from a node or a pod it stops at service instances.", int(Expiry/time.Minute))
 	return sb.String()
 }
 
 // Banner is what a person who starts the demo reads: what it is, its window and
-// its digest, the story in three lines, and two questions to ask. Everything in it
-// is a function of the seed. It prints node and pod ids and never an endpoint's.
+// its digest, the story in four lines, and three questions to ask. Everything in it
+// is a function of the seed. It prints node and service ids and never an endpoint's,
+// and claims no call fails: toposhift stores who calls whom, not whether it works.
 func (b *Built) Banner() string {
 	s := b.Story
 	var sb strings.Builder
@@ -126,8 +156,11 @@ func (b *Built) Banner() string {
 		rfc(s.NotReady), s.Failed.Name, rfc(s.Evict), rfc(s.Ready))
 	fmt.Fprintf(&sb, "  %s: the frontend is rolled out, one pod at a time; a report job runs every hour from %s.\n",
 		rfc(s.Rollout), rfc(s.Anchor.Add(jobFirst)))
+	fmt.Fprintf(&sb, "  %s: checkout starts calling payments-api; its last call to legacy-pay is at %s, last sighted at %s; that call ends at %s, one expiry (%dm) after.\n",
+		rfc(s.Migrate), rfc(s.LastLegacyCall), rfc(s.LegacyCallEnds.Add(-Expiry)), rfc(s.LegacyCallEnds), int(Expiry/time.Minute))
 	sb.WriteString("  Nothing here is real: the nodes, pods and times are made up, and one seed always gives the same cluster.\n")
 	fmt.Fprintf(&sb, "  try blast_radius: entity %s, from %s to %s\n", s.Failed.ID, rfc(s.NotReady), rfc(s.NotReady.Add(30*time.Minute)))
 	fmt.Fprintf(&sb, "  try neighbors_at: entity %s, at %s\n", s.Failed.ID, rfc(s.NotReady.Add(-time.Minute)))
+	fmt.Fprintf(&sb, "  try blast_radius: entity %s, from %s to %s (what ledger's failure would reach)\n", s.Service("payments", "ledger").ID, rfc(s.FaultFrom), rfc(s.FaultTo))
 	return sb.String()
 }

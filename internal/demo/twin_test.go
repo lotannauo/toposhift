@@ -48,8 +48,9 @@ func source(tb testing.TB, st store.Store) *mcp.Source {
 // The records a build commits, copied as they are committed into a pebblestore in
 // memory, answer the questions of the end-to-end test with the same bytes as the
 // memstore the build wrote them to: the same records in the same order give the
-// same answers, whichever engine holds them. The pebblestore here is not
-// retained; retained twins are the store package's.
+// same answers, whichever engine holds them, and the services' as well as the
+// cluster's. The pebblestore here is not retained; retained twins are the store
+// package's.
 func TestAPebblestoreHoldingTheSameRecordsAnswersTheSame(t *testing.T) {
 	twin := openTwin(t)
 	b := build(t, DefaultSeed, withTee(Options{}, twin))
@@ -120,6 +121,21 @@ func TestAPebblestoreHoldingTheSameRecordsAnswersTheSame(t *testing.T) {
 		}},
 		{"neighbors of the address", func(src *mcp.Source) (any, error) {
 			return src.NeighborsAt(t.Context(), mcp.NeighborsAtInput{Entity: endpointID, At: at})
+		}},
+		// The questions about the services: a name, the blast radius of a service while
+		// it is called by one caller and of the service that is the last of the chain,
+		// and the change of checkout while it moves from one callee to the other.
+		{"find services", func(src *mcp.Source) (any, error) {
+			return src.FindEntities(t.Context(), mcp.FindEntitiesInput{Type: "service", Name: "pay", At: rfc(s.Anchor.Add(time.Hour))})
+		}},
+		{"blast radius of ledger", func(src *mcp.Source) (any, error) {
+			return src.BlastRadius(t.Context(), mcp.BlastRadiusInput{Entity: s.Service("payments", "ledger").ID, From: rfc(s.FaultFrom), To: rfc(s.FaultTo)})
+		}},
+		{"blast radius of legacy-pay", func(src *mcp.Source) (any, error) {
+			return src.BlastRadius(t.Context(), mcp.BlastRadiusInput{Entity: s.Service("payments", "legacy-pay").ID, From: rfc(s.Anchor.Add(time.Hour)), To: rfc(s.Anchor.Add(time.Hour + 30*time.Minute))})
+		}},
+		{"what changed for checkout", func(src *mcp.Source) (any, error) {
+			return src.WhatChanged(t.Context(), mcp.WhatChangedInput{Scope: []string{s.Service("shop", "checkout").ID}, From: rfc(s.Migrate.Add(-5 * time.Minute)), To: rfc(s.Migrate.Add(35 * time.Minute))})
 		}},
 	}
 	mem, peb := source(t, b.Store), source(t, twin)

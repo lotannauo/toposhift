@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
@@ -214,8 +215,8 @@ func TestWhatIsPrintedIsSafeAndBounded(t *testing.T) {
 			t.Errorf("the instructions name the pod %s", p.Name)
 		}
 	}
-	if strings.Count(banner, "\n") != 6 {
-		t.Errorf("the banner is %d lines, want the build, three of story and two questions:\n%s", strings.Count(banner, "\n"), banner)
+	if strings.Count(banner, "\n") != 8 {
+		t.Errorf("the banner is %d lines, want the build, three of story, the note that nothing is real and three questions:\n%s", strings.Count(banner, "\n"), banner)
 	}
 }
 
@@ -230,27 +231,49 @@ func TestBuildStopsWhenItsContextIsDone(t *testing.T) {
 	}
 }
 
-// The only thing the translators set aside is the namespace event the cluster
-// receiver sends in every report, which the world sends on purpose for the
-// detector of cluster identity and which is not in the catalog. So the skips are
-// that one reason of that one producer, as many as the world sent, which is
-// every report's every namespace; and there is no note. The count is compared
-// with the world's own: a message the sequencer worded otherwise would show as
-// no skip at all.
-func TestEverySkipIsANamespaceEventTheWorldSent(t *testing.T) {
+// What the translators set aside is what the world sent on purpose, each in the
+// number the world knows: the namespace event the cluster receiver sends in every
+// report, for the detector of cluster identity, which is not in the catalog; the
+// calls the trace collector counted from before the translator started, which it
+// sets aside once while it warms up; and the calls to the two databases, which it
+// sets aside at every flush. So the skips are those three reasons of their
+// producers, and there is no note. The counts are compared with the world's own: a
+// message the sequencer worded otherwise would show as no skip at all.
+func TestEverySkipIsOneTheWorldSent(t *testing.T) {
 	b := canonicalBuild(t)
 	w := NewWorld(DefaultSeed)
-	reports := 0
+	reports, databases, firstFlush := 0, 0, -1
 	for _, r := range w.Requests() {
 		if r.Emitter == EmitClusterReport {
 			reports++
+		}
+		if r.Emitter != EmitServiceGraph {
+			continue
+		}
+		points, db := 0, 0
+		for _, p := range r.Metrics().Resources[0].Points {
+			points++
+			if isDatabasePoint(p) {
+				db++
+			}
+		}
+		databases += db
+		if firstFlush < 0 {
+			firstFlush = points - db
 		}
 	}
 	want := reports * len(w.Namespaces)
 	if want == 0 || b.NamespaceEvents != want {
 		t.Errorf("the driver counted %d namespace events, want %d reports of %d namespaces = %d", b.NamespaceEvents, reports, len(w.Namespaces), want)
 	}
-	wantSkips := []Count{{Producer: "k8scluster/" + ClusterName, Reason: k8scluster.SkipTypeNotInCatalog, N: want}}
+	if b.DatabasePoints != databases || b.WarmUpSeries != firstFlush || databases != 720 || firstFlush != 11 {
+		t.Errorf("the driver counted %d database points and %d series in the first flush; the world sent %d and %d; want 720 and 11", b.DatabasePoints, b.WarmUpSeries, databases, firstFlush)
+	}
+	wantSkips := []Count{
+		{Producer: "k8scluster/" + ClusterName, Reason: k8scluster.SkipTypeNotInCatalog, N: want},
+		{Producer: "svcgraph/" + ClusterName, Reason: svcgraph.SkipConnectionDatabase, N: databases},
+		{Producer: "svcgraph/" + ClusterName, Reason: svcgraph.SkipWarmUp, N: firstFlush},
+	}
 	if !slices.Equal(b.Skips, wantSkips) {
 		t.Errorf("skips %v, want %v", b.Skips, wantSkips)
 	}
@@ -282,6 +305,24 @@ func TestUnexplainedSkips(t *testing.T) {
 		if got := (&Built{Skips: tc.skips, NamespaceEvents: tc.sent}).UnexplainedSkips(); got != tc.want {
 			t.Errorf("%s: %d unexplained, want %d", tc.name, got, tc.want)
 		}
+	}
+
+	// The service graph's two reasons are explained by the series the first flush
+	// held and the database points sent, each exactly.
+	graph := "svcgraph/" + ClusterName
+	b := Built{WarmUpSeries: 11, DatabasePoints: 720, Skips: []Count{
+		{graph, svcgraph.SkipConnectionDatabase, 720}, {graph, svcgraph.SkipWarmUp, 11},
+	}}
+	if got := b.UnexplainedSkips(); got != 0 {
+		t.Errorf("the service graph's skips: %d unexplained, want 0", got)
+	}
+	b.Skips[0].N, b.Skips[1].N = 719, 12
+	if got := b.UnexplainedSkips(); got != 2 {
+		t.Errorf("one database point fewer and one series more: %d unexplained, want 2", got)
+	}
+	b.Skips = append(b.Skips, Count{graph, svcgraph.SkipStale, 3})
+	if got := b.UnexplainedSkips(); got != 5 {
+		t.Errorf("and three stale points: %d unexplained, want 5", got)
 	}
 }
 
