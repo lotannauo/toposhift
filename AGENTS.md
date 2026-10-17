@@ -34,6 +34,7 @@ mise run hooks      # install git hooks
 - Workflows pin actions to full commit SHAs. Do not replace a SHA with a tag.
 - No secrets in the repository. Secrets come from the environment.
 - Every commit pushed to a branch on GitHub is signed; GitHub refuses unsigned commits on every branch. Changes reach `main` through pull requests, squash-merged.
+- A release made while retention ships off by default has its own branch `release-vX.Y.Z`, pushed once by the owner together with its tag `vX.Y.Z` and never updated: one signed commit on a commit of `main` that changes only the retention default and the test that pins it. No branch other than `release-*` and `verify` is pushed outside a pull request.
 - Do not edit git configuration. Do not force-push or skip hooks unless the repository owner asks.
 
 ## Handoff conditions for agents

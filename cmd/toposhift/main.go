@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -126,10 +127,11 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
 		return 2
 	}
-	// An empty TOPOSHIFT_RETAIN is the same as an unset one: on.
-	retain := getenv(envRetain)
+	// An empty TOPOSHIFT_RETAIN is the same as an unset one: the default.
+	retainEnv := getenv(envRetain)
+	retain := retainEnv
 	if retain == "" {
-		retain = "on"
+		retain = defaultRetain
 	}
 
 	fs := flag.NewFlagSet("toposhift serve", flag.ContinueOnError)
@@ -152,7 +154,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		_, _ = fmt.Fprint(stderr, serveUsage)
 		fs.PrintDefaults()
 		_, _ = fmt.Fprint(stderr, dataDirHelp)
-		_, _ = fmt.Fprint(stderr, ingestHelp)
+		_, _ = fmt.Fprint(stderr, strings.ReplaceAll(ingestHelp, "{default}", defaultRetain))
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -205,22 +207,37 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		_, _ = fmt.Fprintf(stderr, "toposhift serve: --retain %q: give on or off\n", retain)
 		return 2
 	}
+	retainSetBy := retainByDefault
+	switch {
+	case setFlags(fs)["retain"]:
+		retainSetBy = retainByFlag
+	case retainEnv != "":
+		retainSetBy = retainByEnv
+	}
 
 	log := slog.New(slog.NewTextHandler(stderr, nil))
-	if !ic.retain {
-		log.Info("retention is off: no retention is asked for; a pass an earlier boot started still completes")
-	}
 	dir, gate, code := bootDataDir(*dataDir, getenv, log, stderr)
 	if code != 0 {
 		return code
 	}
 	defer func() { _ = dir.Close() }()
+	// Logged once the data directory is known: the warning that the store grows is
+	// given only when there is a store to grow, that is when ingest is on.
+	switch {
+	case !ic.retain && retainSetBy == retainByDefault && dir != nil:
+		log.Warn("retention is off: no retention is asked for; a pass an earlier boot started still completes. "+
+			"It is off by default in this build: history is never discarded, and the store grows for as long as serve runs. "+
+			"Start serve with --retain on, or "+envRetain+"=on, to discard what is older than each layer's window",
+			"set_by", retainSetBy)
+	case !ic.retain:
+		log.Info("retention is off: no retention is asked for; a pass an earlier boot started still completes", "set_by", retainSetBy)
+	}
 
 	// The server starts first, so that health is served and a request is
 	// answered 503 while the store opens.
 	sink := &switchSink{}
 	sink.set(gateSink{message: gate})
-	status := &statusRoute{retain: ic.retain}
+	status := &statusRoute{retain: ic.retain, setBy: retainSetBy}
 	// The two receiver routes count their requests against one in-flight budget.
 	cfg.Routes = append(receiverRoutes(sink, otlphttp.NewBudget(2*otlphttp.DefaultMaxBodyBytes)), server.Route{
 		Pattern: "GET /status",

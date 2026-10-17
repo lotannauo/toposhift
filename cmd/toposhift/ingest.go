@@ -33,6 +33,22 @@ const envClusterName = "TOPOSHIFT_CLUSTER_NAME"
 // envRetain is the environment twin of --retain.
 const envRetain = "TOPOSHIFT_RETAIN"
 
+// defaultRetain is --retain when neither the flag nor its variable is given.
+// Releases made before background retention passes its latency check on CI ship
+// with off, each on its own release commit, and v0.1.0 is the first; main and
+// every other build have on. It is a variable only so tests can run serve with the
+// other default.
+var defaultRetain = "on"
+
+// Where serve's retention mode came from, as GET /status says always, and as the
+// boot log says on the line that retention is off, and on the line that it is on
+// (logged once ingest is on).
+const (
+	retainByDefault = "default"
+	retainByFlag    = "flag"
+	retainByEnv     = "environment"
+)
+
 // envNodeInterval is the environment twin of --node-interval.
 const envNodeInterval = "TOPOSHIFT_NODE_INTERVAL"
 
@@ -333,6 +349,7 @@ func serveRetainConfig(st *pebblestore.Store, o pebblestore.Options, rl *retainL
 // calls the store.
 type statusRoute struct {
 	retain bool
+	setBy  string // retainByDefault, retainByFlag or retainByEnv
 	seq    atomic.Pointer[sequencer.Sequencer]
 }
 
@@ -437,12 +454,14 @@ func resumeOf(seq *sequencer.Sequencer) resumeStatus {
 
 // retentionOff is the retention status of serve --retain off.
 type retentionOff struct {
-	Mode string `json:"mode"`
+	Mode  string `json:"mode"`
+	SetBy string `json:"set_by"`
 }
 
 // retentionOn is the retention status of serve --retain on.
 type retentionOn struct {
 	Mode          string                `json:"mode"`
+	SetBy         string                `json:"set_by"`
 	CheckedAt     *time.Time            `json:"checked_at"`
 	Horizons      map[string]*time.Time `json:"horizons"`
 	Agreement     string                `json:"agreement"`
@@ -460,13 +479,14 @@ func orNull(t time.Time) *time.Time {
 }
 
 func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
-	var body any = retentionOff{Mode: "off"}
+	var body any = retentionOff{Mode: "off", SetBy: s.setBy}
 	if s.retain {
-		on := retentionOn{Mode: "on", StoppedBy: "ingest is not running"}
+		on := retentionOn{Mode: "on", SetBy: s.setBy, StoppedBy: "ingest is not running"}
 		if seq := s.seq.Load(); seq != nil {
 			st, _ := seq.RetentionStatus()
 			on = retentionOn{
 				Mode:          "on",
+				SetBy:         s.setBy,
 				CheckedAt:     orNull(st.CheckedAt),
 				Horizons:      map[string]*time.Time{},
 				Agreement:     st.Agreement.String(),
@@ -607,7 +627,7 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 	log.Info("ingest is on", "cluster_name", showName(ic), "took", time.Since(start))
 	if ic.retain {
 		log.Info("retention is on: once a day, L2 keeps 30 days, L1 90 days, and L0 is kept",
-			"check_every", retainEvery)
+			"check_every", retainEvery, "set_by", status.setBy)
 	}
 	return in
 }
@@ -693,14 +713,19 @@ Ingest
 
 Retention
 
-  --retain on (the default, or $TOPOSHIFT_RETAIN) discards old history once a
-  day, in the background: L2 (pods, nodes) keeps 30 days, L1 (hosts) 90 days,
-  and L0 is kept. A retention runs once a day, so the store holds up to a day
-  more: L2 up to 31 days, L1 up to 91. The L1 default passed its
-  growth check, a bench run at 20 hosts; none at full size has been run.
+  The default of this build is --retain {default}; $TOPOSHIFT_RETAIN sets it
+  too, and the flag wins. GET /status says which was used, and so does the boot
+  log, on its retention line (with retention on, once ingest is on).
+
+  --retain on discards old history once a day, in the background: L2 (pods,
+  nodes) keeps 30 days, L1 (hosts) 90 days, and L0 is kept. A retention runs
+  once a day, so the store holds up to a day more:
+  L2 up to 31 days, L1 up to 91. The L1 default passed its growth check, a
+  bench run at 20 hosts; none at full size has been run.
   --retain off asks for no retention, and nothing more is discarded, though a
   pass an earlier boot started still completes below the horizon it already
-  published. Any other value is refused.
+  published. The store then grows for as long as serve runs. Any other value
+  is refused.
   L3 (services and their calls) is retained with L2.
 
   This server's clock decides what is old, so it is checked against the
@@ -720,9 +745,10 @@ Retention
   refuses ingest (503) until the restart; a retention refused as invalid does
   not, and ingest goes on.
 
-  GET /status answers the retention's state as JSON: its mode, each layer's
-  horizon, the clock agreement, the pass pending, the last settle, and why
-  retention stopped, if it did.
+  GET /status answers the retention's state as JSON: its mode and what set it
+  (set_by: default, flag or environment), each layer's horizon, the clock
+  agreement, the pass pending, the last settle, and why retention stopped, if
+  it did.
 
 Resume
 
