@@ -26,7 +26,7 @@ mise run hooks      # install git hooks
 - Both time axes (event time and ingest time) on every record. Checkpoints carry the fold-logic version and the ingest sequence number they were built through.
 - `toposhift` stays pure Go and boots with zero config. CGO (RocksDB) and GPL (Raphtory) code lives only in separate benchmark builds (RocksDB in the nested module `bench/rocksdb`, never in `go.mod` or `bench/go.mod`).
 - Identity encoding changes require updated golden vectors and an ADR.
-- Published performance numbers come only from CI hardware, never from the Oracle Cloud VM, whose terms forbid publishing benchmarks.
+- Published performance numbers (timings, rates, memory) come only from CI hardware, never from the Oracle Cloud VM, whose terms forbid publishing benchmarks. A deterministic count (a pure function of the commit, the input hashes and the flags, with the same digest on a second run) may be quoted from a laptop in the findings report under `bench/findings`, labelled `local, deterministic` and given with its commit, input hash and reproduction command; raw outputs stay uncommitted, except the evaluation's results file in `bench/eval/results`.
 
 ## Repository conventions
 
