@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -135,24 +136,59 @@ func TestR15RetainFlagAndVariable(t *testing.T) {
 		}
 	}
 	for _, tt := range []struct {
-		name string
-		env  map[string]string
-		args []string
-		mode string
+		name  string
+		env   map[string]string
+		args  []string
+		mode  string
+		setBy string
 	}{
-		{"the default", nil, nil, "on"},
-		{"the flag off", nil, []string{"--retain", "off"}, "off"},
-		{"the variable off", map[string]string{"TOPOSHIFT_RETAIN": "off"}, nil, "off"},
-		{"the flag over the variable", map[string]string{"TOPOSHIFT_RETAIN": "off"}, []string{"--retain=on"}, "on"},
-		{"an empty variable", map[string]string{"TOPOSHIFT_RETAIN": ""}, nil, "on"},
+		{"the default", nil, nil, defaultRetain, "default"},
+		{"the flag off", nil, []string{"--retain", "off"}, "off", "flag"},
+		{"the variable off", map[string]string{"TOPOSHIFT_RETAIN": "off"}, nil, "off", "environment"},
+		{"the variable on", map[string]string{"TOPOSHIFT_RETAIN": "on"}, nil, "on", "environment"},
+		{"the flag over the variable", map[string]string{"TOPOSHIFT_RETAIN": "off"}, []string{"--retain=on"}, "on", "flag"},
+		{"an empty variable", map[string]string{"TOPOSHIFT_RETAIN": ""}, nil, defaultRetain, "default"},
 	} {
 		s := startServe(t, testEnv(t, tt.env), tt.args...)
 		st := getStatus(t, s.base)
-		if st.Retention.Mode != tt.mode {
-			t.Errorf("%s: mode %q, want %q", tt.name, st.Retention.Mode, tt.mode)
+		if st.Retention.Mode != tt.mode || st.Retention.SetBy != tt.setBy {
+			t.Errorf("%s: mode %q set by %q, want %q set by %q", tt.name, st.Retention.Mode, st.Retention.SetBy, tt.mode, tt.setBy)
 		}
 		if off := strings.Contains(s.stderr.String(), "retention is off: no retention is asked for"); off != (tt.mode == "off") {
 			t.Errorf("%s: the boot line is logged: %v, want %v", tt.name, off, tt.mode == "off")
+		}
+		stopOK(t, s)
+	}
+}
+
+// The boot line that retention is on says where the mode came from, as the line
+// that it is off does: the help says the boot log does.
+func TestTheRetentionOnLineSaysWhereTheModeCameFrom(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		env   map[string]string
+		args  []string
+		setBy string
+	}{
+		{"the flag", nil, []string{"--retain", "on"}, "flag"},
+		{"the variable", map[string]string{"TOPOSHIFT_RETAIN": "on"}, nil, "environment"},
+		{"the default", nil, nil, "default"},
+	} {
+		setSeam(t, &defaultRetain, "on")
+		env := map[string]string{"TOPOSHIFT_DATA_DIR": t.TempDir()}
+		maps.Copy(env, tt.env)
+		s := startServe(t, testEnv(t, env), tt.args...)
+		waitIngestOn(t, s.base)
+		var line string
+		for deadline := time.Now().Add(10 * time.Second); line == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			for l := range strings.SplitSeq(s.stderr.String(), "\n") {
+				if strings.Contains(l, "retention is on") {
+					line = l
+				}
+			}
+		}
+		if !strings.Contains(line, "set_by="+tt.setBy) {
+			t.Errorf("%s: the retention is on line lacks set_by=%s:\n%s", tt.name, tt.setBy, s.stderr)
 		}
 		stopOK(t, s)
 	}
@@ -162,6 +198,7 @@ func TestR15RetainFlagAndVariable(t *testing.T) {
 type statusBody struct {
 	Retention struct {
 		Mode          string                `json:"mode"`
+		SetBy         string                `json:"set_by"`
 		CheckedAt     *time.Time            `json:"checked_at"`
 		Horizons      map[string]*time.Time `json:"horizons"`
 		Agreement     string                `json:"agreement"`
@@ -247,7 +284,7 @@ func TestR17StatusAfterARetention(t *testing.T) {
 		return c
 	})
 	dir := t.TempDir()
-	s := startServe(t, dirEnv(t, dir))
+	s := startServe(t, dirEnv(t, dir), "--retain", "on")
 	waitIngestOn(t, s.base)
 	if st := getStatus(t, s.base); st.Retention.Mode != "on" || st.Retention.Horizons["L2"] != nil {
 		t.Fatalf("before anything agrees: %+v", st.Retention)
@@ -314,12 +351,96 @@ func TestServeRetainOffRetainsNothing(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	code, body := getBody(t, s.base+"/status")
 	var st map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(body), &st); code != http.StatusOK || err != nil || string(st["retention"]) != `{"mode":"off"}` {
+	if err := json.Unmarshal([]byte(body), &st); code != http.StatusOK || err != nil || string(st["retention"]) != `{"mode":"off","set_by":"flag"}` {
 		t.Errorf("GET /status = %d %q", code, body)
 	}
 	stopOK(t, s)
 	if h := openStopped(t, dir).LayerHorizon(catalog.L2); !h.IsZero() {
 		t.Errorf("L2 horizon %v after serve --retain off", h)
+	}
+}
+
+// The default this build ships with. Only a release commit changes it, together
+// with want here, so a change of the default on any other commit fails.
+func TestTheRetainDefault(t *testing.T) {
+	const want = "on"
+	if defaultRetain != want {
+		t.Fatalf("defaultRetain = %q, want %q", defaultRetain, want)
+	}
+}
+
+// A build whose default is off (a release's): serve keeps everything, warns at boot
+// that this is the default and how to turn retention on when ingest is on (there is
+// a store to grow), GET /status says so, and serve -h names the default. With ingest
+// off it only says that retention is off. Either way of asking for retention turns
+// it on, and either way of asking for none turns it off, without the warning; an
+// empty variable is no ask. Each line of the boot log says where the mode came from.
+func TestARetainDefaultOfOff(t *testing.T) {
+	setSeam(t, &defaultRetain, "off")
+	s := startServe(t, dirEnv(t, t.TempDir()))
+	waitIngestOn(t, s.base)
+	if st := getStatus(t, s.base); st.Retention.Mode != "off" || st.Retention.SetBy != "default" {
+		t.Errorf("status %+v, want off by default", st.Retention)
+	}
+	// One line says it all, and it is a warning (the log has other warnings: a
+	// data directory in the temp directory gets one).
+	var warning string
+	for line := range strings.SplitSeq(s.stderr.String(), "\n") {
+		if strings.Contains(line, "off by default") {
+			warning = line
+		}
+	}
+	for _, want := range []string{"level=WARN", "set_by=default", "--retain on", "TOPOSHIFT_RETAIN=on"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("the boot warning does not say %q:\n%s", want, s.stderr)
+		}
+	}
+	stopOK(t, s)
+
+	// No data directory: ingest is off, nothing is stored, so there is no warning
+	// that the store grows; the line that retention is off is still logged.
+	s = startServe(t, testEnv(t, nil))
+	if st := getStatus(t, s.base); st.Retention.Mode != "off" || st.Retention.SetBy != "default" {
+		t.Errorf("ingest off: status %+v, want off by default", st.Retention)
+	}
+	if log := s.stderr.String(); strings.Contains(log, "off by default") || !strings.Contains(log, "retention is off: no retention is asked for") {
+		t.Errorf("ingest off: the boot log warns of the default, or does not say retention is off:\n%s", log)
+	}
+	stopOK(t, s)
+
+	// With a data directory, each way of saying what retention is to be: only the
+	// default, however it comes (unset, or an empty variable), is warned of.
+	for _, tt := range []struct {
+		name  string
+		env   map[string]string
+		args  []string
+		mode  string
+		setBy string
+	}{
+		{"the flag on", nil, []string{"--retain", "on"}, "on", "flag"},
+		{"the variable on", map[string]string{"TOPOSHIFT_RETAIN": "on"}, nil, "on", "environment"},
+		{"the flag off", nil, []string{"--retain", "off"}, "off", "flag"},
+		{"the variable off", map[string]string{"TOPOSHIFT_RETAIN": "off"}, nil, "off", "environment"},
+		{"an empty variable", map[string]string{"TOPOSHIFT_RETAIN": ""}, nil, "off", "default"},
+	} {
+		env := map[string]string{"TOPOSHIFT_DATA_DIR": t.TempDir()}
+		maps.Copy(env, tt.env)
+		s := startServe(t, testEnv(t, env), tt.args...)
+		waitIngestOn(t, s.base)
+		if st := getStatus(t, s.base); st.Retention.Mode != tt.mode || st.Retention.SetBy != tt.setBy {
+			t.Errorf("%s: mode %q set by %q, want %q set by %q", tt.name, st.Retention.Mode, st.Retention.SetBy, tt.mode, tt.setBy)
+		}
+		if warned := strings.Contains(s.stderr.String(), "off by default"); warned != (tt.setBy == "default") {
+			t.Errorf("%s: warns of the default: %v, want %v", tt.name, warned, tt.setBy == "default")
+		}
+		stopOK(t, s)
+	}
+	var stderr bytes.Buffer
+	if code := run(t.Context(), []string{"serve", "-h"}, noEnv, io.Discard, &stderr); code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "The default of this build is --retain off") {
+		t.Errorf("serve -h does not name the default off:\n%s", &stderr)
 	}
 }
 
@@ -332,6 +453,7 @@ func TestServeHelpDocumentsRetention(t *testing.T) {
 	for _, want := range []string{
 		"-retain", "TOPOSHIFT_RETAIN", "--retain off asks for no retention", "L2 up to 31 days, L1 up to 91",
 		"growth check", "restarted", "GET /status", "agree", "loses its records older",
+		"The default of this build is --retain " + defaultRetain, "set_by",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("serve -h does not mention %q", want)

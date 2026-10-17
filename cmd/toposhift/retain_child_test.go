@@ -28,7 +28,7 @@ func init() {
 		o.Observer = holdForever{o.Observer}
 		return pebblestore.Open(path, o)
 	}
-	os.Exit(run(context.Background(), []string{"serve", "--listen", "127.0.0.1:0", "--data-dir", os.Args[2]}, noEnv, os.Stdout, os.Stderr))
+	os.Exit(run(context.Background(), []string{"serve", "--listen", "127.0.0.1:0", "--data-dir", os.Args[2], "--retain", "on"}, noEnv, os.Stdout, os.Stderr))
 }
 
 // holdForever passes the phases on, and never returns from the end of a pass's

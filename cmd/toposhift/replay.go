@@ -48,7 +48,7 @@ Only one toposhift process can have a directory open at a time, and a replay
 holds it until it finishes.
 
 A replay retains nothing. When toposhift serve later opens the store with
-retention on (its default), its first retention, once the producers' clocks
+retention on, its first retention, once the producers' clocks
 agree with the server's, discards what is older than each layer's window: 30
 days for L2, 90 for L1.
 `
