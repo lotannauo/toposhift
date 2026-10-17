@@ -21,9 +21,9 @@ import (
 
 // The end-to-end test of the demo: toposhift demo is started on a loopback port
 // and asked a name, a node's neighbours, its blast radius, a pod's co-residents,
-// the change over the eviction, an address claim seen from both ends, and five
-// questions about the services (a name, three blast radii and a change), over the
-// MCP route, with raw JSON-RPC and nothing else.
+// the change over the eviction, an address claim seen from both ends, and six
+// questions about the services (a name, three blast radii, a change and a context),
+// over the MCP route, with raw JSON-RPC and nothing else.
 //
 // What each answer must be is computed from the generated world alone (the
 // oracle below): its pods, nodes, workloads and instants, and the ids the
@@ -227,6 +227,9 @@ const (
 	// connectorIdle is how long the service graph connector keeps a series that is
 	// not called: its own removal rule, not toposhift's dependency expiry.
 	connectorIdle = 15 * time.Minute
+	// expiry is the demo's documented expiry: a call or an instance ends 15 minutes
+	// after its last sighting.
+	expiry = 15 * time.Minute
 )
 
 // sends says whether the pod's instance sends a span count at s: its container
@@ -266,7 +269,7 @@ func (o *oracle) sightings(p *demo.Pod) (first, last time.Time, ok bool) {
 // while the pod exists.
 func (o *oracle) instLives(p *demo.Pod) (iv, bool) {
 	first, last, ok := o.sightings(p)
-	return iv{first, last.Add(demo.Expiry)}, ok
+	return iv{first, last.Add(expiry)}, ok
 }
 
 func (o *oracle) bridge(p *demo.Pod) (iv, bool) {
@@ -460,11 +463,13 @@ type questions struct {
 
 	// The questions about the services: a name at svcAt; the blast radius of ledger
 	// over the window of its failure, and of legacy-pay while checkout still calls it
-	// and after it stopped; and the change of checkout while it moves from one callee
-	// to the other.
+	// and after it stopped; the change of checkout while it moves from one callee to
+	// the other; and the context of checkout over the same minutes, with every list
+	// shown.
 	svcAt                      time.Time
 	fault, legacyOn, legacyOff iv
 	moveFrom, moveTo           time.Time
+	context                    iv
 }
 
 func askedAbout(o *oracle) questions {
@@ -480,6 +485,7 @@ func askedAbout(o *oracle) questions {
 		legacyOn:  iv{s.Anchor.Add(time.Hour), s.Anchor.Add(time.Hour + 30*time.Minute)},
 		legacyOff: iv{s.Anchor.Add(3 * time.Hour), s.Anchor.Add(3*time.Hour + 30*time.Minute)},
 		moveFrom:  s.Migrate.Add(-5 * time.Minute), moveTo: s.Migrate.Add(35 * time.Minute),
+		context: iv{s.Migrate.Add(-5 * time.Minute), s.Migrate.Add(35 * time.Minute)},
 	}
 }
 
@@ -534,6 +540,18 @@ func (q questions) changedServiceArgs() map[string]any {
 	return map[string]any{
 		"scope": []string{q.story.Service("shop", "checkout").ID},
 		"from":  q.moveFrom.Format(time.RFC3339), "to": q.moveTo.Format(time.RFC3339),
+	}
+}
+
+// contextLimit is the most any list of service_context shows, so that nothing the
+// oracle lists is left out of the answer by the display cap.
+const contextLimit = 500
+
+func (q questions) serviceContextArgs() map[string]any {
+	return map[string]any{
+		"service": q.story.Service("shop", "checkout").ID,
+		"from":    q.context.from.Format(time.RFC3339), "to": q.context.to.Format(time.RFC3339),
+		"limit": contextLimit,
 	}
 }
 
@@ -861,7 +879,7 @@ func (o *oracle) callIv(c demo.Call) iv {
 	if last.After(flush(flushes - 1)) {
 		last = flush(flushes - 1)
 	}
-	return iv{first, last.Add(demo.Expiry)}
+	return iv{first, last.Add(expiry)}
 }
 
 // callsTo are the calls between services whose server is the service, and the key
@@ -1018,6 +1036,305 @@ func (o *oracle) wantServiceChanged(q questions) view {
 	}
 }
 
+// ---- the context of a service ----
+
+// minus is a without b: up to two intervals.
+func (a iv) minus(b iv) []iv {
+	switch {
+	case a.empty():
+		return nil
+	case b.empty() || !b.from.Before(a.to) || !b.to.After(a.from):
+		return []iv{a}
+	}
+	var out []iv
+	if b.from.After(a.from) {
+		out = append(out, iv{a.from, b.from})
+	}
+	if b.to.Before(a.to) {
+		out = append(out, iv{b.to, a.to})
+	}
+	return out
+}
+
+// union is the intervals joined where they overlap or touch, in order.
+func union(xs []iv) []iv {
+	xs = slices.DeleteFunc(slices.Clone(xs), iv.empty)
+	slices.SortFunc(xs, func(a, b iv) int { return a.from.Compare(b.from) })
+	var out []iv
+	for _, x := range xs {
+		if n := len(out); n > 0 && !x.from.After(out[n-1].to) {
+			if x.to.After(out[n-1].to) {
+				out[n-1].to = x.to
+			}
+			continue
+		}
+		out = append(out, x)
+	}
+	return out
+}
+
+// serviceOf is the key of the service a pod is an instance of, if it is one.
+func (o *oracle) serviceOf(p *demo.Pod) (string, bool) {
+	wl := o.w.Workloads[p.Workload]
+	if wl.Service == "" {
+		return "", false
+	}
+	return wl.Namespace + "/" + wl.Service, true
+}
+
+func pairRow(mech, member, memberRole, peer, peerRole, class string, transitions int, overlaps, vias []string, paths int) string {
+	return row("pair", mech, member+" ("+memberRole+")", peer+" ("+peerRole+")", class+" "+strconv.Itoa(transitions),
+		"derived/derived/pair."+mech, "overlap "+strings.Join(overlaps, "; "), "via "+strings.Join(vias, "; "), "paths "+strconv.Itoa(paths))
+}
+
+// ttlNote and ubiquityNote are the sentences an answer about a service's context
+// carries when a span ends by the silence of its last sighting, and when the seed's
+// pods were on too few nodes to judge ubiquity.
+const (
+	ttlNote = "A dependency, an instance and its pod mapping are sightings with a TTL: a span that ends by liveness_expiry ends one TTL after the last sighting, so a service that stopped calling, or an instance that stopped reporting, is shown until then."
+	// ubiquityNodes is the fewest nodes of the seed's pods on which the documentation
+	// judges a peer ubiquitous.
+	ubiquityNodes = 5
+)
+
+func ubiquityNote(nodes int) string {
+	return fmt.Sprintf("Ubiquity was not judged: the seed pods were on %d nodes alone, fewer than %d.", nodes, ubiquityNodes)
+}
+
+// checkContextMargin fails the test if the instant is within margin of an event of
+// anything an answer about the context can name: a call between services, a pod of
+// the world (each is a seed pod, a peer or an unmapped pod, or is gone before the
+// window), and the instances those pods are.
+func (o *oracle) checkContextMargin(question, what string, at time.Time) {
+	o.t.Helper()
+	var events []time.Time
+	for _, p := range o.w.Pods {
+		if in, ok := o.instLives(p); ok {
+			events = append(events, in.from, in.to)
+		}
+	}
+	o.checkServiceMargin(question, what, at)
+	o.checkMargin(question, what, at, o.w.Pods, events...)
+}
+
+// wantServiceContext is the context of a service over a window: its callers and
+// callees, one hop; and every other service that shared a pod, a node or a host with
+// a pod of one of them, and every pod that did and is no instance of a service. A
+// pod of a member is a seed pod over the instants its instance is part of it, and
+// the pods that shared a place with it are found by the rules of co-residency: the
+// same node, or two nodes of one machine, over the time both are scheduled; they are
+// mapped to services only through their instances. A pair is the union, over the
+// seed pods and the pods they met, of the time everything on its path existed, and
+// a pair of two members is one pair. The questions asked here have every span of a
+// pair reach the end of the window, and the oracle stops if one does not.
+func (o *oracle) wantServiceContext(q questions) view {
+	win := q.context
+	o.checkContextMargin("service_context", "the window start", win.from)
+	o.checkContextMargin("service_context", "the window end", win.to)
+	const seed = "shop/checkout"
+
+	// The hop: a call between services is an edge from caller to callee for as long as
+	// it lives inside the window.
+	type hop struct {
+		key   string
+		call  demo.Call
+		reach iv
+	}
+	var callers, callees []hop
+	for _, c := range o.w.Calls {
+		if c.Database {
+			continue
+		}
+		client, server := c.ClientNamespace+"/"+c.Client, c.ServerNamespace+"/"+c.Server
+		reach := o.callIv(c).and(win)
+		switch {
+		case reach.empty():
+		case server == seed:
+			callers = append(callers, hop{client, c, reach})
+		case client == seed:
+			callees = append(callees, hop{server, c, reach})
+		}
+	}
+	roles := map[string]string{seed: "seed"}
+	for _, h := range callers {
+		roles[h.key] = "caller"
+	}
+	for _, h := range callees {
+		if roles[h.key] == "caller" {
+			roles[h.key] = "caller|callee"
+		} else {
+			roles[h.key] = "callee"
+		}
+	}
+
+	// Seed pods, and the instances a service has in the window.
+	seedPods := map[string][]*demo.Pod{}
+	instances := map[string]int{}
+	var members []string
+	for key := range roles {
+		members = append(members, key)
+	}
+	slices.Sort(members)
+	frontier := map[int]bool{}
+	nSeedPods := 0
+	for _, p := range o.w.Pods {
+		key, ok := o.serviceOf(p)
+		if !ok {
+			continue
+		}
+		if in, ok := o.instLives(p); ok && !in.and(win).empty() {
+			instances[key]++
+		}
+		if b, ok := o.bridge(p); ok && roles[key] != "" && !b.and(win).empty() {
+			seedPods[key] = append(seedPods[key], p)
+			frontier[p.Node] = true
+			nSeedPods++
+		}
+	}
+	if len(frontier) >= ubiquityNodes {
+		o.t.Fatalf("the oracle: the seed pods are on %d nodes, where ubiquity is judged, which it does not cover", len(frontier))
+	}
+
+	// What each seed pod met.
+	type met struct {
+		member, peer, mech, via string
+		span                    iv
+	}
+	var contributions []met
+	unmapped := map[*demo.Pod][]iv{}
+	for _, m := range members {
+		for _, s := range seedPods[m] {
+			sb, _ := o.bridge(s)
+			for _, x := range o.w.Pods {
+				if x == s {
+					continue
+				}
+				mech, via := "", ""
+				switch sn, xn := o.w.Nodes[s.Node], o.w.Nodes[x.Node]; {
+				case s.Node == x.Node:
+					mech, via = "shared_node", o.nodeID[s.Node]
+				case sn.Machine == xn.Machine:
+					mech, via = "shared_host", o.hostID[sn.Machine]
+				default:
+					continue
+				}
+				together := o.placed(s).and(o.placed(x)).and(win).and(sb)
+				if together.empty() {
+					continue
+				}
+				rest := []iv{together}
+				if xb, ok := o.bridge(x); ok {
+					rest = together.minus(xb)
+					if k, _ := o.serviceOf(x); k != m && !together.and(xb).empty() {
+						contributions = append(contributions, met{m, k, mech, via, together.and(xb)})
+					}
+				}
+				unmapped[x] = append(unmapped[x], rest...)
+			}
+		}
+	}
+
+	// Pairs: one for a member and a peer by a mechanism; for two members, one.
+	type pairKey struct{ a, b, mech string }
+	type pairAt struct {
+		spans []iv
+		vias  map[string]bool
+		paths int
+	}
+	pairs := map[pairKey]*pairAt{}
+	for _, c := range contributions {
+		// A pair of two members is reported once, with the member the one first in
+		// fingerprint order, which for two ids of one type is their text order.
+		k := pairKey{c.member, c.peer, c.mech}
+		if roles[c.peer] != "" && o.svcID[c.peer] < o.svcID[c.member] {
+			k = pairKey{c.peer, c.member, c.mech}
+		}
+		if pairs[k] == nil {
+			pairs[k] = &pairAt{vias: map[string]bool{}}
+		}
+		pairs[k].spans = append(pairs[k].spans, c.span)
+		pairs[k].vias[c.via] = true
+		pairs[k].paths++
+	}
+	var pairRows []string
+	byExpiry := false
+	for k, p := range pairs {
+		spans := union(p.spans)
+		if len(spans) != 1 || !spans[0].to.Equal(win.to) {
+			o.t.Fatalf("the oracle: the pair %s and %s by %s is not one span to the end of the window: %v", k.a, k.b, k.mech, spans)
+		}
+		class, n := classOf(spans[0], win)
+		var vias []string
+		for v := range p.vias {
+			vias = append(vias, o.ref(v, win))
+		}
+		slices.Sort(vias)
+		peerRole := "none"
+		if roles[k.b] != "" {
+			peerRole = roles[k.b]
+		}
+		pairRows = append(pairRows, pairRow(k.mech, o.ref(o.svcID[k.a], win), roles[k.a], o.ref(o.svcID[k.b], win), peerRole,
+			class, n, []string{span(spans[0], reachEnd(spans[0], win))}, vias, p.paths))
+	}
+
+	// Pods that met a seed pod and are no instance of a service over those instants.
+	var unmappedRows []string
+	for x, rest := range unmapped {
+		var spans []string
+		for _, r := range union(rest) {
+			spans = append(spans, span(r, reachEnd(r, win)))
+		}
+		if len(spans) > 0 {
+			unmappedRows = append(unmappedRows, row(o.ref(o.podID[x], win), "derived/derived/unmapped", strings.Join(spans, "; ")))
+		}
+	}
+
+	// The hop's rows.
+	hopRows := func(hs []hop, edge func(hop) (client, server string)) []string {
+		var rows []string
+		for _, h := range hs {
+			client, server := edge(h)
+			reason := ""
+			if h.reach.to.Before(win.to) {
+				reason, byExpiry = "liveness_expiry", true
+			}
+			rows = append(rows, row(o.ref(o.svcID[h.key], win), existenceLabels,
+				"edge "+o.ref(o.svcID[client], win)+" depends_on "+o.ref(o.svcID[server], win),
+				"asserted_by svcgraph/"+demo.ClusterName, "instances "+strconv.Itoa(instances[h.key]),
+				"duration "+h.reach.to.Sub(h.reach.from).String(), "spans "+span(h.reach, reason)))
+		}
+		return sorted(rows)
+	}
+	callerRows := hopRows(callers, func(h hop) (string, string) { return h.key, seed })
+	calleeRows := hopRows(callees, func(h hop) (string, string) { return seed, h.key })
+
+	var notes []string
+	if byExpiry {
+		notes = append(notes, ttlNote)
+	}
+	notes = append(notes, ubiquityNote(len(frontier)))
+	if len(pairRows) > contextLimit || len(unmappedRows) > contextLimit {
+		o.t.Fatalf("the oracle lists %d pairs and %d unmapped pods, over the limit of %d", len(pairRows), len(unmappedRows), contextLimit)
+	}
+	return view{
+		Tool: "service_context", Args: o.argLabels(q.serviceContextArgs()), Derived: true,
+		Meta: map[string]any{
+			"service": o.ref(o.svcID[seed], win), "window": map[string]any{"from": fmtTime(win.from), "to": fmtTime(win.to)}, "node_only": false,
+			"ubiquity":   map[string]any{"judged": false, "frontier_nodes": len(frontier)},
+			"truncation": map[string]any{"incomplete": false, "instances_dropped": 0, "members_dropped": 0, "pairs_dropped": 0, "pod_searches_cut": 0, "seed_pods_dropped": 0, "suppressed_dropped": 0},
+		},
+		Counts: map[string]any{
+			"callers": len(callerRows), "callees": len(calleeRows), "pairs": len(pairRows), "pairs_shown": len(pairRows),
+			"suppressed": 0, "unattributed": 0, "unmapped": len(unmappedRows), "quarantined": 0,
+			"seed_pods": nSeedPods, "pod_quarantined": 0,
+		},
+		Lists: map[string][]string{
+			"callers": callerRows, "callees": calleeRows, "pairs": sorted(pairRows), "unmapped": sorted(unmappedRows),
+			"suppressed": {}, "unattributed": {}, "quarantined": {}, "notes": sorted(notes),
+		},
+	}
+}
+
 // ---- reading the live answers ----
 
 func obj(v any) map[string]any { m, _ := v.(map[string]any); return m }
@@ -1027,6 +1344,16 @@ func arr(v any) []any { l, _ := v.([]any); return l }
 func str(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func num(v any) int { f, _ := v.(float64); return int(f) }
+
+func strs(v any) []string {
+	var out []string
+	for _, x := range arr(v) {
+		out = append(out, str(x))
+	}
+	return out
 }
 
 func labelsOf(m map[string]any) string {
@@ -1239,6 +1566,83 @@ func (r reader) changed(res map[string]any, args map[string]any, win iv) view {
 		Lists: map[string][]string{
 			"scope": sorted(scope), "created": listing("created"), "deleted": listing("deleted"),
 			"changed": listing("changed"), "transient": listing("transient"), "quarantined": r.listed(res, "quarantined"),
+		},
+	}
+}
+
+// serviceContext reads the answer about the context of a service. The notes are
+// read without the sentence that names the token, which is checked against the
+// answer's own; a pair of two members is read as the answer gives it, the member first in fingerprint order.
+func (r reader) serviceContext(res map[string]any, args map[string]any, win iv) view {
+	hops := func(key string) []string {
+		var rows []string
+		for _, e := range arr(res[key]) {
+			m := obj(e)
+			ed := obj(m["edge"])
+			rows = append(rows, row(r.ref(m["service"], win), labelsOf(m),
+				"edge "+r.ref(ed["from"], win)+" "+str(ed["relation"])+" "+r.ref(ed["to"], win),
+				"asserted_by "+strings.Join(strs(m["asserted_by"]), ","), "instances "+fmt.Sprint(m["instances"]),
+				"duration "+str(m["duration"]), "spans "+strings.Join(r.spans(m["spans"]), "; ")))
+		}
+		return sorted(rows)
+	}
+	var pairs []string
+	for _, e := range arr(res["pairs"]) {
+		m := obj(e)
+		var overlaps, vias []string
+		for _, s := range arr(m["overlaps"]) {
+			sm := obj(s)
+			o := str(sm["start"]) + ".." + str(sm["end"]) + reasonOf(sm["end_reason"])
+			if ends := arr(sm["ends"]); len(ends) > 0 {
+				o += " ends " + fmt.Sprint(len(ends))
+			}
+			overlaps = append(overlaps, o)
+		}
+		for _, v := range arr(m["vias"]) {
+			vias = append(vias, r.ref(obj(v)["via"], win))
+		}
+		slices.Sort(vias)
+		if num(m["vias_total"]) != len(vias) {
+			r.t.Errorf("a pair lists %d of its %v vias", len(vias), m["vias_total"])
+		}
+		if cov := obj(m["coverage"]); cov["covered"] != float64(0) || cov["frontier"] != float64(0) {
+			r.t.Errorf("a pair carries a coverage %v, where ubiquity was not judged", cov)
+		}
+		row := pairRow(str(m["mechanism"]), r.ref(m["member"], win), str(m["member_role"]), r.ref(m["peer"], win), str(m["peer_role"]),
+			str(m["class"]), num(m["transitions"]), overlaps, vias, num(m["paths"]))
+		if got := labelsOf(m); got != "derived/derived/pair."+str(m["mechanism"]) {
+			r.t.Errorf("a pair is labelled %s", got)
+		}
+		pairs = append(pairs, row)
+	}
+	var unmapped []string
+	for _, e := range arr(res["unmapped"]) {
+		m := obj(e)
+		unmapped = append(unmapped, row(r.ref(m["pod"], win), labelsOf(m), strings.Join(r.spans(m["spans"]), "; ")))
+	}
+	var notes []string
+	for _, n := range arr(res["notes"]) {
+		if s := str(n); strings.HasPrefix(s, "Pass asof=") {
+			if !strings.HasPrefix(s, "Pass asof="+str(res["token"])+" ") {
+				r.t.Errorf("the note %q does not name the answer's token %v", s, res["token"])
+			}
+		} else {
+			notes = append(notes, s)
+		}
+	}
+	ub := obj(res["ubiquity"])
+	return view{
+		Tool: "service_context", Args: r.o.argLabels(args), Policy: r.policy(res), Derived: res["derived"] == true,
+		Meta: map[string]any{
+			"service": r.ref(res["service"], win), "window": res["window"], "node_only": res["node_only"],
+			"ubiquity":   map[string]any{"judged": ub["judged"], "frontier_nodes": ub["frontier_nodes"]},
+			"truncation": res["truncation"],
+		},
+		Counts: obj(res["counts"]),
+		Lists: map[string][]string{
+			"callers": hops("callers"), "callees": hops("callees"), "pairs": sorted(pairs), "unmapped": sorted(unmapped),
+			"suppressed": r.listed(res, "suppressed"), "unattributed": r.listed(res, "unattributed"), "quarantined": r.listed(res, "quarantined"),
+			"notes": sorted(notes),
 		},
 	}
 }
@@ -1513,6 +1917,10 @@ func askServices(t *testing.T, o *oracle, q questions, call func(name, tool stri
 	args = q.changedServiceArgs()
 	got["q9_changed_checkout"] = r.changed(call("Q9", "what_changed", args, false), args, changedWin)
 	want["q9_changed_checkout"] = o.wantServiceChanged(q)
+
+	args = q.serviceContextArgs()
+	got["q10_service_context"] = r.serviceContext(call("Q10", "service_context", args, false), args, q.context)
+	want["q10_service_context"] = o.wantServiceContext(q)
 }
 
 // serviceSkips are what the service graph translator sets aside on purpose: the
@@ -1548,7 +1956,9 @@ func (o *oracle) serviceSkips() (warmUp, databases int) {
 // and no instance; a service that nothing calls any more has no blast radius; and
 // the change of checkout shows the call that began and the call that ended by the
 // silence of its last sighting. Every expected set comes from the world, by the
-// rules of the translators, and no answer prints an endpoint.
+// rules of the translators, and no answer prints an endpoint. The context of
+// checkout over those minutes names its caller, its three callees and the end of
+// the call that ended.
 func TestDemoAnswersServiceQuestions(t *testing.T) {
 	o := newOracle(t)
 	q := askedAbout(o)
@@ -1595,6 +2005,43 @@ func TestDemoAnswersServiceQuestions(t *testing.T) {
 				t.Errorf("%s reaches %q, want services only: an instance is never followed to its service", name, m)
 			}
 		}
+	}
+
+	// The context of checkout, written out the same way, with the instants of the
+	// banner's story and not those the world computes: frontend calls it; it calls cart,
+	// legacy-pay and payments-api; the call to legacy-pay is shown ending at 02:25:20Z by
+	// the silence of its last sighting, the call to payments-api beginning at its first,
+	// and the sentence about the expiry is in the answer. The pods of the five
+	// services are seed pods, and both mechanisms and the pods that are no instance
+	// of a service are listed.
+	ctx := got["q10_service_context"]
+	end := func(row string) string { return strings.Split(row, " | ")[6] }
+	if len(ctx.Lists["callers"]) != 1 || !strings.HasPrefix(ctx.Lists["callers"][0], "service frontend [shop] | ") {
+		t.Errorf("the callers of checkout are %v, want frontend only", ctx.Lists["callers"])
+	}
+	callees := ctx.Lists["callees"]
+	if len(callees) != 3 || !strings.HasPrefix(callees[0], "service cart [shop] | ") || !strings.HasPrefix(callees[1], "service legacy-pay [payments] | ") || !strings.HasPrefix(callees[2], "service payments-api [payments] | ") {
+		t.Fatalf("the callees of checkout are %v, want cart, legacy-pay and payments-api", callees)
+	}
+	if want := "spans 2026-10-01T01:55:00Z..2026-10-01T02:25:20Z (liveness_expiry)"; end(callees[1]) != want {
+		t.Errorf("the call to legacy-pay is %q, want %q", end(callees[1]), want)
+	}
+	if want := "spans 2026-10-01T02:00:20Z..2026-10-01T02:35:00Z"; end(callees[2]) != want {
+		t.Errorf("the call to payments-api is %q, want %q", end(callees[2]), want)
+	}
+	if !slices.Contains(ctx.Lists["notes"], ttlNote) {
+		t.Errorf("the notes %v do not say the expiry", ctx.Lists["notes"])
+	}
+	if n := num(ctx.Counts["seed_pods"]); n != 13 {
+		t.Errorf("%d seed pods, want the 13 pods of checkout, frontend, cart, legacy-pay and payments-api", n)
+	}
+	for _, mech := range []string{"shared_node", "shared_host"} {
+		if !slices.ContainsFunc(ctx.Lists["pairs"], func(r string) bool { return strings.HasPrefix(r, "pair | "+mech+" | ") }) {
+			t.Errorf("no pair by %s", mech)
+		}
+	}
+	if len(ctx.Lists["unmapped"]) == 0 {
+		t.Error("no pod is listed as unmapped")
 	}
 	for _, tx := range texts {
 		if endpointIDText.MatchString(tx) {

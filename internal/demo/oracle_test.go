@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -477,5 +478,119 @@ func TestWhoAssertsWhat(t *testing.T) {
 			t.Errorf("%s is asserted by %v, want the span count's", in.ID, got)
 		}
 		break
+	}
+}
+
+// The hop of checkout in the minutes the demo asks service_context about, from the
+// oracle's runs alone and with the instants written out: frontend calls it for the
+// whole window; it calls cart for the whole window, legacy-pay until the silence of
+// its last sighting ends the call, and payments-api from the first sighting of the
+// new call. The window is as far as five minutes from every beginning and end the
+// world has in it (a call, an instance, its bridge, a pod), so that no answer
+// depends on which side of an event an end of the window falls; and the pods that are
+// seed pods, the instances of frontend and the nodes they stand on are the numbers the
+// answer's counts must be.
+func TestTheHopOfCheckoutInTheWindowOfTheQuestion(t *testing.T) {
+	w := NewWorld(DefaultSeed)
+	want := expectServices(w)
+	if len(want.problems) > 0 {
+		t.Fatalf("the oracle cannot model the world: %v", want.problems)
+	}
+	at := func(d time.Duration) time.Time { return anchor.Add(d) }
+	from, to := at(time.Hour+55*time.Minute), at(2*time.Hour+35*time.Minute)
+
+	// A run, cut to the window: it ends there, with no source, if it goes on.
+	within := func(r run) (run, bool) {
+		if !r.end.After(from) || !r.start.Before(to) {
+			return run{}, false
+		}
+		if r.start.Before(from) {
+			r.start = from
+		}
+		if !r.end.Before(to) {
+			r.end, r.source = to, lifecycle.EndUnknown
+		}
+		return r, true
+	}
+	callers, callees := map[string][]run{}, map[string][]run{}
+	for key, runs := range want.calls {
+		for _, r := range runs {
+			if r, ok := within(r); ok {
+				switch {
+				case key[1] == "shop/checkout":
+					callers[key[0]] = append(callers[key[0]], r)
+				case key[0] == "shop/checkout":
+					callees[key[1]] = append(callees[key[1]], r)
+				}
+			}
+		}
+	}
+	legacyEnds := at(2*time.Hour + 25*time.Minute + 20*time.Second)
+	wholeWindow := func() []run { return []run{{from, to, lifecycle.EndUnknown}} }
+	wantCallers := map[string][]run{"shop/frontend": wholeWindow()}
+	wantCallees := map[string][]run{
+		"shop/cart":             wholeWindow(),
+		"payments/legacy-pay":   {{from, legacyEnds, lifecycle.EndLivenessExpiry}},
+		"payments/payments-api": {{at(2*time.Hour + 20*time.Second), to, lifecycle.EndUnknown}},
+	}
+	if !maps.EqualFunc(callers, wantCallers, slices.Equal) || !maps.EqualFunc(callees, wantCallees, slices.Equal) {
+		t.Errorf("the callers of checkout are %v and its callees %v; want %v and %v", callers, callees, wantCallers, wantCallees)
+	}
+
+	// Every beginning and end the world has, and the distance of the window's ends.
+	var events []time.Time
+	for _, runs := range want.calls {
+		for _, r := range runs {
+			events = append(events, r.start, r.end)
+		}
+	}
+	for _, byID := range []map[string][]run{want.instances, want.bridges} {
+		for _, runs := range byID {
+			for _, r := range runs {
+				events = append(events, r.start, r.end)
+			}
+		}
+	}
+	for _, p := range w.Pods {
+		events = append(events, p.Created, p.Scheduled, p.Started, p.Finished, p.Deleted)
+		if !p.Deleted.IsZero() {
+			events = append(events, p.Deleted.Add(time.Second))
+		}
+	}
+	for _, end := range []time.Time{from, to} {
+		for _, e := range events {
+			if e.IsZero() {
+				continue
+			}
+			if d := end.Sub(e).Abs(); d < 5*time.Minute {
+				t.Errorf("the window's end %s is %s from an event at %s, under five minutes", end.Format(time.RFC3339), d, e.Format(time.RFC3339))
+			}
+		}
+	}
+
+	// The seed pods are the pods of checkout and the four services it shares a hop
+	// with whose instance is part of them in the window; frontend has the three of its
+	// rollout, the three it replaced having ended before the window; and they stand on
+	// all four nodes, one short of where ubiquity is judged.
+	members := map[string]bool{"shop/checkout": true, "shop/frontend": true, "shop/cart": true, "payments/legacy-pay": true, "payments/payments-api": true}
+	seedPods, frontend, nodes := 0, 0, map[int]bool{}
+	for id, runs := range want.bridges {
+		svc := want.serviceOf[id]
+		inWindow := false
+		for _, r := range runs {
+			if _, ok := within(r); ok {
+				inWindow = true
+			}
+		}
+		if inWindow && members[svc] {
+			seedPods++
+			nodes[want.podOf[id].Node] = true
+			if svc == "shop/frontend" {
+				frontend++
+			}
+		}
+	}
+	if seedPods != 13 || frontend != 3 || len(nodes) != 4 {
+		t.Errorf("%d seed pods (want 13), %d of frontend (want 3), on %d nodes (want 4)", seedPods, frontend, len(nodes))
 	}
 }
