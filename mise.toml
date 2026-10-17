@@ -260,14 +260,14 @@ run = [
 ]
 
 [tasks."check:collector"]
-description = "Validate the OpenTelemetry collector configurations (toposhift.yaml with its node agents opt-in, and the optional nodeagent.yaml) with the collector itself, and check that a misspelt key is refused"
+description = "Validate the OpenTelemetry collector configurations (toposhift.yaml with its node agents and trace metrics opt-ins, and the optional nodeagent.yaml and tracemetrics.yaml) with the collector itself, and check that a misspelt key is refused"
 # Pulls the image when it is absent (about 100 MB). Without Docker, or when the
 # pull fails, it skips locally and fails when CI is true. If the CI runner's
 # egress policy ever moves from audit to block, it must allow registry-1.docker.io,
 # auth.docker.io and production.cloudflare.docker.com.
-# OTELCOL_IMAGE is the collector image that deploy/otel-collector/toposhift.yaml and
-# nodeagent.yaml are validated with: the tag and the multi-arch index digest,
-# bumped together.
+# OTELCOL_IMAGE is the collector image that deploy/otel-collector/toposhift.yaml,
+# nodeagent.yaml and tracemetrics.yaml are validated with: the tag and the
+# multi-arch index digest, bumped together.
 env = { OTELCOL_IMAGE = "otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6" }
 run = '''
 set -eu
@@ -296,7 +296,10 @@ pos="check-collector-$$-pos"
 ctl="check-collector-$$-ctl"
 agent="check-collector-$$-agent"
 enabled="check-collector-$$-enabled"
-trap 'docker rm -f "$pos" "$ctl" "$agent" "$enabled" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
+traces="check-collector-$$-traces"
+metrics="check-collector-$$-metrics"
+both="check-collector-$$-both"
+trap 'docker rm -f "$pos" "$ctl" "$agent" "$enabled" "$traces" "$metrics" "$both" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -334,6 +337,21 @@ n="$( { diff "$cfg" "$tmp/enabled/toposhift.yaml" || true; } | grep -c '^>' || t
 if [ "$n" != 5 ]; then echo "check:collector: the opt-in form changed $n lines, not 5" >&2; exit 1; fi
 validate "$tmp/enabled" "$enabled" toposhift.yaml
 
+# Positive: the optional trace collector validates.
+mkdir "$tmp/traces"
+cp deploy/otel-collector/tracemetrics.yaml "$tmp/traces/tracemetrics.yaml"
+validate "$tmp/traces" "$traces" tracemetrics.yaml
+
+# Positive: the trace metrics opt-in form of toposhift.yaml (the 37 lines that carry
+# #TRACEMETRICS uncommented), alone and together with the node agents' form.
+mkdir "$tmp/metrics" "$tmp/both"
+sed 's/^#TRACEMETRICS //' "$cfg" > "$tmp/metrics/toposhift.yaml"
+n="$( { diff "$cfg" "$tmp/metrics/toposhift.yaml" || true; } | grep -c '^>' || true)"
+if [ "$n" != 37 ]; then echo "check:collector: the trace metrics opt-in form changed $n lines, not 37" >&2; exit 1; fi
+validate "$tmp/metrics" "$metrics" toposhift.yaml
+sed -e 's/^#NODEAGENTS //' -e 's/^#TRACEMETRICS //' "$cfg" > "$tmp/both/toposhift.yaml"
+validate "$tmp/both" "$both" toposhift.yaml
+
 # Negative control: exactly one key misspelt.
 n="$(grep -c '^ *num_consumers:' "$cfg" || true)"
 if [ "$n" != 1 ]; then echo "check:collector: expected exactly one num_consumers: line in $cfg, found $n" >&2; exit 1; fi
@@ -349,7 +367,7 @@ if ! printf '%s\n' "$out" | grep -qw num_consumer; then
   printf '%s\n' "$out" >&2
   exit 1
 fi
-echo "check:collector: ok (toposhift.yaml, its opt-in form and nodeagent.yaml validate; the control is refused)"
+echo "check:collector: ok (toposhift.yaml, its two opt-in forms alone and together, nodeagent.yaml and tracemetrics.yaml validate; the control is refused)"
 '''
 
 [tasks.spelling]

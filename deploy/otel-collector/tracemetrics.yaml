@@ -1,0 +1,145 @@
+# OPTIONAL trace collector for toposhift: an OpenTelemetry collector (contrib
+# 0.162.0) that the applications send their traces to. It turns the spans into the
+# two metrics toposhift reads, the calls between services and the span counts of
+# their instances, and sends only those to the cluster collector. See README.md in
+# this directory ("Services and their calls"), which says what to do first.
+#
+# Run EXACTLY ONE replica of it, never autoscaled. A call is counted when both of
+# its spans, the client's and the server's, reach the same collector; a second
+# replica splits the pairs, and two connectors behind one producer are counted, not
+# merged. It sends only to the cluster collector (toposhift.yaml, once you have
+# enabled its trace metrics receiver: README.md says how, and what it opens), never
+# to toposhift. Edit one thing and nothing else:
+#   <GATEWAY_HOST>  the exporter below: where the cluster collector's trace metrics
+#                   receiver listens (port 4319), as seen from this collector
+#
+# There is no Kubernetes attributes processor and no resource detection here, on
+# purpose: the pod's uid (k8s.pod.uid) comes from the application's own SDK
+# environment, never from an address. The applications set service.instance.id
+# themselves.
+#
+# The connector settings below are pinned. toposhift reads the metrics as they come
+# out of a 60 second flush and a 1 minute cache loop, and has no flag to change
+# that, so change neither.
+
+receivers:
+  # The applications' SDKs export here, over gRPC (4317) or HTTP (4318), the SDKs'
+  # defaults. Traces feed the connectors. Metrics and logs the SDKs send are
+  # accepted and dropped (the last two pipelines).
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 600
+    spike_limit_mib: 150
+
+  batch:
+    timeout: 1s
+
+  # Only the connectors' two metrics go on. This is the same filter as the one on the
+  # cluster collector's receiver for them.
+  filter/tracemetrics:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'name != "traces_service_graph_request_total" and name != "trace.span.count"'
+
+connectors:
+  # The calls between services, from the pairs of spans.
+  service_graph:
+    # Without service.namespace the client and server labels carry the service name
+    # only, and a namespaced service would get two identities.
+    dimensions:
+      - service.namespace
+    # With an empty list the collector converts no expired edge into a virtual node
+    # (this version has no other switch for it, and the empty list is what turns
+    # the conversion off): a span whose other end never arrives is dropped. A
+    # deployment that sets peer attributes gets virtual-node points.
+    virtual_node_peer_attributes: []
+    # The label is on every point and empty on all of them with the setting above.
+    # With peer attributes set, a virtual-node point carries client or server;
+    # toposhift sets such points aside and counts them.
+    virtual_node_extra_label: true
+    metrics_timestamp_offset: 0s
+    # toposhift expects these two. Change neither.
+    metrics_flush_interval: 60s
+    cache_loop: 1m
+    # The window in which the two spans of a call must meet, and how many half
+    # calls wait for the other.
+    store:
+      ttl: 2s
+      max_items: 1000
+
+  # The spans counted by service instance.
+  count: {}
+
+exporters:
+  # To the cluster collector, never to toposhift. The cluster collector adds the
+  # cluster name and sends in order.
+  otlp_http/gateway:
+    endpoint: http://<GATEWAY_HOST>:4319
+    encoding: proto
+    compression: gzip
+    timeout: 30s
+
+    # Retry for as long as it takes.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0
+
+    # In memory, sized in bytes: this collector keeps no state on disk. One consumer
+    # sends requests one at a time, in the order they were queued. A restart of this
+    # collector loses what is queued, and a call that is made again heals it.
+    sending_queue:
+      enabled: true
+      num_consumers: 1
+      sizer: bytes
+      queue_size: 100000000
+
+  nop: {}
+
+service:
+  # No port for the collector's own telemetry. Turn it on to diagnose pairing; the
+  # README says how.
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - memory_limiter
+        - batch
+      exporters:
+        - service_graph
+        - count
+    # Only what the connectors make. No application can send a metric through this
+    # pipeline, because the otlp receiver is not in it.
+    metrics:
+      receivers:
+        - service_graph
+        - count
+      processors:
+        - memory_limiter
+        - filter/tracemetrics
+      exporters:
+        - otlp_http/gateway
+    metrics/sdk:
+      receivers:
+        - otlp
+      exporters:
+        - nop
+    logs/sdk:
+      receivers:
+        - otlp
+      exporters:
+        - nop
