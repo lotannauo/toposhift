@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/lotannauo/toposhift/internal/coalesce"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -12,6 +13,7 @@ import (
 type Hooks struct {
 	BeforeWrite             func(batch []store.Record)
 	BeforeTranslate         func(cluster string, lr capture.LogRecord)
+	BeforeTranslateMetrics  func(cluster string, res otlpmetrics.Resource)
 	AfterTick               func()
 	AfterRetainCheck        func()
 	AfterWaiter             func()
@@ -22,7 +24,7 @@ type Hooks struct {
 // SetHooks installs the seams.
 func SetHooks(s *Sequencer, h Hooks) {
 	s.hooks = hooks{
-		beforeWrite: h.BeforeWrite, beforeTranslate: h.BeforeTranslate, afterTick: h.AfterTick,
+		beforeWrite: h.BeforeWrite, beforeTranslate: h.BeforeTranslate, beforeTranslateMetrics: h.BeforeTranslateMetrics, afterTick: h.AfterTick,
 		afterRetainCheck: h.AfterRetainCheck, afterWaiter: h.AfterWaiter,
 		betweenPendingAndWaiter: h.BetweenPendingAndWaiter, waiterExited: h.WaiterExited,
 	}

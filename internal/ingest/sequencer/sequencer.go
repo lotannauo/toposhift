@@ -14,7 +14,9 @@ import (
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/ingest/detector"
 	"github.com/lotannauo/toposhift/internal/ingest/otlphttp"
+	"github.com/lotannauo/toposhift/internal/ingest/otlpmetrics"
 	"github.com/lotannauo/toposhift/internal/ingest/resume"
+	"github.com/lotannauo/toposhift/internal/ingest/svcgraph"
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 	"github.com/lotannauo/toposhift/internal/store"
 )
@@ -29,6 +31,16 @@ const (
 	DefaultQueueLen           = 64
 	DefaultMaxGroupRecords    = 20_000
 	DefaultMaxClusters        = 16
+)
+
+// The defaults of [Config.DependencyExpiry] and [Config.InstanceTTL]: how long a
+// call between services, and a service instance, outlive their last sighting.
+// They are an estimate: a call or an instance that a day or an hour does not
+// repeat is, for a topology read at a time, either gone or shown with its end
+// at the last sighting plus this.
+const (
+	DefaultDependencyExpiry = 6 * time.Hour
+	DefaultInstanceTTL      = DefaultDependencyExpiry
 )
 
 // DefaultClusterName is the cluster name of a resource that carries no
@@ -88,6 +100,17 @@ type Config struct {
 	MaxGroupRecords int
 	// MaxClusters is how many cluster names have translators at once.
 	MaxClusters int
+	// DependencyExpiry is the TTL of every record of the service graph translators
+	// (producer svcgraph/<cluster>), and so how long a call between two services
+	// outlives its last sighting, and InstanceTTL the TTL of the span count
+	// translators' (spancount/<cluster>), how long an instance outlives its last
+	// span count. Zero is [DefaultDependencyExpiry] and [DefaultInstanceTTL]; each
+	// must be at most a year. See "Metrics" in the package documentation.
+	DependencyExpiry time.Duration
+	InstanceTTL      time.Duration
+	// ServiceGraphMaxSeries is how many series each cluster name's service graph
+	// translator keeps at most; zero is [svcgraph.DefaultMaxSeries]. It is for tests.
+	ServiceGraphMaxSeries int
 	// Logger receives the notes, refusals, failures and resets; slog.Default when
 	// nil.
 	Logger *slog.Logger
@@ -144,6 +167,13 @@ type Sequencer struct {
 	// without error, which ResumeStats reads from any goroutine.
 	resumeMu    sync.Mutex
 	resumeStats resume.Stats
+
+	// metricsMu guards what MetricsStatus reads from any goroutine: metricsCount,
+	// the metrics path's counters, and metricsSeen, the clusters that have had a
+	// service graph or span count point. The loop writes them (see metrics.go).
+	metricsMu    sync.Mutex
+	metricsCount map[string]int64
+	metricsSeen  map[string]*metricsCluster
 }
 
 // layers is the number of layers, L0 to L3.
@@ -155,6 +185,9 @@ type hooks struct {
 	beforeWrite func(batch []store.Record)
 	// beforeTranslate is called before each record is given to a translator.
 	beforeTranslate func(cluster string, lr capture.LogRecord)
+	// beforeTranslateMetrics is called before each resource of a metrics request is
+	// given to the translators of its cluster name.
+	beforeTranslateMetrics func(cluster string, res otlpmetrics.Resource)
 	// afterTick is called when a flush tick has been handled.
 	afterTick func()
 	// afterRetainCheck is called when a retention check has been handled, and
@@ -176,11 +209,19 @@ const (
 	stateDropped       // its context was done first: it was dropped
 )
 
-// request is one request waiting for, or in, a group.
+// request is one request waiting for, or in, a group: the log records of a logs
+// request, or the data points of a metrics request.
 type request struct {
 	ctx     context.Context
+	metrics bool // a metrics request, whose data is in points; otherwise in data
 	data    capture.LogsData
-	records int // OTLP log records
+	points  otlpmetrics.Data
+	// records is the request's weight in a group: its OTLP log records, or its data
+	// points (the sum points and the dropped ones). slots is how many store-record
+	// slots its translation fills, each of which a refusal rejects whole: for logs
+	// the same as records, for metrics see metrics.go.
+	records int
+	slots   int
 	state   atomic.Int32
 	done    chan outcome // buffered: the loop never waits on it
 
@@ -229,6 +270,8 @@ func New(c Config) (*Sequencer, error) {
 		{"CollectionInterval", &c.CollectionInterval, DefaultCollectionInterval},
 		{"NodeInterval", &c.NodeInterval, DefaultNodeInterval},
 		{"MergeWait", &c.MergeWait, DefaultMergeWait},
+		{"DependencyExpiry", &c.DependencyExpiry, DefaultDependencyExpiry},
+		{"InstanceTTL", &c.InstanceTTL, DefaultInstanceTTL},
 	}
 	for _, f := range durations {
 		switch {
@@ -246,6 +289,7 @@ func New(c Config) (*Sequencer, error) {
 		{"QueueLen", &c.QueueLen, DefaultQueueLen},
 		{"MaxGroupRecords", &c.MaxGroupRecords, DefaultMaxGroupRecords},
 		{"MaxClusters", &c.MaxClusters, DefaultMaxClusters},
+		{"ServiceGraphMaxSeries", &c.ServiceGraphMaxSeries, svcgraph.DefaultMaxSeries},
 	}
 	for _, f := range counts {
 		switch {
@@ -277,6 +321,8 @@ func New(c Config) (*Sequencer, error) {
 		resumeWarned: make(map[string]time.Time),
 		agentCount:   make(map[string]int64),
 		agentSeen:    make(map[string]*agentCluster),
+		metricsCount: make(map[string]int64),
+		metricsSeen:  make(map[string]*metricsCluster),
 	}
 	if c.Retain != nil {
 		r, err := newRetention(*c.Retain)
@@ -344,7 +390,22 @@ func (s *Sequencer) Accept(ctx context.Context, d capture.LogsData) error {
 // A request whose context is done before the loop claims it is dropped. Once the
 // loop has claimed it, its outcome is its group's, whatever its context.
 func (s *Sequencer) AcceptPartial(ctx context.Context, d capture.LogsData) (otlphttp.Partial, error) {
-	r := &request{ctx: ctx, data: d, records: countRecords(d), done: make(chan outcome, 1)}
+	n := countRecords(d)
+	return s.accept(&request{ctx: ctx, data: d, records: n, slots: n, done: make(chan outcome, 1)})
+}
+
+// AcceptMetrics is [Sequencer.AcceptPartial] for the data points of a metrics
+// request: the same queue, claim, merge wait, answers and errors, and a partial
+// success that counts data points. See "Metrics" in the package documentation.
+func (s *Sequencer) AcceptMetrics(ctx context.Context, d otlpmetrics.Data) (otlphttp.Partial, error) {
+	records, slots := countPoints(d)
+	return s.accept(&request{ctx: ctx, metrics: true, points: d, records: records, slots: slots, done: make(chan outcome, 1)})
+}
+
+// accept queues the request, waits for its group's commit, and returns its
+// outcome.
+func (s *Sequencer) accept(r *request) (otlphttp.Partial, error) {
+	ctx := r.ctx
 	s.mu.RLock()
 	if s.stopping {
 		s.mu.RUnlock()
@@ -551,7 +612,7 @@ func (s *Sequencer) abandon() {
 
 // group claims the waiting requests, first (or the carried request when first is
 // nil) and then those queued behind it, in arrival order, up to MaxGroupRecords
-// log records, and commits them. A request that does not fit is carried to the
+// log records or data points, and commits them. A request that does not fit is carried to the
 // next group, unclaimed.
 func (s *Sequencer) group(ctx context.Context, first *request) {
 	if first == nil {

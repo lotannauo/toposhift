@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/coalesce"
@@ -55,10 +56,11 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 	if err == nil {
 		s.resumed(ws, now)
 		s.noteAgents(ws, now)
+		s.noteMetrics(ws, now)
 	}
 	switch {
 	case err == nil:
-		s.observeClocks(batch, ws)
+		s.observeClocks(clockRecords(batch), ws)
 		s.answer(ws, nil)
 	case errors.Is(err, store.ErrBeforeHorizon):
 		s.observeClocks(nil, ws)
@@ -89,9 +91,10 @@ func (s *Sequencer) commit(ctx context.Context, reqs []*request, horizonRetry, s
 		// Whether the batch was stored is told by the last sequence number.
 		if len(batch) > 0 && s.cfg.Store.LastSeq() >= last {
 			s.log.Warn("sequencer: the write returned an error but its batch was stored", "error", err, "last_seq", last)
-			s.observeClocks(batch, ws)
+			s.observeClocks(clockRecords(batch), ws)
 			s.resumed(ws, now)
 			s.noteAgents(ws, now)
+			s.noteMetrics(ws, now)
 			s.answer(ws, nil)
 			return
 		}
@@ -127,12 +130,12 @@ func (s *Sequencer) writeDerived(ctx context.Context, out []store.Record, what s
 	last, err := s.write(ctx, out)
 	switch {
 	case err == nil:
-		s.observeClocks(out, nil)
+		s.observeClocks(clockRecords(out), nil)
 		return
 	case errors.Is(err, store.ErrInvalid):
 	case s.cfg.Store.LastSeq() >= last:
 		s.log.Warn("sequencer: the write returned an error but its batch was stored", "what", what, "error", err, "last_seq", last)
-		s.observeClocks(out, nil)
+		s.observeClocks(clockRecords(out), nil)
 		return
 	}
 	s.log.Error("sequencer: dropped the records of "+what, "records", len(out), "error", err)
@@ -149,6 +152,7 @@ func (s *Sequencer) tick(ctx context.Context) {
 	s.co.Prune(now)
 	s.det.Prune(now)
 	s.checkAgentsSilent(now)
+	s.checkMetricsSilent(now)
 	idle := idleMultiple * max(s.cfg.PullInterval, s.cfg.CollectionInterval, s.cfg.NodeInterval)
 	for name, c := range s.clusters {
 		if s.cfg.ClusterNameSet && name == s.cfg.ClusterName {
@@ -162,6 +166,7 @@ func (s *Sequencer) tick(ctx context.Context) {
 			s.log.Info("sequencer: freed the slot of an idle cluster name", "cluster", name, "idle_since", c.lastUsed)
 		}
 	}
+	s.snapshotSeries()
 	if s.hooks.afterTick != nil {
 		s.hooks.afterTick()
 	}
@@ -179,14 +184,16 @@ func (s *Sequencer) readHorizons() {
 }
 
 // reset makes the translators of every cluster name and the coalescer anew, as a
-// restart would; the detector is kept. See "Restart effects" in the package
-// documentation.
+// restart would; the detector is kept, and so are the service graph translators,
+// rolled back to what the last group that was answered with success left. See
+// "Restart effects" and "Metrics" in the package documentation.
 func (s *Sequencer) reset(why string, err error) {
 	s.log.Warn("sequencer: the translators and the coalescer are made anew", "why", why, "error", err)
 	for name := range s.clusters {
-		s.renewCluster(name)
+		s.resetCluster(name)
 	}
 	s.resetCoalescer()
+	s.snapshotSeries()
 }
 
 func (s *Sequencer) resetCoalescer() {
@@ -240,8 +247,11 @@ func (w *work) partial() otlphttp.Partial {
 		return otlphttp.Partial{}
 	}
 	noun := "log records"
+	if w.r.metrics {
+		noun = "data points"
+	}
 	if w.rejected == 1 {
-		noun = "log record"
+		noun = strings.TrimSuffix(noun, "s")
 	}
 	return otlphttp.Partial{
 		Rejected: w.rejected,

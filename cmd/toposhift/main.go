@@ -114,6 +114,18 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		}
 		nodeInterval = d
 	}
+	// An empty TOPOSHIFT_DEPENDENCY_EXPIRY or TOPOSHIFT_INSTANCE_TTL is the same as
+	// an unset one.
+	dependencyExpiry, err := envDuration(getenv, envDependencyExpiry, sequencer.DefaultDependencyExpiry)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
+		return 2
+	}
+	instanceTTL, err := envDuration(getenv, envInstanceTTL, sequencer.DefaultInstanceTTL)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
+		return 2
+	}
 	// An empty TOPOSHIFT_RETAIN is the same as an unset one: on.
 	retain := getenv(envRetain)
 	if retain == "" {
@@ -131,6 +143,10 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	pullInterval := fs.Duration("pull-interval", sequencer.DefaultPullInterval, "the interval of the collector's pulls of pods and nodes")
 	fs.DurationVar(&nodeInterval, "node-interval", nodeInterval,
 		"the report interval of the node agents, a whole number of seconds from 1m to 1h; their records live for three of them (env "+envNodeInterval+")")
+	fs.DurationVar(&dependencyExpiry, "dependency-expiry", dependencyExpiry,
+		"how long a call between two services outlives its last sighting, a whole number of seconds from 2m to 8784h (env "+envDependencyExpiry+")")
+	fs.DurationVar(&instanceTTL, "instance-ttl", instanceTTL,
+		"how long a service instance outlives its last span count, a whole number of seconds from 2m to 8784h (env "+envInstanceTTL+")")
 	fs.StringVar(&retain, "retain", retain, "on or off: discard history older than each layer's window once a day, or keep everything (env "+envRetain+")")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, serveUsage)
@@ -149,12 +165,14 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 		return 2
 	}
 	ic := ingestConfig{
-		clusterName:  clusterName,
-		set:          clusterName != "",
-		accept:       *accept,
-		acceptGiven:  setFlags(fs)[clustername.FlagName],
-		pullInterval: *pullInterval,
-		nodeInterval: nodeInterval,
+		clusterName:      clusterName,
+		set:              clusterName != "",
+		accept:           *accept,
+		acceptGiven:      setFlags(fs)[clustername.FlagName],
+		pullInterval:     *pullInterval,
+		nodeInterval:     nodeInterval,
+		dependencyExpiry: dependencyExpiry,
+		instanceTTL:      instanceTTL,
 	}
 	if ic.set {
 		if err := store.CheckClusterNameLimit(ic.clusterName); err != nil {
@@ -169,6 +187,15 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	if err := checkNodeInterval(ic.nodeInterval); err != nil {
 		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
 		return 2
+	}
+	for _, c := range []struct {
+		flag string
+		d    time.Duration
+	}{{"--dependency-expiry", ic.dependencyExpiry}, {"--instance-ttl", ic.instanceTTL}} {
+		if err := checkTTLFlag(c.flag, c.d); err != nil {
+			_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
+			return 2
+		}
 	}
 	switch retain {
 	case "on":
@@ -194,13 +221,11 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	sink := &switchSink{}
 	sink.set(gateSink{message: gate})
 	status := &statusRoute{retain: ic.retain}
-	cfg.Routes = []server.Route{{
-		Pattern: "POST /v1/logs",
-		Handler: otlphttp.Handler(sink, otlphttp.Options{MaxInFlightBytes: 2 * otlphttp.DefaultMaxBodyBytes}),
-	}, {
+	// The two receiver routes count their requests against one in-flight budget.
+	cfg.Routes = append(receiverRoutes(sink, otlphttp.NewBudget(2*otlphttp.DefaultMaxBodyBytes)), server.Route{
 		Pattern: "GET /status",
 		Handler: status,
-	}}
+	})
 	// The read-only tools are mounted the same way: before the store opens, and
 	// answering with the receiver's sentence until it has. They are served on a
 	// loopback listener only, because the server has no authentication yet.

@@ -1,8 +1,8 @@
-// Package sequencer commits the logs the receiver takes into the store. It is
-// the receiver's sink: one goroutine, the loop, owns the translators (a
-// k8sobjects, a k8scluster and a nodeagent translator per cluster name, made on
-// first use), the coalescer, the detector, and the store's writing. Nothing else
-// writes to the store.
+// Package sequencer commits the logs and the metrics the receiver takes into the
+// store. It is the receiver's sink: one goroutine, the loop, owns the translators
+// (a k8sobjects, a k8scluster, a nodeagent, a svcgraph and a spancount translator
+// per cluster name, made on first use), the coalescer, the detector, and the
+// store's writing. Nothing else writes to the store.
 //
 // # The 200 is the durability boundary
 //
@@ -14,8 +14,10 @@
 // # Groups
 //
 // The loop claims the requests waiting, in arrival order, up to
-// [Config.MaxGroupRecords] OTLP log records, and commits them as one group in
-// one synced write. A single request larger than that goes whole into one
+// [Config.MaxGroupRecords] OTLP log records and data points (the sum points of a
+// metrics request, and the points the receiver dropped), and commits them as one
+// group in one synced write. Logs requests and metrics requests share the queue,
+// the groups and the write. A single request larger than that goes whole into one
 // commit; a request is never split. The order inside a group:
 //
 //  1. The horizons of the layers are read and given to the coalescer, which
@@ -30,14 +32,17 @@
 //     receiver's; everything else goes to the objects receiver's), with the
 //     producers nodeagent/<cluster>, k8scluster/<cluster> and
 //     k8sobjects/<cluster>; the records the translators backdated are resumed;
-//     and every store record is checked.
+//     and every store record is checked. A metrics request takes the same steps,
+//     except that it has no namespace events and nothing to resume (see
+//     "Metrics").
 //  3. The lookup is closed. The records that passed are coalesced, in order,
 //     numbered contiguously above the store's last sequence number, and written
 //     once, synced, with the sequencer's own context, never a request's.
 //
 // Each request keeps the ingest instant it was claimed at, and the cluster
-// receiver's and the node agents' translators take it, as the time they received
-// the record, so that a rerun from memory translates alike. The detector, the coalescer's flush and
+// receiver's, the node agents' and the metric translators take it, as the time
+// they received the record or the point, so that a rerun from memory translates
+// alike. The detector, the coalescer's flush and
 // the pruning take the ingest clock's present, which the sequencer never lets go
 // backwards.
 //
@@ -52,6 +57,9 @@
 // records reaches the coalescer. The request is answered 200 with an OTLP
 // partial_success counting the rejected log records; the collector logs it and
 // does not send them again. Records the translators skip are not rejections.
+//
+// A metrics request is rejected by the same checks, a sighting or a resource at a
+// time, and counted in data points (see "Metrics").
 //
 // # Refusals
 //
@@ -167,8 +175,10 @@
 //     400 naming the error, with a reset before the next.
 //   - Any other error: the last sequence number tells whether the batch landed.
 //     If it did, every request gets 200. If not, every request gets 503 and the
-//     translators and the coalescer are made anew. A closed store answers 503
-//     with Retry-After: 30, and any other error 503 with Retry-After: 1.
+//     translators and the coalescer are made anew, except that the service graph
+//     translators are rolled back and kept (see "Metrics"). A closed store
+//     answers 503 with Retry-After: 30, and any other error 503 with
+//     Retry-After: 1.
 //   - A resume step that could not read the store because it or its lookup is
 //     closed, or because the sequencer's context is done, fails the group in the
 //     same way before anything is written: every request gets 503, the
@@ -194,7 +204,9 @@
 //
 // Making the translators and the coalescer anew is what a restart of the
 // process does, and costs what a restart costs; the detector is kept, because
-// its state comes only from sightings. A snapshot and restore of the translators
+// its state comes only from sightings, and so are the service graph translators
+// (rolled back to their committed state), because theirs comes from nothing the
+// store holds (see "Metrics"). A snapshot and restore of the translators
 // is not built: the store already holds what they would restore, and the resume
 // step reads it (see "Resume"). The effects are:
 //
@@ -216,7 +228,10 @@
 // cluster names it touched, and translates again from memory the requests of
 // the group before it that share those names; the coalescer has seen nothing
 // of the group yet and is kept. Observing their sightings again changes
-// nothing.
+// nothing. The service graph translator of a name is made anew with the others,
+// the panic of a logs request included: it has no state, and a new warm-up (two
+// connector flushes, with the points of the series that were already there set
+// aside) is the cost of a bug.
 //
 // # Resume
 //
@@ -315,6 +330,93 @@
 //     only after data loss, or an outage of the collector itself, where it is
 //     what the normal path does without a reset. It is counted.
 //
+// # Metrics
+//
+// A metrics request (the receiver's POST /v1/metrics, [Sequencer.AcceptMetrics])
+// carries the sum points of two connectors of the trace collector, and nothing
+// else is used: the service graph connector's request counter (scope
+// traces_service_graph, metric traces_service_graph_request_total), which says
+// that one service called another, and the count connector's span counter
+// (trace.span.count), which says that an instance of a service ran. Each
+// cluster name has a svcgraph and a spancount translator, with the producers
+// svcgraph/<cluster> and spancount/<cluster>. A request takes the steps of a logs
+// request: its resources' k8s.cluster.name resolve the cluster names (the
+// configured name, the limits and [Config.MaxClusters] apply, and a refused name
+// refuses the request whole), the detector checks each name it touches, and the
+// records are checked before the store sees them. It has no namespace pass.
+//
+// Within a resource, a point of the request counter goes to the cluster's svcgraph
+// translator, a point of the span counter to its spancount translator, and every
+// other point is counted (metrics.skipped_other_metric) and given to nobody; so
+// are the points the receiver dropped as not sums or not monotonic.
+//
+// The weight of a request in a group, and in a partial success, is its data
+// points. The slots a refusal rejects are smaller than the request: each sighting
+// of the service graph (a client service, a server service unless it is the
+// client, and the depends_on edge between them), and each resource's span counts
+// as a whole. A record that the checks refuse rejects its slot only, with the
+// number of data points it stands for: one for a sighting, the resource's span
+// count points for a resource. The other slots of the resource and of the request
+// are written, and the answer is 200 with a partial_success counting data points
+// ("N data points rejected, which a retry would not change; the first: ..."). The
+// service graph state of a rejected sighting is committed with the group, so a
+// rejected sighting is not seen again.
+//
+// The service graph translator keeps state, the connector's series, which the
+// store does not hold: a committed state and a pending one. A group answered with
+// success promotes the pending state of every cluster name (both ways of
+// succeeding: the write returned, or returned an error whose batch was stored),
+// and a group that failed (a reset: the resume step could not read, the store
+// refused for a horizon or as invalid, the write failed and was not stored) rolls
+// it back and keeps it, whatever the group held, so that the collector's retry of
+// a request is diffed against the same state and is sighted. A group written one
+// request at a time commits or rolls back each request alone. Only a restart, or
+// a panic while translating a request of the cluster name (a logs request's too),
+// makes it anew, and its first two connector flushes then set aside the points of
+// series it did not see before (a new warm-up). A cluster name that was idle long
+// enough to have its slot freed loses its state the same way. The span count
+// translator keeps none.
+//
+// The translators backdate nothing, so no resume step reads the store for their
+// records; after a restart a stored run of a call can end up to half its TTL
+// early, the cost of a state that is not stored.
+//
+// [Config.DependencyExpiry] (serve: --dependency-expiry) is the TTL of every
+// record of svcgraph/<cluster>, and [Config.InstanceTTL] (--instance-ttl) of
+// spancount/<cluster>'s; each defaults to six hours. Both producers write only
+// services, service instances, and the edges instance_of, part_of (to the pod,
+// named by the k8s.pod.uid the resource carries) and depends_on, never an
+// endpoint, so nothing this path answers, logs or reports can carry an endpoint
+// id. No count, rate or latency is stored. The span counts' times do not count
+// for retention's clock agreement (see "Retention"). A rank among producers is
+// not needed: the two write byte-identical descriptions of a service, and each
+// edge has one writer.
+//
+// [Sequencer.MetricsStatus], which serve reports under "metrics" in GET /status,
+// has the counters (named for what was done with a point: skipped_* a point set
+// aside, refused_* a part of a record not written; metrics.* for the sequencer's
+// own, svcgraph.* and spancount.* for the translators', one for each reason they
+// give), and for each cluster the ingest instant of the latest group that held a
+// service graph point, and a span count point, never a point's own time, which
+// is a sender's clock. The loop copies the number of series each service graph
+// translator holds after each group and each flush tick; the status never calls
+// a translator. The counters count the groups answered without error. The
+// sequencer warns, at most once a minute for each kind and cluster, of a full
+// series table (a sender can cause that on purpose; the receiver has no
+// authentication, and a sender can also add false services, instances and calls,
+// and bridge an instance to any pod whose uid it knows) and of span counts with
+// no usable service.instance.id, which write nothing. A cluster with a service
+// graph point in the last day and none for more than three connector flushes
+// (three minutes) is marked silent at the next flush tick and warned about, once
+// for each silence: the trace collector or its pipeline is down, or no call
+// happened for about sixteen minutes, since the connector stops exporting a
+// series that long after its last update. The entry stays in the status for a
+// day.
+//
+// Each cluster name's service graph translator holds up to 200,000 series, which
+// is memory: tens of MB per cluster name, not measured. Without a configured
+// cluster name the senders choose the names, up to [Config.MaxClusters].
+//
 // # Panics elsewhere
 //
 // Only a panic while a request is translated is recovered. A panic in the
@@ -391,6 +493,12 @@
 // collector on the same host shares its clock, and agrees with it whatever it
 // reads. The node agents' records are stamped by the clocks of the nodes the
 // agents run on, which are other machines' unless an agent shares this host.
+//
+// The span counts' records are left out of the agreement, written or refused: their
+// times are the clocks of the applications that sent the counts, many and not
+// managed, and one application that lags would make a batch disagree and pause
+// retention. The service graph's times are the trace collector's, one clock, and
+// count like the other collectors'.
 //
 // The agreement data is read from the records the sequencer writes: the
 // coalesced batch of each group and the output of each flush, not the records

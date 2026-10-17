@@ -1,7 +1,9 @@
-// Package otlphttp receives OpenTelemetry logs over OTLP/HTTP: an
+// Package otlphttp receives OpenTelemetry logs and metrics over OTLP/HTTP: an
 // [http.Handler] that serves POST /v1/logs, decodes the body, and hands it to
-// a [Sink] as the module's OTLP JSON model, [capture.LogsData]. Binding a
-// listener and serving are not its business; the caller mounts the handler.
+// a [Sink] as the module's OTLP JSON model, [capture.LogsData], and another that
+// serves POST /v1/metrics and hands a [MetricsSink] the narrow model of
+// [otlpmetrics.Data]. Binding a listener and serving are not its business; the
+// caller mounts the handlers.
 //
 // # One input type
 //
@@ -17,6 +19,37 @@
 // string-table index (string_value_strindex, key_strindex) is refused, because
 // the logs signal carries no table to resolve it against, and a trace or span
 // ID of the wrong size is refused, as in JSON.
+//
+// # Metrics
+//
+// [MetricsHandler] runs the same request path as [Handler]: the path, method,
+// type, encoding, size and admission checks, the reading of the body, the
+// depth limits, and the mapping of the sink's errors are one body of code, so
+// that a change to a limit changes both routes. The differences are these.
+//
+// A metrics body is protobuf only. An application/json body is answered 415
+// ("metrics are received as application/x-protobuf only") before the admission
+// and before the body is read, because the module has no JSON model of metrics.
+// A sender that can send only OTLP/JSON cannot send metrics here. Any other
+// Content-Type is 415 too.
+//
+// The body is decoded as go.opentelemetry.io/proto/otlp/metrics/v1.MetricsData,
+// which is wire-compatible with ExportMetricsServiceRequest as LogsData is with
+// the logs request (see "No gRPC in the build"), and converted to the narrow
+// model: the points of the monotonic sums, with the scope's name and the
+// metric's name, the temporality, the times, the value (an integer converted to
+// a float64) and the attributes; and for everything else only a count, in
+// [otlpmetrics.Resource.DroppedNotSum] (gauges, histograms, exponential
+// histograms, summaries) and [otlpmetrics.Resource.DroppedNonMonotonic]. A point
+// with no value, or flagged as having no recorded value, has the value NaN,
+// which the translators set aside: a value is never guessed. The newest time
+// of a resource covers all its points, the dropped ones included. A protobuf
+// string-table index is refused (400), as for logs, and so is a value that nests
+// deeper than 32 levels in the attributes of a resource or of a kept point.
+//
+// A partial success counts data points (rejected_data_points, field 1 of the
+// response's partial_success, with error_message at field 2: the same bytes as
+// for logs).
 //
 // # Nesting
 //
@@ -35,14 +68,15 @@
 //
 // # No gRPC in the build
 //
-// The OTLP/HTTP request is the protobuf message ExportLogsServiceRequest. This
-// package does not import the packages that define it, because the generated
-// code of that service (go.opentelemetry.io/proto/otlp/collector/...) imports
-// gRPC, and the product's build must not contain gRPC. It decodes the body as
-// go.opentelemetry.io/proto/otlp/logs/v1.LogsData instead. The two messages
-// are wire-compatible: each is a single field 1, repeated ResourceLogs, so
-// the same bytes decode as either. The tests encode both shapes and check that
-// they decode to the same value.
+// The OTLP/HTTP request is the protobuf message ExportLogsServiceRequest (or
+// ExportMetricsServiceRequest). This package does not import the packages that
+// define them, because the generated code of those services
+// (go.opentelemetry.io/proto/otlp/collector/...) imports gRPC, and the product's
+// build must not contain gRPC. It decodes the body as
+// go.opentelemetry.io/proto/otlp/logs/v1.LogsData (metrics/v1.MetricsData)
+// instead. The two messages are wire-compatible: each is a single field 1,
+// repeated ResourceLogs (ResourceMetrics), so the same bytes decode as either.
+// The tests encode both shapes and check that they decode to the same value.
 //
 // # Statuses
 //
@@ -60,19 +94,20 @@
 //     stream), and for a request the sink refuses whole by returning a
 //     [RefusedError]; the status carries the sink's message, and the client is
 //     expected not to send the request again.
-//   - 404 for a path other than /v1/logs, and 405, with Allow: POST, for a
-//     method other than POST.
+//   - 404 for a path other than the handler's own (/v1/logs, or /v1/metrics),
+//     and 405, with Allow: POST, for a method other than POST.
 //   - 413 for a body above [Options.MaxBodyBytes], measured twice against the
 //     same limit: the bytes on the wire, and the bytes after decompression. The
 //     decompressed bytes are counted as they are produced and decompression
 //     stops at the limit, so a small gzip stream that inflates to gigabytes
 //     costs at most the limit, in time and in memory.
-//   - 415 for a Content-Type that is neither protobuf nor JSON, or a
-//     Content-Encoding that is neither gzip nor identity.
+//   - 415 for a Content-Type that is neither protobuf nor JSON (for metrics,
+//     that is not protobuf: see "Metrics"), or a Content-Encoding that is
+//     neither gzip nor identity.
 //   - 503 with Retry-After: 1 when the sink returns [ErrBusy], or at once,
 //     before the body is read, when the request would take the bytes in flight
-//     above [Options.MaxInFlightBytes]; the client is expected to send the same
-//     request again later.
+//     above [Options.MaxInFlightBytes] (or the [Options.Budget]); the client is
+//     expected to send the same request again later.
 //   - 503 with Retry-After: 30 when the sink returns an [UnavailableError],
 //     which says ingest is off; the message says what to do about it. It
 //     takes precedence over the other sink errors, also when one error holds
@@ -120,15 +155,22 @@
 //
 // With [Options.MaxInFlightBytes] set, the handler bounds the bytes the
 // requests it is serving hold together, so that a number of large requests
-// cannot together take the memory of the machine. Each request reserves its
-// decoded size, estimated before its body is read: its Content-Length when the
-// body is not compressed, and [Options.MaxBodyBytes] when the length is not
-// declared (a chunked body) or the body is gzip, whose Content-Length is the
-// compressed size. A request whose reservation would take the total above the
-// bound is answered 503 with Retry-After: 1 at once, and its body is not read.
-// The reservation is released when the request is answered, on every path. A
-// reservation is never above the bound itself, so a request alone is always
-// admitted.
+// cannot together take the memory of the machine. With [Options.Budget] set,
+// the bound is that [Budget] instead, and handlers given the same one count
+// their requests against it together: serve gives the logs route and the metrics
+// route one budget, so that the memory they can hold is bounded once, not
+// twice. Each request reserves its decoded size, estimated before its body is
+// read: its Content-Length when the body is not compressed, and
+// [Options.MaxBodyBytes] when the length is not declared (a chunked body) or
+// the body is gzip, whose Content-Length is the compressed size. A request
+// whose reservation would take the total above the bound is answered 503 with
+// Retry-After: 1 at once, and its body is not read. The reservation is released
+// when the request is answered, on every path. A reservation is never above the
+// bound itself, so a request alone is always admitted. The shipped collector
+// sends gzip, so each of its requests reserves the whole limit. A collector
+// that sends metrics with one consumer has one logs request and one metrics
+// request in flight at most, which a budget of twice the limit admits; a
+// request beyond that waits on a 503.
 //
 // The bound counts decoded bytes of the body, not what decoding them costs: the
 // decoded Go structures are several times the body (see "What a request
@@ -138,10 +180,10 @@
 // # What the server has to provide
 //
 // This package is a handler. Beyond one request it limits only the bytes in
-// flight, and only when [Options.MaxInFlightBytes] is set. The lane that serves
-// it must set read-header and read timeouts, so that a client that sends
-// nothing, or sends a body slowly, does not hold a connection and a buffer for
-// ever; and it must decide what a body read that is too slow gets (the handler
-// answers 400 if the connection fails mid-body, and cannot tell slow from
-// broken).
+// flight, and only when [Options.MaxInFlightBytes] or [Options.Budget] is set.
+// The lane that serves it must set read-header and read timeouts, so that a
+// client that sends nothing, or sends a body slowly, does not hold a connection
+// and a buffer for ever; and it must decide what a body read that is too slow
+// gets (the handler answers 400 if the connection fails mid-body, and cannot
+// tell slow from broken).
 package otlphttp

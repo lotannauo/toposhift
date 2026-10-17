@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protowire"
@@ -23,8 +22,12 @@ import (
 	"github.com/lotannauo/toposhift/internal/replay/capture"
 )
 
-// Path is the path the handler serves, which is the OTLP/HTTP path of logs.
-const Path = "/v1/logs"
+// Path is the path [Handler] serves, which is the OTLP/HTTP path of logs, and
+// MetricsPath the path [MetricsHandler] serves, the OTLP/HTTP path of metrics.
+const (
+	Path        = "/v1/logs"
+	MetricsPath = "/v1/metrics"
+)
 
 // DefaultMaxBodyBytes is the body limit when [Options.MaxBodyBytes] is not set,
 // 64 MiB. The package documentation says why it is so large.
@@ -100,12 +103,14 @@ type Sink interface {
 	Accept(ctx context.Context, d capture.LogsData) error
 }
 
-// Partial is what a [PartialSink] did not take of a request it accepted: the
-// number of OTLP log records it rejected, and a message saying why. A record is
-// rejected only for a reason that would hold on any retry, because a client
-// drops what a partial success rejects and does not send it again.
+// Partial is what a [PartialSink] or a [MetricsSink] did not take of a request
+// it accepted: the number of OTLP log records, or data points of a metrics
+// request, it rejected, and a message saying why. A record is rejected only for
+// a reason that would hold on any retry, because a client drops what a partial
+// success rejects and does not send it again.
 type Partial struct {
-	// Rejected counts the OTLP log records rejected. Zero or negative is none.
+	// Rejected counts the OTLP log records, or data points, rejected. Zero or
+	// negative is none.
 	Rejected int64
 	// Message says why, for the client's log. It is made valid UTF-8 and cut to
 	// [MaxStatusMessageBytes], as a status message is.
@@ -121,7 +126,7 @@ type PartialSink interface {
 	AcceptPartial(ctx context.Context, d capture.LogsData) (Partial, error)
 }
 
-// Options configures [Handler]. The zero value is usable.
+// Options configures [Handler] and [MetricsHandler]. The zero value is usable.
 type Options struct {
 	// MaxBodyBytes limits the body: the bytes on the wire, and the bytes after
 	// decompression. A body above it is answered with 413. Zero or negative is
@@ -131,8 +136,13 @@ type Options struct {
 	// together, counted as decoded bytes and estimated before each body is read
 	// (see "Admission" in the package documentation). A request that would take
 	// the total above it is answered 503 with Retry-After: 1 at once, and its
-	// body is not read. Zero or negative is no bound.
+	// body is not read. Zero or negative is no bound. It is ignored when Budget
+	// is set.
 	MaxInFlightBytes int64
+	// Budget, when set, is the in-flight bound of the handler, in place of
+	// MaxInFlightBytes. Handlers given the same Budget count the bytes of their
+	// requests against one bound, as the requests of one handler do.
+	Budget *Budget
 }
 
 // Handler returns the handler of POST /v1/logs. It panics if s is nil.
@@ -140,22 +150,47 @@ func Handler(s Sink, o Options) http.Handler {
 	if s == nil {
 		panic("otlphttp: nil Sink")
 	}
-	if o.MaxBodyBytes <= 0 {
-		o.MaxBodyBytes = DefaultMaxBodyBytes
+	h := newHandler(Path, "logs", true, o)
+	partial, _ := s.(PartialSink)
+	h.decode = func(k kind, body []byte) (func(context.Context) (Partial, error), error) {
+		d, err := decodeBody(k, body)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (Partial, error) {
+			if partial != nil {
+				return partial.AcceptPartial(ctx, d)
+			}
+			return Partial{}, s.Accept(ctx, d)
+		}, nil
 	}
-	h := &handler{sink: s, limit: o.MaxBodyBytes, budget: max(o.MaxInFlightBytes, 0)}
-	h.partial, _ = s.(PartialSink)
 	return h
 }
 
+// handler serves one of the two routes: the steps of a request are the same, and
+// the path, the accepted encodings and the decoding differ.
 type handler struct {
-	sink    Sink
-	partial PartialSink // the sink, when it accepts in part
-	limit   int64
-	// budget is Options.MaxInFlightBytes, zero for none, and inFlight is what
-	// the requests being served have reserved of it.
-	budget   int64
-	inFlight atomic.Int64
+	path string // the path served
+	what string // what it receives: "logs" or "metrics"
+	// jsonOK says whether an application/json body is accepted. Metrics are
+	// received as protobuf only.
+	jsonOK bool
+	limit  int64
+	budget *Budget // nil for none
+	// decode decodes a body of the given encoding and returns the call that hands
+	// it to the sink. Its error is a body that does not decode: 400.
+	decode func(k kind, body []byte) (func(context.Context) (Partial, error), error)
+}
+
+func newHandler(path, what string, jsonOK bool, o Options) *handler {
+	if o.MaxBodyBytes <= 0 {
+		o.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	b := o.Budget
+	if b == nil && o.MaxInFlightBytes > 0 {
+		b = NewBudget(o.MaxInFlightBytes)
+	}
+	return &handler{path: path, what: what, jsonOK: jsonOK, limit: o.MaxBodyBytes, budget: b}
 }
 
 // reservation is what a request is counted for before its body is read: its
@@ -168,20 +203,7 @@ func (h *handler) reservation(r *http.Request, gz bool) int64 {
 	if gz || n < 0 {
 		n = h.limit
 	}
-	return min(n, h.budget)
-}
-
-// admit reserves n bytes of the budget, and reports whether it could.
-func (h *handler) admit(n int64) bool {
-	for {
-		cur := h.inFlight.Load()
-		if cur+n > h.budget {
-			return false
-		}
-		if h.inFlight.CompareAndSwap(cur, cur+n) {
-			return true
-		}
-	}
+	return min(n, h.budget.limit)
 }
 
 // kind is the encoding of a body.
@@ -198,8 +220,8 @@ const (
 )
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != Path {
-		http.Error(w, "not found: logs are received at "+Path, http.StatusNotFound)
+	if r.URL.Path != h.path {
+		http.Error(w, "not found: "+h.what+" are received at "+h.path, http.StatusNotFound)
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -208,11 +230,20 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	k, ok := bodyKind(r.Header.Get("Content-Type"))
-	if !ok {
+	switch {
+	case !ok && h.jsonOK:
 		// The body is not read, so the answer is in the format the client
 		// most likely understands.
 		writeStatus(w, kindProto, http.StatusUnsupportedMediaType,
 			"unsupported Content-Type: use "+contentProto+" or "+contentJSON)
+		return
+	case !ok:
+		writeStatus(w, kindProto, http.StatusUnsupportedMediaType, "unsupported Content-Type: use "+contentProto)
+		return
+	case k == kindJSON && !h.jsonOK:
+		// Before the admission and the body: a JSON sender is told in JSON.
+		writeStatus(w, kindJSON, http.StatusUnsupportedMediaType,
+			"unsupported Content-Type: "+h.what+" are received as "+contentProto+" only")
 		return
 	}
 	gz, ok := bodyGzip(r.Header.Get("Content-Encoding"))
@@ -224,33 +255,28 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, k, http.StatusRequestEntityTooLarge, h.tooLarge())
 		return
 	}
-	if h.budget > 0 {
+	if h.budget != nil {
 		n := h.reservation(r, gz)
-		if !h.admit(n) {
+		if !h.budget.admit(n) {
 			// The body is not read: what it would cost is what is refused.
 			w.Header().Set("Retry-After", retryAfterBusy)
 			writeStatus(w, k, http.StatusServiceUnavailable, "busy: too many bytes in flight; send the request again later")
 			return
 		}
 		// Released when the request is answered, on every path, a panic included.
-		defer h.inFlight.Add(-n)
+		defer h.budget.release(n)
 	}
 	body, status, err := h.readBody(w, r, gz)
 	if err != nil {
 		writeStatus(w, k, status, err.Error())
 		return
 	}
-	d, err := decodeBody(k, body)
+	call, err := h.decode(k, body)
 	if err != nil {
 		writeStatus(w, k, http.StatusBadRequest, "malformed request body: "+err.Error())
 		return
 	}
-	var p Partial
-	if h.partial != nil {
-		p, err = h.partial.AcceptPartial(r.Context(), d)
-	} else {
-		err = h.sink.Accept(r.Context(), d)
-	}
+	p, err := call(r.Context())
 	if err != nil {
 		h.writeSinkError(w, k, err)
 		return
@@ -500,30 +526,33 @@ func jsonTooDeep(b []byte, limit int) bool {
 
 // checkDepth refuses a batch with a value that nests deeper than maxValueDepth.
 func checkDepth(d capture.LogsData) error {
-	check := func(kvs []capture.KeyValue) error {
-		for _, kv := range kvs {
-			if valueDepth(kv.Value) > maxValueDepth {
-				return fmt.Errorf("the value of attribute %s nests deeper than %d levels", snippet(kv.Key), maxValueDepth)
-			}
-		}
-		return nil
-	}
 	for _, rl := range d.ResourceLogs {
-		if err := check(rl.Resource.Attributes); err != nil {
+		if err := checkAttributesDepth(rl.Resource.Attributes); err != nil {
 			return err
 		}
 		for _, sl := range rl.ScopeLogs {
-			if err := check(sl.Scope.Attributes); err != nil {
+			if err := checkAttributesDepth(sl.Scope.Attributes); err != nil {
 				return err
 			}
 			for _, lr := range sl.LogRecords {
 				if lr.Body != nil && valueDepth(*lr.Body) > maxValueDepth {
 					return fmt.Errorf("a log record body nests deeper than %d levels", maxValueDepth)
 				}
-				if err := check(lr.Attributes); err != nil {
+				if err := checkAttributesDepth(lr.Attributes); err != nil {
 					return err
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// checkAttributesDepth refuses a list of attributes with a value that nests
+// deeper than maxValueDepth.
+func checkAttributesDepth(kvs []capture.KeyValue) error {
+	for _, kv := range kvs {
+		if valueDepth(kv.Value) > maxValueDepth {
+			return fmt.Errorf("the value of attribute %s nests deeper than %d levels", snippet(kv.Key), maxValueDepth)
 		}
 	}
 	return nil
@@ -546,9 +575,13 @@ func valueDepth(v capture.AnyValue) int {
 	return 1 + deepest
 }
 
-// writeSuccess writes the ExportLogsServiceResponse: empty when nothing was
-// rejected, and otherwise with its partial_success, whose message is made valid
-// UTF-8 and bounded as a status message is.
+// writeSuccess writes the ExportLogsServiceResponse, or the
+// ExportMetricsServiceResponse when k is protobuf and the request was for
+// metrics (JSON is never answered to metrics): empty when nothing was rejected,
+// and otherwise with its partial_success, whose message is made valid UTF-8 and
+// bounded as a status message is. The two protobuf messages have the same wire
+// form: field 1 is partial_success, whose field 1 is the number rejected and
+// whose field 2 is the message.
 func writeSuccess(w http.ResponseWriter, k kind, p Partial) {
 	if p.Rejected <= 0 {
 		if k == kindJSON {
