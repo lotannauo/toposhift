@@ -125,7 +125,8 @@ func runDemo(ctx context.Context, listen string, mode demoMode, stdin io.Reader,
 		}
 		return err
 	}
-	log.Info("built the cluster in memory", "took", built.Took, "records", built.Records)
+	log.Info("built the cluster in memory", "took", built.Took, "records", built.Records,
+		"skips", demo.Total(built.Skips), "skips_unexplained", built.UnexplainedSkips(), "notes", demo.Total(built.Notes), "warnings", built.Warnings)
 	_, _ = fmt.Fprint(stderr, built.Banner())
 	if mode == demoNone {
 		return errors.Join(built.Store.Close())

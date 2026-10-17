@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lotannauo/toposhift/internal/ingest/k8scluster"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 	"github.com/lotannauo/toposhift/internal/store/memstore"
 )
@@ -41,6 +42,14 @@ type Built struct {
 	// Warnings is how many lines of warn level or above the sequencer logged. A
 	// world the translators take in whole logs none.
 	Warnings int
+	// Skips and Notes are what the translators set aside and remarked on, by
+	// producer and reason, sorted. The world sends one namespace event for the
+	// cluster translator to set aside each time it reports, so Skips is not empty;
+	// NamespaceEvents is how many it sent, and [Built.UnexplainedSkips] is what is
+	// left of Skips once those are taken out. A world the translators take in whole
+	// has no note.
+	Skips, Notes    []Count
+	NamespaceEvents int
 	// Took is how long the build took, by the wall clock. It is not part of the
 	// history.
 	Took  time.Duration
@@ -49,8 +58,30 @@ type Built struct {
 
 func rfc(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+// UnexplainedSkips is how many skips the namespace events the world sent do not
+// explain. The cluster translator sets aside every one of them, as an entity type
+// the catalog does not have, and nothing else: so the skips for that reason of that
+// producer must be exactly NamespaceEvents, and there must be no other. It counts
+// the skips beyond that and the namespace events not set aside, so it is 0 only
+// when both hold. A world that sent a namespace event while the skips were not
+// read at all is not explained either.
+func (b *Built) UnexplainedSkips() int {
+	producer := "k8scluster/" + ClusterName
+	explained := 0
+	for _, c := range b.Skips {
+		if c.Producer == producer && c.Reason == k8scluster.SkipTypeNotInCatalog {
+			explained += c.N
+		}
+	}
+	gap := explained - b.NamespaceEvents
+	if gap < 0 {
+		gap = -gap
+	}
+	return Total(b.Skips) - explained + gap
+}
+
 // Instructions is what the tools say about the demo to the client that connects:
-// the window, since a client has no "now", and the nodes, since there is no search.
+// the window, since a client has no "now", and the nodes, since a client starts from the ids it is told.
 // It names no pod and no endpoint, and does not tell the story.
 func (b *Built) Instructions() string {
 	s := b.Story
