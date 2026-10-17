@@ -817,5 +817,6 @@ Services and their calls
   The receiver has no authentication: anything that reaches it can add services,
   instances and calls, and bridge an instance to any pod whose uid it knows, so
   restrict who reaches it with the network. It serves both routes on every
-  listen address; the read-only tools stay on loopback.
+  listen address; the read-only tools are served only when it listens on
+  loopback.
 `
