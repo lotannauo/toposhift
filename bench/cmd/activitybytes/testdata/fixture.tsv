@@ -1,0 +1,49 @@
+# A synthetic placement of 10 pods on 3 nodes over 40 minutes. No row here is from the trace.
+#
+# One line is a run of observations of one subject, asserted by the producer
+# alibaba/placement in the second layer with the event time basis "producer event":
+#
+#   kind   name   on   start_s   count   step_s   ttl_s   through_s   payload
+#
+# kind is pod, node or edge (a pod on a node: name is the pod, on is the node).
+# start_s is the first event time in seconds from the epoch; count observations follow,
+# step_s apart, each with a TTL of ttl_s. through_s, if not "-", is the Through of the
+# last observation of the line. payload is text, or "-" for none. The records of all
+# lines are ordered by event time, then by line, and numbered from 1 in steps of 3, so
+# that a renumbering of them changes the data.
+#
+# The three nodes. n1 is sampled every 30 seconds: 80 observations, more than the 64
+# a prefix holds before a checkpoint is due, on an entity prefix.
+node   n1   -    0   80   30   90    -   rack=a
+node   n2   -    0   40   60   180   -   rack=b
+node   n3   -    0   40   60   180   -   -
+# Pods 1 to 4 on n1, sampled every minute for the whole time. n1's reverse edge prefix
+# holds four pods' edges: 160 records, on an edge prefix.
+pod    p01  -    0   40   60   180   -   svc=cart
+edge   p01  n1   0   40   60   180   -   -
+pod    p02  -    0   40   60   180   -   svc=cart
+edge   p02  n1   0   40   60   180   -   -
+pod    p03  -    0   40   60   180   -   svc=pay
+edge   p03  n1   0   40   60   180   -   -
+pod    p04  -    0   40   60   180   -   svc=pay
+edge   p04  n1   0   40   60   180   -   -
+# Pod 5 on n2 with a gap of 120 seconds in its samples, within the TTL of 180.
+pod    p05  -    0   20   60   180   -   svc=ads
+pod    p05  -    1260 20  60   180   -   svc=ads
+edge   p05  n2   0   20   60   180   -   -
+edge   p05  n2   1260 20  60   180   -   -
+# Pod 6 on n2 with a gap of 300 seconds, beyond the TTL.
+pod    p06  -    0   20   60   180   -   svc=ads
+pod    p06  -    1440 20  60   180   -   svc=ads
+edge   p06  n2   0   20   60   180   -   -
+edge   p06  n2   1440 20  60   180   -   -
+# Pod 7 on n2 as one record that stands for a run: it was observed until second 2340.
+pod    p07  -    0   1    0    180   2340  svc=db
+edge   p07  n2   0   1    0    180   2340  -
+# Pods 8 to 10 on n3, which come and go.
+pod    p08  -    0    10  60   180   -   svc=db
+edge   p08  n3   0    10  60   180   -   -
+pod    p09  -    600  10  60   180   -   svc=db
+edge   p09  n3   600  10  60   180   -   -
+pod    p10  -    1500 15  60   180   -   svc=db
+edge   p10  n3   1500 15  60   180   -   -

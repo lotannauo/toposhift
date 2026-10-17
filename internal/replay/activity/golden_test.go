@@ -239,7 +239,7 @@ func TestGolden(t *testing.T) {
 		t.Fatalf("NewReader on the golden file: %v", err)
 	}
 	last := goldenRecords[len(goldenRecords)-1]
-	want := activity.Info{Version: 1, Records: int64(len(goldenRecords)), MinSeq: goldenRecords[0].Seq, MaxSeq: last.Seq, RowGroups: 3}
+	want := activity.Info{Version: 1, Records: int64(len(goldenRecords)), MinSeq: goldenRecords[0].Seq, MaxSeq: last.Seq, RowGroups: 3, Digest: goldenDigest}
 	if got := r.Info(); got != want {
 		t.Errorf("Info() = %+v, want %+v", got, want)
 	}

@@ -179,7 +179,7 @@ func TestReadBack(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewReader: %v", err)
 			}
-			want := activity.Info{Version: 1, Records: 37, MinSeq: 3, MaxSeq: 37 * 3, RowGroups: tc.wantGroups}
+			want := activity.Info{Version: 1, Records: 37, MinSeq: 3, MaxSeq: 37 * 3, RowGroups: tc.wantGroups, Digest: footerDigest(t, data)}
 			if got := r.Info(); got != want {
 				t.Errorf("Info() = %+v, want %+v", got, want)
 			}
@@ -273,6 +273,78 @@ func TestLargeSeq(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireSame(t, recs, got)
+}
+
+// Info().Digest is the footer's content digest, the one the written specification
+// gives for the records and their row groups, and it is the one the whole read
+// has verified by the end.
+func TestInfoDigestIsTheFootersDigest(t *testing.T) {
+	t.Parallel()
+
+	recs := sample(t, 50)
+	for _, rows := range []int{8, 50, 1000} {
+		data := writeFile(t, recs, activity.WriterOptions{RowGroupRows: rows})
+		r, err := openFile(data, activity.ReaderOptions{})
+		if err != nil {
+			t.Fatalf("NewReader (groups of %d): %v", rows, err)
+		}
+		_, wantFile := specDigests(recs, rows)
+		if got := r.Info().Digest; got != wantFile || got != footerDigest(t, data) {
+			t.Errorf("groups of %d: Info().Digest = %q, the specification gives %q and the footer %q", rows, got, wantFile, footerDigest(t, data))
+		}
+		if _, err := drain(r); err != nil {
+			t.Fatalf("groups of %d: %v", rows, err)
+		}
+		if got := r.Info().Digest; got != wantFile {
+			t.Errorf("groups of %d: Info().Digest after the read = %q, want %q", rows, got, wantFile)
+		}
+	}
+	// Other records, other digest; the same records in other groups, another digest too.
+	a := openInfo(t, writeFile(t, recs, activity.WriterOptions{RowGroupRows: 8}))
+	b := openInfo(t, writeFile(t, recs[:49], activity.WriterOptions{RowGroupRows: 8}))
+	c := openInfo(t, writeFile(t, recs, activity.WriterOptions{RowGroupRows: 9}))
+	if a.Digest == b.Digest || a.Digest == c.Digest {
+		t.Errorf("digests %q, %q and %q: files of other records or other groups share one", a.Digest, b.Digest, c.Digest)
+	}
+}
+
+func openInfo(tb fataler, data []byte) activity.Info {
+	tb.Helper()
+	r, err := openFile(data, activity.ReaderOptions{})
+	if err != nil {
+		tb.Fatalf("NewReader: %v", err)
+	}
+	return r.Info()
+}
+
+// A footer whose digest is not that of its row groups is still refused when the
+// file is opened, and a row group that does not match its digest is still refused
+// when it is read: a Digest in Info does not stand in for either check.
+func TestInfoDigestDoesNotWeakenTheChecks(t *testing.T) {
+	t.Parallel()
+
+	const digest = "toposhift.activity.digest"
+	other := specFileDigest([]string{strings.Repeat("ab", 32)})
+	data := tamperedFile(t, sample(t, 20), func(kv map[string]string) { kv[digest] = other })
+	if r, err := openFile(data, activity.ReaderOptions{}); !errors.Is(err, activity.ErrFormat) || r != nil {
+		t.Fatalf("NewReader with another file digest in the footer = %v, %v, want an ErrFormat error and no reader", r, err)
+	}
+
+	bogus := strings.Repeat("0", 64)
+	data = tamperedFile(t, sample(t, 20), func(kv map[string]string) {
+		kv["toposhift.activity.group_digests"] = strings.Repeat(bogus+",", 2) + bogus
+		kv[digest] = specFileDigest([]string{bogus, bogus, bogus})
+	})
+	r, err := openFile(data, activity.ReaderOptions{})
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	if r.Info().Digest == "" {
+		t.Error("Info().Digest is empty for a footer that is consistent with itself")
+	}
+	if got, err := drain(r); !errors.Is(err, activity.ErrFormat) || len(got) != 0 {
+		t.Fatalf("drain = %d records, %v, want none and an ErrFormat error", len(got), err)
+	}
 }
 
 func TestErrorsAreSticky(t *testing.T) {

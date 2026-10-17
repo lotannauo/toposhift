@@ -163,7 +163,7 @@ func TestPropertyRoundTrip(t *testing.T) {
 		}
 
 		info := r.Info()
-		want := activity.Info{Version: 1, Records: int64(len(recs))}
+		want := activity.Info{Version: 1, Records: int64(len(recs)), Digest: footerDigest(t, data)}
 		if len(recs) > 0 {
 			want.MinSeq, want.MaxSeq = recs[0].Seq, recs[len(recs)-1].Seq
 		}
