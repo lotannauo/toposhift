@@ -928,4 +928,5 @@ policy's spacing; choosing the spacing and pruning is a measurement question.
 
 Results written under `bench/results/` are git-ignored. Numbers measured on a
 laptop or a VM choose between designs and are never published; published
-performance numbers come only from CI hardware.
+performance numbers come only from CI hardware. The deterministic counts the
+findings report may quote are described in `findings/README.md`.

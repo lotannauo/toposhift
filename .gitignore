@@ -26,8 +26,10 @@ credentials*.json
 # Remove this entry, then `git add docs/adr`, to publish them.
 /docs/adr/
 
-# Local benchmark output. Numbers from a laptop or a VM are for choosing a
-# design, never for publishing; published numbers come from CI hardware only.
+# Local benchmark output. Performance numbers from a laptop or a VM are for
+# choosing a design, never for publishing; published performance numbers come
+# from CI hardware only. The deterministic counts a report may quote are in
+# bench/findings/README.md.
 /bench/results/
 /bench/**/*.jsonl
 
