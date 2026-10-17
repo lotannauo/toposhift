@@ -39,6 +39,160 @@
       ]
     }
   },
+  "q10_service_context": {
+    "tool": "service_context",
+    "args": {
+      "from": "2026-10-01T01:55:00Z",
+      "limit": 500,
+      "service": "<service checkout>",
+      "to": "2026-10-01T02:35:00Z"
+    },
+    "policy": {
+      "coresidency": 1,
+      "extract": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "derived": true,
+    "meta": {
+      "node_only": false,
+      "service": "service checkout [shop]",
+      "truncation": {
+        "incomplete": false,
+        "instances_dropped": 0,
+        "members_dropped": 0,
+        "pairs_dropped": 0,
+        "pod_searches_cut": 0,
+        "seed_pods_dropped": 0,
+        "suppressed_dropped": 0
+      },
+      "ubiquity": {
+        "frontier_nodes": 4,
+        "judged": false
+      },
+      "window": {
+        "from": "2026-10-01T01:55:00Z",
+        "to": "2026-10-01T02:35:00Z"
+      }
+    },
+    "counts": {
+      "callees": 3,
+      "callers": 1,
+      "pairs": 67,
+      "pairs_shown": 67,
+      "pod_quarantined": 0,
+      "quarantined": 0,
+      "seed_pods": 13,
+      "suppressed": 0,
+      "unattributed": 0,
+      "unmapped": 15
+    },
+    "lists": {
+      "callees": [
+        "service cart [shop] | asserted/derived/existence | edge service checkout [shop] depends_on service cart [shop] | asserted_by svcgraph/demo | instances 2 | duration 40m0s | spans 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "service legacy-pay [payments] | asserted/derived/existence | edge service checkout [shop] depends_on service legacy-pay [payments] | asserted_by svcgraph/demo | instances 2 | duration 30m20s | spans 2026-10-01T01:55:00Z..2026-10-01T02:25:20Z (liveness_expiry)",
+        "service payments-api [payments] | asserted/derived/existence | edge service checkout [shop] depends_on service payments-api [payments] | asserted_by svcgraph/demo | instances 3 | duration 34m40s | spans 2026-10-01T02:00:20Z..2026-10-01T02:35:00Z"
+      ],
+      "callers": [
+        "service frontend [shop] | asserted/derived/existence | edge service frontend [shop] depends_on service checkout [shop] | asserted_by svcgraph/demo | instances 3 | duration 40m0s | spans 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z"
+      ],
+      "notes": [
+        "A dependency, an instance and its pod mapping are sightings with a TTL: a span that ends by liveness_expiry ends one TTL after the last sighting, so a service that stopped calling, or an instance that stopped reporting, is shown until then.",
+        "Ubiquity was not judged: the seed pods were on 4 nodes alone, fewer than 5."
+      ],
+      "pairs": [
+        "pair | shared_host | service cart [shop] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service cart [shop] (callee) | service checkout [shop] (seed) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service cart [shop] (callee) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service cart [shop] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service cart [shop] (callee) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service cart [shop] (callee) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service cart [shop] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service cart [shop] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service checkout [shop] (seed) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 3",
+        "pair | shared_host | service checkout [shop] (seed) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 6",
+        "pair | shared_host | service checkout [shop] (seed) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service checkout [shop] (seed) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service checkout [shop] (seed) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 2",
+        "pair | shared_host | service checkout [shop] (seed) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 3",
+        "pair | shared_host | service checkout [shop] (seed) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service frontend [shop] (caller) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 2",
+        "pair | shared_host | service frontend [shop] (caller) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 2",
+        "pair | shared_host | service frontend [shop] (caller) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 6",
+        "pair | shared_host | service frontend [shop] (caller) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 2",
+        "pair | shared_host | service frontend [shop] (caller) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 3",
+        "pair | shared_host | service legacy-pay [payments] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service legacy-pay [payments] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service legacy-pay [payments] (callee) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service legacy-pay [payments] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service legacy-pay [payments] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 1",
+        "pair | shared_host | service payments-api [payments] (callee) | service cart [shop] (callee) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service payments-api [payments] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 3",
+        "pair | shared_host | service payments-api [payments] (callee) | service checkout [shop] (seed) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 4",
+        "pair | shared_host | service payments-api [payments] (callee) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 6",
+        "pair | shared_host | service payments-api [payments] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service payments-api [payments] (callee) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_host | service payments-api [payments] (callee) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed) | paths 2",
+        "pair | shared_host | service payments-api [payments] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 3",
+        "pair | shared_host | service payments-api [payments] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_host | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via host machine-1 (unnamed); host machine-2 (unnamed) | paths 2",
+        "pair | shared_node | service cart [shop] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service cart [shop] (callee) | service checkout [shop] (seed) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-3 | paths 2",
+        "pair | shared_node | service cart [shop] (callee) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 2",
+        "pair | shared_node | service cart [shop] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service cart [shop] (callee) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service cart [shop] (callee) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-3 | paths 2",
+        "pair | shared_node | service cart [shop] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service cart [shop] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-3; k8s.node node-4 | paths 2",
+        "pair | shared_node | service checkout [shop] (seed) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-2 | paths 2",
+        "pair | shared_node | service checkout [shop] (seed) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1 | paths 4",
+        "pair | shared_node | service checkout [shop] (seed) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2 | paths 1",
+        "pair | shared_node | service checkout [shop] (seed) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1 | paths 1",
+        "pair | shared_node | service checkout [shop] (seed) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2; k8s.node node-3 | paths 4",
+        "pair | shared_node | service checkout [shop] (seed) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-2 | paths 2",
+        "pair | shared_node | service checkout [shop] (seed) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2; k8s.node node-3 | paths 2",
+        "pair | shared_node | service frontend [shop] (caller) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-4 | paths 3",
+        "pair | shared_node | service frontend [shop] (caller) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service frontend [shop] (caller) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-4 | paths 3",
+        "pair | shared_node | service frontend [shop] (caller) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-4 | paths 3",
+        "pair | shared_node | service frontend [shop] (caller) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-4 | paths 1",
+        "pair | shared_node | service legacy-pay [payments] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2 | paths 1",
+        "pair | shared_node | service legacy-pay [payments] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2 | paths 1",
+        "pair | shared_node | service legacy-pay [payments] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2 | paths 1",
+        "pair | shared_node | service legacy-pay [payments] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2; k8s.node node-3 | paths 2",
+        "pair | shared_node | service payments-api [payments] (callee) | service cart [shop] (callee) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-3 | paths 2",
+        "pair | shared_node | service payments-api [payments] (callee) | service catalog [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-2 | paths 2",
+        "pair | shared_node | service payments-api [payments] (callee) | service checkout [shop] (seed) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-2; k8s.node node-3 | paths 6",
+        "pair | shared_node | service payments-api [payments] (callee) | service frontend [shop] (caller) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1 | paths 4",
+        "pair | shared_node | service payments-api [payments] (callee) | service ingress [platform] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2 | paths 1",
+        "pair | shared_node | service payments-api [payments] (callee) | service ledger [payments] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1 | paths 1",
+        "pair | shared_node | service payments-api [payments] (callee) | service legacy-pay [payments] (callee) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2; k8s.node node-3 | paths 4",
+        "pair | shared_node | service payments-api [payments] (callee) | service recommend [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-1; k8s.node node-2 | paths 2",
+        "pair | shared_node | service payments-api [payments] (callee) | service search [shop] (none) | stable 0 | derived/derived/pair.shared_node | overlap 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z | via k8s.node node-2; k8s.node node-3 | paths 2"
+      ],
+      "quarantined": [],
+      "suppressed": [],
+      "unattributed": [],
+      "unmapped": [
+        "k8s.pod coredns-e23b9a4a77-cmvc5 [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod coredns-e23b9a4a77-tj68g [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod db-0 [data] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod db-1 [data] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod kube-proxy-475wv [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod kube-proxy-6gvdg [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod kube-proxy-9lfx8 [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod kube-proxy-fznkl [kube-system] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod metrics-agent-6jbx5 [platform] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod metrics-agent-jwcgg [platform] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod metrics-agent-s4xvn [platform] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod metrics-agent-s7brg [platform] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod redis-9fb0a958fe-8hxrk [data] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod redis-9fb0a958fe-wz7dp [data] | derived/derived/unmapped | 2026-10-01T01:55:00Z..2026-10-01T02:35:00Z",
+        "k8s.pod report-3-w5cl7 (unnamed) | derived/derived/unmapped | 2026-10-01T02:15:18Z..2026-10-01T02:29:22Z (reach_ended)"
+      ]
+    }
+  },
   "q1_neighbors": {
     "tool": "neighbors_at",
     "args": {

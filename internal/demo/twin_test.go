@@ -124,7 +124,8 @@ func TestAPebblestoreHoldingTheSameRecordsAnswersTheSame(t *testing.T) {
 		}},
 		// The questions about the services: a name, the blast radius of a service while
 		// it is called by one caller and of the service that is the last of the chain,
-		// and the change of checkout while it moves from one callee to the other.
+		// the change of checkout while it moves from one callee to the other, and its
+		// callers, callees and the services that shared a place with them.
 		{"find services", func(src *mcp.Source) (any, error) {
 			return src.FindEntities(t.Context(), mcp.FindEntitiesInput{Type: "service", Name: "pay", At: rfc(s.Anchor.Add(time.Hour))})
 		}},
@@ -136,6 +137,9 @@ func TestAPebblestoreHoldingTheSameRecordsAnswersTheSame(t *testing.T) {
 		}},
 		{"what changed for checkout", func(src *mcp.Source) (any, error) {
 			return src.WhatChanged(t.Context(), mcp.WhatChangedInput{Scope: []string{s.Service("shop", "checkout").ID}, From: rfc(s.Migrate.Add(-5 * time.Minute)), To: rfc(s.Migrate.Add(35 * time.Minute))})
+		}},
+		{"service context of checkout", func(src *mcp.Source) (any, error) {
+			return src.ServiceContext(t.Context(), mcp.ServiceContextInput{Service: s.Service("shop", "checkout").ID, From: rfc(s.Migrate.Add(-5 * time.Minute)), To: rfc(s.Migrate.Add(35 * time.Minute)), Limit: 500})
 		}},
 	}
 	mem, peb := source(t, b.Store), source(t, twin)
