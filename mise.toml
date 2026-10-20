@@ -401,6 +401,13 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 description = "Formatting, lint and the tests without the race detector, reusing unchanged results"
 depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "test:fast"]
 
+# What the pre-push hook runs: the static checks that need no test binary, no
+# network and no race detector, all of them also part of ci:static. It is not a
+# shard and not part of ci, so check:ci-shards is unaffected.
+[tasks."check:static"]
+description = "Formatting, lint, spelling, the no-results check, the CI shard list and the secret scan, without tests"
+depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "spelling", "check:no-results", "check:ci-shards", "secrets"]
+
 [tasks."test:fast"]
 description = "Both modules' tests without the race detector, the bench module with Pebble's invariant checks on"
 depends = ["test:fast:root", "test:fast:bench"]
