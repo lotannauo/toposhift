@@ -16,12 +16,15 @@ pre-commit:
       glob: "*.go"
       run: mise exec -- golangci-lint fmt --diff && cd bench && mise exec -- golangci-lint fmt --diff
 
-# The push runs the quick check that the edit loop uses; the full CI runs on the
-# pull request. go test reuses the result of every package that has not changed
-# since it last passed, so after a passing mise run check this takes seconds;
-# after a change it costs what the change reaches. It checks the working tree,
-# which can hold changes the pushed commits do not.
+# The push runs only the static checks: formatting, lint, spelling, the
+# no-results check, the CI shard list and a secret scan (mise run check:static).
+# It runs no tests, because the pull request CI runs them and running them here
+# only repeats that work at a cost of minutes per push. What it catches is the
+# format, lint, spelling, tracked-results, shard-list and secret problems that
+# would otherwise fail the pull request after the push. Like the old hook it
+# checks the working tree, which can hold changes the pushed commits do not.
+# Run mise run check between edits to test locally.
 pre-push:
   commands:
-    check:
-      run: mise run check
+    static:
+      run: mise run check:static
