@@ -14,13 +14,14 @@ jq = "1.8.2"
 gotestsum = "1.13.0"
 
 [tasks.fmt]
-description = "Format Go code in place, including the bench module and its RocksDB, Postgres and metrics-store modules"
+description = "Format Go code in place, including the bench module and its RocksDB, Postgres, metrics-store and DuckDB modules"
 run = [
   "golangci-lint fmt",
   "cd bench && golangci-lint fmt",
   "cd bench/rocksdb && golangci-lint fmt",
   "cd bench/postgres && golangci-lint fmt",
   "cd bench/victoria && golangci-lint fmt",
+  "cd bench/duckdb && golangci-lint fmt",
 ]
 
 [tasks."fmt:check"]
@@ -305,6 +306,36 @@ for cgo in 0 1; do
   fi
 done
 '''
+
+# The DuckDB baseline (bench/duckdb) is a module of its own: its driver, which a later
+# change adds, links DuckDB's native library, so its checks run in duckdb.yml, outside the
+# four ci shards, as the RocksDB module's do. Until the driver exists it is pure Go, and
+# its tests run with cgo off.
+[tasks."bench:duckdb:fmt:check"]
+description = "Fail if any Go file in the DuckDB module is not formatted"
+dir = "bench/duckdb"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:duckdb:lint"]
+description = "Lint the DuckDB module"
+dir = "bench/duckdb"
+run = "golangci-lint run --allow-parallel-runners"
+
+[tasks."bench:duckdb:vuln"]
+description = "Scan the DuckDB module's dependencies for known vulnerabilities"
+dir = "bench"
+run = "go tool govulncheck -C duckdb ./..."
+
+[tasks."bench:duckdb:test"]
+description = "Run the DuckDB module's full tests, cgo off"
+dir = "bench/duckdb"
+env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-duckdb-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:duckdb:test:race"]
+description = "Run the DuckDB module's trimmed tests with the race detector"
+dir = "bench/duckdb"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-duckdb-test-race.json"} -- -race -short -p 2 -timeout 25m ./...'
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the
