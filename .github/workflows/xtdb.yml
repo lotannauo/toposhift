@@ -1,0 +1,91 @@
+name: xtdb
+
+# The XTDB baseline (bench/xtdb) is a module of its own, kept out of the four ci
+# shards because a later step tests it against an XTDB server that no shard has. This
+# workflow runs the module's format check, lint, vulnerability scan, tests and
+# race-detector tests on both architectures. It is not a required check, and it times
+# nothing.
+#
+# A pull request runs it when it touches the module or this file. A push to main also
+# runs it when it touches what the module links (bench/spike, internal, the module
+# files). So a pull request that changes internal/** is caught by this workflow only
+# after it reaches main, which is acceptable for a baseline that is not required.
+
+on:
+  pull_request:
+    paths:
+      - "bench/xtdb/**"
+      - ".github/workflows/xtdb.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bench/xtdb/**"
+      - "bench/spike/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "bench/go.mod"
+      - "bench/go.sum"
+      - ".github/workflows/xtdb.yml"
+
+permissions: {}
+
+concurrency:
+  group: xtdb-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      - name: Check formatting
+        run: mise run bench:xtdb:fmt:check
+
+      - name: Lint
+        run: mise run bench:xtdb:lint
+
+      - name: Scan the Go dependencies for known vulnerabilities
+        run: mise run bench:xtdb:vuln
+
+      - name: Test
+        run: mise run bench:xtdb:test
+
+      - name: Test with the race detector
+        run: mise run bench:xtdb:test:race
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-xtdb-${{ matrix.os }}
+          path: "bench/xtdb/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14

@@ -14,13 +14,14 @@ jq = "1.8.2"
 gotestsum = "1.13.0"
 
 [tasks.fmt]
-description = "Format Go code in place, including the bench module and its RocksDB, Postgres and metrics-store modules"
+description = "Format Go code in place, including the bench module and its RocksDB, Postgres, metrics-store and XTDB modules"
 run = [
   "golangci-lint fmt",
   "cd bench && golangci-lint fmt",
   "cd bench/rocksdb && golangci-lint fmt",
   "cd bench/postgres && golangci-lint fmt",
   "cd bench/victoria && golangci-lint fmt",
+  "cd bench/xtdb && golangci-lint fmt",
 ]
 
 [tasks."fmt:check"]
@@ -294,6 +295,39 @@ for cgo in 0 1; do
   fi
 done
 '''
+
+# The XTDB baseline (bench/xtdb) is a module of its own so that a database driver and
+# a server to test against stay out of the bench module's graph. It is pure Go. Its
+# checks run in .github/workflows/xtdb.yml, outside the four ci shards, so that
+# `mise run ci` stays unchanged and a later step can add tests that need an XTDB
+# server, which no shard has. It links layout L's shared code, and so Pebble, through
+# bench/spike. Its tests that need an XTDB server will skip without
+# TOPOSHIFT_XTDB_DSN (there are none yet).
+[tasks."bench:xtdb:fmt:check"]
+description = "Fail if any Go file in the XTDB module is not formatted"
+dir = "bench/xtdb"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:xtdb:lint"]
+description = "Lint the XTDB module"
+dir = "bench/xtdb"
+run = "golangci-lint run --allow-parallel-runners"
+
+[tasks."bench:xtdb:vuln"]
+description = "Scan the XTDB module's dependencies for known vulnerabilities"
+dir = "bench"
+run = "go tool govulncheck -C xtdb ./..."
+
+[tasks."bench:xtdb:test"]
+description = "Run the XTDB module's full tests, cgo off"
+dir = "bench/xtdb"
+env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-xtdb-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:xtdb:test:race"]
+description = "Run the XTDB module's trimmed tests with the race detector"
+dir = "bench/xtdb"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-xtdb-test-race.json"} -- -race -short -p 2 -timeout 25m ./...'
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the

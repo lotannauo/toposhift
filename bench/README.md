@@ -61,6 +61,20 @@ with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`; `mise run bench:victoria
 `bench:victoria:test:race`, `bench:victoria:lint`, `bench:victoria:vuln` and
 `bench:victoria:purego` are its tasks, in the CI shards.
 
+The XTDB baseline, `xtdb/`, is a module of its own so that a database driver and a server to test against stay out
+of the bench module's graph, and pure Go as well. XTDB 2 is bitemporal, so it asks whether a database with both time axes built in
+answers the spike's reads as the reference engine does when system time carries the
+ingest batches (one transaction per batch) and valid time carries each producer's
+lifecycle segments. `xtdb/xtmodel` needs no server: the planner that turns a batch into
+the transaction that writes those segments and a `Model`, an in-memory bitemporal store
+with XTDB's semantics for those statements, which the spike's conformance test checks
+against the reference engine, and whose segments are compared with `lifecycle.Fold`.
+`xtdb/g0` asks an engine every question of a plan and compares the answers with the
+plan's (`go run ./cmd/g0model -plan plan.json`, from `xtdb/`). No XTDB server, image or
+driver is needed yet. Its checks are `mise run bench:xtdb:fmt:check`, `bench:xtdb:lint`,
+`bench:xtdb:vuln`, `bench:xtdb:test` and `bench:xtdb:test:race`; they run in
+`.github/workflows/xtdb.yml`, not in the `ci` shards.
+
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
 mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
