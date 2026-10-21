@@ -150,6 +150,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	fs.DurationVar(&instanceTTL, "instance-ttl", instanceTTL,
 		"how long a service instance outlives its last span count, a whole number of seconds from 2m to 8784h (env "+envInstanceTTL+")")
 	fs.StringVar(&retain, "retain", retain, "on or off: discard history older than each layer's window once a day, or keep everything (env "+envRetain+")")
+	bflags := addBackupFlags(fs, getenv)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, serveUsage)
 		fs.PrintDefaults()
@@ -214,6 +215,10 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	case retainEnv != "":
 		retainSetBy = retainByEnv
 	}
+	if ic.backup, err = bflags.resolve(fs); err != nil {
+		_, _ = fmt.Fprintf(stderr, "toposhift serve: %v\n", err)
+		return 2
+	}
 
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	dir, gate, code := bootDataDir(*dataDir, getenv, log, stderr)
@@ -237,7 +242,7 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	// answered 503 while the store opens.
 	sink := &switchSink{}
 	sink.set(gateSink{message: gate})
-	status := &statusRoute{retain: ic.retain, setBy: retainSetBy}
+	status := &statusRoute{retain: ic.retain, setBy: retainSetBy, backup: newBackupReporter(ic.backup, dir != nil, log)}
 	// The two receiver routes count their requests against one in-flight budget.
 	cfg.Routes = append(receiverRoutes(sink, otlphttp.NewBudget(2*otlphttp.DefaultMaxBodyBytes)), server.Route{
 		Pattern: "GET /status",

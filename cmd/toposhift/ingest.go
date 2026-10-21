@@ -166,6 +166,8 @@ type ingestConfig struct {
 	dependencyExpiry, instanceTTL time.Duration
 	// retain is --retain on: the sequencer retains the store once a day.
 	retain bool
+	// backup is what serve was told about the backup.
+	backup backupConfig
 }
 
 // serveStoreOptions are the options serve opens its store with: those of the
@@ -351,6 +353,7 @@ type statusRoute struct {
 	retain bool
 	setBy  string // retainByDefault, retainByFlag or retainByEnv
 	seq    atomic.Pointer[sequencer.Sequencer]
+	backup *backupReporter // nil: the backup is off
 }
 
 // nodeAgentStatus is the node agents' status: on with the interval expected of the
@@ -506,7 +509,7 @@ func (s *statusRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	seq := s.seq.Load()
-	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(seq), "nodeagent": nodeAgentOf(seq), "metrics": metricsOf(seq)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"retention": body, "resume": resumeOf(seq), "nodeagent": nodeAgentOf(seq), "metrics": metricsOf(seq), "backup": s.backup.status()})
 }
 
 // ingest is what boot opened for ingest: the store, and the sequencer with its
@@ -516,6 +519,7 @@ type ingest struct {
 	seq     *sequencer.Sequencer
 	cancel  context.CancelFunc
 	runDone chan error
+	backup  *backupRun // nil when the backup is off
 }
 
 // startIngest opens the store in the data directory, decides from the cluster
@@ -587,9 +591,12 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		log.Info("recorded the cluster name", "cluster_name", showName(ic))
 	}
 
+	// The backup, when asked for, takes what the store commits and the retentions
+	// it logs, and is stopped last.
+	in.backup = startBackup(ctx, dir, st, ic, opts, status, log)
 	var retain *sequencer.RetainConfig
 	if ic.retain {
-		rl.st = st
+		rl.st = in.backup.retainer(st, st)
 		retain = serveRetainConfig(st, opts, rl)
 	}
 	lookup := lookupFor(st)
@@ -597,7 +604,7 @@ func startIngest(ctx context.Context, dir *datadir.Dir, ic ingestConfig, sink *s
 		log.Error("resume is disabled: the sequencer has no lookup of the store; after a restart every live object is asserted again from its creation")
 	}
 	seq, err := sequencer.New(sequencer.Config{
-		Store:          writerFor(st),
+		Store:          in.backup.writer(st, writerFor(st)),
 		ClusterName:    ic.clusterName,
 		ClusterNameSet: ic.set,
 		PullInterval:   ic.pullInterval,
@@ -676,6 +683,7 @@ func (in *ingest) stop(log *slog.Logger, closeStore bool) {
 	}
 	if !closeStore {
 		log.Warn("the store was not closed: a call of the tools may still be reading it")
+		in.backup.stop()
 		return
 	}
 	start := time.Now()
@@ -683,6 +691,9 @@ func (in *ingest) stop(log *slog.Logger, closeStore bool) {
 		log.Error("the store did not close cleanly", "err", err)
 	}
 	log.Info("store closed", "took", time.Since(start))
+	// The backup is cut once more after the store closes: the cut reads only the
+	// backup's own files, and a kill during it leaves a closed store.
+	in.backup.stop()
 }
 
 const ingestHelp = `
@@ -749,6 +760,39 @@ Retention
   (set_by: default, flag or environment), each layer's horizon, the clock
   agreement, the pass pending, the last settle, and why retention stopped, if
   it did.
+
+Backup
+
+  --backup on (or $TOPOSHIFT_BACKUP=on) keeps a backup of the records the store
+  commits in backup/ of the data directory, and --backup off, the default,
+  keeps none: nothing is written, started or logged for it. It copies the
+  committed records, not the store's files, and nothing derived from them. It
+  is cut every --backup-every (or $TOPOSHIFT_BACKUP_EVERY; default 1h, a whole
+  number of minutes from 5m to 24h), and once more at a stop, after the store
+  closes, within 5 seconds. A cut writes only when a record or a retention was
+  committed since the last one. A commit waits while a cut is made.
+
+  A backup that fails never fails a commit or a read: it is logged, at start
+  and then every hour, and GET /status answers "backup": its mode (off, on,
+  broken or refused), what set it, the reason, the interval, and, for the
+  local backup, the generation and the Seq it stands at, the time of its last
+  cut and the error of its last attempt, its files and the size of its
+  manifest, and what it retired last and the classes it does not retire.
+
+  A backup starts with the store's first record, so --backup on must be given
+  from the first boot of a data directory: a store that already holds records
+  is refused, and so is a store that ends before its backup, and a store whose
+  cluster name differs from the backup's. A store that ends after its backup
+  (a stop whose last cut failed, or a crash), or whose retention was applied
+  after the last cut, leaves the backup broken: it ends where it stood, and this
+  build does not repair it.
+
+  With retention on, after each retention the backup drops the files whose
+  records lie more than a day behind their layer's horizon. L0 and the hosts
+  are kept, and so is a class that holds a record with no TTL or a TTL above
+  23h55m, which /status reports. The backup is in the data directory, on the
+  volume of the store, so it does not survive the loss of the volume, and this
+  build has no command that restores from it.
 
 Resume
 

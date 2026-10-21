@@ -23,6 +23,8 @@ A ready-made collector configuration, with its README, is in [deploy/otel-collec
 | `--node-interval` | `TOPOSHIFT_NODE_INTERVAL` | The report interval of the node agents |
 | `--dependency-expiry` | `TOPOSHIFT_DEPENDENCY_EXPIRY` | How long a call outlives its last sighting |
 | `--instance-ttl` | `TOPOSHIFT_INSTANCE_TTL` | How long a service instance outlives its last span count |
+| `--backup` | `TOPOSHIFT_BACKUP` | The local backup, `on` or `off` (off by default) |
+| `--backup-every` | `TOPOSHIFT_BACKUP_EVERY` | How often the backup is cut, from 5m to 24h (1h by default) |
 
 The data directory is the first of these that is set: `--data-dir`, `$TOPOSHIFT_DATA_DIR`, `$STATE_DIRECTORY` when it is one absolute path, then `$HOME/.local/share/toposhift`. One instance owns a directory at a time.
 
@@ -54,6 +56,24 @@ When retention is off by default and `serve` has a data directory, `serve` logs 
 `GET /status` reports where the mode came from, for example `"retention":{"mode":"off","set_by":"default"}`; `set_by` is `default`, `flag` or `environment`. A store that ran without retention loses what is older than each layer's window at its first retention, once the producers' clocks agree with the server's.
 
 This server's clock decides what is old, so the times that producers' records carry must agree with it within a day. While they disagree, nothing is discarded and the log warns. An error from a retention stops retention until `serve` is restarted, and the log says so at every check.
+
+## Backup
+
+`--backup on` (or `TOPOSHIFT_BACKUP=on`) keeps a backup of the records `serve` commits, in `backup/` of the data directory. It is off by default: with it off nothing is written, started or logged for it, and `GET /status` says `"backup":{"mode":"off"}`.
+
+The backup is the committed records, with their sequence numbers, not the store's files and nothing derived from the records. It is cut every `--backup-every` (a whole number of minutes from 5m to 24h; one hour by default) and once more at a stop, after the store has closed, within five seconds. A cut writes only when a record or a retention was committed since the last one. The manifest is written whole at every cut and lists every file the backup holds, so a short interval costs more than a long one. A commit waits while a cut is made, and a request is answered 200 only after its records are committed, as with the backup off.
+
+A backup that fails never fails a commit or a read. It is logged at start and then every hour, and `GET /status` has a `backup` object: `mode` (`off`, `on`, `broken` or `refused`), `set_by`, `reason`, `every`, and for the local backup the `generation` and `seq` it stands at, the time of its last cut and the error of its last attempt, its `files` and the size of its manifest, and, under `retire`, when it last retired and which classes it does not retire.
+
+- **It starts with the store's first record.** Turn `--backup on` on at the first boot of a data directory. A store that already holds records and has no backup is `refused`, and enabling the backup later means starting a new data directory.
+- **Refused** also: a store that ends before its backup (replaced, or restored from an older copy), and a store whose cluster name differs from the backup's.
+- **Broken:** a store that ends after its backup, because the last cut at a stop failed or the process was killed between cuts, or whose retention was applied after the last cut; and a backup that could not take a batch or log a retention while running. The backup ends where it stood and this build does not repair it.
+- **Retention:** after each retention the backup drops the files whose records lie more than a day behind their layer's horizon. L0 and the hosts' records are kept, and so is a class that holds a record with no TTL or a TTL above 23h55m; `/status` names it.
+- **Where it lives:** `backup/segments` holds the segments and the manifests, and `backup/tmp` the files not cut yet. Both are on the volume of the store, so the backup does not survive the loss of the volume. This build has no command that restores from it.
+
+Stopping takes up to five seconds longer with the backup on, for the last cut.
+
+With it on, the longest stop is about 23 seconds plus one commit or retention chunk. Give the process at least 30 seconds to stop (a Kubernetes pod's default grace period is 30 seconds; 60 is safer once an object-store copy is added).
 
 ## Services and their calls
 
