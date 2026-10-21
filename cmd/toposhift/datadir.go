@@ -22,9 +22,11 @@ metrics at POST /v1/metrics into the store there, and keeps ingest off when no
 data directory resolves.
 
 On a loopback listener it also serves read-only topology tools to MCP clients,
-at POST /mcp (streamable HTTP, no session). They answer from the same store,
-each answer read at one token, and are off on any other listen address until
-the server has authentication.
+at POST /mcp (streamable HTTP, no session), and the temporal subgraph of four
+questions as JSON at POST /api/v1/subgraph/scope, /co_residents,
+/service_context and /blast_radius. They answer from the same store, each
+answer read at one token, and are off on any other listen address until the
+server has authentication.
 
 Flags:
 `

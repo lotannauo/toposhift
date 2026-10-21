@@ -111,6 +111,25 @@ type SubgraphAnswer struct {
 	// Document is the wire document's JSON twin, as a JSON value: it decodes to what
 	// wire.JSON writes (the bytes sent are compact).
 	Document json.RawMessage `json:"document"`
+
+	// scanned is the JSON of the answer as the last check scanned it. It is set
+	// by a [Source] only, and is not part of the answer.
+	scanned []byte
+}
+
+// keepScanned keeps the bytes of the answer that the last check scanned.
+func (a *SubgraphAnswer) keepScanned(b []byte) { a.scanned = b }
+
+// JSON is the answer as JSON, compact. For an answer a [Source] returned, it is
+// the very bytes its last check scanned for an endpoint id the request did not
+// name: a transport that writes them writes what was checked, and does not
+// marshal the answer again. It must be called on the answer as returned; one
+// whose fields were changed since would not match them.
+func (a SubgraphAnswer) JSON() ([]byte, error) {
+	if a.scanned != nil {
+		return a.scanned, nil
+	}
+	return json.Marshal(&a)
 }
 
 // SubgraphCounts are the counts of an answer.

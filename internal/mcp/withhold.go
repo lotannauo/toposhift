@@ -210,8 +210,15 @@ func (s *Source) egress(out any, req *request) error {
 	if ids := unnamedEndpoints(b, req.named); len(ids) > 0 {
 		return &egressError{n: len(ids), typ: strings.TrimPrefix(fmt.Sprintf("%T", out), "*")}
 	}
+	if k, ok := out.(keepsScanned); ok {
+		k.keepScanned(b)
+	}
 	return nil
 }
+
+// keepsScanned is implemented by an answer that keeps the bytes the last check
+// scanned, so that a transport writes those bytes and does not write others.
+type keepsScanned interface{ keepScanned(b []byte) }
 
 // NeighborWithheld counts what neighbors_at left out because it names an endpoint
 // the request did not name.

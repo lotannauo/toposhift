@@ -1,0 +1,345 @@
+{
+  "q1_scope_node": {
+    "route": "scope",
+    "args": {
+      "from": "2026-10-01T02:55:00Z",
+      "scope": [
+        "<k8s.node node-2>"
+      ],
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "question": "scope",
+    "derived": true,
+    "window": {
+      "from": "2026-10-01T02:55:00Z",
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "incomplete": false,
+    "withheld": {
+      "derived": 0,
+      "edges": 1,
+      "entities": 0,
+      "quarantined_edges": 0,
+      "quarantined_entities": 0
+    },
+    "notes": [
+      "Withheld because each is or names an endpoint the request did not name (an endpoint's id reveals its address): 1 edge. Name the endpoint, by its id, to see it."
+    ],
+    "entities": [
+      "host machine-1 (unnamed) (boundary)",
+      "k8s.node node-2",
+      "k8s.pod search-a713e3cbf1-m4xxr [shop] (boundary)",
+      "k8s.pod catalog-0efb8ee864-md74k [shop] (boundary)",
+      "k8s.pod recommend-ceb22420e9-hfqd5 [shop] (boundary)",
+      "k8s.pod checkout-7372434c33-9nk6z [shop] (boundary)",
+      "k8s.pod legacy-pay-00947b3f72-xpjpl [payments] (boundary)",
+      "k8s.pod redis-9fb0a958fe-wz7dp [data] (boundary)",
+      "k8s.pod kube-proxy-475wv [kube-system] (boundary)",
+      "k8s.pod ingress-08bf8f73d1-tbw2r [platform] (boundary)",
+      "k8s.pod payments-api-1f68b1e786-vz8np [payments] (boundary)",
+      "k8s.pod metrics-agent-s4xvn [platform] (boundary)"
+    ],
+    "elements": [
+      "entity k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge k8s.node node-2 runs_on host machine-1 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge k8s.pod search-a713e3cbf1-m4xxr scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) before",
+      "edge k8s.pod catalog-0efb8ee864-md74k scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge k8s.pod recommend-ceb22420e9-hfqd5 scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) before",
+      "edge k8s.pod checkout-7372434c33-9nk6z scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "edge k8s.pod legacy-pay-00947b3f72-xpjpl scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) before",
+      "edge k8s.pod redis-9fb0a958fe-wz7dp scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge k8s.pod kube-proxy-475wv scheduled_on k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge k8s.pod ingress-08bf8f73d1-tbw2r scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) before",
+      "edge k8s.pod payments-api-1f68b1e786-vz8np scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) before",
+      "edge k8s.pod metrics-agent-s4xvn scheduled_on k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before"
+    ],
+    "document": {
+      "deltas": 8,
+      "format": {
+        "major": 1,
+        "minor": 0
+      },
+      "keyframes": 2,
+      "quarantine": {
+        "edges": 0,
+        "entities": 0
+      },
+      "query": {
+        "asof": "latest",
+        "kind": "scope",
+        "options": [
+          {
+            "name": "max_scope",
+            "value": "256"
+          }
+        ],
+        "seeds": [
+          "<k8s.node node-2>"
+        ]
+      }
+    }
+  },
+  "q2_blast_radius_node": {
+    "route": "blast_radius",
+    "args": {
+      "entity": "<k8s.node node-2>",
+      "from": "2026-10-01T02:55:00Z",
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "question": "blast_radius",
+    "derived": true,
+    "window": {
+      "from": "2026-10-01T02:55:00Z",
+      "to": "2026-10-01T03:30:00Z"
+    },
+    "policy": {
+      "blastradius": 1,
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "incomplete": false,
+    "withheld": {
+      "derived": 0,
+      "edges": 0,
+      "entities": 0,
+      "quarantined_edges": 0,
+      "quarantined_entities": 0
+    },
+    "notes": null,
+    "entities": [
+      "container payments-api",
+      "container checkout",
+      "container kube-proxy",
+      "container legacy-pay",
+      "container catalog",
+      "container search",
+      "container recommend",
+      "container metrics-agent",
+      "container redis",
+      "container ingress",
+      "k8s.node node-2",
+      "k8s.pod search-a713e3cbf1-m4xxr [shop]",
+      "k8s.pod catalog-0efb8ee864-md74k [shop]",
+      "k8s.pod recommend-ceb22420e9-hfqd5 [shop]",
+      "k8s.pod checkout-7372434c33-9nk6z [shop]",
+      "k8s.pod legacy-pay-00947b3f72-xpjpl [payments]",
+      "k8s.pod redis-9fb0a958fe-wz7dp [data]",
+      "k8s.pod kube-proxy-475wv [kube-system]",
+      "k8s.pod ingress-08bf8f73d1-tbw2r [platform]",
+      "k8s.pod payments-api-1f68b1e786-vz8np [payments]",
+      "k8s.pod metrics-agent-s4xvn [platform]",
+      "service.instance shop.search-a713e3cbf1-m4xxr.search (unnamed)",
+      "service.instance platform.ingress-08bf8f73d1-tbw2r.ingress (unnamed)",
+      "service.instance shop.checkout-7372434c33-9nk6z.checkout (unnamed)",
+      "service.instance shop.recommend-ceb22420e9-hfqd5.recommend (unnamed)",
+      "service.instance payments.payments-api-1f68b1e786-vz8np.payments-api (unnamed)",
+      "service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay (unnamed)",
+      "service.instance shop.catalog-0efb8ee864-md74k.catalog (unnamed)"
+    ],
+    "elements": [
+      "entity container payments-api | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) before",
+      "entity container checkout | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "entity container kube-proxy | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "entity container legacy-pay | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) before",
+      "entity container catalog | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "entity container search | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) before",
+      "entity container recommend | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) before",
+      "entity container metrics-agent | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "entity container redis | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "entity container ingress | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) before",
+      "entity k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "entity k8s.pod search-a713e3cbf1-m4xxr | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) before",
+      "entity k8s.pod catalog-0efb8ee864-md74k | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "entity k8s.pod recommend-ceb22420e9-hfqd5 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) before",
+      "entity k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "entity k8s.pod legacy-pay-00947b3f72-xpjpl | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) before",
+      "entity k8s.pod redis-9fb0a958fe-wz7dp | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "entity k8s.pod kube-proxy-475wv | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "entity k8s.pod ingress-08bf8f73d1-tbw2r | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) before",
+      "entity k8s.pod payments-api-1f68b1e786-vz8np | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) before",
+      "entity k8s.pod metrics-agent-s4xvn | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "entity service.instance shop.search-a713e3cbf1-m4xxr.search | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance platform.ingress-08bf8f73d1-tbw2r.ingress | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance shop.checkout-7372434c33-9nk6z.checkout | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance shop.recommend-ceb22420e9-hfqd5.recommend | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance payments.payments-api-1f68b1e786-vz8np.payments-api | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "entity service.instance shop.catalog-0efb8ee864-md74k.catalog | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:14:50Z (liveness_expiry) before",
+      "edge container payments-api part_of k8s.pod payments-api-1f68b1e786-vz8np | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) before",
+      "edge container checkout part_of k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "edge container kube-proxy part_of k8s.pod kube-proxy-475wv | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge container legacy-pay part_of k8s.pod legacy-pay-00947b3f72-xpjpl | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) before",
+      "edge container catalog part_of k8s.pod catalog-0efb8ee864-md74k | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge container search part_of k8s.pod search-a713e3cbf1-m4xxr | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) before",
+      "edge container recommend part_of k8s.pod recommend-ceb22420e9-hfqd5 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) before",
+      "edge container metrics-agent part_of k8s.pod metrics-agent-s4xvn | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge container redis part_of k8s.pod redis-9fb0a958fe-wz7dp | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge container ingress part_of k8s.pod ingress-08bf8f73d1-tbw2r | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) before",
+      "edge k8s.pod search-a713e3cbf1-m4xxr scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (producer) before",
+      "edge k8s.pod catalog-0efb8ee864-md74k scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge k8s.pod recommend-ceb22420e9-hfqd5 scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (producer) before",
+      "edge k8s.pod checkout-7372434c33-9nk6z scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "edge k8s.pod legacy-pay-00947b3f72-xpjpl scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (producer) before",
+      "edge k8s.pod redis-9fb0a958fe-wz7dp scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (producer) before",
+      "edge k8s.pod kube-proxy-475wv scheduled_on k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge k8s.pod ingress-08bf8f73d1-tbw2r scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (producer) before",
+      "edge k8s.pod payments-api-1f68b1e786-vz8np scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (producer) before",
+      "edge k8s.pod metrics-agent-s4xvn scheduled_on k8s.node node-2 | asserted/existence | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown) before",
+      "edge service.instance shop.search-a713e3cbf1-m4xxr.search part_of k8s.pod search-a713e3cbf1-m4xxr | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (cascade) before",
+      "edge service.instance platform.ingress-08bf8f73d1-tbw2r.ingress part_of k8s.pod ingress-08bf8f73d1-tbw2r | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (cascade) before",
+      "edge service.instance shop.checkout-7372434c33-9nk6z.checkout part_of k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (cascade) before",
+      "edge service.instance shop.recommend-ceb22420e9-hfqd5.recommend part_of k8s.pod recommend-ceb22420e9-hfqd5 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (cascade) before",
+      "edge service.instance payments.payments-api-1f68b1e786-vz8np.payments-api part_of k8s.pod payments-api-1f68b1e786-vz8np | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (cascade) before",
+      "edge service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay part_of k8s.pod legacy-pay-00947b3f72-xpjpl | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (cascade) before",
+      "edge service.instance shop.catalog-0efb8ee864-md74k.catalog part_of k8s.pod catalog-0efb8ee864-md74k | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (cascade) before",
+      "derived k8s.node node-2 blast_radius.reach container payments-api  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container checkout  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container kube-proxy  | derived/blast_radius.reach | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown)",
+      "derived k8s.node node-2 blast_radius.reach container legacy-pay  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container catalog  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container search  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container recommend  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container metrics-agent  | derived/blast_radius.reach | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown)",
+      "derived k8s.node node-2 blast_radius.reach container redis  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach container ingress  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod search-a713e3cbf1-m4xxr  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod catalog-0efb8ee864-md74k  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod recommend-ceb22420e9-hfqd5  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod checkout-7372434c33-9nk6z  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod legacy-pay-00947b3f72-xpjpl  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod redis-9fb0a958fe-wz7dp  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod kube-proxy-475wv  | derived/blast_radius.reach | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod ingress-08bf8f73d1-tbw2r  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod payments-api-1f68b1e786-vz8np  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach k8s.pod metrics-agent-s4xvn  | derived/blast_radius.reach | stable 0 | 2026-10-01T02:55:00Z..2026-10-01T03:30:00Z (unknown)",
+      "derived k8s.node node-2 blast_radius.reach service.instance shop.search-a713e3cbf1-m4xxr.search  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:21Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance platform.ingress-08bf8f73d1-tbw2r.ingress  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:15Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance shop.checkout-7372434c33-9nk6z.checkout  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance shop.recommend-ceb22420e9-hfqd5.recommend  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:12Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance payments.payments-api-1f68b1e786-vz8np.payments-api  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:20Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance payments.legacy-pay-00947b3f72-xpjpl.legacy-pay  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:10Z (reach_ended)",
+      "derived k8s.node node-2 blast_radius.reach service.instance shop.catalog-0efb8ee864-md74k.catalog  | derived/blast_radius.reach | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:03Z (reach_ended)"
+    ],
+    "document": {
+      "deltas": 69,
+      "format": {
+        "major": 1,
+        "minor": 0
+      },
+      "keyframes": 3,
+      "quarantine": {
+        "edges": 0,
+        "entities": 0
+      },
+      "query": {
+        "asof": "latest",
+        "kind": "blast_radius",
+        "options": [
+          {
+            "name": "depth",
+            "value": "6"
+          },
+          {
+            "name": "max_frontier",
+            "value": "1024"
+          },
+          {
+            "name": "max_members",
+            "value": "4096"
+          }
+        ],
+        "seeds": [
+          "<k8s.node node-2>"
+        ]
+      }
+    }
+  },
+  "q3_scope_evicted_pod_and_its_replacement": {
+    "route": "scope",
+    "args": {
+      "from": "2026-10-01T02:55:00Z",
+      "scope": [
+        "<k8s.pod checkout-7372434c33-9nk6z>",
+        "<k8s.pod checkout-7372434c33-tmj5j>"
+      ],
+      "to": "2026-10-01T03:15:00Z"
+    },
+    "question": "scope",
+    "derived": true,
+    "window": {
+      "from": "2026-10-01T02:55:00Z",
+      "to": "2026-10-01T03:15:00Z"
+    },
+    "policy": {
+      "interval": 1,
+      "names": 2,
+      "rank": "287b7cdf8e61e161",
+      "withhold": 1
+    },
+    "incomplete": false,
+    "withheld": {
+      "derived": 0,
+      "edges": 2,
+      "entities": 0,
+      "quarantined_edges": 0,
+      "quarantined_entities": 0
+    },
+    "notes": [
+      "Withheld because each is or names an endpoint the request did not name (an endpoint's id reveals its address): 2 edges. Name the endpoint, by its id, to see it."
+    ],
+    "entities": [
+      "container checkout (boundary)",
+      "container checkout (boundary)",
+      "k8s.node node-2 (boundary)",
+      "k8s.node node-3 (boundary)",
+      "k8s.pod checkout-7372434c33-9nk6z [shop]",
+      "k8s.pod checkout-7372434c33-tmj5j [shop]",
+      "service.instance shop.checkout-7372434c33-tmj5j.checkout (unnamed) (boundary)",
+      "service.instance shop.checkout-7372434c33-9nk6z.checkout (unnamed) (boundary)"
+    ],
+    "elements": [
+      "entity k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "entity k8s.pod checkout-7372434c33-tmj5j | asserted/existence | appeared 1 | 2026-10-01T03:05:13Z..2026-10-01T03:15:00Z (unknown)",
+      "edge container checkout part_of k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "edge container checkout part_of k8s.pod checkout-7372434c33-tmj5j | asserted/existence | appeared 1 | 2026-10-01T03:05:46Z..2026-10-01T03:15:00Z (unknown)",
+      "edge k8s.pod checkout-7372434c33-9nk6z scheduled_on k8s.node node-2 | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (producer) before",
+      "edge k8s.pod checkout-7372434c33-tmj5j scheduled_on k8s.node node-3 | asserted/existence | appeared 1 | 2026-10-01T03:05:14Z..2026-10-01T03:15:00Z (unknown)",
+      "edge service.instance shop.checkout-7372434c33-tmj5j.checkout part_of k8s.pod checkout-7372434c33-tmj5j | asserted/existence | appeared 1 | 2026-10-01T03:05:50Z..2026-10-01T03:15:00Z (unknown)",
+      "edge service.instance shop.checkout-7372434c33-9nk6z.checkout part_of k8s.pod checkout-7372434c33-9nk6z | asserted/existence | disappeared 1 | 2026-10-01T02:55:00Z..2026-10-01T03:05:13Z (cascade) before"
+    ],
+    "document": {
+      "deltas": 8,
+      "format": {
+        "major": 1,
+        "minor": 0
+      },
+      "keyframes": 2,
+      "quarantine": {
+        "edges": 0,
+        "entities": 0
+      },
+      "query": {
+        "asof": "latest",
+        "kind": "scope",
+        "options": [
+          {
+            "name": "max_scope",
+            "value": "256"
+          }
+        ],
+        "seeds": [
+          "<k8s.pod checkout-7372434c33-9nk6z>",
+          "<k8s.pod checkout-7372434c33-tmj5j>"
+        ]
+      }
+    }
+  }
+}
