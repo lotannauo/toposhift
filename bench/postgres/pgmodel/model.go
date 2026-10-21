@@ -192,59 +192,19 @@ func (m *Model) apply(st *subject, recs []rec) error {
 	lo := sort.Search(len(st.recs), func(i int) bool { return st.recs[i].event >= start })
 	input = append(input, st.recs[lo:]...)
 
-	folded, err := foldRows(input)
+	fresh, ch, err := refold(st.rows[from:], input, start, m.horizon)
 	if err != nil {
 		return err
 	}
-	// Keep what begins at or after S and has not ended before the horizon: the rest
-	// is either unchanged (before S) or a row retention would have deleted.
-	fresh := folded[:0:0]
-	for _, r := range folded {
-		if r.Start >= start && !r.EndsAtOrBefore(m.horizon) {
-			fresh = append(fresh, r)
-		}
-	}
-
-	var d diff
-	st.rows, d = splice(st.rows, from, fresh)
+	rows := make([]Row, 0, from+len(fresh))
+	rows = append(rows, st.rows[:from]...)
+	st.rows = append(rows, fresh...)
 	m.counts.Refolds++
 	m.counts.RecordsFolded += uint64(len(input))
-	m.counts.RowsInserted += d.inserted
-	m.counts.RowsUpdated += d.updated
-	m.counts.RowsDeleted += d.deleted
+	m.counts.RowsInserted += uint64(len(ch.Inserted))
+	m.counts.RowsUpdated += uint64(len(ch.Updated))
+	m.counts.RowsDeleted += uint64(len(ch.Deleted))
 	return nil
-}
-
-// diff is what a splice changed.
-type diff struct{ inserted, updated, deleted uint64 }
-
-// splice replaces rows[from:] with fresh, both ascending by start, and counts the
-// row changes it takes: a start in both is an update if the row differs and nothing
-// if it does not; a start in only one is an insert or a delete.
-func splice(rows []Row, from int, fresh []Row) ([]Row, diff) {
-	var d diff
-	old := rows[from:]
-	i, j := 0, 0
-	for i < len(old) || j < len(fresh) {
-		switch {
-		case j == len(fresh) || i < len(old) && old[i].Start < fresh[j].Start:
-			d.deleted++
-			i++
-		case i == len(old) || fresh[j].Start < old[i].Start:
-			d.inserted++
-			j++
-		default:
-			if old[i] != fresh[j] {
-				d.updated++
-			}
-			i++
-			j++
-		}
-	}
-	out := make([]Row, 0, from+len(fresh))
-	out = append(out, rows[:from]...)
-	out = append(out, fresh...)
-	return out, d
 }
 
 // LastSeq implements [engine.Engine].

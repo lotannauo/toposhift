@@ -1025,6 +1025,13 @@ func quantileBounds(h Histogram, q float64) (lo, hi int64) {
 	return h.MaxNs, h.MaxNs
 }
 
+// insideP99 is the 99th percentile of a batch's commit inside windows as Q2 reads it:
+// the upper bound of its bucket.
+func (t *GateTrace) insideP99() int64 {
+	_, hi := quantileBounds(t.Inside.Commit, 0.99)
+	return hi
+}
+
 // processGC is the GC target the process started with, as a manifest records it ("" if
 // the runtime does not say). It is read once, when the package is initialized, from the
 // runtime's metrics: reading does not set anything, unlike a read through
@@ -1123,7 +1130,14 @@ func readStoreGateMetrics(path string) (StoreGateMetrics, error) {
 		return out, err
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
+	return scanStoreGateMetrics(f, path)
+}
+
+// scanStoreGateMetrics is [readStoreGateMetrics] over the lines of r; an error calls the
+// file path.
+func scanStoreGateMetrics(r io.Reader, path string) (StoreGateMetrics, error) {
+	var out StoreGateMetrics
+	sc := bufio.NewScanner(r)
 	sc.Buffer(nil, 1<<22)
 	// The write stalls of the openings before the current one, and of the current one.
 	var before, opening int64
@@ -1461,25 +1475,43 @@ func (t *GateTrace) passes() []gatePass {
 	return out
 }
 
+// rewriteReading is what Q3 of a build in the background reads off the judged passes:
+// how many rewrites ended and the longest of them, and how many have only a lower bound
+// and the longest of those.
+type rewriteReading struct {
+	done, bounded        int
+	rewriteMax, boundMax int64
+}
+
+// longest is the longest rewrite of the judged passes, a lower bound counting as its own
+// value: the figure Q3 judges against its limit.
+func (q rewriteReading) longest() int64 { return max(q.rewriteMax, q.boundMax) }
+
+// judgedRewrites reads the judged passes of a build in the background (see [GateTrace.passes]).
+func (t *GateTrace) judgedRewrites() rewriteReading {
+	var q rewriteReading
+	for _, p := range t.passes() {
+		switch {
+		case !p.judged:
+		case p.bound:
+			q.bounded++
+			q.boundMax = max(q.boundMax, p.rewrite)
+		default:
+			q.done++
+			q.rewriteMax = max(q.rewriteMax, p.rewrite)
+		}
+	}
+	return q
+}
+
 // judgeQ3Background judges Q3 for a build in the background: the rewrite time of each
 // judged pass whose rewrite ended, and for a judged pass that was replaced or had not
 // ended when the stream did, the lower bound of its rewrite. The row fails if any of
 // them is over the limit, at the load the build ran at; otherwise it is not judged if
 // some judged pass has only a lower bound; otherwise it passes.
 func judgeQ3Background(r *gateRow, t *GateTrace, load float64, loadOK bool) {
-	var done, bounded int
-	var rewriteMax, boundMax int64
-	for _, p := range t.passes() {
-		switch {
-		case !p.judged:
-		case p.bound:
-			bounded++
-			boundMax = max(boundMax, p.rewrite)
-		default:
-			done++
-			rewriteMax = max(rewriteMax, p.rewrite)
-		}
-	}
+	q := t.judgedRewrites()
+	done, bounded, rewriteMax, boundMax := q.done, q.bounded, q.rewriteMax, q.boundMax
 	loadText := "load not determinable"
 	if loadOK {
 		loadText = fmt.Sprintf("load %.0f records/s over the paced writing time", load)
@@ -1490,7 +1522,7 @@ func judgeQ3Background(r *gateRow, t *GateTrace, load float64, loadOK bool) {
 	}
 	r.value = fmt.Sprintf("%s (%s)", value, loadText)
 	r.limit = fmt.Sprintf("%s with %d days kept, at a load of at least %d records/s", StoreGateQ3Max, StoreGateQ3KeepDays, StoreGateRate)
-	worst := max(rewriteMax, boundMax)
+	worst := q.longest()
 	over := worst > int64(StoreGateQ3Max)
 	r.pass = !over
 	r.margin = float64(worst) / float64(StoreGateQ3Max)
@@ -1612,7 +1644,7 @@ func judgeBuild(b, base *StoreGateBuild, baseWhy string) (rows [gateRows]gateRow
 		// The inside is read at the top of its bucket and the outside at the bottom of
 		// its: a bucket is within an eighth of the value it holds, and each reading is
 		// the one that cannot let a batch pass that the true values would not.
-		_, in := quantileBounds(t.Inside.Commit, 0.99)
+		in := t.insideP99()
 		outLo, outHi := quantileBounds(t.Outside.Commit, 0.99)
 		lim := max(StoreGateQ2Factor*outLo, int64(StoreGateQ2Floor))
 		rows[gateQ2].value = fmt.Sprintf("%s (outside: from %s to %s; over %d inside batches)", fmtDur(in), fmtDur(outLo), fmtDur(outHi), t.Inside.Batches)

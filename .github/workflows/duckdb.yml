@@ -1,0 +1,117 @@
+name: duckdb
+
+# The DuckDB baseline (bench/duckdb) is a module of its own, built and tested outside the
+# four ci shards: its driver, which a later change adds, links DuckDB's native library,
+# which no shard has. This workflow runs the module's format check, lint, vulnerability
+# scan, tests and race-detector tests on both architectures. It is not a required check,
+# and it times nothing.
+
+on:
+  pull_request:
+    paths:
+      - "bench/duckdb/**"
+      - ".github/workflows/duckdb.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bench/duckdb/**"
+      - ".github/workflows/duckdb.yml"
+      # What the module links and its tests read: the spike, the packages of the root
+      # module's internal tree, and the module files and sums the replace directives
+      # point at. A pull request that changes only these is not checked here until it
+      # reaches main, which is acceptable for a baseline that is not a required check.
+      - "bench/spike/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "bench/go.mod"
+      - "bench/go.sum"
+
+permissions: {}
+
+concurrency:
+  # As in rocksdb.yml: a newer push to a pull request cancels its older run; runs on
+  # main are never cancelled.
+  group: duckdb-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step.
+    shell: bash
+
+env:
+  GO_CACHE_PATHS: |
+    ~/.cache/go-build
+    ~/go/pkg/mod
+    ~/.cache/golangci-lint
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # As in ci.yml: go test reuses a result only when the files a test read look
+      # unchanged, and checkout gives every file the current time.
+      - name: Give checked-out files times derived from their content
+        run: python3 .github/scripts/stable-mtimes.py
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # Restored only, never saved: a pull request must not write a cache entry. The
+      # module builds from the same packages as the bench shard, so it starts from the
+      # entries the pushes to main save for that shard (ci.yml).
+      - name: Restore Go builds and modules
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GO_CACHE_PATHS }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-bench-${{ github.sha }}
+          restore-keys: |
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-bench-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Check formatting
+        run: mise run bench:duckdb:fmt:check
+
+      - name: Lint
+        run: mise run bench:duckdb:lint
+
+      - name: Scan the Go dependencies for known vulnerabilities
+        run: mise run bench:duckdb:vuln
+
+      - name: Test
+        run: mise run bench:duckdb:test
+
+      - name: Test with the race detector
+        run: mise run bench:duckdb:test:race
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-duckdb-${{ matrix.os }}
+          path: "bench/duckdb/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14

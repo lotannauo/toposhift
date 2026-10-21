@@ -35,9 +35,26 @@ which the spike's conformance test checks against the reference engine.
 `postgres/pgschema` is the DDL as text, `postgres/pginput` reads an activity file as
 engine records, and `postgres/g0` asks an engine every question of a plan and compares
 the answers with the plan's (`go run ./cmd/g0model -plan plan.json`, from `postgres/`).
-No Postgres server, image or driver is needed yet. Run its tests with `cd postgres &&
-go test ./... -p 2`; `mise run bench:postgres:test` and its siblings (`bench:postgres:test:race`,
-`bench:postgres:lint`, `bench:postgres:vuln`, `bench:postgres:purego`) run them in the CI shards.
+`postgres/pgengine` is an engine over a Postgres 17 server (pgx): the same planner's
+row changes applied with set-based SQL, the reads with range types, GiST (index set G)
+or a btree on the interval's end (set B), and the EXPLAIN counter parser and the check
+that a server has the settings of `postgres/scripts/settings.conf`. `mise run
+bench:postgres:test` runs the module's tests; the ones that need a server skip without
+`TOPOSHIFT_PG_DSN`. To run them, start the server the settings are written for (a
+container, which this script starts on a laptop and on CI alike) and stop it when done,
+from `bench/`:
+
+```sh
+postgres/scripts/pg-server.sh start     # the pinned image, 127.0.0.1:55432, no password
+TOPOSHIFT_PG_DSN='host=127.0.0.1 port=55432 user=postgres dbname=postgres sslmode=disable' \
+  mise run bench:postgres:test:server   # the engine's tests, the server's included
+postgres/scripts/pg-server.sh psql      # a psql in the container
+postgres/scripts/pg-server.sh stop
+```
+
+The data is under `~/spikebench/pg/17` unless `TOPOSHIFT_PG_DATA` says otherwise, and a
+Unix socket replaces the port when `TOPOSHIFT_PG_SOCKET_DIR` is set, as on CI
+(`.github/workflows/postgres.yml`, which is not a required check).
 
 The metrics-store baseline, `victoria/`, is a module of its own as well and shares nothing
 with the Postgres one (pure Go: build and test it with `CGO_ENABLED=0`). It asks what a
@@ -60,6 +77,21 @@ behaviour is marked as an unverified assumption in `vmmodel`'s documentation. Ru
 with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`; `mise run bench:victoria:test`,
 `bench:victoria:test:race`, `bench:victoria:lint`, `bench:victoria:vuln` and
 `bench:victoria:purego` are its tasks, in the CI shards.
+
+The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver, which a
+later change adds, will link DuckDB's native library; for now it is pure Go (build and
+test it with `CGO_ENABLED=0`). It asks what it costs to answer the spike's reads from
+Parquet files of the activity stream. `duckdb/duckmodel` needs no DuckDB: it models the
+record files (ordered by source and by target) and the interval file, answers every
+read from them by the rule the SQL will have (one `Model` for each of the two arms,
+which the spike's conformance test checks against the reference engine), and holds the
+retention filter a file builder applies, the order of neighbors that a database's text
+order does not give, and the conversion from engine records to store records.
+`duckdb/g0` asks an engine every question of a plan and compares the answers with the
+plan's (`go run ./cmd/duckspike g0 -plan plan.json`, from `duckdb/`). No DuckDB binary,
+driver or file is needed yet. Its tasks (`mise run bench:duckdb:fmt:check`,
+`bench:duckdb:lint`, `bench:duckdb:vuln`, `bench:duckdb:test` and
+`bench:duckdb:test:race`) run in `duckdb.yml`, not in the shards.
 
 The XTDB baseline, `xtdb/`, is a module of its own so that a database driver and a server to test against stay out
 of the bench module's graph, and pure Go as well. XTDB 2 is bitemporal, so it asks whether a database with both time axes built in
@@ -896,6 +928,41 @@ build may not fit the 6 hours of a job.
   `metrics.jsonl`, `manifest.json`, `job.json`, the sync probe and the logs (never
   `db/`) for 30 days. The report job writes one table of the whole dispatch.
 
+#### Reading a diag run: diagread
+
+A diag run's report job prints what each job ran on and no figure of a build.
+`spikebench diagread` prints the figures of the table-shape comparison from the downloaded
+artifacts, and judges nothing: no verdict, no limit and no ratio.
+
+```sh
+gh run download <run> -p 'diag-build-<run>-*' -D artifacts
+spikebench diagread -commit <commit> -run <run> -expect control=none \
+    -expect "p5shape=$SHAPE" -json diagread.json artifacts   # SHAPE: the variant's pebble_shape text
+```
+
+It reads each `diag-build-<run>-<os>-<name>-rep<n>/` directory (its `job.json`,
+`manifest.json`, `metrics.jsonl` and `logs/time.txt`) and prints, for every build, its os,
+architecture, configuration, role, repetition, CPU model, binary sha256 and attempt; Q1, the
+longest batch inside a retention window, with the longest outside beside it; Q2, the top of
+the bucket holding the 99th percentile inside, with the batches inside; R, the longest
+rewrite over the judged windows (a pass that a later retention replaced or that outlived the
+stream counts at its lower bound), with the number of such passes; the peak live heap
+(`go.heap_live`) in MB of 10^6 bytes; and `peak_rss_mib`, for information. Then, per
+architecture, CPU model and configuration, the count, the median (the lower of the middle two
+for an even count), the least and the largest of Q1, Q2, R and the heap. The figures are the
+store gate's own, computed by the functions behind its Q1, Q2, Q3 and Q5 rows
+(`runner.DiagFigures`). A duration is printed exactly, and `-json` writes the same report with
+nanoseconds.
+
+It refuses, with status 3 and nothing printed: a build whose `base_sha` or manifest revision is
+not `-commit`, that was patched, or that is not attempt 1; jobs of more than one run or of a
+run other than `-run`; more than one binary on an architecture; two builds of one
+architecture, configuration and repetition; a `pebble_shape` that differs from `-expect`
+(`none` stands for a manifest without one); a manifest that is not background retention paced
+at 4,500 records/s with a flush threshold of 32,768, Sync on and a 7-day window, or that the
+store gate would not judge; a build with no judged window, no batch inside one or no live heap
+sample; and a missing or unreadable file. It reads files only.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the
@@ -1053,3 +1120,38 @@ Results written under `bench/results/` are git-ignored. Numbers measured on a
 laptop or a VM choose between designs and are never published; published
 performance numbers come only from CI hardware. The deterministic counts the
 findings report may quote are described in `findings/README.md`.
+
+### Known failures of the CI tiers
+
+Each entry says what is known and what is not, and is dated.
+
+- **A concurrent read in `spike/pebblemvcc` matched no committed state once (2026-10-21).**
+  `TestConforms/crdb1/concurrent_reads` failed in the `verify bench (ubuntu-24.04)` job of
+  `verify` run 39549744035, attempt 1 (a patch on a commit of `main`): "a concurrent read
+  matched no committed state" for a batched read of every node's pods, between two equal
+  tokens. The same job rerun passed, and every other job of that attempt passed. The cause
+  is not found: whether the reader of layout M returned a view that was never committed, or
+  the check judged a read of an instant near a retention horizon wrongly, is not known.
+  `pebblemvcc` is a candidate of this spike and is not in the product build. A second
+  occurrence in any run is the reason to run the check many times under `-race` and decide
+  between fixing the reader and fixing the check.
+- **`deep (ubuntu-24.04)` failed on slow hosts because of the demo tests' fixed deadlines
+  (2026-10-17 to 2026-10-21; fixed in #199).** `TestDemoNoServePrintsTheBanner`,
+  `TestDemoEndToEnd` and `TestDemoOnATakenPort` in `cmd/toposhift` failed with `context
+  deadline exceeded`: the demo builds its cluster in memory before it serves, and with
+  every package running under the race detector at once on a 4-vCPU runner that took
+  longer than the deadlines (28.37 s in nightly 39400829188). Three of the four failed runs
+  read (39039943774, 39365679498, 39400829188) were on `AMD EPYC 7763` hosts; the fourth,
+  push run 39559075805, was on an `AMD EPYC 9V74` host, so a slow host, not one CPU model,
+  is the condition. #199 gives these tests four times the deadline under the race
+  detector; what they assert is unchanged. The nightly 39576583196, which contains #199,
+  passed this job on an `AMD EPYC 7763` host: one green run on the host class that failed
+  most, not proof that it is closed. A `deep (ubuntu-24.04)` failure on a commit that
+  contains #199 is a new failure to read, not a rerun.
+- **`internal/coalesce` `TestWithNothingAbsorbedTheCoalescedStreamFoldsLikeTheRawOne`
+  failed once in the `deep` job of push run 39636383439 (2026-10-21;
+  `-rapid.seed=2047047424587645809`).** The cause was a counting error in the property,
+  not in the coalescer: a byte-identical confirmation repeated at one instant was counted
+  as absorbed. The property now counts such a repeat separately and still requires the
+  coalesced stream to fold exactly like the raw one. The shipped coalescer and v0.1.0 are
+  unaffected.

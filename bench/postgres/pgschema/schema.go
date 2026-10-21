@@ -106,7 +106,8 @@ type Column struct{ Name, Def string }
 var (
 	// LogColumns are the columns of log and log_base. src and dst hold fingerprints
 	// (or ids, in the BulkID arm); for an entity record src is the entity and dst
-	// and rel are null.
+	// and rel are null. seq, here and in meta, is the ingest sequence number, a uint64,
+	// stored with its top bit flipped so that bigint order is its order.
 	LogColumns = []Column{
 		{"seq", "bigint NOT NULL"},
 		{"event_ns", "bigint NOT NULL"},
@@ -171,26 +172,27 @@ func Tables(a Arm) ([]string, error) {
 	if a == BulkID {
 		out = append(out, "CREATE TABLE entity (\n  id bigint PRIMARY KEY,\n  fp bytea NOT NULL UNIQUE\n)")
 	}
-	if a.Streaming() {
-		out = append(out, `CREATE TABLE meta (
+	// What an engine must find again when it opens a schema it left: the token, the
+	// retention horizon, and whether the horizon was moved past the last instant (a
+	// bigint cannot say it), under the fold logic and the arm that built the rows. Every
+	// arm has it, the bulk ones too: the highest seq in the log is not the token once a
+	// retention has dropped a late record.
+	out = append(out, `CREATE TABLE meta (
   one bool PRIMARY KEY DEFAULT true CHECK (one),
   last_seq bigint NOT NULL,
   horizon_ns bigint,
+  past_end bool NOT NULL DEFAULT false,
   fold_version int NOT NULL,
   arm text NOT NULL
 )`)
-	}
 	log := "CREATE TABLE log (\n  " + columns(LogColumns, key) + "\n)"
 	if a.partitioned() {
 		log += "\nPARTITION BY RANGE (event_ns)"
 	}
 	out = append(out, log)
-	if a.Streaming() {
-		// Retention baselines: the last record of each subject and producer before
-		// the horizon, as the log's columns. Bulk arms apply the plan's retentions to
-		// the log itself.
-		out = append(out, "CREATE TABLE log_base (\n  "+columns(LogColumns, key)+"\n)")
-	}
+	// Retention baselines: the last record of each subject and producer before the
+	// horizon, as the log's columns, standing for everything a retention dropped.
+	out = append(out, "CREATE TABLE log_base (\n  "+columns(LogColumns, key)+"\n)")
 
 	fill := ""
 	pkEdges, pkEntities := "", ""
@@ -230,9 +232,7 @@ func Indexes(a Arm) ([]string, error) {
 		// filter after reading every record of the source.
 		"CREATE INDEX log_g_subject ON log (src, dst, rel, event_ns, seq) WHERE subject_kind = 'g'",
 	}
-	if a.Streaming() {
-		out = append(out, "CREATE INDEX log_base_subject ON log_base (src, dst, rel, producer)")
-	}
+	out = append(out, "CREATE INDEX log_base_subject ON log_base (src, dst, rel, producer)")
 	switch a {
 	case Stream, StreamNoPartition:
 		// The *_end indexes find the rows retention deletes: those whose range has
@@ -293,7 +293,7 @@ func Setup(a Arm) ([]string, error) {
 }
 
 // DayPartition returns the name of the partition of log that holds the UTC day of
-// the instant, and the statement that creates it. The partition's range is the day in
+// the instant, and the statement that creates it if it is not there. The partition's range is the day in
 // Unix nanoseconds, from midnight to the next midnight; the last day an engine stores
 // has no next midnight in a bigint, so it runs to MAXVALUE. An instant before the epoch
 // is an error.
@@ -308,5 +308,5 @@ func DayPartition(ns int64) (name, stmt string, err error) {
 	if lo <= math.MaxInt64-day {
 		hi = fmt.Sprint(lo + day)
 	}
-	return name, fmt.Sprintf("CREATE TABLE %s PARTITION OF log FOR VALUES FROM (%d) TO (%s)", name, lo, hi), nil
+	return name, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s PARTITION OF log FOR VALUES FROM (%d) TO (%s)", name, lo, hi), nil
 }

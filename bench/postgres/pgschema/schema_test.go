@@ -108,10 +108,11 @@ func TestTablesHaveTheColumnsOfTheLists(t *testing.T) {
 				t.Errorf("%s: %s has columns %v, the list %v", a, table, got, want)
 			}
 		}
-		if a.Streaming() {
-			if got, want := tableColumns(t, stmts, "log_base"), pgschema.Names(pgschema.LogColumns); !slices.Equal(got, want) {
-				t.Errorf("%s: log_base has columns %v, the list %v", a, got, want)
-			}
+		if got, want := tableColumns(t, stmts, "log_base"), pgschema.Names(pgschema.LogColumns); !slices.Equal(got, want) {
+			t.Errorf("%s: log_base has columns %v, the list %v", a, got, want)
+		}
+		if got, want := tableColumns(t, stmts, "meta"), []string{"one", "last_seq", "horizon_ns", "past_end", "fold_version", "arm"}; !slices.Equal(got, want) {
+			t.Errorf("%s: meta has columns %v, want %v", a, got, want)
 		}
 	}
 }
@@ -141,8 +142,11 @@ func TestEachArmHasWhatItIsFor(t *testing.T) {
 		},
 		{
 			pgschema.Bulk,
-			[]string{"USING gist (src, layer, during) INCLUDE (dst, rel)", "USING gist (fp, layer, during)"},
-			[]string{"PRIMARY KEY", "fillfactor", "edges_end", "entities_end", "CREATE TABLE meta", "CREATE TABLE log_base", "PARTITION BY", "edges_src_b"},
+			[]string{
+				"USING gist (src, layer, during) INCLUDE (dst, rel)", "USING gist (fp, layer, during)",
+				"CREATE TABLE meta", "CREATE TABLE log_base", "log_base_subject",
+			},
+			[]string{"PRIMARY KEY (src", "PRIMARY KEY (fp", "fillfactor", "edges_end", "entities_end", "PARTITION BY", "edges_src_b"},
 		},
 		{
 			pgschema.BulkB,
@@ -151,7 +155,7 @@ func TestEachArmHasWhatItIsFor(t *testing.T) {
 				"edges_dst_b ON edges (dst, layer, coalesce(upper(during), 9223372036854775807)) INCLUDE (src, rel, during)",
 				"entities_b ON entities (fp, layer, coalesce(upper(during), 9223372036854775807)) INCLUDE (during)",
 			},
-			[]string{"USING gist", "PRIMARY KEY", "lower(during) <="},
+			[]string{"USING gist", "PRIMARY KEY (src", "PRIMARY KEY (fp", "lower(during) <="},
 		},
 		{
 			pgschema.BulkID,
@@ -226,11 +230,11 @@ func TestDayPartition(t *testing.T) {
 		ns   int64
 		want string
 	}{
-		{"the epoch", 0, "CREATE TABLE log_p19700101 PARTITION OF log FOR VALUES FROM (0) TO (86400000000000)"},
-		{"the last nanosecond of the first day", day - 1, "CREATE TABLE log_p19700101 PARTITION OF log FOR VALUES FROM (0) TO (86400000000000)"},
-		{"the second day", day, "CREATE TABLE log_p19700102 PARTITION OF log FOR VALUES FROM (86400000000000) TO (172800000000000)"},
-		{"2026-01-01", 1767225600*int64(time.Second) + 5, "CREATE TABLE log_p20260101 PARTITION OF log FOR VALUES FROM (1767225600000000000) TO (1767312000000000000)"},
-		{"the last instant", math.MaxInt64, "CREATE TABLE log_p22620411 PARTITION OF log FOR VALUES FROM (9223286400000000000) TO (MAXVALUE)"},
+		{"the epoch", 0, "CREATE TABLE IF NOT EXISTS log_p19700101 PARTITION OF log FOR VALUES FROM (0) TO (86400000000000)"},
+		{"the last nanosecond of the first day", day - 1, "CREATE TABLE IF NOT EXISTS log_p19700101 PARTITION OF log FOR VALUES FROM (0) TO (86400000000000)"},
+		{"the second day", day, "CREATE TABLE IF NOT EXISTS log_p19700102 PARTITION OF log FOR VALUES FROM (86400000000000) TO (172800000000000)"},
+		{"2026-01-01", 1767225600*int64(time.Second) + 5, "CREATE TABLE IF NOT EXISTS log_p20260101 PARTITION OF log FOR VALUES FROM (1767225600000000000) TO (1767312000000000000)"},
+		{"the last instant", math.MaxInt64, "CREATE TABLE IF NOT EXISTS log_p22620411 PARTITION OF log FOR VALUES FROM (9223286400000000000) TO (MAXVALUE)"},
 	} {
 		_, got, err := pgschema.DayPartition(c.ns)
 		if err != nil || got != c.want {

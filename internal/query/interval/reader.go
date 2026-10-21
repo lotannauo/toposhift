@@ -68,6 +68,13 @@ type Options struct {
 	// time, under Rank, the records of the subject the call has already read,
 	// and reads nothing more.
 	Describe bool
+	// Evidence fills [Element].Last: the record that decides each live producer's
+	// reference at the window's last instant. It is read from the records the call
+	// has already read (the seeds and the window of each subject), so it adds no
+	// store read and no refusal, and it asks for no payload: a reader with it and
+	// no Describe reads exactly what a reader without it reads. Nothing else in an
+	// answer depends on it.
+	Evidence bool
 	// Rank is the authority order of descriptions, as lifecycle.Policy.Rank: a
 	// listed producer beats an unlisted one, a higher rank beats a lower one,
 	// and the smaller name breaks every remaining tie, so with no Rank the
@@ -102,7 +109,7 @@ func (r *Reader) Entity(ctx context.Context, fp identity.Fingerprint, w Window) 
 	if err != nil {
 		return Result{}, err
 	}
-	c.keepRecords = r.opts.Describe
+	c.keepRecords, c.keepEvidence = r.opts.Describe, r.opts.Evidence
 	if err := c.existences([]identity.Fingerprint{fp}); err != nil {
 		return Result{}, err
 	}
@@ -125,7 +132,7 @@ func (r *Reader) Entities(ctx context.Context, fps []identity.Fingerprint, w Win
 	if err != nil {
 		return 0, nil, err
 	}
-	c.keepRecords = r.opts.Describe
+	c.keepRecords, c.keepEvidence = r.opts.Describe, r.opts.Evidence
 	if err := c.existences(fps); err != nil {
 		return 0, nil, err
 	}
@@ -217,6 +224,10 @@ type call struct {
 	// entity reads of a reader that describes, never by an edge read, whose
 	// endpoints are read for the cascade only.
 	keepRecords bool
+	// keepEvidence keeps the same records for the evidence at the window's last
+	// instant, which needs no payload: set by the entity reads of a reader with
+	// Evidence, never by an edge read, whose endpoints are read for the cascade only.
+	keepEvidence bool
 }
 
 // existence is what a call has read of one entity: its layer, and either its
@@ -246,6 +257,9 @@ func (c *call) entity(fp identity.Fingerprint) (Element, error) {
 	attribute(el.Pieces, ex.f)
 	el.Class, el.Transitions = classify(el.Pieces, c.from, c.to)
 	if err := c.describe(&el, ex.recs, ex.unknown); err != nil {
+		return Element{}, err
+	}
+	if err := c.evidence(&el, ex.recs, ex.f); err != nil {
 		return Element{}, err
 	}
 	return el, nil
@@ -280,6 +294,59 @@ func (c *call) describe(el *Element, recs []store.Record, unknown map[lifecycle.
 		}
 	}
 	return nil
+}
+
+// evidence sets an element's Last when the reader asks for evidence and a piece
+// contains the window's last instant, To-1ns: for each producer whose reference
+// is live there (by the producer's own fold, as the pieces' Producers are), the
+// producer's latest record at or before it by event time and then by sequence
+// number, and the latest last instant of any of the producer's records read. recs are the subject's records the call has read, its seeds and its
+// window, all before To; the seed of a reference is its latest record before
+// From, so the latest of a producer's seed and window records is the record that
+// decides it. Nothing more is read.
+func (c *call) evidence(el *Element, recs []store.Record, f folded) error {
+	if !c.r.opts.Evidence {
+		return nil
+	}
+	last := c.to.Add(-time.Nanosecond)
+	if !containsAt(el.Pieces, last) {
+		return nil
+	}
+	latest := map[lifecycle.Producer]*store.Record{}
+	seen := map[lifecycle.Producer]time.Time{}
+	for i := range recs {
+		r := &recs[i]
+		if d, ok := latest[r.Producer]; !ok || r.EventTime.After(d.EventTime) || (r.EventTime.Equal(d.EventTime) && r.Seq > d.Seq) {
+			latest[r.Producer] = r
+		}
+		if r.Kind == lifecycle.Observe {
+			if l, _ := store.LastOf(r.EventTime, r.Through); l.After(seen[r.Producer]) {
+				seen[r.Producer] = l
+			}
+		}
+	}
+	for i, p := range f.producers {
+		if !liveAt(f.byProducer[i], last) {
+			continue
+		}
+		d := latest[p]
+		if d == nil || d.Kind != lifecycle.Observe {
+			return c.fail(fmt.Errorf("%s is live by %s at %s with no observation deciding it",
+				describeSubject(el.Subject), p, formatTime(last)))
+		}
+		el.Last = append(el.Last, Evidence{
+			Producer: p, EventTime: d.EventTime.UTC(), Through: d.Through.UTC(), TTL: d.TTL, Seq: d.Seq,
+			Latest: seen[p].UTC(),
+		})
+	}
+	return nil
+}
+
+// liveAt reports whether x is in one of the intervals.
+func liveAt(ivs []ival, x time.Time) bool {
+	return slices.ContainsFunc(ivs, func(iv ival) bool {
+		return !iv.start.After(x) && (iv.open || x.Before(iv.end))
+	})
 }
 
 // describedAt is the description at x, or the refusal of one whose winning
@@ -566,6 +633,9 @@ func (c *call) edge(e edgeRead) (Element, error) {
 	if err := c.describe(&el, e.g.recs, e.unknown); err != nil {
 		return Element{}, err
 	}
+	if err := c.evidence(&el, e.g.recs, e.f); err != nil {
+		return Element{}, err
+	}
 	return el, nil
 }
 
@@ -603,6 +673,8 @@ func (c *call) existences(fps []identity.Fingerprint) error {
 	slices.Sort(layers)
 	for _, l := range layers {
 		of := byLayer[l]
+		// The payloads are for descriptions alone: evidence is every field of a
+		// seed but the payload.
 		answers, err := c.since(of, 0, l, c.keepRecords)
 		if err != nil {
 			return c.fail(fmt.Errorf("reading the existence of %d entities in layer %s: %w", len(of), l, err))
@@ -613,7 +685,7 @@ func (c *call) existences(fps []identity.Fingerprint) error {
 			if ex.f, err = foldSubject(recs); err != nil {
 				return c.fail(err)
 			}
-			if c.keepRecords {
+			if c.keepRecords || c.keepEvidence {
 				ex.recs, ex.unknown = recs, unknown[store.EntitySubject(fp)]
 			}
 		}
@@ -631,12 +703,13 @@ func cloneElements(els []Element) []Element {
 	return out
 }
 
-// cloneElement copies an element's pieces and descriptions.
+// cloneElement copies an element's pieces, descriptions and evidence.
 func cloneElement(el Element) Element {
 	el.Pieces = slices.Clone(el.Pieces)
 	for k := range el.Pieces {
 		el.Pieces[k].Producers = slices.Clone(el.Pieces[k].Producers)
 	}
 	el.AtFrom, el.AtLast = el.AtFrom.clone(), el.AtLast.clone()
+	el.Last = slices.Clone(el.Last)
 	return el
 }
