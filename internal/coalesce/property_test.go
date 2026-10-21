@@ -104,10 +104,24 @@ func drawRetention(t *rapid.T, c storetest.Config) retention {
 // it, when the store retains as the retention says, and how the coalescer behaved.
 type outcome struct {
 	raw, out []store.Record // kept by the store; out has its Seq assigned
-	// extensions are the records returned with a Through; absorbed the refreshes that
-	// returned nothing; continuations the refreshes of a run, inside its TTL, that
-	// started a new run of the same description.
-	extensions, absorbed, continuations int
+	// extensions are the records returned with a Through; repeats the refreshes that
+	// returned nothing at an instant an earlier refresh of their description (basis
+	// included) had already reached; absorbed the other refreshes that returned
+	// nothing; continuations the refreshes of a run, inside its TTL, that started a new
+	// run of the same description.
+	//
+	// A repeat says nothing the store was not already given: the run its earlier
+	// refresh belongs to, or the run before it, covers its instant, and the coalescer
+	// returns nothing for it whatever the extension interval, even with none. Only an
+	// absorbed refresh is one the extension interval held back.
+	extensions, repeats, absorbed, continuations int
+}
+
+// reached is a description with its basis: the refreshes of one, at or before the
+// latest instant one of them was fed at, are repeats.
+type reached struct {
+	d     described
+	basis store.EventTimeBasis
 }
 
 type seen struct {
@@ -172,6 +186,8 @@ func feed(t fataler, cfg coalesce.Config, stream []store.Record, ret retention) 
 	// The bases of the inputs fed so far: at an instant, and at any.
 	basesAt := map[atTime]uint8{}
 	bases := map[described]uint8{}
+	// The latest instant each description was refreshed at, of the refreshes fed so far.
+	latest := map[reached]time.Time{}
 	for _, r := range stream {
 		d := describedOf(r)
 		basesAt[atTime{d, r.EventTime.UnixNano()}] |= 1 << r.EventTimeBasis
@@ -179,10 +195,17 @@ func feed(t fataler, cfg coalesce.Config, stream []store.Record, ret retention) 
 		outs := co.Add(r, nil)
 
 		if r.Kind == lifecycle.Observe && r.TTL > 0 {
+			rk := reached{d, r.EventTimeBasis}
+			reach, seenBefore := latest[rk]
+			if !seenBefore || r.EventTime.After(reach) {
+				latest[rk] = r.EventTime
+			}
 			key := subjectProducer{r.Subject, r.Producer}
 			prev, had := last[key]
 			same := had && prev.ttl == r.TTL && prev.boot == r.Boot && prev.payload == string(r.Payload) && prev.basis == r.EventTimeBasis
 			switch {
+			case len(outs) == 0 && seenBefore && !r.EventTime.After(reach):
+				o.repeats++
 			case len(outs) == 0:
 				o.absorbed++
 			case same && r.EventTime.After(prev.last) && !r.EventTime.After(prev.last.Add(prev.ttl)) &&
@@ -423,6 +446,9 @@ func drawStream(t *rapid.T) (storetest.Config, []store.Record) {
 
 // With every refresh extending and no bound, the coalesced stream is the raw one in
 // another form: the same existence, the same boots, and the same clone collisions.
+// No refresh is absorbed; one the coalescer returns nothing for is a repeat of an
+// instant its description already reached, which the store already has (see
+// TestARepeatedRefreshIsNotAbsorbed).
 func TestWithNothingAbsorbedTheCoalescedStreamFoldsLikeTheRawOne(t *testing.T) {
 	t.Parallel()
 
@@ -438,6 +464,75 @@ func TestWithNothingAbsorbedTheCoalescedStreamFoldsLikeTheRawOne(t *testing.T) {
 		}
 		check(t, coalesce.Config{}, true, o, retention{}, new(tally))
 	})
+}
+
+// With every refresh extending, a refresh at an instant its run already reached, of
+// the same description, is a repeat: the coalescer returns nothing for it, because
+// the record it wrote for that instant already says it, and the fold is the raw one.
+// That holds for a refresh repeated at the same instant, for one that arrives late
+// inside the run, and for one inside the run before it.
+func TestARepeatedRefreshIsNotAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	t.Run("refreshes written out", func(t *testing.T) {
+		t.Parallel()
+
+		fp := node(t, "node-0")
+		beats := []beat{{0, "a"}, {0, "a"}, {60, "a"}, {30, "a"}, {60, "a"}, {120, "b"}, {45, "a"}}
+		var stream []store.Record
+		for i, b := range beats {
+			r := refresh(t, fp, b.at, b.payload)
+			r.Seq = uint64(i + 1)
+			stream = append(stream, r)
+		}
+		co := mustNew(t, coalesce.Config{})
+		var got []store.Record
+		for _, r := range stream {
+			got = co.Add(r, got)
+		}
+		if want := " [0 a] [0..60 a] [120 b]"; describe(got) != want {
+			t.Errorf("wrote%s, want%s", describe(got), want)
+		}
+		o := feed(t, coalesce.Config{}, stream, retention{})
+		if o.repeats != 4 || o.absorbed != 0 {
+			t.Errorf("%d repeats and %d absorbed, want 4 and 0", o.repeats, o.absorbed)
+		}
+		check(t, coalesce.Config{}, true, o, retention{}, new(tally))
+	})
+
+	// The draw of TestWithNothingAbsorbedTheCoalescedStreamFoldsLikeTheRawOne that
+	// counted a repeat as absorbed: a churn event at the start reschedules a pod onto
+	// the one node, and the kubelet confirms the placement again with a payload that,
+	// drawn afresh, is the same single byte. Its second confirmation repeats the first.
+	for name, set := range map[string]func(*storetest.Config){
+		"the draw as found": func(c *storetest.Config) {
+			c.Duration, c.ChurnPerMinute, c.HeartbeatInterval, c.TTLFactor = 22*time.Minute, 20, 2*time.Minute, 2
+			c.LateMax, c.RebootProbability = 7*time.Second, 0.5
+		},
+		"the draw shrunk": func(c *storetest.Config) {
+			c.Duration, c.ChurnPerMinute, c.HeartbeatInterval, c.TTLFactor = 20*time.Minute, 5, 30*time.Second, 1
+			c.LateMax, c.RebootProbability = time.Second, 0
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			c := storetest.Tiny()
+			c.Seed = 0x4387d26
+			c.Racks, c.Hosts, c.Pods, c.Services = 1, 1, 2, 2
+			c.ConfirmProbability, c.LateProbability, c.CloneProbability, c.Runs = 0.5, 0, 0, false
+			set(&c)
+			g, err := storetest.NewGenerator(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := feed(t, coalesce.Config{}, g.All(), retention{})
+			if o.repeats == 0 || o.absorbed != 0 {
+				t.Errorf("%d repeats and %d absorbed, want some and none", o.repeats, o.absorbed)
+			}
+			check(t, coalesce.Config{}, true, o, retention{}, new(tally))
+		})
+	}
 }
 
 // Absorbing refreshes within an extension interval, with or without a bound on the age
