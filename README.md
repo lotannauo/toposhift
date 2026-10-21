@@ -93,7 +93,7 @@ Or, in a checkout, `mise install && mise run build` writes `bin/toposhift` ([bui
 - One `serve` takes remote ingest or serves the tools, not both.
 - No UI or HTTP query API besides MCP.
 - A call stops after 30 seconds, with no partial answer.
-- Range answers cost more as a store ages.
+- Range answers that reach a host cost more as the host's history grows (in v0.1.0, any entity's).
 
 [All of them](docs/limits.md). In the report: [what the evidence does not show](bench/findings/REPORT.md#what-this-does-not-show) and [its shortcomings](bench/findings/REPORT.md#10-known-shortcomings).
 
