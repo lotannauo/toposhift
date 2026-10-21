@@ -3,6 +3,7 @@ module github.com/lotannauo/toposhift/bench/postgres
 go 1.27.3
 
 require (
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lotannauo/toposhift v0.0.0-00010101000000-000000000000
 	github.com/lotannauo/toposhift/bench v0.0.0-00010101000000-000000000000
 	pgregory.net/rapid v1.3.0
@@ -31,6 +32,9 @@ require (
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect

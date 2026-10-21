@@ -165,7 +165,8 @@ run = './scripts/cgoenv.sh gotestsum --format standard-quiet ${TEST_REPORT_DIR:+
 # driver and a server to test against stay out of the bench module's graph. It is
 # pure Go, so unlike the RocksDB module's, all of its checks fit the shards. It links
 # layout L's shared code and so Pebble, hence the cgo-free build check. Its tests that
-# need a Postgres server skip without TOPOSHIFT_PG_DSN (there are none yet).
+# need a Postgres server skip without TOPOSHIFT_PG_DSN; bench:postgres:test:server runs
+# them against a server, and only postgres.yml, which starts one, does.
 [tasks."bench:postgres:fmt:check"]
 description = "Fail if any Go file in the Postgres module is not formatted"
 dir = "bench/postgres"
@@ -186,6 +187,16 @@ description = "Run the Postgres module's full tests, cgo off"
 dir = "bench/postgres"
 env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-postgres-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:postgres:test:server"]
+description = "Run the Postgres module's server tests against a live server (TOPOSHIFT_PG_DSN names it; bench/postgres/scripts/pg-server.sh starts the one the settings are written for)"
+dir = "bench/postgres"
+env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "8" }
+run = '''
+set -eu
+: "${TOPOSHIFT_PG_DSN:?TOPOSHIFT_PG_DSN must name the server, see bench/postgres/scripts/pg-server.sh}"
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-postgres-test-server.json"} -- -count=1 -p 1 -timeout 40m ./pgengine/...
+'''
 
 [tasks."bench:postgres:test:race"]
 description = "Run the Postgres module's trimmed tests with the race detector"
