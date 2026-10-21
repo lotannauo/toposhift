@@ -38,7 +38,7 @@ const envRetain = "TOPOSHIFT_RETAIN"
 // with off, each on its own release commit, and v0.1.0 is the first; main and
 // every other build have on. It is a variable only so tests can run serve with the
 // other default.
-var defaultRetain = "on"
+var defaultRetain = "off"
 
 // Where serve's retention mode came from, as GET /status says always, and as the
 // boot log says on the line that retention is off, and on the line that it is on

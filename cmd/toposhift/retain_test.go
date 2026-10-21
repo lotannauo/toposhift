@@ -363,7 +363,7 @@ func TestServeRetainOffRetainsNothing(t *testing.T) {
 // The default this build ships with. Only a release commit changes it, together
 // with want here, so a change of the default on any other commit fails.
 func TestTheRetainDefault(t *testing.T) {
-	const want = "on"
+	const want = "off"
 	if defaultRetain != want {
 		t.Fatalf("defaultRetain = %q, want %q", defaultRetain, want)
 	}
