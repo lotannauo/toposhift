@@ -1,10 +1,11 @@
 name: duckdb
 
 # The DuckDB baseline (bench/duckdb) is a module of its own, built and tested outside the
-# four ci shards: its driver, which a later change adds, links DuckDB's native library,
-# which no shard has. This workflow runs the module's format check, lint, vulnerability
-# scan, tests and race-detector tests on both architectures. It is not a required check,
-# and it times nothing.
+# four ci shards: its driver links DuckDB's native library (a static one, prebuilt in the
+# driver's Go module and linked with the runner's C and C++ compilers), which no shard
+# has. This workflow runs the module's format check, lint, vulnerability scan, tests and
+# race-detector tests on both architectures. It is not a required check, and it times
+# nothing.
 
 on:
   pull_request:

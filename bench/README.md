@@ -87,20 +87,24 @@ of the baseline's series, `mise run bench:victoria:test:server` runs them. `mise
 bench:victoria:test`, `bench:victoria:test:race`, `bench:victoria:lint`,
 `bench:victoria:vuln` and `bench:victoria:purego` are its tasks, in the CI shards.
 
-The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver, which a
-later change adds, will link DuckDB's native library; for now it is pure Go (build and
-test it with `CGO_ENABLED=0`). It asks what it costs to answer the spike's reads from
-Parquet files of the activity stream. `duckdb/duckmodel` needs no DuckDB: it models the
-record files (ordered by source and by target) and the interval file, answers every
-read from them by the rule the SQL will have (one `Model` for each of the two arms,
-which the spike's conformance test checks against the reference engine), and holds the
-retention filter a file builder applies, the order of neighbors that a database's text
-order does not give, and the conversion from engine records to store records.
-`duckdb/g0` asks an engine every question of a plan and compares the answers with the
-plan's (`go run ./cmd/duckspike g0 -plan plan.json`, from `duckdb/`). No DuckDB binary,
-driver or file is needed yet. Its tasks (`mise run bench:duckdb:fmt:check`,
-`bench:duckdb:lint`, `bench:duckdb:vuln`, `bench:duckdb:test` and
-`bench:duckdb:test:race`) run in `duckdb.yml`, not in the shards.
+The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver links
+DuckDB's native library: it builds and tests with cgo (the model and the first gate,
+`duckmodel` and `g0`, are pure Go and also pass with `CGO_ENABLED=0`). It asks what it
+costs to answer the spike's reads from Parquet files of the activity stream.
+`duckdb/duckmodel` needs no DuckDB: it models the record files (ordered by source and by
+target) and the interval file, answers every read from them by the rule the SQL has (one
+`Model` for each of the two arms, which the spike's conformance test checks against the
+reference engine), and holds the retention filter a file builder applies, the order of
+neighbors that a database's text order does not give, and the conversion from engine
+records to store records. `duckdb/g0` asks an engine every question of a plan and
+compares the answers with the plan's. `duckdb/duckengine` builds the files of three arms
+from a plan's stream (the archive as written, record files sorted both ways, and
+interval files), answers every question of a plan from them with SQL, and counts the
+work of each read in rows, row groups and bytes; `duckspike` drives it (`build`, `read`,
+`explain`, `sizes`, `env`, and `g0`), prints no time, and keeps its output out of the git
+work tree. Its tasks (`mise run bench:duckdb:fmt:check`, `bench:duckdb:lint`,
+`bench:duckdb:vuln`, `bench:duckdb:test` and `bench:duckdb:test:race`) run in
+`duckdb.yml`, not in the shards.
 
 The XTDB baseline, `xtdb/`, is a module of its own so that a database driver and a server to test against stay out
 of the bench module's graph, and pure Go as well. XTDB 2 is bitemporal, so it asks whether a database with both time axes built in

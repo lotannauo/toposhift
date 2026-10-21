@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
@@ -131,3 +132,19 @@ func sortRows(rows []IntervalRow) {
 		)
 	})
 }
+
+// SubjectIntervals folds the records of one subject, in any order, and returns its
+// maximal intervals ascending: what the model would hold for the subject, for a builder
+// that folds the subjects of a file one after another. The records must all be of one
+// subject; the payloads are not read.
+func SubjectIntervals(records []engine.Record) ([]Interval, error) {
+	recs := make([]rec, len(records))
+	for i, r := range records {
+		recs[i] = keep(r)
+	}
+	return foldIntervals(recs, mutNone)
+}
+
+// SortRows puts the rows of an interval file in the file's order: by layer, then the
+// text of the fingerprint they are seen from, then start, then peer and relation.
+func SortRows(rows []IntervalRow) { sortRows(rows) }
