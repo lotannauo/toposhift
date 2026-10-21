@@ -25,7 +25,9 @@ name: bench
 # artifact of the run, which the cache's eviction does not touch. With the read input,
 # repetition 1 of every candidate also reads its build afterwards, for the answers
 # and counters that rocksbench judge, the RocksDB rule's judge, compares between the
-# engines; the build alone is timed.
+# engines; the build alone is timed. With the read_timed input, every repetition reads
+# its build and times the reads (spikebench read -timed), and the plans are made at the
+# product's block cache; the judge of those timings is spikebench readtiming, offline.
 #
 # A dispatch waits at its setup job for approval: that job runs in the environment
 # bench-approval, which a maintainer creates beforehand (Settings, Environments) with
@@ -97,6 +99,10 @@ on:
         description: After the build of repetition 1 of each candidate, read it (spikebench read, or rocksbench read for RL/ and RL4/) and keep its results.json. Required for a dispatch of both engines.
         type: boolean
         default: false
+      read_timed:
+        description: With read, every repetition reads its build and times the reads (spikebench read -timed), and the plans are made at the product's 256 MiB block cache. Pebble candidates only, retention_mode sync, windows of at most 7 days, go_mem_limit empty.
+        type: boolean
+        default: false
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -146,6 +152,8 @@ jobs:
       go_mem_limit: ${{ steps.matrix.outputs.go_mem_limit }}
       pebble_memory_limit: ${{ steps.matrix.outputs.pebble_memory_limit }}
       read: ${{ steps.matrix.outputs.read }}
+      read_timed: ${{ steps.matrix.outputs.read_timed }}
+      plan_flags: ${{ steps.matrix.outputs.plan_flags }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       retention_mode: ${{ steps.matrix.outputs.retention_mode }}
       pace: ${{ steps.matrix.outputs.pace }}
@@ -201,6 +209,7 @@ jobs:
           RETAIN_FLUSH_DELS: ${{ inputs.retain_flush_dels }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           READ: ${{ inputs.read }}
+          READ_TIMED: ${{ inputs.read_timed }}
         run: bash bench/scripts/gate-dispatch-check.sh
 
   # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
@@ -274,6 +283,10 @@ jobs:
           # From the setup job's fixed mapping of the family, never from free
           # text; it is split into words on purpose.
           FAMILY_FLAGS: ${{ needs.setup.outputs.family_flags }}
+          # Also a fixed mapping: -cache-mb 256 for a timed read, else empty. The pins
+          # take it as the plans do, since the cache is part of the scenario the pins
+          # are chosen from.
+          PLAN_FLAGS: ${{ needs.setup.outputs.plan_flags }}
           PINS_WINDOW: ${{ needs.setup.outputs.pins_window }}
           WINDOWS: ${{ needs.setup.outputs.windows }}
         run: |
@@ -283,15 +296,17 @@ jobs:
           LOGS="$RUNNER_TEMP/logs"
           mkdir -p "$LOGS"
           read -ra flags <<<"$FAMILY_FLAGS"
+          # An empty array is expanded as ${a[@]+"${a[@]}"}, which bash 3.2 and 5 take alike.
+          read -ra pflags <<<"$PLAN_FLAGS"
           IFS=, read -ra wins <<<"$WINDOWS"
 
           /usr/bin/time -v -o "$LOGS/pins.time.txt" \
-            "$SB" pins -out "$PLANS" -preset ci "${flags[@]}" -window "$PINS_WINDOW" \
+            "$SB" pins -out "$PLANS" -preset ci "${flags[@]}" ${pflags[@]+"${pflags[@]}"} -window "$PINS_WINDOW" \
             2>&1 | tee "$LOGS/pins.log"
 
           for d in "${wins[@]}"; do
             /usr/bin/time -v -o "$LOGS/plan-R$d.time.txt" \
-              "$SB" plan -out "$PLANS/R$d" -preset ci "${flags[@]}" -window "$d" -pins "$PLANS/pins.json" -full \
+              "$SB" plan -out "$PLANS/R$d" -preset ci "${flags[@]}" ${pflags[@]+"${pflags[@]}"} -window "$d" -pins "$PLANS/pins.json" -full \
               2>&1 | tee "$LOGS/plan-R$d.log"
           done
 
@@ -696,9 +711,11 @@ jobs:
       # Timed: no -untimed, no -rest-after-retention and no -canonical-layout, so
       # the numbers are those of a build as it ingests. Its own step with a timeout
       # shorter than the job's, so that an overrun still reaches the upload; shorter
-      # still when a read follows it, which has a timeout of its own.
+      # still when a read follows it, which has a timeout of its own: the build of
+      # repetition 1, or of every repetition when the reads are timed. 280 and the
+      # read's 60 leave the rest of the job's 358 minutes for its other steps.
       - name: Build the candidate
-        timeout-minutes: ${{ needs.setup.outputs.read == 'true' && matrix.rep == 1 && 280 || 340 }}
+        timeout-minutes: ${{ needs.setup.outputs.read == 'true' && (matrix.rep == 1 || needs.setup.outputs.read_timed == 'true') && 280 || 340 }}
         env:
           WINDOW: ${{ matrix.window }}
           CANDIDATE: ${{ matrix.candidate }}
@@ -751,18 +768,31 @@ jobs:
       # counters of repetition 1 (never -perf, which makes every query that loads a
       # block unstable). spikebench reads under the GOMEMLIMIT its build had;
       # rocksbench's read takes no limit and runs with none. Its peak memory goes
-      # to a file of its own, so time.txt stays the build's.
+      # to a file of its own, so time.txt stays the build's. With read_timed, every
+      # repetition reads, and after its passes spikebench times the warm reads of every
+      # query and writes timings.json beside results.json; it prints no duration. The
+      # setup refuses a timed read of a RocksDB candidate, which the engine check below
+      # repeats.
       - name: Read the candidate
-        if: needs.setup.outputs.read == 'true' && matrix.rep == 1
+        if: needs.setup.outputs.read == 'true' && (matrix.rep == 1 || needs.setup.outputs.read_timed == 'true')
         timeout-minutes: 60
         env:
           WINDOW: ${{ matrix.window }}
           CANDIDATE: ${{ matrix.candidate }}
           ENGINE: ${{ matrix.engine }}
           GO_MEM_LIMIT: ${{ needs.setup.outputs.go_mem_limit }}
+          READ_TIMED: ${{ needs.setup.outputs.read_timed }}
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
+          timed=()
+          if [ "$READ_TIMED" = true ]; then
+            if [ "$ENGINE" != pebble ]; then
+              echo "::error::a timed read is for Pebble candidates only" >&2
+              exit 1
+            fi
+            timed=(-timed)
+          fi
           if [ "$ENGINE" = rocksdb ]; then
             bin="$RUNNER_TEMP/rocksbench"
           else
@@ -772,7 +802,7 @@ jobs:
             fi
           fi
           /usr/bin/time -v -o "$RUNNER_TEMP/logs/read.time.txt" \
-            "$bin" read -out "$WORK" -candidate "$CANDIDATE" \
+            "$bin" read -out "$WORK" -candidate "$CANDIDATE" ${timed[@]+"${timed[@]}"} \
             2>&1 | tee "$RUNNER_TEMP/logs/read.log"
 
       - name: Collect the manifest and the logs
@@ -814,8 +844,8 @@ jobs:
           LOGS="$RUNNER_TEMP/logs"
           mkdir -p "$OUT"
 
-          # Only the manifest, the results of a read and the metrics, never db/:
-          # the database is gigabytes.
+          # Only the manifest, the results and timings of a read and the metrics, never
+          # db/: the database is gigabytes. The timings are kept as the read wrote them.
           manifest=no
           if [ -f "$WORK/$SLUG/manifest.json" ]; then
             cp "$WORK/$SLUG/manifest.json" "$OUT/manifest.json"
@@ -825,6 +855,11 @@ jobs:
           if [ -f "$WORK/$SLUG/results.json" ]; then
             cp "$WORK/$SLUG/results.json" "$OUT/results.json"
             results=yes
+          fi
+          timings=no
+          if [ -f "$WORK/$SLUG/timings.json" ]; then
+            cp "$WORK/$SLUG/timings.json" "$OUT/timings.json"
+            timings=yes
           fi
           if [ -f "$WORK/$SLUG/metrics.jsonl" ]; then
             cp "$WORK/$SLUG/metrics.jsonl" "$OUT/metrics.jsonl"
@@ -918,7 +953,7 @@ jobs:
             echo "### $CANDIDATE, $WINDOW days, $OS, repetition $REP"
             echo
             echo "- engine: $ENGINE"
-            echo "- manifest written: $manifest; results of a read written: $results"
+            echo "- manifest written: $manifest; results of a read written: $results; timings: $timings"
             echo "- peak memory: ${rss:-unknown}; of the read: ${read_rss:-none}"
             echo "- elapsed time (h:mm:ss or m:ss): ${elapsed:-unknown}"
             echo "- most disk used, sampled each minute (root, mnt and the work directory's filesystem): ${disk:-unknown}"
@@ -1048,6 +1083,32 @@ jobs:
           D="$RUNNER_TEMP/dry/R1"
           "$RUNNER_TEMP/spikebench" read -out "$D" -candidate L/off
           "$RUNNER_TEMP/spikebench" read -out "$D" -candidate L/k64a2l1ns
+
+      # The timed read of a dispatch with read_timed, at the tiny preset: it must write
+      # timings.json with every query of the plan and 31 timed asks of each (it prints
+      # no duration, which a test of the program pins). The judge is then run on the
+      # output and must refuse it, with status 3 and for the one reason that this is no
+      # artifact of a dispatch (it has no job.json): that proves the judge is built,
+      # finds the file and refuses first, as the RocksDB dry run proves its judge by a
+      # refusal. Nothing is kept, and the timings are checked for their shape only.
+      - name: Time the reads of one candidate
+        run: |
+          set -uo pipefail
+          D="$RUNNER_TEMP/dry/R1"
+          SB="$RUNNER_TEMP/spikebench"
+          fail() {
+            echo "::error::$1" >&2
+            exit 1
+          }
+          "$SB" read -timed -out "$D" -candidate L/off || fail "the timed read failed"
+          jq -e --slurpfile plan "$D/plan.json" \
+            '(.Queries | length) == ($plan[0].Queries | length) and (.Queries | length) > 0 and .Untimed == false and .Warmup == 3 and .Reps == 31 and all(.Queries[]; (.Ns | length) == 31)' \
+            "$D/L_off/timings.json" >/dev/null || fail "timings.json lacks a query of the plan or its 31 timed asks"
+          code=0
+          "$SB" readtiming -commit "$(git rev-parse HEAD)" -plans "$RUNNER_TEMP/planset" -base L/off -jobs 1 "$D" >"$RUNNER_TEMP/judge.out" 2>"$RUNNER_TEMP/judge.err" || code=$?
+          [ "$code" = 3 ] || fail "the judge ended with status $code on a read with no job.json, want 3"
+          head -n 1 "$RUNNER_TEMP/judge.out" | grep -Eq '^read timing rules [0-9]+ digest [0-9a-f]+$' || fail "the judge did not print its rules digest first"
+          grep -q "not an artifact of the bench workflow" "$RUNNER_TEMP/judge.err" || fail "the judge refused for another reason than the missing job.json"
 
       - name: Report
         run: |

@@ -162,6 +162,10 @@ const collectResults = "{\"answers\":[]}\n"
 
 const collectMetrics = "{\"t\":1}\n{\"t\":2}\n"
 
+// The file a timed read writes beside results.json, as the program wrote it: odd bytes
+// and no trailing newline, to show that the step keeps it as it is.
+const collectTimings = "{\"Version\":1,\"Queries\":[{\"Ns\":[3,1,2]}]}"
+
 const collectBuildTime = "\tCommand being timed: \"spikebench build\"\n" +
 	"\tElapsed (wall clock) time (h:mm:ss or m:ss): 1:02.03\n" +
 	"\tMaximum resident set size (kbytes): 123456\n"
@@ -218,7 +222,7 @@ func collectCases() []*collectCase {
 	noRead.want["rocksdb_libraries"] = ""
 	noRead.summary = append(noRead.summary,
 		"- engine: pebble",
-		"- manifest written: yes; results of a read written: no",
+		"- manifest written: yes; results of a read written: no; timings: no",
 		"- peak memory: 121 MiB; of the read: none",
 		"- elapsed time (h:mm:ss or m:ss): 1:02.03",
 		"(root, mnt and the work directory's filesystem): root 2.0 GiB",
@@ -242,10 +246,37 @@ func collectCases() []*collectCase {
 	read.want["read_max_rss_kb"] = 2048
 	read.want["binary_sha256"] = sha256Hex(collectPebbleBinary)
 	read.summary = append(read.summary,
-		"- manifest written: yes; results of a read written: yes",
+		"- manifest written: yes; results of a read written: yes; timings: no",
 		"- peak memory: 121 MiB; of the read: 2 MiB",
 	)
 	cases = append(cases, read)
+
+	// With read_timed, a repetition after the first reads too, and the read leaves
+	// timings.json beside results.json. It is kept as it is, and the job file is the
+	// one of a job with a read.
+	timed := newCollectCase("a job with a timed read")
+	timed.env["REP"] = "1"
+	timed.work["manifest.json"] = collectManifest
+	timed.work["results.json"] = collectResults
+	timed.work["timings.json"] = collectTimings
+	timed.work["metrics.jsonl"] = collectMetrics
+	timed.files = maps.Clone(read.files)
+	timed.want = maps.Clone(read.want)
+	timed.summary = append(timed.summary,
+		"- manifest written: yes; results of a read written: yes; timings: yes",
+		"- peak memory: 121 MiB; of the read: 2 MiB",
+	)
+	cases = append(cases, timed)
+
+	timedLater := newCollectCase("a job after the first with a timed read")
+	timedLater.work = maps.Clone(timed.work)
+	timedLater.files = maps.Clone(read.files)
+	timedLater.want = maps.Clone(read.want)
+	timedLater.summary = append(timedLater.summary,
+		"- manifest written: yes; results of a read written: yes; timings: yes",
+		"- peak memory: 121 MiB; of the read: 2 MiB",
+	)
+	cases = append(cases, timedLater)
 
 	// Killed for memory, by a timeout or by a cancel: the binary ran and the sampler
 	// wrote, but there is no build report and no manifest.
@@ -257,7 +288,7 @@ func collectCases() []*collectCase {
 	killed.want["read_max_rss_kb"] = 0
 	killed.want["binary_sha256"] = sha256Hex(collectPebbleBinary)
 	killed.summary = append(killed.summary,
-		"- manifest written: no; results of a read written: no",
+		"- manifest written: no; results of a read written: no; timings: no",
 		"- peak memory: unknown; of the read: none",
 		"- elapsed time (h:mm:ss or m:ss): unknown",
 		"(root, mnt and the work directory's filesystem): root 2.0 GiB",
@@ -270,7 +301,7 @@ func collectCases() []*collectCase {
 	early.want["read_max_rss_kb"] = 0
 	early.want["binary_sha256"] = "unknown"
 	early.summary = append(early.summary,
-		"- manifest written: no; results of a read written: no",
+		"- manifest written: no; results of a read written: no; timings: no",
 		"- peak memory: unknown; of the read: none",
 		"- elapsed time (h:mm:ss or m:ss): unknown",
 		"(root, mnt and the work directory's filesystem): unknown",
@@ -361,8 +392,9 @@ func TestTheCollectStepKeepsTheJobFileAndTheLogsOfEveryJob(t *testing.T) {
 	}
 }
 
-// checkCollect runs the step for c as the runner does and checks everything it left.
-func checkCollect(t *testing.T, script string, c *collectCase) {
+// checkCollect runs the step for c as the runner does and checks everything it left. It
+// returns the job file.
+func checkCollect(t *testing.T, script string, c *collectCase) []byte {
 	t.Helper()
 	tmp := t.TempDir()
 	runner := filepath.Join(tmp, "runner")
@@ -474,9 +506,9 @@ func checkCollect(t *testing.T, script string, c *collectCase) {
 		}
 	}
 
-	// The manifest, results and metrics the job wrote are kept as they are, and nothing
-	// else of the build directory.
-	for _, name := range []string{"manifest.json", "results.json", "metrics.jsonl"} {
+	// The manifest, results, timings and metrics the job wrote are kept as they are, and
+	// nothing else of the build directory.
+	for _, name := range []string{"manifest.json", "results.json", "timings.json", "metrics.jsonl"} {
 		got, err := os.ReadFile(filepath.Join(out, name))
 		if w, ok := c.work[name]; ok {
 			if err != nil || string(got) != w {
@@ -516,5 +548,32 @@ func checkCollect(t *testing.T, script string, c *collectCase) {
 		if !strings.Contains(string(summary), line) {
 			t.Errorf("the summary lacks %q:\n%s", line, summary)
 		}
+	}
+	return data
+}
+
+// A timed read adds a file to what a job keeps and nothing to the job file: the keys
+// and their order are pinned in three packages, which read the artifacts of earlier
+// runs too. Two jobs of one runner that differ only in the timings they wrote have the
+// same job file, byte for byte.
+func TestATimedReadLeavesTheJobFileAsItWas(t *testing.T) {
+	t.Parallel()
+	script, _ := collectStep(t)
+	for _, tool := range []string{"bash", "jq", "awk", "sha256sum", "cut", "paste", "tr"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed, so the collect step cannot be run", tool)
+		}
+	}
+	jobs := map[string][]byte{}
+	for _, c := range collectCases() {
+		if c.name == "a job with a read" || c.name == "a job with a timed read" {
+			jobs[c.name] = checkCollect(t, script, c)
+		}
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("found %d of the two cases to compare", len(jobs))
+	}
+	if string(jobs["a job with a read"]) != string(jobs["a job with a timed read"]) {
+		t.Errorf("the job file of a job with timings differs from that of a job without:\n%s\n%s", jobs["a job with a read"], jobs["a job with a timed read"])
 	}
 }

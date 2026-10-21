@@ -625,7 +625,7 @@ depends = ["bench:test:race:rest", "bench:postgres:test:race"]
 description = "Fail if measurement output is tracked: numbers from a laptop or a VM are never published"
 run = '''
 set -eu
-files="$(git ls-files -- bench/results ':(glob)bench/**/*.jsonl' ':(glob)bench/**/plan.json' ':(glob)bench/**/manifest.json' ':(glob)bench/**/results.json' ':(glob)bench/**/report.txt')"
+files="$(git ls-files -- bench/results ':(glob)bench/**/*.jsonl' ':(glob)bench/**/plan.json' ':(glob)bench/**/manifest.json' ':(glob)bench/**/results.json' ':(glob)bench/**/timings.json' ':(glob)bench/**/report.txt')"
 found="$(printf '%s\n' "$files" | head -5)"
 if [ -n "$found" ]; then
   echo "check:no-results: measurement output is tracked, remove it from the index:" >&2
