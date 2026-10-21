@@ -121,6 +121,38 @@
 // or after its deadline does not need it; one with no TTL is needed by every
 // window until its producer asserts the subject again.
 //
+// # Evidence
+//
+// A reader with [Options].Evidence also gives each element, at the window's last
+// instant (To-1ns), [Element].Last: one [Evidence] for each producer whose
+// reference is live there, when a piece contains that instant.
+// The evidence is the record that decides the reference, the producer's latest
+// assertion at or before the instant by event time and then by sequence number
+// among the records the token sees: its event time, its Through, its TTL and
+// its Seq, both time axes included, and no payload. A producer whose latest
+// assertion is a Delete, or an Observe past its deadline, has no reference at
+// the instant and no evidence.
+//
+// Evidence is read from the records the call has already read, so it adds no
+// store read: a seed carries every field the store wrote but the payload, and
+// is the same whatever a retention has reached, so no refusal belongs to it
+// either. A reader without the option reads, and answers, exactly as before,
+// and the option changes no piece, class or transition.
+//
+// The evidence also names the latest last instant of any record of the producer
+// that the call read, [Evidence].Latest, which is later than the deciding record's
+// own when an earlier record attests a span that reaches past it. Only the
+// producer's seed and the window's records are read, so a record before the
+// window's start that is not the seed is not among them.
+//
+// A record's Through is the last instant it says the producer saw the subject,
+// and a record with none stands for one sighting at its event time. What the
+// evidence cannot say is how long ago the producer saw the subject after the
+// last instant a record names: ingest absorbs the refreshes inside an extension
+// interval of a run's record without writing them (package coalesce), so the
+// producer may have been seen later than the record says. Package decay turns
+// the evidence into a bound that allows for it.
+//
 // # A multigraph of subjects
 //
 // An element is one subject: an entity, or an edge (from, to, relation). Two
