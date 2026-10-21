@@ -135,9 +135,24 @@ func total(perLoop, loops float64) int64 { return int64(math.Round(perLoop * loo
 // Explain runs the statement under [ExplainPrefix] and returns the work it did. The
 // statement runs: an EXPLAIN ANALYZE of a write writes.
 func Explain(ctx context.Context, q Querier, sql string, args ...any) (Counters, error) {
+	_, c, err := ExplainJSON(ctx, q, sql, args...)
+	return c, err
+}
+
+// ExplainJSON is [Explain] that also returns the server's own JSON, as it printed it.
+func ExplainJSON(ctx context.Context, q Querier, sql string, args ...any) ([]byte, Counters, error) {
 	var raw []byte
 	if err := q.QueryRow(ctx, ExplainPrefix+sql, args...).Scan(&raw); err != nil {
-		return Counters{}, fmt.Errorf("pgengine: explaining: %w", err)
+		return nil, Counters{}, fmt.Errorf("pgengine: explaining: %w", err)
 	}
-	return ParseExplain(raw)
+	c, err := ParseExplain(raw)
+	return raw, c, err
+}
+
+// FoldStatement reports whether a statement is a read of the log made to fold it in the
+// reader: the read of an entity's or an edge's records, baselines included, as of an old
+// snapshot token. The rows it returns are the rows the reader had to fetch because the
+// interval tables have no axis for the token.
+func FoldStatement(sql string) bool {
+	return strings.Contains(sql, "FROM log_base") && strings.Contains(sql, "UNION ALL") && !strings.HasPrefix(sql, "INSERT")
 }

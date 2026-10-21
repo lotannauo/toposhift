@@ -1,0 +1,74 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Sort",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 1.50,
+      "Total Cost": 1.52,
+      "Plan Rows": 7,
+      "Plan Width": 36,
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      "Sort Key": ["dst", "rel COLLATE \"C\""],
+      "Sort Method": "quicksort",
+      "Sort Space Used": 25,
+      "Sort Space Type": "Memory",
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 7,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0,
+      "Plans": [
+        {
+          "Node Type": "Index Only Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "edges_src_g",
+          "Relation Name": "edges",
+          "Alias": "edges",
+          "Startup Cost": 0.14,
+          "Total Cost": 1.40,
+          "Plan Rows": 7,
+          "Plan Width": 36,
+          "Actual Rows": 1,
+          "Actual Loops": 1,
+          "Index Cond": "((src = '\\x6b38732e706f64009d5f6653c1c091a9da2ef9cca4482885'::bytea) AND (layer = '3'::smallint) AND (during @> '1767231600000000000'::bigint))",
+          "Rows Removed by Index Recheck": 0,
+          "Heap Fetches": 0,
+          "Shared Hit Blocks": 0,
+          "Shared Read Blocks": 7,
+          "Shared Dirtied Blocks": 0,
+          "Shared Written Blocks": 0,
+          "Local Hit Blocks": 0,
+          "Local Read Blocks": 0,
+          "Local Dirtied Blocks": 0,
+          "Local Written Blocks": 0,
+          "Temp Read Blocks": 0,
+          "Temp Written Blocks": 0
+        }
+      ]
+    },
+    "Planning": {
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Triggers": [
+    ]
+  }
+]

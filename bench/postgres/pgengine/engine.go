@@ -27,6 +27,16 @@
 // differ in the index set their reads use, G (GiST on the interval) or B (a btree on
 // its end). The id-dictionary arm is for sizes only and is refused.
 //
+// # Bulk loads and the cold-read protocol
+//
+// A [Loader] is the measured way into a bulk arm: the log is written with COPY, the
+// stream's retentions are the engine's own, the intervals are folded from the log in one
+// pass and written in the order the reads want them, the indexes are built after the
+// tables are full, and the tables are vacuumed and frozen. It counts the log it writes by
+// phase. [ColdExplain] explains the statements of one read with the buffers of the schema
+// emptied, and [Recorder] hands it the statements an engine ran, so that what is explained
+// is what ran. Neither is the correctness writer's path: Write and Retain are.
+//
 // # Consistency
 //
 // A batch, and a retention, is one transaction, so a reader sees a whole batch or none
@@ -81,6 +91,9 @@ type Config struct {
 	Arm pgschema.Arm
 	// MaxConns bounds the connections the engine opens (default 4).
 	MaxConns int32
+	// Tracer, if set, is told of every statement the engine's connections run, which
+	// lets a harness see the statements a read runs and explain exactly those.
+	Tracer pgx.QueryTracer
 }
 
 // layout is what differs between the arms the engine runs.
@@ -154,6 +167,7 @@ func Open(ctx context.Context, cfg Config) (*Engine, error) {
 	}
 	// Every statement names its tables bare: the schema is the connection's.
 	pc.ConnConfig.RuntimeParams["search_path"] = pgx.Identifier{cfg.Schema}.Sanitize() + ", public"
+	pc.ConnConfig.Tracer = cfg.Tracer
 	pool, err := pgxpool.NewWithConfig(ctx, pc)
 	if err != nil {
 		return nil, fmt.Errorf("pgengine: %w", err)
@@ -175,22 +189,9 @@ func (e *Engine) setup(ctx context.Context) error {
 		return fmt.Errorf("pgengine: connecting: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	simple := pgx.QueryExecModeSimpleProtocol
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", setupLock); err != nil {
-		return fmt.Errorf("pgengine: %w", err)
-	}
-	for _, s := range pgschema.Extensions() {
-		if _, err := tx.Exec(ctx, s, simple); err != nil {
-			return fmt.Errorf("pgengine: %s: %w", s, err)
-		}
-	}
-	q := pgx.Identifier{e.schema}.Sanitize()
-	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+q, simple); err != nil {
-		return fmt.Errorf("pgengine: creating schema %s: %w", e.schema, err)
-	}
-	var exists bool
-	if err := tx.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", q+".meta").Scan(&exists); err != nil {
-		return fmt.Errorf("pgengine: %w", err)
+	exists, err := prepareSchema(ctx, tx, e.schema)
+	if err != nil {
+		return err
 	}
 	if exists {
 		var arm string
@@ -206,26 +207,64 @@ func (e *Engine) setup(ctx context.Context) error {
 	}
 	// A new schema. The bulk arms build their indexes after a load, and the engine's
 	// loads are rebuilds of single subjects, so it has them from the start.
-	stmts, err := pgschema.Tables(e.lay.arm)
+	if err := buildSchema(ctx, tx, e.schema, e.lay.arm, true); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// prepareSchema takes the setup lock, makes the extensions and the schema if they are
+// not there, and reports whether the schema already holds an engine's meta table. The
+// transaction's search path is not changed, and the lock is held until it ends.
+func prepareSchema(ctx context.Context, tx pgx.Tx, schema string) (bool, error) {
+	simple := pgx.QueryExecModeSimpleProtocol
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", setupLock); err != nil {
+		return false, fmt.Errorf("pgengine: %w", err)
+	}
+	for _, s := range pgschema.Extensions() {
+		if _, err := tx.Exec(ctx, s, simple); err != nil {
+			return false, fmt.Errorf("pgengine: %s: %w", s, err)
+		}
+	}
+	q := pgx.Identifier{schema}.Sanitize()
+	if _, err := tx.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+q, simple); err != nil {
+		return false, fmt.Errorf("pgengine: creating schema %s: %w", schema, err)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", q+".meta").Scan(&exists); err != nil {
+		return false, fmt.Errorf("pgengine: %w", err)
+	}
+	return exists, nil
+}
+
+// buildSchema makes the tables of an arm in an empty schema, and its indexes if
+// indexes is set (a bulk load builds them after its load), and the meta row. It runs
+// with the transaction's search path set to the schema.
+func buildSchema(ctx context.Context, tx pgx.Tx, schema string, arm pgschema.Arm, indexes bool) error {
+	simple := pgx.QueryExecModeSimpleProtocol
+	stmts, err := pgschema.Tables(arm)
 	if err != nil {
 		return err
 	}
-	idx, err := pgschema.Indexes(e.lay.arm)
-	if err != nil {
-		return err
+	if indexes {
+		idx, err := pgschema.Indexes(arm)
+		if err != nil {
+			return err
+		}
+		stmts = append(stmts, idx...)
 	}
-	if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+q+", public", simple); err != nil {
+	if _, err := tx.Exec(ctx, "SET LOCAL search_path TO "+pgx.Identifier{schema}.Sanitize()+", public", simple); err != nil {
 		return fmt.Errorf("pgengine: %w", err)
 	}
-	for _, s := range append(stmts, idx...) {
+	for _, s := range stmts {
 		if _, err := tx.Exec(ctx, s, simple); err != nil {
 			return fmt.Errorf("pgengine: %.60s...: %w", s, err)
 		}
 	}
-	if _, err := tx.Exec(ctx, "INSERT INTO meta (last_seq, fold_version, arm) VALUES ($1, $2, $3)", seqToDB(0), FoldVersion, string(e.lay.arm)); err != nil {
+	if _, err := tx.Exec(ctx, "INSERT INTO meta (last_seq, fold_version, arm) VALUES ($1, $2, $3)", seqToDB(0), FoldVersion, string(arm)); err != nil {
 		return fmt.Errorf("pgengine: %w", err)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // Close releases the connections. The schema and what it holds stay, for Open.

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"hash"
+	"math"
 	"slices"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
@@ -139,41 +141,93 @@ func clip(r Row, horizon int64) (Row, bool) {
 // effective end and its end source, so two tables with one digest hold the same
 // intervals however the rows were made.
 func (t Tables) Digest() string {
-	h := sha256.New()
-	var buf []byte
-	u64 := func(v uint64) { buf = binary.BigEndian.AppendUint64(buf, v) }
-	bytesOf := func(b []byte) {
-		buf = binary.BigEndian.AppendUint32(buf, uint32(len(b)))
-		buf = append(buf, b...)
-	}
-	row := func(layer catalog.Layer, r Row) {
-		end, open := r.EffectiveEnd()
-		u64(uint64(layer))
-		u64(uint64(r.Start))
-		if open {
-			buf = append(buf, 1)
-		} else {
-			buf = append(buf, 0)
-			u64(uint64(end))
-		}
-		buf = append(buf, byte(r.EndSource))
-	}
+	w := NewDigestWriter(math.MinInt64)
 	for _, e := range t.Edges {
-		buf = append(buf[:0], 'g')
-		bytesOf(EncodeFingerprint(e.Src))
-		bytesOf(EncodeFingerprint(e.Dst))
-		bytesOf([]byte(e.Rel))
-		row(e.Layer, e.Row)
-		h.Write(buf)
+		w.Edge(e)
 	}
 	for _, e := range t.Entities {
-		buf = append(buf[:0], 'e')
-		bytesOf(EncodeFingerprint(e.Fp))
-		row(e.Layer, e.Row)
-		h.Write(buf)
+		w.Entity(e)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return w.Sum()
 }
+
+// DigestWriter computes the digest of tables from their rows, one at a time, so that
+// tables too large to hold in memory can be digested as they are read: first every
+// edge row, then every entity row, each in the order of [Tables]. It clips each row at
+// its horizon first, so with a horizon the digest is that of [Tables.Clipped]; with
+// math.MinInt64 no row is clipped and it is that of the tables as they are.
+type DigestWriter struct {
+	h       hash.Hash
+	buf     []byte
+	horizon int64
+	rows    int64
+}
+
+// NewDigestWriter returns a writer that clips at horizon.
+func NewDigestWriter(horizon int64) *DigestWriter {
+	return &DigestWriter{h: sha256.New(), horizon: horizon}
+}
+
+func (w *DigestWriter) u64(v uint64) { w.buf = binary.BigEndian.AppendUint64(w.buf, v) }
+
+func (w *DigestWriter) bytesOf(b []byte) {
+	w.buf = binary.BigEndian.AppendUint32(w.buf, uint32(len(b)))
+	w.buf = append(w.buf, b...)
+}
+
+func (w *DigestWriter) row(layer catalog.Layer, r Row) {
+	end, open := r.EffectiveEnd()
+	w.u64(uint64(layer))
+	w.u64(uint64(r.Start))
+	if open {
+		w.buf = append(w.buf, 1)
+	} else {
+		w.buf = append(w.buf, 0)
+		w.u64(uint64(end))
+	}
+	w.buf = append(w.buf, byte(r.EndSource))
+}
+
+func (w *DigestWriter) clip(r Row) (Row, bool) {
+	if w.horizon == math.MinInt64 {
+		return r, true
+	}
+	return clip(r, w.horizon)
+}
+
+// Edge adds an edge row, unless the horizon has taken it.
+func (w *DigestWriter) Edge(e EdgeRow) {
+	r, ok := w.clip(e.Row)
+	if !ok {
+		return
+	}
+	w.buf = append(w.buf[:0], 'g')
+	w.bytesOf(EncodeFingerprint(e.Src))
+	w.bytesOf(EncodeFingerprint(e.Dst))
+	w.bytesOf([]byte(e.Rel))
+	w.row(e.Layer, r)
+	w.h.Write(w.buf)
+	w.rows++
+}
+
+// Entity adds an entity row, unless the horizon has taken it.
+func (w *DigestWriter) Entity(e EntityRow) {
+	r, ok := w.clip(e.Row)
+	if !ok {
+		return
+	}
+	w.buf = append(w.buf[:0], 'e')
+	w.bytesOf(EncodeFingerprint(e.Fp))
+	w.row(e.Layer, r)
+	w.h.Write(w.buf)
+	w.rows++
+}
+
+// Rows is the number of rows added that the horizon left.
+func (w *DigestWriter) Rows() int64 { return w.rows }
+
+// Sum is the digest, as hex.
+func (w *DigestWriter) Sum() string { return hex.EncodeToString(w.h.Sum(nil)) }
 
 // Equal reports whether two tables hold the same rows, ignoring how a provisional
 // row spells its end.
