@@ -61,6 +61,21 @@ with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`; `mise run bench:victoria
 `bench:victoria:test:race`, `bench:victoria:lint`, `bench:victoria:vuln` and
 `bench:victoria:purego` are its tasks, in the CI shards.
 
+The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver, which a
+later change adds, will link DuckDB's native library; for now it is pure Go (build and
+test it with `CGO_ENABLED=0`). It asks what it costs to answer the spike's reads from
+Parquet files of the activity stream. `duckdb/duckmodel` needs no DuckDB: it models the
+record files (ordered by source and by target) and the interval file, answers every
+read from them by the rule the SQL will have (one `Model` for each of the two arms,
+which the spike's conformance test checks against the reference engine), and holds the
+retention filter a file builder applies, the order of neighbors that a database's text
+order does not give, and the conversion from engine records to store records.
+`duckdb/g0` asks an engine every question of a plan and compares the answers with the
+plan's (`go run ./cmd/duckspike g0 -plan plan.json`, from `duckdb/`). No DuckDB binary,
+driver or file is needed yet. Its tasks (`mise run bench:duckdb:fmt:check`,
+`bench:duckdb:lint`, `bench:duckdb:vuln`, `bench:duckdb:test` and
+`bench:duckdb:test:race`) run in `duckdb.yml`, not in the shards.
+
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
 mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
