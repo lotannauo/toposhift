@@ -1,0 +1,33 @@
+# The settings of the Dolt server the Dolt baseline is tested and measured against: the
+# one source of every setting.
+#
+# scripts/dolt-server.sh gives this file to the server, and doltengine.CheckServer refuses
+# a server whose observable settings (ObservableSettings) differ from the values written
+# here, so a change to a value is a change to the registered configuration. The file is
+# read by doltengine.ParseServerConfig, which takes only keys, scalars and two-space
+# indents.
+#
+# What is not here depends on where the server runs and not on what it is asked to do:
+# the address the container's port is published on (scripts/dolt-server.sh publishes it
+# on loopback only).
+
+log_level: warning
+
+behavior:
+  read_only: false
+  # Every statement of the engine is in a transaction of its own, so that a reader sees
+  # whole committed batches; a batch is committed in Dolt by an explicit call, and a SQL
+  # commit makes no Dolt commit of its own.
+  autocommit: false
+  dolt_transaction_commit: false
+  # The server's documentation gives both defaults for this switch, so it is written.
+  auto_gc_behavior:
+    enable: false
+
+listener:
+  # Inside the container, which publishes the port on loopback.
+  host: 0.0.0.0
+  port: 3306
+  max_connections: 8
+
+data_dir: /var/lib/dolt

@@ -141,13 +141,19 @@ rule hold it to the reference engine. It also holds the diagnostic
 arm, which reads a commit's place in history as an event time and so counts the answers
 that shortcut gets wrong. `dolt/g0` asks an engine every question of a plan and reports,
 per age, how many keys the state settled and how many went to the log (`go run
-./cmd/g0model -plan plan.json -arm commit`, from `dolt/`). No Dolt server, image or
-driver is used yet, and nothing about how Dolt behaves is checked: the versioning
-semantics Dolt is taken to have are listed as unverified in the `doltmodel` package
-documentation. The module's tasks (`mise run bench:dolt:test`, `bench:dolt:test:race`,
-`bench:dolt:lint`, `bench:dolt:fmt:check`, `bench:dolt:vuln`) run in
-`.github/workflows/dolt.yml`, not in the `ci` shards, so that a baseline that will need
-a database server never holds up a pull request that touches nothing under `dolt/`.
+./cmd/g0model -plan plan.json -arm commit`, from `dolt/`). `dolt/doltengine` is the
+same design on a Dolt 2.4.2 server: one transaction and one Dolt commit per batch, reads
+as of the commit a snapshot token names, and the model's rule for each key; it is held to
+the reference engine and to the model statement for statement. `dolt/scripts/dolt-server.sh
+start` runs the digest-pinned server image with `dolt/scripts/server.yaml` (the one source
+of its settings), and `TOPOSHIFT_DOLT_DSN='root@tcp(127.0.0.1:33306)/' mise run
+bench:dolt:test:server` runs the tests that need it; without the variable they skip. The
+facts about Dolt the design relies on are listed, each with the test that checks it, in
+the `doltengine` package documentation. The module's other tasks (`mise run bench:dolt:test`,
+`bench:dolt:test:race`, `bench:dolt:lint`, `bench:dolt:fmt:check`, `bench:dolt:vuln`) and
+the server tests run in `.github/workflows/dolt.yml`, not in the `ci` shards, so that a
+baseline that needs a database server never holds up a pull request that touches nothing
+under `dolt/`.
 
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
