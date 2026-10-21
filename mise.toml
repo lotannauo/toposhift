@@ -14,11 +14,12 @@ jq = "1.8.2"
 gotestsum = "1.13.0"
 
 [tasks.fmt]
-description = "Format Go code in place, including the bench module and its RocksDB module"
+description = "Format Go code in place, including the bench module and its RocksDB and Postgres modules"
 run = [
   "golangci-lint fmt",
   "cd bench && golangci-lint fmt",
   "cd bench/rocksdb && golangci-lint fmt",
+  "cd bench/postgres && golangci-lint fmt",
 ]
 
 [tasks."fmt:check"]
@@ -112,6 +113,74 @@ run = './scripts/cgoenv.sh gotestsum --format standard-quiet ${TEST_REPORT_DIR:+
 description = "Run the RocksDB module's trimmed tests with the race detector (needs RocksDB installed; the detector does not see C++)"
 dir = "bench/rocksdb"
 run = './scripts/cgoenv.sh gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-rocksdb-test-race.json"} -- -tags grocksdb_no_link,pebblegozstd -race -short -p 2 -timeout 25m ./...'
+
+# The Postgres baseline (bench/postgres) is a module of its own so that a database
+# driver and a server to test against stay out of the bench module's graph. It is
+# pure Go, so unlike the RocksDB module's, all of its checks fit the shards. It links
+# layout L's shared code and so Pebble, hence the cgo-free build check. Its tests that
+# need a Postgres server skip without TOPOSHIFT_PG_DSN (there are none yet).
+[tasks."bench:postgres:fmt:check"]
+description = "Fail if any Go file in the Postgres module is not formatted"
+dir = "bench/postgres"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:postgres:lint"]
+description = "Lint the Postgres module"
+dir = "bench/postgres"
+run = "golangci-lint run --allow-parallel-runners"
+
+[tasks."bench:postgres:vuln"]
+description = "Scan the Postgres module's dependencies for known vulnerabilities"
+dir = "bench"
+run = "go tool govulncheck -C postgres ./..."
+
+[tasks."bench:postgres:test"]
+description = "Run the Postgres module's full tests, cgo off"
+dir = "bench/postgres"
+env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-postgres-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:postgres:test:race"]
+description = "Run the Postgres module's trimmed tests with the race detector"
+dir = "bench/postgres"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-postgres-test-race.json"} -- -race -short -p 2 -timeout 25m ./...'
+
+# The same check as bench:purego, on the module that links Pebble through bench/spike
+# and reads activity files, so the ban on gRPC and Arrow's Flight, cdata and pqarrow
+# applies to it as well.
+[tasks."bench:postgres:purego"]
+description = "Build the Postgres module with CGO disabled and check no cgo zstd, gRPC, Arrow Flight, Arrow cdata or pqarrow is linked"
+dir = "bench/postgres"
+run = '''
+set -eu
+export CGO_ENABLED=0
+go build ./...
+# See bench:purego for why the cgo-on count must be above zero.
+deps() {
+  list="$(CGO_ENABLED="$1" go list -deps -tags "$2" ./...)" || { echo "bench:postgres:purego: go list failed" >&2; echo ERR; exit 1; }
+  printf '%s\n' "$list" | grep -c 'github.com/DataDog/zstd' || true
+}
+cgo_default="$(deps 1 "")"
+nocgo_default="$(deps 0 "")"
+cgo_tagged="$(deps 1 pebblegozstd)"
+if [ "$cgo_default" = 0 ]; then
+  echo "bench:postgres:purego: the cgo zstd is not in a default build, so this check no longer proves anything" >&2
+  exit 1
+fi
+if [ "$nocgo_default" != 0 ] || [ "$cgo_tagged" != 0 ]; then
+  echo "bench:postgres:purego: the cgo zstd is linked with cgo off, or with the pebblegozstd tag" >&2
+  exit 1
+fi
+for cgo in 0 1; do
+  all="$(CGO_ENABLED=$cgo go list -deps ./...)" || { echo "bench:postgres:purego: go list failed" >&2; exit 1; }
+  bad="$(printf '%s\n' "$all" | grep -E '^(google\.golang\.org/grpc|github\.com/apache/arrow-go/v18/(arrow/flight|arrow/cdata|parquet/pqarrow))(/|$)' || true)"
+  if [ -n "$bad" ]; then
+    echo "bench:postgres:purego: with CGO_ENABLED=$cgo these packages must not be in the build:" >&2
+    printf '%s\n' "$bad" >&2
+    exit 1
+  fi
+done
+'''
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the
@@ -213,7 +282,7 @@ done
 # and needs a new measurement; it is made in this task, in go.mod, in bench/go.mod
 # and in internal/store/pebblekv/pins_test.go together.
 [tasks."check:pebble-pin"]
-description = "Fail unless the root, bench and RocksDB modules all use the pinned Pebble version and the same compression libraries"
+description = "Fail unless the root, bench, RocksDB and Postgres modules all use the pinned Pebble version and the same compression libraries"
 run = '''
 set -eu
 want=v2.1.7
@@ -223,8 +292,10 @@ root="$(go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
 bench="$(cd bench && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
 # The RocksDB module links layout L's shared code, and through it Pebble.
 rocks="$(cd bench/rocksdb && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
-if [ "$root" != "$want" ] || [ "$bench" != "$want" ] || [ "$rocks" != "$want" ]; then
-  echo "check:pebble-pin: Pebble is $root in the root module, $bench in bench and $rocks in bench/rocksdb, all must be $want" >&2
+# The Postgres module links the same code, through bench/spike.
+pg="$(cd bench/postgres && go list -m -json github.com/cockroachdb/pebble/v2 | jq -r "$version")"
+if [ "$root" != "$want" ] || [ "$bench" != "$want" ] || [ "$rocks" != "$want" ] || [ "$pg" != "$want" ]; then
+  echo "check:pebble-pin: Pebble is $root in the root module, $bench in bench, $rocks in bench/rocksdb and $pg in bench/postgres, all must be $want" >&2
   exit 1
 fi
 # The libraries that compress Pebble's blocks shape the bytes it writes as much as
@@ -237,16 +308,19 @@ mods() {
 rootmods="$(mods)" || exit 1
 benchmods="$(cd bench && mods)" || exit 1
 rocksmods="$(cd bench/rocksdb && mods)" || exit 1
+pgmods="$(cd bench/postgres && mods)" || exit 1
 version_in() { printf '%s\n' "$1" | awk -v m="$2" '$1 == m { print $2 }'; }
 for mod in github.com/golang/snappy github.com/klauspost/compress github.com/minio/minlz github.com/DataDog/zstd; do
   root="$(version_in "$rootmods" "$mod")"
   bench="$(version_in "$benchmods" "$mod")"
   rocks="$(version_in "$rocksmods" "$mod")"
-  if [ "$root" != "$bench" ] || [ "$root" != "$rocks" ]; then
+  pg="$(version_in "$pgmods" "$mod")"
+  if [ "$root" != "$bench" ] || [ "$root" != "$rocks" ] || [ "$root" != "$pg" ]; then
     root="${root:-absent}"
     bench="${bench:-absent}"
     rocks="${rocks:-absent}"
-    echo "check:pebble-pin: $mod is $root in the root module, $bench in bench and $rocks in bench/rocksdb, they must match" >&2
+    pg="${pg:-absent}"
+    echo "check:pebble-pin: $mod is $root in the root module, $bench in bench, $rocks in bench/rocksdb and $pg in bench/postgres, they must match" >&2
     exit 1
   fi
 done
@@ -406,7 +480,7 @@ depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "test:fast"]
 # shard and not part of ci, so check:ci-shards is unaffected.
 [tasks."check:static"]
 description = "Formatting, lint, spelling, the no-results check, the CI shard list and the secret scan, without tests"
-depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "spelling", "check:no-results", "check:ci-shards", "secrets"]
+depends = ["fmt:check", "lint", "bench:fmt:check", "bench:lint", "bench:postgres:fmt:check", "spelling", "check:no-results", "check:ci-shards", "secrets"]
 
 [tasks."test:fast"]
 description = "Both modules' tests without the race detector, the bench module with Pebble's invariant checks on"
@@ -461,19 +535,19 @@ depends = ["ci:static", "ci:bench", "ci:race", "ci:benchrace"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows, secrets and the collector configuration"
-depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:rocksdb:fmt:check", "bench:lint", "vuln", "bench:vuln", "lint:workflows", "secrets", "check:collector"]
+depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin", "purego", "check:ci-shards", "check:no-results", "bench:fmt:check", "bench:rocksdb:fmt:check", "bench:postgres:fmt:check", "bench:lint", "bench:postgres:lint", "vuln", "bench:vuln", "bench:postgres:vuln", "lint:workflows", "secrets", "check:collector"]
 
 [tasks."ci:bench"]
-description = "CI shard: the bench module's full tests and its cgo-free build"
-depends = ["bench:test", "bench:purego"]
+description = "CI shard: the bench module's full tests and its cgo-free build, and the Postgres module's"
+depends = ["bench:test", "bench:purego", "bench:postgres:test", "bench:postgres:purego"]
 
 [tasks."ci:race"]
 description = "CI shard: the root module's tests under the race detector"
 depends = ["test"]
 
 [tasks."ci:benchrace"]
-description = "CI shard: the bench module's trimmed tests under the race detector"
-depends = ["bench:test:race"]
+description = "CI shard: the bench module's trimmed tests under the race detector, and the Postgres module's"
+depends = ["bench:test:race", "bench:postgres:test:race"]
 
 [tasks."check:no-results"]
 description = "Fail if measurement output is tracked: numbers from a laptop or a VM are never published"
