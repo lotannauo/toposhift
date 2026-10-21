@@ -1,6 +1,7 @@
 package vmmodel
 
 import (
+	"container/heap"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -23,9 +24,10 @@ var (
 	// ErrUnregistered marks a record whose producer does not hold its subject in the
 	// registry.
 	ErrUnregistered = errors.New("vmmodel: the producer is not registered as a holder of the subject")
-	// ErrWindow marks an Observe whose TTL is not the window its producer is registered
-	// with: the registry and the stream disagree about how long a sample counts.
-	ErrWindow = errors.New("vmmodel: the TTL of the record is not its producer's registered window")
+	// ErrWindow marks an Observe whose TTL is not the one its producer is registered
+	// with: the window of a refreshing producer, none for a producer in watch mode. The
+	// registry and the stream disagree about how long a sample counts.
+	ErrWindow = errors.New("vmmodel: the TTL of the record is not its producer's registered one")
 	// ErrCoalesced marks a record that stands for a run of refreshes (a Through). The
 	// converter takes the every-sample stream, where each refresh is a record, and cannot
 	// turn a run into the samples a scraper would have written.
@@ -51,7 +53,7 @@ type Sample struct {
 	Series      uint32
 	TimestampMs int64
 	// Stale marks a staleness marker (StaleNaN), the end of the series at its
-	// timestamp [U] (b); its value is not 1.
+	// timestamp (assumption (b), verified); its value is not 1.
 	Stale bool
 }
 
@@ -65,12 +67,20 @@ type Options struct {
 	// older than it is an error ([ErrTooLate]), never a silent second sample. Zero is
 	// [DefaultReorderWindow]. It must be a whole number of milliseconds.
 	ReorderWindow time.Duration
-	// Emit receives samples in the order of the records that made them (by sequence
-	// number), at the end of each Write and of Close. The slice is reused after Emit
-	// returns. If it returns an error the converter is closed with it. Nil drops the
-	// samples, which leaves the counts.
+	// Until is the end of the period: a fact held by a producer in watch mode that has
+	// not been deleted by then is written at every scrape through this instant
+	// (inclusive). It is required when the registry has a producer in watch mode.
+	Until time.Time
+	// Emit receives samples at the end of each Write and of Close, and in chunks while a
+	// long-lived fact is written out. The slice is reused after Emit returns. If it
+	// returns an error the converter is closed with it. Nil drops the samples, which
+	// leaves the counts.
 	Emit func([]Sample) error
 }
+
+// emitChunk is the most samples held before Emit is called while a fact's scrapes are
+// written out.
+const emitChunk = 1 << 16
 
 // HourCount is the number of series whose first sample falls in one hour.
 type HourCount struct {
@@ -85,7 +95,15 @@ type Counts struct {
 	// Records, Observes and Deletes are what was read.
 	Records, Observes, Deletes uint64
 	// Samples are the samples of value 1 written and Markers the staleness markers.
+	// Samples include Scraped.
 	Samples, Markers uint64
+	// Scraped are the samples of value 1 that no record asked for: the scrapes at which
+	// a fact held by a producer in watch mode is written again between its assertion
+	// and its delete (or the end of the period). They are the cost of a metrics store
+	// holding state, and they are counted with the rest. Reasserted are the Observes
+	// of a series that was already being scraped, which write nothing: the scraper was
+	// writing the fact already.
+	Scraped, Reasserted uint64
 	// CollapsedObserves and CollapsedDeletes are the records dropped because a later one
 	// of the same series had the same millisecond (the later by sequence number is kept,
 	// whatever its kind).
@@ -133,10 +151,14 @@ type pend struct {
 //
 // The mapping is the series model's:
 //
-//   - an Observe at event time e writes one sample, value 1, at e truncated to the
-//     millisecond [U] (i);
+//   - an Observe of a refreshing producer at event time e writes one sample, value 1, at
+//     e truncated to the millisecond (assumption (i), verified);
+//   - an Observe of a producer in watch mode opens its series: a sample at e, and then
+//     one at every [Holder.Scrape] after it (the scrapes of an exporter that writes the
+//     fact again each time it is scraped) until the Delete, strictly before it, or the
+//     end of the period;
 //   - a Delete writes a staleness marker at its event time, as a Prometheus scraper does
-//     when an exporter stops exporting a deleted object [U] (b);
+//     when an exporter stops exporting a deleted object (assumption (b), verified);
 //   - a producer that goes silent writes nothing: its series ends when the window its
 //     queries name passes. Expiry is never a marker.
 //
@@ -144,12 +166,15 @@ type pend struct {
 // number (a Delete after an Observe leaves the marker, an Observe after a Delete the
 // sample), and the number dropped is counted. The Converter holds samples back for the
 // reorder window to know. Records must arrive in ascending sequence order, as an engine
-// is written.
+// is written. The records of a producer in watch mode are held for the window too, and
+// handled in event-time order (then sequence order), so that a delete that arrives
+// before the assertion it ends, in a stream whose arrival is out of order, still ends it.
 //
 // A Converter is not safe for concurrent use.
 type Converter struct {
 	reg      *Registry
 	windowMs int64
+	untilMs  int64
 	emit     func([]Sample) error
 
 	series []seriesKey
@@ -159,6 +184,12 @@ type Converter struct {
 	pending map[sampleKey]*pend
 	fifo    []*pend
 	head    int
+
+	// held are the records of producers in watch mode, until none can arrive before them
+	// in event time, and open the series being scraped, with the millisecond of the
+	// sample that opened each and the interval it is scraped at.
+	held watchHeap
+	open map[uint32]openSeries
 
 	lastSeq uint64
 	maxMs   int64
@@ -183,11 +214,18 @@ func NewConverter(o Options) (*Converter, error) {
 	if w < 0 || w%time.Millisecond != 0 {
 		return nil, fmt.Errorf("vmmodel: the reorder window %s is not a positive whole number of milliseconds", w)
 	}
-	return &Converter{
+	c := &Converter{
 		reg: o.Registry, windowMs: w.Milliseconds(), emit: o.Emit,
-		index: map[seriesKey]uint32{}, pending: map[sampleKey]*pend{},
+		index: map[seriesKey]uint32{}, pending: map[sampleKey]*pend{}, open: map[uint32]openSeries{},
 		digest: sha256.New(),
-	}, nil
+	}
+	if o.Registry.HasWatch() {
+		if o.Until.IsZero() {
+			return nil, errors.New("vmmodel: a registry with a producer in watch mode needs the end of the period (Options.Until)")
+		}
+		c.untilMs = o.Until.UnixMilli()
+	}
+	return c, nil
 }
 
 // Retain implements runner.Sink. It does nothing: the metrics store of the baseline
@@ -204,6 +242,9 @@ func (c *Converter) Write(batch []engine.Record) error {
 		if err := c.add(r); err != nil {
 			return c.fail(err)
 		}
+	}
+	if err := c.sweep(false); err != nil {
+		return c.fail(err)
 	}
 	c.release(false)
 	return c.flush()
@@ -227,8 +268,12 @@ func (c *Converter) add(r engine.Record) error {
 	}
 	switch r.Kind {
 	case lifecycle.Observe:
-		if r.TTL != h.Window {
-			return fmt.Errorf("%w: seq %d, producer %q has TTL %s, registered %s", ErrWindow, r.Seq, r.Producer, r.TTL, h.Window)
+		want := h.Window
+		if h.Watch() {
+			want = 0
+		}
+		if r.TTL != want {
+			return fmt.Errorf("%w: seq %d, producer %q has TTL %s, registered %s", ErrWindow, r.Seq, r.Producer, r.TTL, want)
 		}
 	case lifecycle.Delete:
 	default:
@@ -271,6 +316,17 @@ func (c *Converter) add(r engine.Record) error {
 	} else {
 		c.counts.Observes++
 	}
+	if h.Watch() {
+		heap.Push(&c.held, heldRecord{series: idx, ms: ms, seq: r.Seq, stale: stale, scrapeMs: h.Scrape.Milliseconds()})
+		return nil
+	}
+	c.queue(idx, ms, stale)
+	return nil
+}
+
+// queue holds a sample back until no record can collide with it. A sample of the same
+// series and millisecond that is still held is superseded: the later one wins.
+func (c *Converter) queue(idx uint32, ms int64, stale bool) {
 	sk := sampleKey{idx, ms}
 	if old, ok := c.pending[sk]; ok {
 		old.dead = true
@@ -283,7 +339,104 @@ func (c *Converter) add(r engine.Record) error {
 	p := &pend{series: idx, ms: ms, stale: stale}
 	c.pending[sk] = p
 	c.fifo = append(c.fifo, p)
+}
+
+// openSeries is a series of a producer in watch mode that is being scraped.
+type openSeries struct {
+	// startMs is the sample that opened it, and the scrapes follow at intervals of
+	// scrapeMs from it.
+	startMs, scrapeMs int64
+}
+
+// heldRecord is a record of a producer in watch mode, waiting to be handled in order.
+type heldRecord struct {
+	series   uint32
+	ms       int64
+	seq      uint64
+	stale    bool
+	scrapeMs int64
+}
+
+// watchHeap orders the held records by event millisecond and then sequence number.
+type watchHeap []heldRecord
+
+func (h watchHeap) Len() int { return len(h) }
+func (h watchHeap) Less(i, j int) bool {
+	if h[i].ms != h[j].ms {
+		return h[i].ms < h[j].ms
+	}
+	return h[i].seq < h[j].seq
+}
+func (h watchHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *watchHeap) Push(x any)   { *h = append(*h, x.(heldRecord)) }
+func (h *watchHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
+	return x
+}
+
+// sweep handles the held records of producers in watch mode that no record can precede
+// any more (all of them if final), in event-time order. An Observe of a series that is
+// not being scraped opens it, with a sample queued like any other; one of a series that
+// is changes nothing. A Delete writes the scrapes from the opening up to, not
+// including, its millisecond, and a marker queued at it, so that an Observe in the same
+// millisecond and a Delete collapse as two records of any series do.
+func (c *Converter) sweep(final bool) error {
+	for len(c.held) > 0 && (final || c.maxMs-c.held[0].ms >= c.windowMs) {
+		r := heap.Pop(&c.held).(heldRecord)
+		if r.stale {
+			if o, ok := c.open[r.series]; ok {
+				delete(c.open, r.series)
+				if err := c.scrapes(r.series, o, r.ms-1); err != nil {
+					return err
+				}
+			}
+			c.queue(r.series, r.ms, true)
+			continue
+		}
+		if _, ok := c.open[r.series]; ok {
+			c.counts.Reasserted++
+			continue
+		}
+		c.open[r.series] = openSeries{startMs: r.ms, scrapeMs: r.scrapeMs}
+		c.queue(r.series, r.ms, false)
+	}
 	return nil
+}
+
+// scrapes writes the samples of an open series after the one that opened it, at its
+// interval, up to last (inclusive). They are written at once, in order, outside the
+// held-back samples: no record of the series can collide with them.
+func (c *Converter) scrapes(idx uint32, o openSeries, last int64) error {
+	for ms := o.startMs + o.scrapeMs; ms <= last; ms += o.scrapeMs {
+		c.write(idx, ms, false)
+		c.counts.Scraped++
+		if len(c.out) >= emitChunk {
+			if err := c.flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// write puts a sample into the digest, the counts and the output.
+func (c *Converter) write(idx uint32, ms int64, stale bool) {
+	binary.BigEndian.PutUint32(c.buf[0:4], idx)
+	binary.BigEndian.PutUint64(c.buf[4:12], uint64(ms))
+	c.buf[12] = 0
+	if stale {
+		c.buf[12] = 1
+		c.counts.Markers++
+	} else {
+		c.counts.Samples++
+	}
+	c.digest.Write(c.buf[:])
+	if c.emit != nil {
+		c.out = append(c.out, Sample{Series: idx, TimestampMs: ms, Stale: stale})
+	}
 }
 
 // release writes the samples that no record can collide with any more, in the order of
@@ -300,19 +453,7 @@ func (c *Converter) release(final bool) {
 			continue
 		}
 		delete(c.pending, sampleKey{p.series, p.ms})
-		binary.BigEndian.PutUint32(c.buf[0:4], p.series)
-		binary.BigEndian.PutUint64(c.buf[4:12], uint64(p.ms))
-		c.buf[12] = 0
-		if p.stale {
-			c.buf[12] = 1
-			c.counts.Markers++
-		} else {
-			c.counts.Samples++
-		}
-		c.digest.Write(c.buf[:])
-		if c.emit != nil {
-			c.out = append(c.out, Sample{Series: p.series, TimestampMs: p.ms, Stale: p.stale})
-		}
+		c.write(p.series, p.ms, p.stale)
 	}
 	if c.head > 4096 && c.head > len(c.fifo)/2 {
 		c.fifo = append(c.fifo[:0], c.fifo[c.head:]...)
@@ -341,6 +482,22 @@ func (c *Converter) Close() error {
 	if c.closed != nil {
 		return c.closed
 	}
+	if err := c.sweep(true); err != nil {
+		return c.fail(err)
+	}
+	// What is still being scraped is scraped through the end of the period, in the order
+	// the series were opened.
+	idxs := make([]uint32, 0, len(c.open))
+	for idx := range c.open {
+		idxs = append(idxs, idx)
+	}
+	slices.Sort(idxs)
+	for _, idx := range idxs {
+		if err := c.scrapes(idx, c.open[idx], c.untilMs); err != nil {
+			return c.fail(err)
+		}
+	}
+	clear(c.open)
 	c.release(true)
 	if err := c.flush(); err != nil {
 		return err

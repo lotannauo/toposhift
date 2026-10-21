@@ -20,7 +20,7 @@ func storeOf(t *testing.T, recs []engine.Record) (*vmmodel.Store, uint64) {
 	t.Helper()
 	st := vmmodel.NewStore()
 	var c *vmmodel.Converter
-	c, err := vmmodel.NewConverter(vmmodel.Options{Registry: registry(t), Emit: func(ss []vmmodel.Sample) error { return st.Sink(c)(ss) }})
+	c, err := vmmodel.NewConverter(vmmodel.Options{Registry: registry(t), Until: t0.Add(2 * time.Hour), Emit: func(ss []vmmodel.Sample) error { return st.Sink(c)(ss) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func atWindow(t *testing.T, st *vmmodel.Store, sem vmmodel.Semantics, at time.Du
 }
 
 // The window of a term is (t-W, t]: a sample exactly W before t is out, one a millisecond
-// later is in, one at t is in, one a millisecond after t is not seen. [U] (j)
+// later is in, one at t is in, one a millisecond after t is not seen. (j)
 func TestEvaluateReadsTheWindowAsLeftOpenRightClosed(t *testing.T) {
 	const w = 3600 * time.Second
 	st, _ := storeOf(t, []engine.Record{placement(1, "k8s-cluster", lifecycle.Observe, w, 0)})
@@ -104,7 +104,7 @@ func TestEvaluateUsesEachProducersWindow(t *testing.T) {
 	}
 }
 
-// A Delete is a marker. Under the assumption that a window skips markers [U] (k) the
+// A Delete is a marker. Under the assumption that a window skips markers (k), which the server was found to do, the
 // series reads as present until its window ends; under the other, the last sample in the
 // window being a marker ends the answer.
 func TestEvaluateAndTheMarker(t *testing.T) {
@@ -159,7 +159,9 @@ func TestEvaluateSelectsOnEveryLabel(t *testing.T) {
 	// Another layer or another producer selects nothing.
 	wrong := append(vmquery.Expr{}, p.Expr...)
 	wrong[0].Layer = catalog.L3
-	wrong[1].Producer = "traces"
+	for i := 1; i < len(wrong); i++ {
+		wrong[i].Producer = "traces"
+	}
 	if rs, _ = vmquery.Evaluate(st, vmmodel.Semantics{}, wrong, p.At); len(rs) != 0 {
 		t.Errorf("%d results for a layer and a producer nothing was written with", len(rs))
 	}
@@ -191,8 +193,8 @@ func TestModelEngineRefusesWhatTheStoreCannotAnswer(t *testing.T) {
 	if ok, err := eng.Alive(node, at, sc); err != nil || ok {
 		t.Errorf("an entity nothing was written for is not alive: %v, %v", ok, err)
 	}
-	if ok, err := eng.Alive(podA, at, sc); ok || !errors.Is(err, vmquery.ErrNotModelled) || errors.Is(err, vmquery.ErrNotExpressible) {
-		t.Errorf("a pod's existence has only a producer that asserts once, so it is not modelled yet: %v, %v", ok, err)
+	if ok, err := eng.Alive(podA, at, sc); ok || err != nil {
+		t.Errorf("a pod nothing was written for is not alive, and asking is no refusal: %v, %v", ok, err)
 	}
 	// The snapshot the store was written through is the latest.
 	if got, err := eng.Neighbors(node, engine.Reverse, at, engine.Scope{Layer: catalog.L2, AsOf: last}); err != nil || len(got) != 1 {
@@ -232,5 +234,38 @@ func TestModelEngineRefusesWhatTheStoreCannotAnswer(t *testing.T) {
 	// runner.Ask puts the refusal through unchanged, for the reader to record as a row.
 	if _, err := runner.Ask(eng, runner.Query{Op: runner.OpWindow, Layer: catalog.L2, Dir: engine.Reverse, Fps: []identity.Fingerprint{node}, From: t0, To: at, AsOf: engine.Latest}); !errors.Is(err, vmquery.ErrNotExpressible) {
 		t.Errorf("Ask of a window: %v", err)
+	}
+}
+
+// A fact held by a producer in watch mode is read through its window like any other: it
+// is there from the assertion on, scraped every minute, and after the delete it is read
+// as present until the last scrape before the delete is a window old (a range function
+// does not see the marker), which is the read of a deleted fact; with a marker that ends
+// a window it is gone at the delete.
+func TestEvaluateAWatchFactAndItsDelete(t *testing.T) {
+	watch := func(seq uint64, kind lifecycle.Kind, at time.Duration) engine.Record {
+		return placement(seq, "k8sobjects", kind, 0, at)
+	}
+	st, _ := storeOf(t, []engine.Record{watch(1, lifecycle.Observe, 10*time.Second), watch(2, lifecycle.Delete, 1000*time.Second)})
+	// The scrapes are at 10, 70, ..., 970 s; the last is 970 s, and its window ends at 1,210 s.
+	for _, c := range []struct {
+		at   time.Duration
+		sem  vmmodel.Semantics
+		want int
+	}{
+		{10*time.Second - time.Millisecond, vmmodel.Semantics{}, 0},
+		{10 * time.Second, vmmodel.Semantics{}, 1},
+		{500 * time.Second, vmmodel.Semantics{}, 1},
+		{999*time.Second + 999*time.Millisecond, vmmodel.Semantics{}, 1},
+		{1000 * time.Second, vmmodel.Semantics{}, 1},
+		{1209*time.Second + 999*time.Millisecond, vmmodel.Semantics{}, 1},
+		{1210 * time.Second, vmmodel.Semantics{}, 0},
+		{999 * time.Second, vmmodel.Semantics{StaleVisible: true}, 1},
+		{1000 * time.Second, vmmodel.Semantics{StaleVisible: true}, 0},
+		{1100 * time.Second, vmmodel.Semantics{StaleVisible: true}, 0},
+	} {
+		if got := atWindow(t, st, c.sem, c.at); got != c.want {
+			t.Errorf("at %s with %+v: %d series, want %d", c.at, c.sem, got, c.want)
+		}
 	}
 }

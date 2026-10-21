@@ -13,14 +13,16 @@
 //	  or last_over_time(topo_edge{layer="L2",dst="k8s.node:...",producer="kubelet"}[300s])
 //
 // joined with or. A read at an instant is an instant query at time=t with nocache=1.
-// A question the store cannot express is refused with a [NotExpressibleError] that names
-// the row of the capability table it falls under; one it cannot be asked yet, because its
-// holders assert once, with a [NotModelledError].
+// Every holder has a window: a producer in watch mode is re-exported at a scrape interval
+// (see [vmmodel.Holder]) and read through the window of the heartbeat TTL factor times
+// it. A question the store cannot express is refused with a [NotExpressibleError] that
+// names the row of the capability table it falls under.
 //
 // The package also holds [Evaluate], a model of the server for these queries over a
 // [vmmodel.Store], so that the rewriting is checked against the reference without a
-// server. What it assumes of the server is marked [U]; see the assumptions listed in
-// package vmmodel.
+// server, and [Engine], which answers a plan's questions through any [Backend]: the
+// model, or the server over HTTP (package vmengine). What the model assumes of the server
+// is listed in package vmmodel, each with whether a server confirmed it.
 package vmquery
 
 import (
@@ -59,33 +61,6 @@ func (e *NotExpressibleError) Error() string {
 
 // Unwrap lets errors.Is find [ErrNotExpressible].
 func (e *NotExpressibleError) Unwrap() error { return ErrNotExpressible }
-
-// ErrNotModelled is wrapped by the error of a question that the model cannot write a query
-// for yet, because every producer that holds what it asks about asserts once and ends the
-// fact by an explicit delete (watch mode), so no window of the store reads it. It is not a
-// row of the capability table and not a loss: the store is not asked, and the question is
-// counted apart (see [NotModelledError.Label]). Use errors.As with [NotModelledError] for
-// the reason.
-var ErrNotModelled = errors.New("vmquery: not modelled yet")
-
-// NotModelledLabel is what a tally of the questions refused with [ErrNotModelled] is called.
-const NotModelledLabel = "not modelled yet: the holder asserts once and is not re-exported"
-
-// NotModelledError is the refusal of a question whose every holder is in watch mode.
-type NotModelledError struct {
-	Question string
-	Why      string
-}
-
-func (e *NotModelledError) Error() string {
-	return fmt.Sprintf("%s: %s: %s: %s", ErrNotModelled, NotModelledLabel, e.Question, e.Why)
-}
-
-// Unwrap lets errors.Is find [ErrNotModelled].
-func (e *NotModelledError) Unwrap() error { return ErrNotModelled }
-
-// Label is [NotModelledLabel].
-func (*NotModelledError) Label() string { return NotModelledLabel }
 
 // ErrNoRelation marks a read of an entity type no relation of the catalog touches in the
 // layer and direction: nothing could ever be returned, so there is no query to write.
@@ -186,7 +161,7 @@ type Request struct {
 }
 
 // Form returns the parameters of the request: the query, the time as Unix seconds to the
-// millisecond [U] (d), and nocache=1 [U] (f). The result cache would otherwise answer a
+// millisecond (assumption (d)), and nocache=1 (assumption (f): accepted, its effect on instant queries not observable). The result cache would otherwise answer a
 // repeated ask from memory, which no engine it is compared with does.
 func (r Request) Form() url.Values {
 	ms := r.At.UnixMilli()
@@ -215,10 +190,6 @@ func refuse(q runner.Query, capability, why string) error {
 	return &NotExpressibleError{Capability: capability, Question: q.Name(), Why: why}
 }
 
-func notModelled(q runner.Query, why string) error {
-	return &NotModelledError{Question: q.Name(), Why: why}
-}
-
 // Rewrite writes a read as a query for the store, or refuses it:
 //
 //   - a window (every stored record in [from, to)) has no query: the store does not keep
@@ -226,13 +197,11 @@ func notModelled(q runner.Query, why string) error {
 //   - a read as of a snapshot token other than the latest has no query: it has no time of
 //     ingestion to read as of;
 //
-// A read whose only holders are producers in watch mode (they assert once and delete
-// explicitly) is not modelled yet and returns a [NotModelledError]: it is counted apart and
-// is not a capability row.
-//
-// Otherwise, for each producer of the registry that refreshes and can hold what is asked
-// about (it holds a relation of the catalog that touches the entity in the layer and
-// direction, or the entity itself), it writes one term with that producer's window.
+// Otherwise, for each producer of the registry that can hold what is asked about (it
+// holds a relation of the catalog that touches the entity in the layer and direction, or
+// the entity itself), it writes one term with that producer's window. A producer in watch
+// mode is one of them: it is re-exported at its scrape interval and read through its
+// window like any other.
 func Rewrite(reg *vmmodel.Registry, q runner.Query) (Plan, error) {
 	if q.Op == runner.OpWindow {
 		return Plan{}, refuse(q, vmmodel.CapWindow, "a store of samples keeps no record of what was written, only the last sample in a window")
@@ -268,15 +237,7 @@ func Rewrite(reg *vmmodel.Registry, q runner.Query) (Plan, error) {
 			for _, r := range relationsTouching(fp.Type(), q.Layer, q.Dir) {
 				related = true
 				for _, h := range reg.EdgeHolders(r) {
-					// TEMPORARY: a watch-mode holder (for scheduled_on, the Kubernetes watch)
-					// is dropped here, so a pod's placement is read through the producers that
-					// refresh and the scheduler's own sample is ignored. The band covers the
-					// difference where the refreshing producers are there. This holds until
-					// the re-export model lands in PR 2, which gives such a fact the samples
-					// a scraper would write.
-					if !h.Watch() {
-						holders[h.Producer] = h.Window
-					}
+					holders[h.Producer] = h.Window
 				}
 			}
 		}
@@ -284,7 +245,7 @@ func Rewrite(reg *vmmodel.Registry, q runner.Query) (Plan, error) {
 			return Plan{}, fmt.Errorf("%w: %s in layer %s, direction %s", ErrNoRelation, q.Fps[0].Type(), q.Layer, q.Dir)
 		}
 		if len(holders) == 0 {
-			return Plan{}, notModelled(q, "every producer that holds these edges asserts them once and deletes them explicitly, so no window reads them")
+			return Plan{}, fmt.Errorf("%w: no producer of the registry holds a relation of %s in layer %s, direction %s", ErrNoRelation, q.Fps[0].Type(), q.Layer, q.Dir)
 		}
 		values = sortedUnique(values)
 		for _, h := range sortedHolders(holders) {
@@ -298,17 +259,11 @@ func Rewrite(reg *vmmodel.Registry, q runner.Query) (Plan, error) {
 			return Plan{}, fmt.Errorf("vmquery: %s asks about %d entities", q.Name(), len(q.Fps))
 		}
 		fp := q.Fps[0]
-		var windowed []vmmodel.Holder
-		for _, h := range reg.EntityHolders(fp.Type()) {
-			// TEMPORARY, as for the edges above: until the re-export model lands in PR 2.
-			if !h.Watch() {
-				windowed = append(windowed, h)
-			}
+		holders := reg.EntityHolders(fp.Type())
+		if len(holders) == 0 {
+			return Plan{}, fmt.Errorf("%w: no producer of the registry holds %s", ErrNoRelation, fp.Type())
 		}
-		if len(windowed) == 0 {
-			return Plan{}, notModelled(q, "every producer that holds this entity type asserts it once and deletes it explicitly, so no window reads it")
-		}
-		for _, h := range windowed {
+		for _, h := range holders {
 			p.Expr = append(p.Expr, Term{
 				Metric: vmmodel.MetricEntity, Layer: q.Layer, Type: fp.Type(), Label: vmmodel.LabelFP,
 				Values: []string{vmmodel.FPLabel(fp)}, Producer: h.Producer, Window: h.Window,

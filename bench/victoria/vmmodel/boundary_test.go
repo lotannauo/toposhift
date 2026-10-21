@@ -2,6 +2,7 @@ package vmmodel_test
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -125,145 +126,296 @@ func TestInBandAgainstBruteForce(t *testing.T) {
 
 // ---- classification ----
 
-func classWorld(t *testing.T) (*vmmodel.World, *vmmodel.Registry, identity.Fingerprint, identity.Fingerprint) {
+// worldOf folds records into a world, numbering them in the order given.
+func worldOf(t fataler, recs ...engine.Record) *vmmodel.World {
 	t.Helper()
-	reg := registry(t)
-	node := fixture.FP(catalog.K8sNode, 1)
-	host := fixture.FP(catalog.Host, 2)
-	podA, podB, podC := fixture.FP(catalog.K8sPod, 11), fixture.FP(catalog.K8sPod, 12), fixture.FP(catalog.K8sPod, 13)
-	hb := func(seq uint64, s engine.Subject, p lifecycle.Producer, ttl time.Duration, at time.Duration) engine.Record {
-		layer := catalog.L2
-		if s.Relation == catalog.RunsOn {
-			layer = catalog.L1
-		}
-		return engine.Record{Layer: layer, Subject: s, Producer: p, EventTime: t0.Add(at), Seq: seq, Kind: lifecycle.Observe, TTL: ttl}
-	}
-	h := 3600 * time.Second
-	// pod A is placed long ago and for a long time (refreshed every 15 min for 10 hours),
-	// pod B is placed at hour 8, and pod C was refreshed once, at hour 5.
-	var recs []engine.Record
-	seq := uint64(0)
-	add := func(r engine.Record) { seq++; r.Seq = seq; recs = append(recs, r) }
-	for at := time.Duration(0); at <= 10*h; at += 15 * time.Minute {
-		add(hb(0, engine.EdgeSubject(podA, node, catalog.ScheduledOn), "k8s-cluster", h, at))
-	}
-	for at := 8 * h; at <= 10*h; at += 15 * time.Minute {
-		add(hb(0, engine.EdgeSubject(podB, node, catalog.ScheduledOn), "k8s-cluster", h, at))
-	}
-	add(hb(0, engine.EdgeSubject(podC, node, catalog.ScheduledOn), "k8s-cluster", h, 5*h))
-	for at := time.Duration(0); at <= 10*h; at += time.Minute {
-		add(hb(0, engine.EntitySubject(node), "node-collector", 240*time.Second, at))
-		add(hb(0, engine.EdgeSubject(node, host, catalog.RunsOn), "node-collector", 240*time.Second, at))
-	}
-	// the records are in event-time order here, which is also arrival order
 	w := vmmodel.NewWorld()
-	if err := w.Write(sortBySeqKeepingTime(recs)); err != nil {
-		t.Fatal(err)
-	}
-	return w, reg, node, host
-}
-
-// sortBySeqKeepingTime renumbers the records in event-time order so Seq ascends.
-func sortBySeqKeepingTime(recs []engine.Record) []engine.Record {
-	out := make([]engine.Record, len(recs))
-	copy(out, recs)
-	engine.SortRecords(out)
+	out := slices.Clone(recs)
 	for i := range out {
 		out[i].Seq = uint64(i + 1)
 	}
-	return out
+	if err := w.Write(out); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+func edgeRec(pod, node identity.Fingerprint, p lifecycle.Producer, kind lifecycle.Kind, ttl, at time.Duration) engine.Record {
+	return engine.Record{Layer: catalog.L2, Subject: engine.EdgeSubject(pod, node, catalog.ScheduledOn), Producer: p, EventTime: t0.Add(at), Kind: kind, TTL: ttl}
+}
+
+func nodeRec(node identity.Fingerprint, kind lifecycle.Kind, ttl, at time.Duration) engine.Record {
+	return engine.Record{Layer: catalog.L2, Subject: engine.EntitySubject(node), Producer: "node-collector", EventTime: t0.Add(at), Kind: kind, TTL: ttl}
 }
 
 func query(op runner.Op, layer catalog.Layer, dir engine.Direction, at time.Duration, fps ...identity.Fingerprint) runner.Query {
 	return runner.Query{Group: "g", Op: op, Layer: layer, Dir: dir, Fps: fps, Age: "x", At: t0.Add(at), AsOf: engine.Latest}
 }
 
-func TestClassifyMarksInstantsNearAChange(t *testing.T) {
-	w, reg, node, _ := classWorld(t)
-	h := 3600 * time.Second
+const hour = 3600 * time.Second
+
+// The band is the slack and nothing else: a window does not widen it. A pod's placement
+// held by the pod collector (a window of an hour) exists from 0 to 11 hours, refreshed
+// every quarter of an hour for ten: an instant half an hour before its end is far from
+// any change, and the instants a millisecond either side of the start and the end are
+// the boundary.
+func TestClassifyIsBoundaryOnlyWithinTheSlackOfAChange(t *testing.T) {
+	node, podA := fixture.FP(catalog.K8sNode, 1), fixture.FP(catalog.K8sPod, 11)
+	var recs []engine.Record
+	for at := time.Duration(0); at <= 10*hour; at += 15 * time.Minute {
+		recs = append(recs, edgeRec(podA, node, "k8s-cluster", lifecycle.Observe, hour, at))
+	}
+	w := worldOf(t, recs...)
+	ms := time.Millisecond
 	cases := []struct {
 		name string
-		q    runner.Query
+		at   time.Duration
 		want bool
-		band time.Duration
 	}{
-		// Pod A's edge (3,600 s window) exists from 0 to 11 h. Pod B's starts at 8 h and
-		// pod C's is the single refresh at 5 h, existing from 5 h to 6 h.
-		{"reverse read of the node at 2 h: only A, far from its ends", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 2*h, node), false, h + time.Millisecond},
-		{"at 5 h: pod C's edge starts there", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 5*h, node), true, h + time.Millisecond},
-		{"at 5 h 30: C is alive and ends in half an hour, inside the band", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 5*h+30*time.Minute, node), true, h + time.Millisecond},
-		{"at 7 h: C ended an hour ago, B starts in an hour: neither is in the answer, A is far", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 7*h, node), false, h + time.Millisecond},
-		{"at 8 h 30: B started half an hour ago", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 8*h+30*time.Minute, node), true, h + time.Millisecond},
-		{"at 10 h 30: A ends in half an hour", query(runner.OpNeighbors, catalog.L2, engine.Reverse, 10*h+30*time.Minute, node), true, h + time.Millisecond},
-		{"a batch is the union of its entities", query(runner.OpBatch, catalog.L2, engine.Reverse, 2*h, node, node), false, h + time.Millisecond},
-		// The node exists from 0 to 10 h + 4 min; its band is 240 s.
-		{"alive at 5 h: far from its ends", query(runner.OpAlive, catalog.L2, 0, 5*h, node), false, 240*time.Second + time.Millisecond},
-		{"alive at 10 h: it ends in four minutes, at the edge of the band", query(runner.OpAlive, catalog.L2, 0, 10*h, node), true, 240*time.Second + time.Millisecond},
-		{"alive an hour after the end: long ended", query(runner.OpAlive, catalog.L2, 0, 11*h+10*time.Minute, node), false, 240*time.Second + time.Millisecond},
-		{"alive just after its start", query(runner.OpAlive, catalog.L2, 0, 3*time.Second, node), true, 240*time.Second + time.Millisecond},
+		{"at 2 h: far from both ends", 2 * hour, false},
+		{"at 10 h 30: the window is still open for half an hour, and that is no reason", 10*hour + 30*time.Minute, false},
+		{"the start itself", 0, true},
+		{"a millisecond before the start: the start is the right end of the band", -ms, true},
+		{"two milliseconds before the start", -2 * ms, false},
+		{"a millisecond after the start: the start is the left end, excluded", ms, false},
+		{"a millisecond before the end", 11*hour - ms, true},
+		{"two milliseconds before the end", 11*hour - 2*ms, false},
+		{"the end itself", 11 * hour, true},
+		{"a millisecond after the end", 11*hour + ms, false},
 	}
 	for _, c := range cases {
-		got, err := w.Classify(reg, c.q, nil)
+		got, err := w.Classify(w, query(runner.OpNeighbors, catalog.L2, engine.Reverse, c.at, node))
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
-		if got.Boundary != c.want || got.Band != c.band {
-			t.Errorf("%s: class %+v, want boundary %v band %s", c.name, got, c.want, c.band)
+		if got.Boundary() != c.want || (c.want && got.Kind != vmmodel.Boundary) || (!c.want && got.Kind != vmmodel.Compared) {
+			t.Errorf("%s: class %+v, want boundary %v", c.name, got, c.want)
+		}
+	}
+	// A batch is the union of its entities, and a repeat adds nothing.
+	got, err := w.Classify(w, query(runner.OpBatch, catalog.L2, engine.Reverse, 2*hour, node, node))
+	if err != nil || got.Boundary() || got.Subjects != 1 {
+		t.Errorf("batch: %+v, %v", got, err)
+	}
+}
+
+// An existence read involves the entity whether or not it is alive.
+func TestClassifyAnExistenceRead(t *testing.T) {
+	node := fixture.FP(catalog.K8sNode, 1)
+	var recs []engine.Record
+	for at := time.Duration(0); at <= 10*hour; at += time.Minute {
+		recs = append(recs, nodeRec(node, lifecycle.Observe, 240*time.Second, at))
+	}
+	w := worldOf(t, recs...)
+	end := 10*hour + 240*time.Second
+	for _, c := range []struct {
+		name string
+		at   time.Duration
+		want bool
+	}{
+		{"alive at 5 h", 5 * hour, false},
+		{"alive at 10 h: four minutes from its end", 10 * hour, false},
+		{"its end", end, true},
+		{"an hour after the end: dead, far from a change", end + hour, false},
+		{"its start", 0, true},
+		{"just after its start", 3 * time.Second, false},
+	} {
+		got, err := w.Classify(w, query(runner.OpAlive, catalog.L2, 0, c.at, node))
+		if err != nil || got.Boundary() != c.want || got.Subjects != 1 {
+			t.Errorf("%s: %+v, %v", c.name, got, err)
 		}
 	}
 }
 
-// A subject the store returned that the reference does not have is involved too: an edge
-// that ended an hour ago is not in the answer, but if the store returned it, the instant
-// is a boundary, and the band is that of the longest window among all the subjects.
-func TestClassifyUsesTheSubjectsTheStoreReturned(t *testing.T) {
-	w, reg, node, _ := classWorld(t)
-	h := 3600 * time.Second
-	q := query(runner.OpNeighbors, catalog.L2, engine.Reverse, 7*h, node)
-	pre, err := w.Classify(reg, q, nil)
-	if err != nil || pre.Boundary {
-		t.Fatalf("from the reference alone: %+v, %v", pre, err)
+// The reference's stream may end an interval earlier than the store's, and may open a gap
+// in the middle of one (the coalescer, a refresh that arrived late): an instant where the
+// store's stream has the subject and the reference's does not is a boundary, however far
+// from a change, and the store may return that subject.
+func TestClassifyTheCoalescedEndGap(t *testing.T) {
+	node, podA := fixture.FP(catalog.K8sNode, 1), fixture.FP(catalog.K8sPod, 11)
+	ref := worldOf(t, edgeRec(podA, node, "k8s-cluster", lifecycle.Observe, hour, 0)) // [0, 1 h)
+	held := worldOf(t,
+		edgeRec(podA, node, "k8s-cluster", lifecycle.Observe, hour, 0),
+		edgeRec(podA, node, "k8s-cluster", lifecycle.Observe, hour, 15*time.Minute), // [0, 1 h 15)
+	)
+	for _, c := range []struct {
+		name string
+		at   time.Duration
+		want bool
+	}{
+		{"both alive", 30 * time.Minute, false},
+		{"in the gap: only the store's stream has it", 65 * time.Minute, true},
+		{"both dead", 2 * hour, false},
+	} {
+		got, err := ref.Classify(held, query(runner.OpNeighbors, catalog.L2, engine.Reverse, c.at, node))
+		if err != nil || got.Boundary() != c.want {
+			t.Errorf("%s: %+v, %v", c.name, got, err)
+		}
+		// With one view there is no gap.
+		if one, err := ref.Classify(ref, query(runner.OpNeighbors, catalog.L2, engine.Reverse, c.at, node)); err != nil || one.Boundary() {
+			t.Errorf("%s with one view: %+v, %v", c.name, one, err)
+		}
 	}
-	podC := fixture.FP(catalog.K8sPod, 13)
-	returned := vmmodel.NeighborSubjects(node, engine.Reverse, []engine.Neighbor{{Peer: podC, Relation: catalog.ScheduledOn}})
-	// C's interval ended at 6 h, which is exactly t-B on the left: outside. Move the read
-	// to just inside the band.
-	q2 := query(runner.OpNeighbors, catalog.L2, engine.Reverse, 6*h+59*time.Minute, node)
-	got, err := w.Classify(reg, q2, returned)
-	if err != nil || !got.Boundary {
-		t.Errorf("with the returned edge: %+v, %v", got, err)
+	// The same through an existence read of an entity.
+	a := worldOf(t, nodeRec(node, lifecycle.Observe, 240*time.Second, 0))
+	b := worldOf(t, nodeRec(node, lifecycle.Observe, 240*time.Second, 0), nodeRec(node, lifecycle.Observe, 240*time.Second, 120*time.Second))
+	if got, err := a.Classify(b, query(runner.OpAlive, catalog.L2, 0, 5*time.Minute, node)); err != nil || !got.Boundary() {
+		t.Errorf("alive in the gap: %+v, %v", got, err)
 	}
-	if got.Subjects < 2 {
-		t.Errorf("involved %d subjects", got.Subjects)
+}
+
+// Against a brute force: the instant is a boundary exactly when existence changes in
+// either view within a millisecond of it, or the store's view has the subject alive and
+// the reference's does not. Intervals are on whole milliseconds, made of refreshes that
+// overlap and touch, so that merging them is exercised too.
+func TestClassifyAgainstBruteForce(t *testing.T) {
+	node := fixture.FP(catalog.K8sNode, 1)
+	rapid.Check(t, func(rt *rapid.T) {
+		draw := func(name string) []engine.Record {
+			n := rapid.IntRange(0, 4).Draw(rt, name+" refreshes")
+			var recs []engine.Record
+			for i := 0; i < n; i++ {
+				at := time.Duration(rapid.IntRange(0, 40).Draw(rt, name+" at")) * time.Millisecond
+				ttl := time.Duration(rapid.IntRange(1, 15).Draw(rt, name+" ttl")) * time.Millisecond
+				recs = append(recs, engine.Record{Layer: catalog.L2, Subject: engine.EntitySubject(node), Producer: "node-collector", EventTime: t0.Add(at), Kind: lifecycle.Observe, TTL: ttl})
+			}
+			return recs
+		}
+		refRecs := draw("ref")
+		// The store's view holds the reference's records and may have more, which can only
+		// lengthen existence, as the coalescer's streams are related.
+		held := vmmodel.NewWorld()
+		extra := append(slices.Clone(refRecs), draw("store")...)
+		for i := range extra {
+			extra[i].Seq = uint64(i + 1)
+		}
+		if err := held.Write(extra); err != nil {
+			rt.Fatal(err)
+		}
+		ref := worldOf(rt, refRecs...)
+		at := time.Duration(rapid.IntRange(-2, 60).Draw(rt, "t")) * time.Millisecond
+		s := engine.EntitySubject(node)
+		alive := func(w *vmmodel.World, x time.Duration) bool {
+			ok, err := w.AliveAt(s, t0.Add(x))
+			if err != nil {
+				rt.Fatal(err)
+			}
+			return ok
+		}
+		want := alive(held, at) && !alive(ref, at)
+		for _, x := range []time.Duration{at, at + time.Millisecond} {
+			want = want || alive(ref, x) != alive(ref, x-time.Millisecond) || alive(held, x) != alive(held, x-time.Millisecond)
+		}
+		got, err := ref.Classify(held, query(runner.OpAlive, catalog.L2, 0, at, node))
+		if err != nil {
+			rt.Fatal(err)
+		}
+		if got.Boundary() != want {
+			rt.Fatalf("t=%s ref %v store %v: boundary %v, brute force %v", at, refRecs, extra, got.Boundary(), want)
+		}
+	})
+}
+
+func neighbor(pod identity.Fingerprint) []engine.Neighbor {
+	return []engine.Neighbor{{Peer: pod, Relation: catalog.ScheduledOn}}
+}
+
+// A subject the store returned that the reference does not have is a read of a deleted
+// fact only if a producer deleted it at most its window ago and nothing else differs.
+func TestClassifyAnswerReadsADeletedFact(t *testing.T) {
+	reg := registry(t)
+	node, podA, podB := fixture.FP(catalog.K8sNode, 1), fixture.FP(catalog.K8sPod, 11), fixture.FP(catalog.K8sPod, 12)
+	// The kubelet confirmed pod A's placement at 0 with a TTL of 300 s and withdrew it at
+	// 100 s. Pod B's was never withdrawn (and is alive until 3,600 s by the pod collector).
+	w := worldOf(t,
+		edgeRec(podA, node, "kubelet", lifecycle.Observe, 300*time.Second, 0),
+		edgeRec(podA, node, "kubelet", lifecycle.Delete, 0, 100*time.Second),
+		edgeRec(podB, node, "k8s-cluster", lifecycle.Observe, hour, 0),
+	)
+	a := vmmodel.NeighborSubjects(node, engine.Reverse, neighbor(podA))
+	b := vmmodel.NeighborSubjects(node, engine.Reverse, neighbor(podB))
+	both := slices.Concat(a, b)
+	sem := vmmodel.Semantics{}
+	at := func(d time.Duration) runner.Query {
+		return query(runner.OpNeighbors, catalog.L2, engine.Reverse, d, node)
 	}
-	without, err := w.Classify(reg, q2, nil)
-	if err != nil || without.Boundary {
-		t.Errorf("without it: %+v, %v", without, err)
+	for _, c := range []struct {
+		name     string
+		q        runner.Query
+		returned []engine.Subject
+		sem      vmmodel.Semantics
+		want     vmmodel.Kind
+	}{
+		{"the deleted edge, 50 s after the delete, with pod B", at(150 * time.Second), both, sem, vmmodel.ReadsDeletedFact},
+		{"the deleted edge without the live one: a subject of the reference is missing", at(150 * time.Second), a, sem, vmmodel.Compared},
+		{"only the live one: the reference's answer", at(150 * time.Second), b, sem, vmmodel.Compared},
+		{"the deleted edge just inside the window (299 s after)", at(399 * time.Second), both, sem, vmmodel.ReadsDeletedFact},
+		{"the deleted edge a full window after: nothing explains it", at(400 * time.Second), both, sem, vmmodel.Compared},
+		{"the deleted edge, but markers end a window: nothing explains it", at(150 * time.Second), both, vmmodel.Semantics{StaleVisible: true}, vmmodel.Compared},
+		{"an edge that was never deleted, returned before it exists", at(-time.Hour), b, sem, vmmodel.Compared},
+		{"at the delete itself, which is a boundary", at(100 * time.Second), both, sem, vmmodel.Boundary},
+	} {
+		got, err := w.ClassifyAnswer(reg, w, c.sem, c.q, c.returned)
+		if err != nil || got.Kind != c.want {
+			t.Errorf("%s: %+v, %v, want %s", c.name, got, err, c.want)
+		}
 	}
-	// A returned subject that is nowhere near a change leaves the query as it was.
-	far := vmmodel.NeighborSubjects(node, engine.Reverse, []engine.Neighbor{{Peer: fixture.FP(catalog.K8sPod, 11), Relation: catalog.ScheduledOn}})
-	got, err = w.Classify(reg, query(runner.OpNeighbors, catalog.L2, engine.Reverse, 2*h, node), far)
-	if err != nil || got.Boundary || got.Subjects != 1 {
-		t.Errorf("a far subject: %+v, %v", got, err)
+
+	// An existence read: the entity returned alive after its producer withdrew it.
+	n := worldOf(t, nodeRec(node, lifecycle.Observe, 240*time.Second, 0), nodeRec(node, lifecycle.Delete, 0, 100*time.Second))
+	ent := []engine.Subject{engine.EntitySubject(node)}
+	if got, err := n.ClassifyAnswer(reg, n, sem, query(runner.OpAlive, catalog.L2, 0, 150*time.Second, node), ent); err != nil || got.Kind != vmmodel.ReadsDeletedFact {
+		t.Errorf("alive after the withdrawal: %+v, %v", got, err)
+	}
+	if got, err := n.ClassifyAnswer(reg, n, sem, query(runner.OpAlive, catalog.L2, 0, 150*time.Second, node), nil); err != nil || got.Kind != vmmodel.Compared {
+		t.Errorf("not alive, as the reference says: %+v, %v", got, err)
+	}
+	if got, err := n.ClassifyAnswer(reg, n, sem, query(runner.OpAlive, catalog.L2, 0, 400*time.Second, node), ent); err != nil || got.Kind != vmmodel.Compared {
+		t.Errorf("alive a window after the withdrawal: %+v, %v", got, err)
 	}
 }
 
 func TestClassifyRefusesWhatIsNotAnInstantReadOfTheLatest(t *testing.T) {
-	w, reg, node, _ := classWorld(t)
+	node := fixture.FP(catalog.K8sNode, 1)
+	w := worldOf(t, nodeRec(node, lifecycle.Observe, time.Minute, 0))
 	old := query(runner.OpNeighbors, catalog.L2, engine.Reverse, time.Hour, node)
 	old.AsOf = 5
 	win := query(runner.OpWindow, catalog.L2, engine.Reverse, time.Hour, node)
 	for name, q := range map[string]runner.Query{"an old token": old, "a window": win} {
-		if _, err := w.Classify(reg, q, nil); !errors.Is(err, vmmodel.ErrUnclassifiable) {
+		if _, err := w.Classify(w, q); !errors.Is(err, vmmodel.ErrUnclassifiable) {
 			t.Errorf("%s: err = %v", name, err)
+		}
+		if _, err := w.ClassifyAnswer(registry(t), w, vmmodel.Semantics{}, q, nil); !errors.Is(err, vmmodel.ErrUnclassifiable) {
+			t.Errorf("%s: ClassifyAnswer err = %v", name, err)
 		}
 	}
 }
 
-func TestReferenceSubjectsOfAnExistenceReadIsTheEntityWhetherOrNotItIsAlive(t *testing.T) {
-	w, _, node, _ := classWorld(t)
-	got, err := w.ReferenceSubjects(query(runner.OpAlive, catalog.L2, 0, 20*3600*time.Second, node))
-	if err != nil || len(got) != 1 || got[0] != engine.EntitySubject(node) {
-		t.Errorf("subjects %v, %v", got, err)
+func TestAnswerIsTheReferencesAliveSubjects(t *testing.T) {
+	node, podA, podB := fixture.FP(catalog.K8sNode, 1), fixture.FP(catalog.K8sPod, 11), fixture.FP(catalog.K8sPod, 12)
+	w := worldOf(t,
+		edgeRec(podA, node, "k8s-cluster", lifecycle.Observe, hour, 0),
+		edgeRec(podB, node, "k8s-cluster", lifecycle.Observe, hour, 2*hour),
+		nodeRec(node, lifecycle.Observe, time.Minute, 0),
+	)
+	reverse := func(at time.Duration) runner.Query {
+		return query(runner.OpNeighbors, catalog.L2, engine.Reverse, at, node)
+	}
+	for _, c := range []struct {
+		name string
+		q    runner.Query
+		want []engine.Subject
+	}{
+		{"the edge that is alive", reverse(30 * time.Minute), vmmodel.NeighborSubjects(node, engine.Reverse, neighbor(podA))},
+		{"nothing between the two", reverse(90 * time.Minute), nil},
+		{"the later one", reverse(2*hour + time.Minute), vmmodel.NeighborSubjects(node, engine.Reverse, neighbor(podB))},
+		{"a batch with a repeat is a set", query(runner.OpBatch, catalog.L2, engine.Reverse, 30*time.Minute, node, node), vmmodel.NeighborSubjects(node, engine.Reverse, neighbor(podA))},
+		{"an entity that is alive", query(runner.OpAlive, catalog.L2, 0, 30*time.Second, node), []engine.Subject{engine.EntitySubject(node)}},
+		{"an entity that is not", query(runner.OpAlive, catalog.L2, 0, time.Hour, node), nil},
+	} {
+		got, err := w.Answer(c.q)
+		if err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("%s: %v, %v, want %v", c.name, got, err, c.want)
+		}
 	}
 }

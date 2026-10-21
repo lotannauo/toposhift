@@ -105,14 +105,14 @@ func (st *Store) At(i int) Series { return st.series[i] }
 type Semantics struct {
 	// StaleVisible says a staleness marker is the last sample of a window when it is the
 	// last in it, so that a range function over the window reports nothing. The default,
-	// false, is the assumption (k) of the package documentation [U]: the function skips
+	// false, is the assumption (k) of the package documentation, verified against the server: the function skips
 	// markers, and a series ended by a Delete reads as present until its window ends.
 	StaleVisible bool
 }
 
 // Last returns whether the series has a sample in (after, upTo] (in milliseconds) that a
 // window reads: the last one there, a marker being skipped or ending the answer
-// according to the semantics. This is assumption (j) [U]: the window excludes its left
+// according to the semantics. This is assumption (j), verified against the server to the millisecond: the window excludes its left
 // end and includes its right end.
 func (st *Store) Last(i int, after, upTo int64, sem Semantics) bool {
 	ps := st.points[i]

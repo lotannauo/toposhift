@@ -52,9 +52,9 @@ func mustRewrite(t *testing.T, query runner.Query) vmquery.Plan {
 	return p
 }
 
-// Each family is one term per producer that refreshes and can hold what is asked, with
-// that producer's own window, joined with or, with the entity on the end the direction
-// names. The watch-mode producers have no term.
+// Each family is one term per producer that can hold what is asked, with that producer's
+// own window, joined with or, with the entity on the end the direction names. A producer
+// in watch mode is one of them, read through the window of its scrape interval (240 s).
 func TestRewriteWritesOneTermPerProducerWithItsOwnWindow(t *testing.T) {
 	cases := []struct {
 		name string
@@ -64,12 +64,22 @@ func TestRewriteWritesOneTermPerProducerWithItsOwnWindow(t *testing.T) {
 		{
 			"node<- (pods placed on a node)", q(runner.OpNeighbors, catalog.L2, engine.Reverse, t0, node),
 			`last_over_time(topo_edge{layer="L2",dst="k8s.node:` + nodeHex + `",producer="k8s-cluster"}[3600s])` +
+				` or last_over_time(topo_edge{layer="L2",dst="k8s.node:` + nodeHex + `",producer="k8sobjects"}[240s])` +
 				` or last_over_time(topo_edge{layer="L2",dst="k8s.node:` + nodeHex + `",producer="kubelet"}[300s])`,
 		},
 		{
 			"pod-> (the node a pod is on)", q(runner.OpNeighbors, catalog.L2, engine.Forward, t0, fixture.FP(catalog.K8sPod, 1)),
 			`last_over_time(topo_edge{layer="L2",src="k8s.pod:01000000000000000000000000000000",producer="k8s-cluster"}[3600s])` +
+				` or last_over_time(topo_edge{layer="L2",src="k8s.pod:01000000000000000000000000000000",producer="k8sobjects"}[240s])` +
 				` or last_over_time(topo_edge{layer="L2",src="k8s.pod:01000000000000000000000000000000",producer="kubelet"}[300s])`,
+		},
+		{
+			"service<- (the instances of a service): only the watch holds it", q(runner.OpNeighbors, catalog.L2, engine.Reverse, t0, svc),
+			`last_over_time(topo_edge{layer="L2",dst="service:` + svcHex + `",producer="k8sobjects"}[240s])`,
+		},
+		{
+			"pod exists: only the watch holds it", q(runner.OpAlive, catalog.L2, 0, t0, fixture.FP(catalog.K8sPod, 1)),
+			`last_over_time(topo_entity{layer="L2",type="k8s.pod",fp="01000000000000000000000000000000",producer="k8sobjects"}[240s])`,
 		},
 		{
 			"host<- (nodes on a host)", q(runner.OpNeighbors, catalog.L1, engine.Reverse, t0, host),
@@ -136,6 +146,7 @@ func TestBatchQuery(t *testing.T) {
 	a, b := fixture.FP(catalog.K8sNode, 0x02), fixture.FP(catalog.K8sNode, 0x01)
 	p := mustRewrite(t, q(runner.OpBatch, catalog.L2, engine.Reverse, t0, a, b, a))
 	want := `last_over_time(topo_edge{layer="L2",dst=~"k8s\\.node:01000000000000000000000000000000|k8s\\.node:02000000000000000000000000000000",producer="k8s-cluster"}[3600s])` +
+		` or last_over_time(topo_edge{layer="L2",dst=~"k8s\\.node:01000000000000000000000000000000|k8s\\.node:02000000000000000000000000000000",producer="k8sobjects"}[240s])` +
 		` or last_over_time(topo_edge{layer="L2",dst=~"k8s\\.node:01000000000000000000000000000000|k8s\\.node:02000000000000000000000000000000",producer="kubelet"}[300s])`
 	if got := p.Expr.String(); got != want {
 		t.Errorf("\n got %s\nwant %s", got, want)
@@ -235,31 +246,32 @@ func TestRewriteRefusesWhatIsMalformed(t *testing.T) {
 	}
 }
 
-// A question whose every holder asserts once and deletes explicitly is not modelled yet:
-// it is neither a row of the capability table nor a loss, and it is told apart from both.
-func TestAQuestionWhoseHoldersAssertOnceIsNotModelledYet(t *testing.T) {
-	pod := fixture.FP(catalog.K8sPod, 1)
+// A producer in watch mode asserts once, and what a scraper writes of it is read through
+// the window of its scrape interval: no question is left unmodelled for want of a
+// window, and no refusal but the capability rows exists.
+func TestEveryExpressibleQuestionHasATermPerHolder(t *testing.T) {
+	reg := registry(t)
 	cases := map[string]runner.Query{
 		"the service instances of a service": q(runner.OpNeighbors, catalog.L2, engine.Reverse, t0, svc),
 		"the same, batched":                  q(runner.OpBatch, catalog.L2, engine.Reverse, t0, svc, svc),
-		"the existence of a pod":             q(runner.OpAlive, catalog.L2, 0, t0, pod),
+		"the existence of a pod":             q(runner.OpAlive, catalog.L2, 0, t0, fixture.FP(catalog.K8sPod, 1)),
+		"the containers of a pod":            q(runner.OpNeighbors, catalog.L2, engine.Reverse, t0, fixture.FP(catalog.K8sPod, 1)),
+		"the rack of a host":                 q(runner.OpNeighbors, catalog.L1, engine.Forward, t0, host),
 	}
 	for name, c := range cases {
-		_, err := vmquery.Rewrite(registry(t), c)
-		var nm *vmquery.NotModelledError
-		if !errors.Is(err, vmquery.ErrNotModelled) || !errors.As(err, &nm) {
-			t.Errorf("%s: err = %v", name, err)
+		p, err := vmquery.Rewrite(reg, c)
+		if err != nil || len(p.Expr) == 0 {
+			t.Errorf("%s: %v, %v", name, p.Expr, err)
 			continue
 		}
-		if errors.Is(err, vmquery.ErrNotExpressible) {
-			t.Errorf("%s: a question that is not modelled is a capability row", name)
-		}
-		if nm.Label() != "not modelled yet: the holder asserts once and is not re-exported" || !strings.Contains(err.Error(), nm.Label()) {
-			t.Errorf("%s: label %q, message %v", name, nm.Label(), err)
+		for _, term := range p.Expr {
+			if h, ok := reg.Window(term.Producer); !ok || h != term.Window || term.Window <= 0 {
+				t.Errorf("%s: term %s has window %s, the registry's is %s", name, term, term.Window, h)
+			}
 		}
 	}
-	// A capability refusal is not that.
-	if _, err := vmquery.Rewrite(registry(t), q(runner.OpWindow, catalog.L2, engine.Reverse, t0, svc)); errors.Is(err, vmquery.ErrNotModelled) {
-		t.Error("a window is a capability row")
+	// The one refusal that is not a capability row is a read nothing in the catalog answers.
+	if _, err := vmquery.Rewrite(reg, q(runner.OpNeighbors, catalog.L0, engine.Reverse, t0, node)); !errors.Is(err, vmquery.ErrNoRelation) || errors.Is(err, vmquery.ErrNotExpressible) {
+		t.Errorf("err = %v", err)
 	}
 }

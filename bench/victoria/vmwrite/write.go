@@ -1,7 +1,7 @@
 // Package vmwrite encodes samples as Prometheus remote-write requests, by hand.
 //
 // A request is a WriteRequest protobuf message, compressed with snappy's block format
-// (not its framed stream format), posted to the store's remote-write endpoint [U] (a).
+// (not its framed stream format), posted to the store's remote-write endpoint (assumption (a), verified).
 // Only the fields a store needs are written:
 //
 //	WriteRequest { repeated TimeSeries timeseries = 1; }
@@ -11,7 +11,7 @@
 //
 // The labels of a series are written sorted by name, as a remote-write receiver may
 // require. A staleness marker is the float whose bits are StaleNaN (0x7ff0000000000002),
-// the value Prometheus writes when a series ends [U] (b).
+// the value Prometheus writes when a series ends (assumption (b), verified).
 //
 // The package builds the bytes and sends nothing. It knows no server: the address, the
 // retry and the pacing are the caller's.
@@ -29,7 +29,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/victoria/vmmodel"
 )
 
-// Path is the remote-write endpoint [U] (a), and the headers a request carries.
+// Path is the remote-write endpoint (assumption (a), verified), and the headers a request carries.
 const (
 	Path            = "/api/v1/write"
 	ContentType     = "application/x-protobuf"

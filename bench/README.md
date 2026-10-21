@@ -60,23 +60,32 @@ The metrics-store baseline, `victoria/`, is a module of its own as well and shar
 with the Postgres one (pure Go: build and test it with `CGO_ENABLED=0`). It asks what a
 PromQL-compatible metrics store (VictoriaMetrics single-node) holds and answers when the
 spike's streams are written to it as samples, the way kube-state-metrics' placement series
-are, and says what it cannot answer. Nothing in it needs a server, an image or a new third-party
-module yet. `victoria/vmmodel` is the series model (`topo_entity`, `topo_edge`), the
-converter from the every-sample stream (the generator with `CoalesceRuns` off) to samples
-and staleness markers with its deterministic counts, the registered table of producers and
-the window each is read with, the reference's existence intervals and the classification of
-an instant near a change as a boundary instant (counted, never compared), the capability
-table (a question the store cannot express is a row there, never a loss and never timed;
-a question whose only holder asserts once is tallied apart as not modelled yet),
-and the check that the coalesced and the every-sample stream describe the same existence.
-`victoria/vmwrite` encodes remote-write requests by hand, `victoria/vmquery` rewrites the
-spike's reads as instant queries with one term per producer, reads the answers as an
-engine returns them and has a model of the server for those queries, against which a
-plan's answers are checked without a server. Everything it says about the server's own
-behaviour is marked as an unverified assumption in `vmmodel`'s documentation. Run its tests
-with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`; `mise run bench:victoria:test`,
-`bench:victoria:test:race`, `bench:victoria:lint`, `bench:victoria:vuln` and
-`bench:victoria:purego` are its tasks, in the CI shards.
+are, and says what it cannot answer. `victoria/vmmodel` is the series model (`topo_entity`,
+`topo_edge`), the converter from the every-sample stream (the generator with `CoalesceRuns`
+off) to samples and staleness markers with its deterministic counts (a fact held by a
+producer that asserts once, such as the Kubernetes watch, is written again at a registered
+scrape interval until its delete, as an exporter would, and those samples are counted), the
+registered table of producers and the window each is read with, the reference's existence
+intervals and the sorting of an instant into a boundary instant (within a millisecond of a
+change, or in the gap the coalescer leaves), a read of a deleted fact, or one that is
+compared, the capability table (a question the store cannot express is a row there, never
+a loss and never timed), and the check that the coalesced and the every-sample stream
+describe the same existence. `victoria/vmwrite` encodes remote-write requests by hand,
+`victoria/vmquery` rewrites the spike's reads as instant queries with one term per
+producer and reads the answers as an engine returns them, with a model of the server for
+those queries, and `victoria/vmgate` is the first gate: every question of a plan that the
+store can be asked is answered as the reference engine answered it, sorted and tallied by
+family. `victoria/vmengine` answers a plan from a server over HTTP, loads the converter's
+samples into it, checks the server's own counters against the converter's and refuses a
+server whose flags are not those of `victoria/scripts/flags.conf`.
+`victoria/scripts/vm-server.sh start|stop` runs the pinned image with those flags (it never
+pulls an image that is already there, and publishes the port on loopback only; give it an
+empty data directory outside any work tree in `TOPOSHIFT_VM_DATA`). Run the module's tests
+with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`, which skips the tests that need a
+server; with `TOPOSHIFT_VM_URL=http://127.0.0.1:8428` set against a server that holds none
+of the baseline's series, `mise run bench:victoria:test:server` runs them. `mise run
+bench:victoria:test`, `bench:victoria:test:race`, `bench:victoria:lint`,
+`bench:victoria:vuln` and `bench:victoria:purego` are its tasks, in the CI shards.
 
 The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver, which a
 later change adds, will link DuckDB's native library; for now it is pure Go (build and
