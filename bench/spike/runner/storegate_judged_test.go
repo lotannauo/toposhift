@@ -115,6 +115,12 @@ func TestTheGatePoolsOnlyBuildsOfOneThresholdAndOneOrigin(t *testing.T) {
 			b.Manifest.Describe[runner.RetainFlushDelsKey] = v
 		}
 	}
+	serve := func(v string) func(*runner.StoreGateBuild) {
+		return func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ServeOptionsKey] = v }
+	}
+	if err := runner.CheckStoreGateSettings([]*runner.StoreGateBuild{rep(1, serve("true")), rep(2, serve("true"))}); err != nil {
+		t.Fatalf("two repetitions with serve's options: %v", err)
+	}
 	if err := runner.CheckStoreGateSettings([]*runner.StoreGateBuild{rep(1), rep(2), rep(3)}); err != nil {
 		t.Fatalf("three repetitions alike: %v", err)
 	}
@@ -137,6 +143,11 @@ func TestTheGatePoolsOnlyBuildsOfOneThresholdAndOneOrigin(t *testing.T) {
 			"two table shapes",
 			[]*runner.StoreGateBuild{rep(1), rep(2, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ShapeKey] = "compression=zstd" })},
 			[]string{"different pebble_shape", `pebble_shape="none"`, `pebble_shape="compression=zstd"`},
+		},
+		{
+			"builds with and without serve's options",
+			[]*runner.StoreGateBuild{rep(1, serve("true")), rep(2), rep(3, serve("false"))},
+			[]string{"different serve_options", `serve_options="true"`, `serve_options="false"`},
 		},
 		{
 			"a re-run attempt",

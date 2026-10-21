@@ -38,7 +38,21 @@ type Options struct {
 	// RetainFlushDels is the store's [pebblestore.Options.RetainFlushDels]: the count
 	// of unflushed range deletions at which a pass flushes, 0 for the store's default.
 	RetainFlushDels int
+	// ServeOptions opens the store with the policy and the retention layers `serve`
+	// opens its own with: the lifecycle policy that names the boot key
+	// ([lifecycle.BootID]), L0 kept (never retained), and L1 retained [ServeL1Offset]
+	// behind L2. Its entity prefixes are then folded and checkpointed as `serve`'s are
+	// (a host's whole, the others' by the walk that stops at a checkpoint). False, the
+	// default, is the zero policy and every layer retained alike, as the store gate's
+	// Lroot builds have always been. The policy is fixed when a database is created,
+	// so a database opens only with the setting it was created with.
+	ServeOptions bool
 }
+
+// ServeL1Offset is how far behind L2 `serve` retains L1: its l1Offset, in
+// cmd/toposhift/flags.go (a test reads that file, so the two cannot drift apart).
+// A retention to h leaves L1 history back to h less this.
+const ServeL1Offset = 60 * 24 * time.Hour
 
 // Engine is layout L through the root module's store. It implements
 // [engine.Engine] and the optional parts of a measurement the runner uses.
@@ -65,7 +79,8 @@ var (
 )
 
 // Open opens the store under dir, new or as an earlier one left it. The lifecycle
-// policy is the zero one: no boot key.
+// policy is the zero one, no boot key, and every layer is retained to the horizon,
+// unless opts.ServeOptions says otherwise.
 func Open(dir string, opts Options) (*Engine, error) {
 	ckpt := opts.Checkpoints // a copy: its address is the store's explicit policy
 	so := pebblestore.Options{
@@ -76,6 +91,11 @@ func Open(dir string, opts Options) (*Engine, error) {
 		Observer:    opts.Observer,
 
 		RetainFlushDels: opts.RetainFlushDels,
+	}
+	if opts.ServeOptions {
+		so.Policy = lifecycle.Policy{BootKey: lifecycle.BootID}
+		so.Keep[0] = true // L0, the first layer, as serve's storeOptions keeps it
+		so.Offsets[catalog.L1-catalog.L0] = ServeL1Offset
 	}
 	if opts.Recorder != nil { // a nil engine.Recorder must stay a nil recorder, not a typed one
 		so.Recorder = opts.Recorder

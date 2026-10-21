@@ -115,6 +115,7 @@ func testEnvHome(t testing.TB, home string) func(string) string {
 // a local getenv, or from testEnv; none reads the process's environment; and
 // only this file names HOME.
 func TestRunIsNeverGivenARealEnvironment(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*_test.go")
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no test files found: %v", err)

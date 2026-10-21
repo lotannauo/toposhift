@@ -134,7 +134,33 @@ func Check(plan *Plan, cs []*Candidate, allowUntimed bool) []string {
 	if why := flushDelsMix(names, ms); why != "" {
 		out = append(out, why)
 	}
+	if why := serveOptionsMix(names, ms); why != "" {
+		out = append(out, why)
+	}
 	return out
+}
+
+// serveOptionsMix is why the builds through the root store among ms (named by names)
+// cannot be set side by side: some were built with serve's options (the boot key, L0
+// kept, L1 retained behind) and some without. It is "" if they agree; a build that is
+// not through the root store has no such option and is left out.
+func serveOptionsMix(names []string, ms []*Manifest) string {
+	by := map[string][]string{}
+	for i, m := range ms {
+		if m.Describe["store"] != "root" {
+			continue
+		}
+		v := describedOr(m, ServeOptionsKey, "false")
+		by[v] = append(by[v], names[i])
+	}
+	if len(by) < 2 {
+		return ""
+	}
+	var parts []string
+	for _, v := range slices.Sorted(maps.Keys(by)) {
+		parts = append(parts, fmt.Sprintf("%s=%q: %s", ServeOptionsKey, v, strings.Join(by[v], ", ")))
+	}
+	return fmt.Sprintf("the candidates built through the root store were built with and without serve's options (%s): a family is built all with or all without them", strings.Join(parts, "; "))
 }
 
 // flushDelsMix is why the builds through the root store among ms (named by names)

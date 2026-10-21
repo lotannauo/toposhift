@@ -10,7 +10,7 @@
 #
 #   REF, SHA                 the ref the run was dispatched from and its commit
 #   FAMILY WINDOWS CANDIDATES REPS ARCHES PINS_WINDOW SYNC METRICS_EVERY GO_MEM_LIMIT
-#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ
+#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ READ_TIMED
 #                            the dispatch's inputs
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, RUNNER_TEMP
 #
@@ -72,6 +72,11 @@ esac
 case "$READ" in
   true | false) ;;
   *) fail "read: not true or false" ;;
+esac
+
+case "$READ_TIMED" in
+  true | false) ;;
+  *) fail "read_timed: not true or false" ;;
 esac
 
 # The pace is not an input: the gate admits no other rate for a background build.
@@ -185,6 +190,29 @@ if [ "$has_rocks" = true ]; then
   fi
 fi
 
+# A timed read is a read of every repetition's build, by spikebench (rocksbench has no
+# timed read), of a build whose retention ran in step with its ingest, and the step
+# limits were sized for windows of at most 7 days. The plans of a timed read are made
+# at the product's block cache: the flags are a fixed mapping and never free text, as
+# the family's are.
+plan_flags=""
+if [ "$READ_TIMED" = true ]; then
+  [ "$READ" = true ] ||
+    fail "read_timed: a timed read is a read: set read too"
+  [ "$has_rocks" = false ] ||
+    fail "read_timed: rocksbench has no timed read"
+  [ "$RETENTION_MODE" = sync ] ||
+    fail "read_timed: a background dispatch is the store gate's arm"
+  for w in "${wins[@]}"; do
+    [ "$w" -le 7 ] ||
+      fail "read_timed: windows of at most 7 days (the step limits were sized there)"
+  done
+  # The judge refuses a timed read made under a memory limit.
+  [ -z "$go_mem_limit" ] ||
+    fail "read_timed: a timed read runs with no Go memory limit: leave go_mem_limit empty"
+  plan_flags="-cache-mb 256"
+fi
+
 # The retention flush threshold takes one of the registered rungs, or the store's
 # default; a rung is measured only on a background build of the root store.
 case "$RETAIN_FLUSH_DELS" in
@@ -274,6 +302,8 @@ fi
   echo "go_mem_limit=$go_mem_limit"
   echo "pebble_memory_limit=$pebble_memory_limit"
   echo "read=$READ"
+  echo "read_timed=$READ_TIMED"
+  echo "plan_flags=$plan_flags"
   echo "max_parallel=$MAX_PARALLEL"
   echo "retention_mode=$RETENTION_MODE"
   echo "pace=$pace"
@@ -292,6 +322,7 @@ fi
   echo "- retention mode: \`$RETENTION_MODE\`; pace: \`$pace\` records/s (0: unpaced); retention flush threshold: \`$RETAIN_FLUSH_DELS\`"
   echo "- Go memory limit: \`${go_mem_limit:-none}\` (a RocksDB build's: that less the plan's cache and four memtables; \`-pebble-memory-limit $pebble_memory_limit\`)"
   echo "- read repetition 1 after its build: \`$READ\`"
+  echo "- time the reads of every repetition: \`$READ_TIMED\` (extra plan flags: \`${plan_flags:-none}\`)"
   echo "- at most \`$MAX_PARALLEL\` build jobs at once"
   echo
   echo "| runner | window (days) | candidate | engine | repetition |"

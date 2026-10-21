@@ -73,6 +73,7 @@ func hostEventBody(t *testing.T, hostID, node string, at time.Time) []byte {
 // that interval as their TTL; an event with no host id is counted as refused and
 // stores nothing.
 func TestServeStoresNodeAgentEventsAndCountsThem(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir), "--retain", "off", "--node-interval", "2m")
 	waitIngestOn(t, s.base)
@@ -122,6 +123,7 @@ func TestServeStoresNodeAgentEventsAndCountsThem(t *testing.T) {
 // With no node-interval given, serve expects five minutes, and the variable sets
 // it.
 func TestServeNodeIntervalDefaultsAndTheVariable(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		env  map[string]string
 		args []string

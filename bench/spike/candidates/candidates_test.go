@@ -504,6 +504,45 @@ func TestTheRetentionModeIsTheRootVariantsOnly(t *testing.T) {
 	}
 }
 
+// ServeOptions reaches the variants built through the root store and no other: the
+// database an Lroot variant creates with it is refused by one opened without it (the
+// boot key is fixed at creation), and the others ignore it. Off, the default, an Lroot
+// database opens as it always did.
+func TestServeOptionsAreTheRootVariantsOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"Lroot/off", "Lroot/k64a2l1ns", "L/off", "M/default"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			v, err := candidates.Lookup(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fs := vfs.NewMem()
+			open := func(serve bool) (engine.Engine, error) {
+				return v.Open("db", candidates.Options{FS: fs, ServeOptions: serve})
+			}
+			e, err := open(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Close(); err != nil {
+				t.Fatal(err)
+			}
+			e, err = open(false)
+			switch {
+			case v.Root() && err == nil:
+				_ = e.Close()
+				t.Errorf("%s: a database created with ServeOptions opens without them", name)
+			case !v.Root() && err != nil:
+				t.Errorf("%s: ServeOptions changed a variant that is not built through the root store: %v", name, err)
+			case err == nil:
+				_ = e.Close()
+			}
+		})
+	}
+}
+
 // CheckRetentionMode says what the root store can be opened in: no mode, sync and
 // background, and nothing else.
 func TestCheckRetentionModeAcceptsSyncAndBackground(t *testing.T) {

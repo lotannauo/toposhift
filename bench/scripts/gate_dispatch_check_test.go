@@ -56,7 +56,7 @@ func dispatch(r repo) map[string]string {
 		"REF": "refs/tags/gate-freeze-20261012", "SHA": r.onMain,
 		"FAMILY": "rmae", "WINDOWS": "7", "CANDIDATES": "Lroot/off,Lroot/k64a2l1ns", "REPS": "3", "ARCHES": "both",
 		"PINS_WINDOW": "2", "SYNC": "true", "METRICS_EVERY": "10s", "GO_MEM_LIMIT": "11GiB", "MAX_PARALLEL": "12",
-		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain, "READ": "false",
+		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain, "READ": "false", "READ_TIMED": "false",
 	}
 }
 
@@ -116,7 +116,7 @@ func TestADispatchIsTakenFromMainOrAFreezeTagOnMain(t *testing.T) {
 	for _, want := range []string{
 		"retention_mode=background\n", "pace=4500\n", "retain_flush_dels=24576\n", "expected_sha=" + r.onMain + "\n",
 		"sync=true\n", "metrics_every=10s\n", "max_parallel=12\n", "rocksdb_oses=[]\n",
-		"go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "read=false\n",
+		"go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "read=false\n", "read_timed=false\n", "plan_flags=\n",
 		`matrix={"include":[{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/off","slug":"Lroot_off","engine":"pebble","rep":1},`,
 	} {
 		if !strings.Contains(got.output, want) {
@@ -171,7 +171,7 @@ func TestADispatchOfBothEnginesMarksEachJob(t *testing.T) {
 		t.Fatalf("the RocksDB rule's dispatch: exit %d\n%s", got.code, got.stderr)
 	}
 	for _, want := range []string{
-		"read=true\n", "go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "retention_mode=sync\n",
+		"read=true\n", "read_timed=false\n", "plan_flags=\n", "go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "retention_mode=sync\n",
 		`rocksdb_oses=["ubuntu-24.04","ubuntu-24.04-arm"]` + "\n",
 		`{"os":"ubuntu-24.04","window":30,"candidate":"L/off","slug":"L_off","engine":"pebble","rep":1}`,
 		`{"os":"ubuntu-24.04","window":30,"candidate":"RL/k64a2l5m","slug":"RL_k64a2l5m","engine":"rocksdb","rep":5}`,
@@ -204,6 +204,109 @@ func TestADispatchOfBothEnginesMarksEachJob(t *testing.T) {
 		}
 		if want := "pebble_memory_limit=" + c.bytes + "\n"; !strings.Contains(got.output, want) {
 			t.Errorf("limit %q: the outputs lack %q:\n%s", c.limit, want, got.output)
+		}
+	}
+}
+
+// timedDispatch is the environment of a dispatch that times the reads of every
+// repetition: layout L and M on Pebble, five repetitions on both architectures, the
+// 7-day window, retention run in step with the ingest.
+func timedDispatch(r repo) map[string]string {
+	env := dispatch(r)
+	env["REF"], env["SHA"], env["EXPECTED_SHA"] = "refs/heads/main", r.offMain, r.offMain
+	env["WINDOWS"], env["CANDIDATES"], env["REPS"] = "7", "L/k64a2l5m,M/crdb1,L/off", "5"
+	env["SYNC"], env["METRICS_EVERY"], env["GO_MEM_LIMIT"], env["RETENTION_MODE"], env["RETAIN_FLUSH_DELS"] = "false", "", "", "sync", "default"
+	env["READ"], env["READ_TIMED"] = "true", "true"
+	return env
+}
+
+// A dispatch that times the reads says so, and only it makes its plans at the product's
+// block cache: the plan flags are a fixed mapping of the input and empty otherwise.
+func TestATimedReadDispatchMakesItsPlansAtTheProductsCache(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	for _, wins := range []string{"7", "1", "2,7"} {
+		env := timedDispatch(r)
+		env["WINDOWS"] = wins
+		got := run(t, r, env)
+		if got.code != 0 {
+			t.Fatalf("a timed read of windows %s: exit %d\n%s", wins, got.code, got.stderr)
+		}
+		for _, want := range []string{"read=true\n", "read_timed=true\n", "plan_flags=-cache-mb 256\n", "retention_mode=sync\n"} {
+			if !strings.Contains(got.output, want) {
+				t.Errorf("windows %s: the outputs lack %q:\n%s", wins, want, got.output)
+			}
+		}
+		if want := "time the reads of every repetition: `true` (extra plan flags: `-cache-mb 256`)"; !strings.Contains(got.summary, want) {
+			t.Errorf("windows %s: the summary lacks %q:\n%s", wins, want, got.summary)
+		}
+	}
+
+	// The same dispatch without the input, and one that reads without timing, change
+	// nothing about the plans, and so keep every registered command valid.
+	for _, read := range []string{"true", "false"} {
+		env := timedDispatch(r)
+		env["READ"], env["READ_TIMED"], env["WINDOWS"] = read, "false", "30"
+		got := run(t, r, env)
+		if got.code != 0 {
+			t.Fatalf("read %s, not timed: exit %d\n%s", read, got.code, got.stderr)
+		}
+		for _, want := range []string{"read_timed=false\n", "plan_flags=\n"} {
+			if !strings.Contains(got.output, want) {
+				t.Errorf("read %s, not timed: the outputs lack %q:\n%s", read, want, got.output)
+			}
+		}
+		if strings.Contains(got.output, "-cache-mb") {
+			t.Errorf("read %s, not timed: the plans' flags name a cache:\n%s", read, got.output)
+		}
+	}
+}
+
+// A timed read is refused, with exit 1 and an error that names the input and does not
+// repeat it, when it is not a read, when a candidate is built by rocksbench, which has
+// no timed read, when the retention is the store gate's, when a window is longer
+// than the step limits were sized for, and when it runs under a Go memory limit.
+func TestATimedReadIsRefusedWhenItsConditionsFail(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	const evil = "x::set-output name=y::z"
+	background := map[string]string{
+		"RETENTION_MODE": "background", "SYNC": "true", "METRICS_EVERY": "10s", "EXPECTED_SHA": r.onMain, "SHA": r.onMain,
+		"CANDIDATES": "Lroot/off,Lroot/k64a2l1ns",
+	}
+	for _, c := range []struct {
+		name string
+		set  map[string]string
+		want string
+	}{
+		{"an input as read_timed", map[string]string{"READ_TIMED": evil}, "read_timed:"},
+		{"read_timed as a word", map[string]string{"READ_TIMED": "yes"}, "read_timed:"},
+		{"read_timed empty", map[string]string{"READ_TIMED": ""}, "read_timed:"},
+		{"no read", map[string]string{"READ": "false"}, "read_timed: a timed read is a read"},
+		{"a RocksDB candidate", map[string]string{"CANDIDATES": "L/off,RL/off"}, "read_timed: rocksbench has no timed read"},
+		{"a RocksDB candidate of four-way layout alone", map[string]string{"CANDIDATES": "RL4/k64a2l5m"}, "read_timed: rocksbench has no timed read"},
+		{"a background retention", background, "read_timed: a background dispatch is the store gate's arm"},
+		{"a Go memory limit", map[string]string{"GO_MEM_LIMIT": "11GiB"}, "read_timed: a timed read runs with no Go memory limit"},
+		{"a Go memory limit in MiB", map[string]string{"GO_MEM_LIMIT": "512MiB"}, "read_timed: a timed read runs with no Go memory limit"},
+		{"a window of 8 days", map[string]string{"WINDOWS": "8"}, "read_timed: windows of at most 7 days"},
+		{"a window of 30 days", map[string]string{"WINDOWS": "30"}, "read_timed: windows of at most 7 days"},
+		{"a long window among short ones", map[string]string{"WINDOWS": "2,7,30"}, "read_timed: windows of at most 7 days"},
+	} {
+		env := timedDispatch(r)
+		for k, v := range c.set {
+			env[k] = v
+		}
+		got := run(t, r, env)
+		if got.code != 1 || !strings.Contains(got.stderr, "::error::"+c.want) {
+			t.Errorf("%s: exit %d, %q; want 1 and an error starting %q", c.name, got.code, got.stderr, c.want)
+		}
+		if strings.Contains(got.stderr, "set-output") {
+			t.Errorf("%s: the error repeats the input: %q", c.name, got.stderr)
+		}
+		if got.output != "" {
+			t.Errorf("%s: outputs were written: %q", c.name, got.output)
 		}
 	}
 }

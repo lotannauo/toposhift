@@ -1227,6 +1227,8 @@ func TestQ5NeedsABaselineOfTheSameSettings(t *testing.T) {
 		{runner.RetainFlushDelsKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.RetainFlushDelsKey] = "32768" }},
 		// A baseline of another table shape of Pebble is not the candidate's baseline.
 		{runner.ShapeKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ShapeKey] = "delete_only_compactions=off" }},
+		// A baseline built with serve's options is another store from the candidate's.
+		{runner.ServeOptionsKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ServeOptionsKey] = "true" }},
 		// A pacing start that differs from the rule's is a refusal of the build itself, so
 		// that the baseline cannot be used; the comparison of the start is a unit test.
 		{runner.PaceFromDayKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PaceFromDayKey] = "12" }},

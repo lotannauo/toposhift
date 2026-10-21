@@ -2058,6 +2058,9 @@ var storeGateSettingKeys = []struct {
 	// A manifest without the table shape was built with Pebble's own rule, the product's
 	// today: builds of different shapes are neither pooled nor compared (Q5).
 	{ShapeKey, func(m *Manifest) string { return describedOr(m, ShapeKey, "none") }},
+	// A build with serve's options (the boot key, L0 kept, L1 behind) is another store
+	// from one without, which every manifest that lacks the key is.
+	{ServeOptionsKey, func(m *Manifest) string { return describedOr(m, ServeOptionsKey, "false") }},
 }
 
 // JudgeStoreGate judges the builds, each candidate on each architecture, from its

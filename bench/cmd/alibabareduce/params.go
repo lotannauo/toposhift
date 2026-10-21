@@ -198,20 +198,25 @@ func (r *results) params() paramsFile {
 
 // manifestFile records what a run read, how it was run and what it wrote.
 type manifestFile struct {
-	Tool               string                      `json:"tool"`
-	Commit             string                      `json:"commit"`
-	Epoch              string                      `json:"epoch"`
-	Layout             string                      `json:"layout_note"`
-	Flags              map[string]any              `json:"flags"`
-	Cadences           map[string]map[string]int64 `json:"cadences"`
-	Coalescer          map[string]string           `json:"coalescer"`
-	FlushPeriodSeconds int64                       `json:"flush_period_seconds"`
-	Provisional        string                      `json:"provisional"`
-	Inputs             []*fileReport               `json:"inputs"`
-	Outputs            []sinkResult                `json:"outputs"`
-	Tables             map[string]int64            `json:"tables"`
-	Ratios             ratios                      `json:"ratios"`
-	Checks             map[string]int64            `json:"in_process_store_checks"`
+	Tool     string                      `json:"tool"`
+	Commit   string                      `json:"commit"`
+	Epoch    string                      `json:"epoch"`
+	Layout   string                      `json:"layout_note"`
+	Flags    map[string]any              `json:"flags"`
+	Cadences map[string]map[string]int64 `json:"cadences"`
+	// Coalescer is the configuration the placement streams (C60 and C300) used: the
+	// product's with the run's extension fraction. ProductCoalescer is the product's own,
+	// which the call edges and the fixture keep. Each output names how its coalescer
+	// flushed (coalescer_flush).
+	Coalescer          map[string]string `json:"coalescer"`
+	ProductCoalescer   map[string]string `json:"product_coalescer"`
+	FlushPeriodSeconds int64             `json:"flush_period_seconds"`
+	Provisional        string            `json:"provisional"`
+	Inputs             []*fileReport     `json:"inputs"`
+	Outputs            []sinkResult      `json:"outputs"`
+	Tables             map[string]int64  `json:"tables"`
+	Ratios             ratios            `json:"ratios"`
+	Checks             map[string]int64  `json:"in_process_store_checks"`
 }
 
 type ratios struct {
@@ -245,9 +250,11 @@ func (r *results) manifest() manifestFile {
 			"call_file_millis": cfg.CallFileMillis, "fixture_minutes": cfg.FixtureMinutes, "fixture_nodes": cfg.FixtureNodes,
 			"write_c60": cfg.WriteC60, "max_file_bytes": cfg.MaxFileBytes, "max_call_keys": cfg.MaxCallKeys, "max_edges": cfg.MaxEdges,
 			"sample_interval_seconds": int64(sampleInterval.Seconds()), "ttl_factor": cfg.TTLFactor,
+			"extend_fraction": cfg.ExtendFraction, "recency": cfg.Recency, "whole_coalescer": cfg.WholeCoalescer,
 		},
 		Cadences:           map[string]map[string]int64{},
-		Coalescer:          coalesceConfig().Describe(),
+		Coalescer:          cfg.placementCoalesce().Describe(),
+		ProductCoalescer:   coalesceConfig().Describe(),
 		FlushPeriodSeconds: 30,
 		Provisional:        "the depends_on stream is provisional: the storage format of per-minute rollups (l3-rollups) is not decided here",
 		Inputs:             r.files, Tables: r.tables, Checks: r.asked,

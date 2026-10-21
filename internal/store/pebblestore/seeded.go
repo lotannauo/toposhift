@@ -79,6 +79,13 @@ import (
 // deletes a prefix's newest checkpoints, and the walk has no bound on its store.
 // The budget is this store's alone: the store contract fixes none, and memstore,
 // the reference, has none.
+//
+// Added 2026-10-21: SW1 also covers the seed walk of the own prefix of any entity
+// that is not a host, under a boot key as without one: a checkpoint stands in such a
+// prefix, because only a host has boots to fold (see foldsWhole). The budget is
+// unchanged. At one reference per prefix the policy gap is KMin, so the longest walk
+// counted is 64 records and one stamp, on a pod that lived 30 days under
+// sequencer.CoalesceConfig (4,320 records, against 4,293 stepped without checkpoints).
 const (
 	// G at the reference cell: a checkpoint of 7,831 bytes over a mean record of
 	// 213 (the edge payload is 152 bytes), so 2 x 7831 / 213 = 73, above KMin.

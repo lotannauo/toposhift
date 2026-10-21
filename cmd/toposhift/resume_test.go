@@ -46,6 +46,7 @@ func createdPodBody(uid string, created, observed time.Time) []byte {
 // is new, and after a restart of serve the same pod's first sighting is raised to
 // what the store holds.
 func TestServeResumesFromItsStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	created := time.Now().Add(-time.Hour).Truncate(time.Second)
 	s := startServe(t, dirEnv(t, dir), "--retain", "off")
@@ -94,6 +95,7 @@ func TestServeSaysResumeIsDisabled(t *testing.T) {
 
 // serve -h documents resume.
 func TestServeHelpDocumentsResume(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{"Resume", `"resume"`, "disabled", "raised", "unknown"} {
 		if !strings.Contains(ingestHelp, s) {
 			t.Errorf("the help does not say %q", s)

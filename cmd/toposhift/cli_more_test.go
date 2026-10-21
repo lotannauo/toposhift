@@ -136,6 +136,7 @@ func TestAReplayThatStoredNothingSaysSo(t *testing.T) {
 }
 
 func TestWriteFailureWhenTheCommitIsLost(t *testing.T) {
+	t.Parallel()
 	ref, err := memstore.Open(memstore.Options{})
 	if err != nil {
 		t.Fatal(err)

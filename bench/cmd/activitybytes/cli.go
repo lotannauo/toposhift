@@ -73,6 +73,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&cfg.Out, "out", "", "the directory the store is made in and the result is written to, never inside a git work tree (required)")
 	fs.StringVar(&cfg.Label, "label", "", "the name of the measurement, [A-Za-z0-9/._-]+ (required)")
 	fs.StringVar(&cfg.Checkpoints, "checkpoints", checkpointsDefault, "the store's checkpoint policy: default or off")
+	fs.StringVar(&cfg.Compression, "compression", "default", "the block compression of the store's tables: default (the store's own, Snappy, set by nothing), snappy, zstd or balanced")
 	fs.IntVar(&cfg.Batch, "batch", DefaultBatch, "records per write")
 	fs.Int64Var(&cfg.ExpectRecords, "expect-records", 0, "the records the file must hold, checked against its footer before any write and against the count written after (0: not checked)")
 	fs.Int64Var(&cfg.Samples, "samples", 0, "the samples the records assert, for the bytes per sample (0: left out)")

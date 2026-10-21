@@ -225,6 +225,9 @@ check_build_word() {
   local w=$1 v
   case "$w" in
     -profile-windows | -disable-delete-only) ;;
+    # The three spellings the program takes and no other, so that nothing but one of
+    # these words is ever passed on.
+    -compression=snappy | -compression=zstd | -compression=balanced) ;;
     -lbase-target-mb=*)
       v="${w#*=}"
       re='^[1-9][0-9]{0,3}$'
@@ -249,7 +252,7 @@ check_build_word() {
       [[ $v =~ $re ]] && [ "$v" -le 64 ] ||
         fail "build_flags: -read-ahead takes a count from 1 to 64"
       ;;
-    *) fail "build_flags: every word is -profile-windows, -disable-delete-only, -lbase-target-mb=N, -target-sizes-mb=N,N,... or -read-ahead=N" ;;
+    *) fail "build_flags: every word is -profile-windows, -disable-delete-only, -lbase-target-mb=N, -target-sizes-mb=N,N,..., -read-ahead=N or -compression=snappy, -compression=zstd or -compression=balanced" ;;
   esac
 }
 

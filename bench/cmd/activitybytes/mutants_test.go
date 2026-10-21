@@ -66,14 +66,21 @@ func TestMutantsAreCaught(t *testing.T) {
 			fails: func(res *result, _ diagnostics, err error) bool { return err != nil || checkFrozenDigest(res) != nil },
 		},
 		{
-			name: "the checkpoint setting is not passed", caughtBy: "TestCheckpointsLandOnEdgePrefixesOnly", mut: mutCheckpointsIgnored,
+			name: "the checkpoint setting is not passed", caughtBy: "TestCheckpointsLandOnEdgeAndNonHostEntityPrefixesNeverOnAHosts", mut: mutCheckpointsIgnored,
 			change: func(_ *testing.T, c *config) { c.Checkpoints = checkpointsOff },
 			fails:  func(res *result, _ diagnostics, err error) bool { return err == nil && checkNoCheckpoints(res) != nil },
 		},
 		{
-			name: "the options have no boot key", caughtBy: "TestCheckpointsLandOnEdgePrefixesOnly", mut: mutNoBootKey,
-			fails: func(res *result, _ diagnostics, err error) bool {
-				return err == nil && checkDefaultCheckpoints(res) != nil
+			// A checkpoint on the prefix of a host: the fixture holds no host, so it is put there.
+			name: "a host's prefix has a checkpoint", caughtBy: "TestCheckpointsLandOnEdgeAndNonHostEntityPrefixesNeverOnAHosts", mut: mutHostCheckpoint,
+			fails: func(res *result, diag diagnostics, err error) bool {
+				return err == nil && diag.CheckpointsHost == 1 && checkDefaultCheckpoints(res, diag) != nil
+			},
+		},
+		{
+			name: "no non-host entity prefix has a checkpoint", caughtBy: "TestCheckpointsLandOnEdgeAndNonHostEntityPrefixesNeverOnAHosts", mut: mutNoEntityCheckpoints,
+			fails: func(res *result, diag diagnostics, err error) bool {
+				return err == nil && res.CheckpointsEdge > 0 && checkDefaultCheckpoints(res, diag) != nil
 			},
 		},
 		{

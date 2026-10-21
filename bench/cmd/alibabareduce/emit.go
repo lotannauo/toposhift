@@ -57,15 +57,31 @@ type sinkResult struct {
 	// Written is whether the file holds them.
 	Written bool `json:"written"`
 	// DroppedOverLimit is set if the file was removed because it passed its size limit.
-	DroppedOverLimit bool   `json:"dropped_over_limit,omitempty"`
-	Assertions       int64  `json:"assertions"`
-	Deletes          int64  `json:"deletes"`
-	WithThrough      int64  `json:"with_through"`
-	MinSeq           uint64 `json:"min_seq"`
-	MaxSeq           uint64 `json:"max_seq"`
-	RowGroups        int    `json:"row_groups"`
-	Bytes            int64  `json:"bytes"`
-	FileSHA256       string `json:"file_sha256,omitempty"`
+	DroppedOverLimit bool `json:"dropped_over_limit,omitempty"`
+	// Recency, with -recency, counts the samples by how many sampling intervals the
+	// stored end of the sample's run was behind it once the sample was handled
+	// (the key "0" is a sample the stored run ends at), and "max" is the largest.
+	Recency map[string]int64 `json:"recency_samples_by_lag,omitempty"`
+	// FinishRecords, with -recency, is how many of Records the stream wrote when it
+	// ended: the flushes that follow the last sample and the graceful stop's write of
+	// every refresh still absorbed. They are an artifact of where the hour ends.
+	FinishRecords int64  `json:"finish_records,omitempty"`
+	Assertions    int64  `json:"assertions"`
+	Deletes       int64  `json:"deletes"`
+	WithThrough   int64  `json:"with_through"`
+	MinSeq        uint64 `json:"min_seq"`
+	MaxSeq        uint64 `json:"max_seq"`
+	RowGroups     int    `json:"row_groups"`
+	Bytes         int64  `json:"bytes"`
+	FileSHA256    string `json:"file_sha256,omitempty"`
+	// ContentDigest is the digest in the file's footer: of the records, in their row
+	// groups, and not of the file's bytes. Two files of the same records have the same
+	// one, so repeats are compared by it where their bytes may differ.
+	ContentDigest string `json:"content_digest,omitempty"`
+	// CoalescerFlush is how the stream's coalescer flushes: "split" (by subject, one
+	// deadline at a time) or "whole" (one coalescer, as the product's); empty for a
+	// stream with no coalescer.
+	CoalescerFlush string `json:"coalescer_flush,omitempty"`
 }
 
 // sink takes a producer's assertions in event-time order, passes them through
@@ -90,6 +106,7 @@ type sink struct {
 	next     time.Time // the next scheduled flush
 	last     time.Time // the ingest time of the latest assertion
 	maxTTL   time.Duration
+	rec      *recency // nil unless -recency
 	res      sinkResult
 	capture  bool
 	raw      []rawAssertion
@@ -100,7 +117,21 @@ type sink struct {
 // newSink starts a stream. If write is false the records are counted and not
 // written. If capture is set the raw assertions are kept in memory for a check.
 func newSink(name, path string, write bool, maxBytes int64, capture bool) (*sink, error) {
-	co, err := newShardedCoalescer(coalesceConfig())
+	return newSinkConfig(coalescerChoice{cfg: coalesceConfig()}, name, path, write, maxBytes, capture)
+}
+
+// coalescerChoice is the coalescer of a stream: its configuration, the TTL of the
+// stream's records if it is known, and whether to use one whole coalescer (see
+// [newCoalescerFor]).
+type coalescerChoice struct {
+	cfg   coalesce.Config
+	ttl   time.Duration
+	whole bool
+}
+
+// newSinkConfig is newSink with the coalescer chosen.
+func newSinkConfig(cc coalescerChoice, name, path string, write bool, maxBytes int64, capture bool) (*sink, error) {
+	co, err := newCoalescerFor(cc.cfg, cc.ttl, cc.whole)
 	if err != nil {
 		return nil, err
 	}
@@ -116,6 +147,9 @@ func newPlainSink(name, path string, maxBytes int64, capture bool) (*sink, error
 func newSinkWith(name, path string, co *shardedCoalescer, write bool, maxBytes int64, capture bool) (*sink, error) {
 	s := &sink{name: name, path: path, co: co, capture: capture}
 	s.res.Name = name
+	if co != nil {
+		s.res.CoalescerFlush = co.flushName()
+	}
 	if !write {
 		return s, nil
 	}
@@ -168,7 +202,13 @@ func (s *sink) assert(r store.Record) error {
 		s.err = fmt.Errorf("%s: %w", s.name, err)
 		return s.err
 	}
-	return s.write(recs)
+	if err := s.write(recs); err != nil {
+		return err
+	}
+	if s.rec != nil {
+		s.rec.sample(r)
+	}
+	return nil
 }
 
 // write numbers the records the coalescer returned and writes them.
@@ -180,6 +220,9 @@ func (s *sink) write(recs []store.Record) error {
 // emit numbers and writes records. It does not keep the slice.
 func (s *sink) emit(recs []store.Record) error {
 	for _, r := range recs {
+		if s.rec != nil {
+			s.rec.stored(r)
+		}
 		s.seq++
 		r.Seq = s.seq
 		s.res.Records++
@@ -222,6 +265,10 @@ func (s *sink) finish() (sinkResult, error) {
 	if s.err != nil {
 		return s.res, s.err
 	}
+	atFinish := s.res.Records
+	if s.rec != nil {
+		s.res.Recency = s.rec.result() // no sample follows the last
+	}
 	if s.started {
 		for !s.next.After(s.last) {
 			if err := s.co.flush(s.next, s.emit); err != nil {
@@ -233,6 +280,9 @@ func (s *sink) finish() (sinkResult, error) {
 			s.err = fmt.Errorf("%s: %w", s.name, err)
 			return s.res, s.err
 		}
+	}
+	if s.rec != nil {
+		s.res.FinishRecords = s.res.Records - atFinish
 	}
 	// The coalescer holds a run for every subject of the stream, and is not used again.
 	s.co, s.buf = nil, nil
@@ -258,7 +308,7 @@ func (s *sink) finish() (sinkResult, error) {
 		s.err = err
 		return s.res, err
 	}
-	s.res.MinSeq, s.res.MaxSeq, s.res.RowGroups = info.MinSeq, info.MaxSeq, info.RowGroups
+	s.res.MinSeq, s.res.MaxSeq, s.res.RowGroups, s.res.ContentDigest = info.MinSeq, info.MaxSeq, info.RowGroups, info.Digest
 	if info.Records != s.res.Records {
 		s.err = fmt.Errorf("%s: the file holds %d records, but %d were written", s.name, info.Records, s.res.Records)
 		return s.res, s.err

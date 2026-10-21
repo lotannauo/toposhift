@@ -162,7 +162,7 @@
 // or records that make the prefix due for a checkpoint with none known between the
 // horizon and it, whose build would walk on into the keys the step removes. A
 // checkpoint placed by the instrument on such a prefix runs the step first, in a
-// commit of its own. A state is not kept for an entity prefix under a boot key, nor
+// commit of its own. A state is not kept for a host's prefix under a boot key, nor
 // when the fold of a state changes (the version of the fold is pinned by a test).
 // No stored byte and no answer differs from those of a write that runs the step
 // first. A key before the horizon that cannot be read is then met by the pass, whose
@@ -252,11 +252,15 @@
 // boot ID with a length byte and two instants of 9 bytes: about 55 bytes for a
 // 36-byte boot ID, the form of /proc/sys/kernel/random/boot_id.
 //
-// Because Alive folds the whole prefix, no read would use a checkpoint of an
-// entity's own prefix, so under a boot key the checkpoint policy places none there.
-// This is a choice of cost, not one of the rules above. Edge prefixes are
-// unchanged, and a checkpoint that exists on an entity prefix (written by the
-// instrument) is still deleted when a record makes it untrue.
+// Because Alive folds the whole prefix of a host, no read would use a checkpoint of
+// a host's own prefix, so under a boot key the checkpoint policy places none there.
+// This is a choice of cost, not one of the rules above. Only a host record carries a
+// boot id (see [store.Record].Boot), so the prefix of any other entity has no boots
+// and no collision: Alive reads it by the walk that stops at a checkpoint, as a store
+// with no boot key does, and the policy places, keeps and invalidates its
+// checkpoints as it does there. Edge prefixes are unchanged, and a checkpoint that
+// exists on a host's prefix (written by the instrument) is still deleted when a
+// record makes it untrue.
 //
 // # Durability
 //

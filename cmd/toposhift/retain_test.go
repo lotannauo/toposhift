@@ -34,6 +34,7 @@ const day = 24 * time.Hour
 // offsets: storeOptions, serve's, and the replay's and query's open. The
 // retention check's offset is the one of L2 in the options serve opens with.
 func TestR14EveryCommandKeepsL0(t *testing.T) {
+	t.Parallel()
 	o := storeOptions()
 	if o.Keep != [4]bool{true, false, false, false} || o.Offsets != [4]time.Duration{0, 60 * day, 0, 0} {
 		t.Fatalf("storeOptions: Keep %v Offsets %v, want L0 kept and L1 60 days behind", o.Keep, o.Offsets)
@@ -92,6 +93,7 @@ func wantHorizons(t *testing.T, what string, s interface {
 // R13. A retention moves each layer to h less its offset, and never L0, in
 // memstore opened with the default layers and in the pebblestore serve opens.
 func TestR13PerLayerHorizons(t *testing.T) {
+	t.Parallel()
 	o := storeOptions()
 	mem, err := memstore.Open(memstore.Options{Policy: o.Policy, Keep: o.Keep, Offsets: o.Offsets})
 	if err != nil {
@@ -121,6 +123,7 @@ func TestR13PerLayerHorizons(t *testing.T) {
 // a mistake in how serve was called (exit 2, before anything listens), and the
 // flag wins over the variable.
 func TestR15RetainFlagAndVariable(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		env  map[string]string
@@ -363,6 +366,7 @@ func TestServeRetainOffRetainsNothing(t *testing.T) {
 // The default this build ships with. Only a release commit changes it, together
 // with want here, so a change of the default on any other commit fails.
 func TestTheRetainDefault(t *testing.T) {
+	t.Parallel()
 	const want = "on"
 	if defaultRetain != want {
 		t.Fatalf("defaultRetain = %q, want %q", defaultRetain, want)
@@ -446,6 +450,7 @@ func TestARetainDefaultOfOff(t *testing.T) {
 
 // serve -h documents retention.
 func TestServeHelpDocumentsRetention(t *testing.T) {
+	t.Parallel()
 	var stderr bytes.Buffer
 	if code := run(t.Context(), []string{"serve", "-h"}, noEnv, io.Discard, &stderr); code != 0 {
 		t.Fatalf("exit code = %d", code)

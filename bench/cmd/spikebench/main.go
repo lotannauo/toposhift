@@ -458,6 +458,9 @@ func doBuild(ctx context.Context, args []string) error {
 	if err := b.flushDelsCandidates([]string{name}); err != nil {
 		return err
 	}
+	if err := b.serveCandidates([]string{name}); err != nil {
+		return err
+	}
 	_, err = runner.BuildWith(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), b.options(), progress)
 	return err
 }
@@ -522,6 +525,9 @@ type buildFlags struct {
 	l0CompactionConcurrency int
 	debtConcurrencyMB       int
 	garbageFraction         float64
+	// serveOptions opens the root store of an Lroot candidate with serve's options
+	// (runner.BuildOptions.ServeOptions): an arm beside the default Lroot.
+	serveOptions bool
 }
 
 // Bounds of the table-size flags: Pebble doubles the base level's target for each of
@@ -539,6 +545,7 @@ const (
 )
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
+	fs.BoolVar(&b.serveOptions, "serve-options", false, "for the Lroot candidates (the root store's): open the store as serve does, with the lifecycle policy that names the boot key, L0 kept and L1 retained 60 days behind L2, an arm beside the default Lroot (which has no boot key and retains every layer alike), so that what ships is measured; recorded in the manifest (serve_options), and a family is built all with or all without it (default: off)")
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
 	fs.BoolVar(&b.sync, "sync", false, "commit every batch with a sync of the log to the disk, as production does; recorded in the manifest, and a report refuses to compare builds with and without it (default: off)")
@@ -703,6 +710,21 @@ func (b buildFlags) flushDelsCandidates(names []string) error {
 	return nil
 }
 
+// serveCandidates refuses -serve-options for a candidate that is not built through the
+// root store, before anything is built: the options are the root store's. A name that
+// is not a candidate is left to the caller's own lookup.
+func (b buildFlags) serveCandidates(names []string) error {
+	if !b.serveOptions {
+		return nil
+	}
+	for _, n := range names {
+		if v, err := candidates.Lookup(n); err == nil && !v.Root() {
+			return fmt.Errorf("-serve-options is for the candidates built through the root store (Lroot/...), and %s is not", n)
+		}
+	}
+	return nil
+}
+
 // paceNeedsAWindow refuses -pace for a run that makes its plan without -window: a build
 // is paced from stream day 2W + 1.5 - ceil(W/2) of a window of W days, so the plan it
 // makes must be a window plan. A plan made before is checked by the build.
@@ -758,13 +780,16 @@ func (b buildFlags) args() []string {
 	if b.compression != "" {
 		out = append(out, "-compression="+b.compression)
 	}
+	if b.serveOptions {
+		out = append(out, "-serve-options")
+	}
 	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
 	return runner.BuildOptions{
 		RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows,
-		Shape: b.shape(),
+		Shape: b.shape(), ServeOptions: b.serveOptions,
 	}
 }
 
@@ -819,6 +844,9 @@ func (b buildFlags) agrees(dir string) error {
 	// one that does not record it was built before it was recorded, which is not taken
 	// for the default.
 	if m.Describe["store"] == "root" {
+		if have, want := orDefault(runner.ServeOptionsKey, "false"), strconv.FormatBool(b.serveOptions); have != want {
+			return fmt.Errorf("%s was built with %s %q, and this run asks for -serve-options=%s: a family is built all with or all without it (remove that build, give the flag its value, or use another -out)", dir, runner.ServeOptionsKey, have, want)
+		}
 		have, want := orDefault(runner.RetainFlushDelsKey, "not recorded"), strconv.Itoa(runner.RetainFlushDelsOf(b.retainFlushDels))
 		if have != want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for a threshold of %s range deletions (-retain-flush-dels=%d): a family is built all at one threshold (remove that build, give the flag its value, or use another -out)", dir, runner.RetainFlushDelsKey, have, want, b.retainFlushDels)
@@ -1031,6 +1059,9 @@ func doRun(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := b.flushDelsCandidates(strings.Split(names, ",")); err != nil {
+		return err
+	}
+	if err := b.serveCandidates(strings.Split(names, ",")); err != nil {
 		return err
 	}
 	_, statErr := os.Stat(filepath.Join(c.out, planFile))
@@ -1254,6 +1285,9 @@ func doWindows(ctx context.Context, args []string) error {
 		return err
 	}
 	if err := b.flushDelsCandidates(strings.Split(names, ",")); err != nil {
+		return err
+	}
+	if err := b.serveCandidates(strings.Split(names, ",")); err != nil {
 		return err
 	}
 	days, err := parseWindows(windows)
