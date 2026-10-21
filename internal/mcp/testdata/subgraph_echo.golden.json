@@ -1,0 +1,254 @@
+{
+  "blast_radius": {
+    "asof": "latest",
+    "kind": "blast_radius",
+    "options": [
+      {
+        "name": "depth",
+        "value": "6"
+      },
+      {
+        "name": "max_frontier",
+        "value": "1024"
+      },
+      {
+        "name": "max_members",
+        "value": "4096"
+      }
+    ],
+    "seeds": [
+      "k8s.node:aa5c53e361feac821c5d33b87121296e"
+    ]
+  },
+  "blast_radius, depth 2, at a token": {
+    "asof": "30",
+    "kind": "blast_radius",
+    "options": [
+      {
+        "name": "depth",
+        "value": "2"
+      },
+      {
+        "name": "max_frontier",
+        "value": "1024"
+      },
+      {
+        "name": "max_members",
+        "value": "4096"
+      }
+    ],
+    "seeds": [
+      "k8s.node:aa5c53e361feac821c5d33b87121296e"
+    ]
+  },
+  "co_residents": {
+    "asof": "latest",
+    "kind": "co_residents",
+    "options": [
+      {
+        "name": "max_hosts",
+        "value": "16"
+      },
+      {
+        "name": "max_nodes",
+        "value": "64"
+      },
+      {
+        "name": "max_per_via",
+        "value": "1024"
+      },
+      {
+        "name": "max_results",
+        "value": "4096"
+      },
+      {
+        "name": "min_overlap_ns",
+        "value": "1000000000"
+      },
+      {
+        "name": "node_only",
+        "value": "0"
+      }
+    ],
+    "seeds": [
+      "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3"
+    ]
+  },
+  "co_residents, node only": {
+    "asof": "latest",
+    "kind": "co_residents",
+    "options": [
+      {
+        "name": "max_hosts",
+        "value": "16"
+      },
+      {
+        "name": "max_nodes",
+        "value": "64"
+      },
+      {
+        "name": "max_per_via",
+        "value": "1024"
+      },
+      {
+        "name": "max_results",
+        "value": "4096"
+      },
+      {
+        "name": "min_overlap_ns",
+        "value": "1000000000"
+      },
+      {
+        "name": "node_only",
+        "value": "1"
+      }
+    ],
+    "seeds": [
+      "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3"
+    ]
+  },
+  "scope": {
+    "asof": "latest",
+    "kind": "scope",
+    "options": [
+      {
+        "name": "max_scope",
+        "value": "256"
+      }
+    ],
+    "seeds": [
+      "k8s.node:aa5c53e361feac821c5d33b87121296e",
+      "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3"
+    ]
+  },
+  "service_context": {
+    "asof": "latest",
+    "kind": "extraction",
+    "options": [
+      {
+        "name": "anchored",
+        "value": "0"
+      },
+      {
+        "name": "max_hosts",
+        "value": "16"
+      },
+      {
+        "name": "max_instances",
+        "value": "64"
+      },
+      {
+        "name": "max_members",
+        "value": "16"
+      },
+      {
+        "name": "max_nodes",
+        "value": "64"
+      },
+      {
+        "name": "max_pairs",
+        "value": "4096"
+      },
+      {
+        "name": "max_per_via",
+        "value": "1024"
+      },
+      {
+        "name": "max_results",
+        "value": "4096"
+      },
+      {
+        "name": "max_seed_pods",
+        "value": "64"
+      },
+      {
+        "name": "min_overlap_ns",
+        "value": "1000000000"
+      },
+      {
+        "name": "node_only",
+        "value": "0"
+      },
+      {
+        "name": "ubiquity_den",
+        "value": "5"
+      },
+      {
+        "name": "ubiquity_min_nodes",
+        "value": "5"
+      },
+      {
+        "name": "ubiquity_num",
+        "value": "4"
+      }
+    ],
+    "seeds": [
+      "service:92bb743612b9898ff4c5022c0d70232f"
+    ]
+  },
+  "service_context, node only": {
+    "asof": "latest",
+    "kind": "extraction",
+    "options": [
+      {
+        "name": "anchored",
+        "value": "0"
+      },
+      {
+        "name": "max_hosts",
+        "value": "16"
+      },
+      {
+        "name": "max_instances",
+        "value": "64"
+      },
+      {
+        "name": "max_members",
+        "value": "16"
+      },
+      {
+        "name": "max_nodes",
+        "value": "64"
+      },
+      {
+        "name": "max_pairs",
+        "value": "4096"
+      },
+      {
+        "name": "max_per_via",
+        "value": "1024"
+      },
+      {
+        "name": "max_results",
+        "value": "4096"
+      },
+      {
+        "name": "max_seed_pods",
+        "value": "64"
+      },
+      {
+        "name": "min_overlap_ns",
+        "value": "1000000000"
+      },
+      {
+        "name": "node_only",
+        "value": "1"
+      },
+      {
+        "name": "ubiquity_den",
+        "value": "5"
+      },
+      {
+        "name": "ubiquity_min_nodes",
+        "value": "5"
+      },
+      {
+        "name": "ubiquity_num",
+        "value": "4"
+      }
+    ],
+    "seeds": [
+      "service:92bb743612b9898ff4c5022c0d70232f"
+    ]
+  }
+}

@@ -1,0 +1,428 @@
+{
+  "token": "30",
+  "derived": true,
+  "question": "blast_radius",
+  "window": {
+    "from": "2026-01-01T10:00:00Z",
+    "to": "2026-01-01T10:30:00Z"
+  },
+  "policy": {
+    "interval": 1,
+    "blastradius": 1,
+    "rank": "253c746577b09aba",
+    "names": 2,
+    "withhold": 1
+  },
+  "incomplete": false,
+  "names": [
+    {
+      "id": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+      "type": "k8s.node",
+      "name": "worker-n",
+      "name_from": "k8sobjects/c1"
+    },
+    {
+      "id": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3",
+      "type": "k8s.pod",
+      "name": "web-a",
+      "namespace": "shop",
+      "name_from": "k8sobjects/c1"
+    },
+    {
+      "id": "k8s.pod:e13aa02ffe78a26f687bcb74b01734cb",
+      "type": "k8s.pod",
+      "name": "web-r",
+      "namespace": "shop",
+      "name_from": "k8sobjects/c1"
+    },
+    {
+      "id": "service.instance:bfe4546186f0156dbc66b1a4a1be3e3e",
+      "type": "service.instance",
+      "name": null
+    }
+  ],
+  "counts": {
+    "withheld": {
+      "entities": 0,
+      "edges": 0,
+      "derived": 0,
+      "quarantined_entities": 0,
+      "quarantined_edges": 0
+    }
+  },
+  "notes": [
+    "Pass asof=30 to see the same world, until the next retention (at most a day) or a restart with other ranks."
+  ],
+  "document": {
+    "format": {
+      "major": 1,
+      "minor": 0
+    },
+    "basis": "derived",
+    "token": "30",
+    "from": "1767261600000000000",
+    "to": "1767263400000000000",
+    "policy": {
+      "subgraph": 2,
+      "interval": 1,
+      "coresidency": 1,
+      "extract": 1,
+      "blastradius": 1,
+      "graphdiff": 1,
+      "catalog_ids": "f28d37014cb38aaad2b7bfa3bb73194e0db9c69e61ac95942517e82f964dfe70",
+      "identity_encoding": 1
+    },
+    "query": {
+      "kind": "blast_radius",
+      "seeds": [
+        "k8s.node:aa5c53e361feac821c5d33b87121296e"
+      ],
+      "options": [
+        {
+          "name": "depth",
+          "value": "6"
+        },
+        {
+          "name": "max_frontier",
+          "value": "1024"
+        },
+        {
+          "name": "max_members",
+          "value": "4096"
+        }
+      ],
+      "asof": "latest"
+    },
+    "entities": [
+      {
+        "fingerprint": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+        "boundary": false
+      },
+      {
+        "fingerprint": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3",
+        "boundary": false
+      },
+      {
+        "fingerprint": "k8s.pod:e13aa02ffe78a26f687bcb74b01734cb",
+        "boundary": false
+      },
+      {
+        "fingerprint": "service.instance:bfe4546186f0156dbc66b1a4a1be3e3e",
+        "boundary": false
+      }
+    ],
+    "elements": [
+      {
+        "key": {
+          "kind": "entity",
+          "a": "k8s.node:aa5c53e361feac821c5d33b87121296e"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "k8sobjects/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "entity",
+          "a": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "k8sobjects/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "entity",
+          "a": "k8s.pod:e13aa02ffe78a26f687bcb74b01734cb"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "k8sobjects/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "entity",
+          "a": "service.instance:bfe4546186f0156dbc66b1a4a1be3e3e"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "spancount/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "edge",
+          "a": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3",
+          "b": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+          "relation": "scheduled_on"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "k8sobjects/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "edge",
+          "a": "k8s.pod:e13aa02ffe78a26f687bcb74b01734cb",
+          "b": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+          "relation": "scheduled_on"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "appeared",
+        "transitions": 1,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "600000000000",
+            "end": "1800000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [
+              "k8sobjects/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "edge",
+          "a": "service.instance:bfe4546186f0156dbc66b1a4a1be3e3e",
+          "b": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3",
+          "relation": "part_of"
+        },
+        "subject": "asserted",
+        "rule": "existence",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": true,
+            "end_reason": "unknown",
+            "producers": [
+              "spancount/c1"
+            ],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "derived",
+          "a": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+          "b": "k8s.pod:dae2d00783327734c8d8f4469fa1e5c3",
+          "rule": "blast_radius.reach",
+          "detail": ""
+        },
+        "subject": "derived",
+        "rule": "blast_radius.reach",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [
+          [
+            4
+          ]
+        ],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "derived",
+          "a": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+          "b": "k8s.pod:e13aa02ffe78a26f687bcb74b01734cb",
+          "rule": "blast_radius.reach",
+          "detail": ""
+        },
+        "subject": "derived",
+        "rule": "blast_radius.reach",
+        "class": "appeared",
+        "transitions": 1,
+        "paths": [
+          [
+            5
+          ]
+        ],
+        "pieces": [
+          {
+            "start": "600000000000",
+            "end": "1800000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [],
+            "ends": []
+          }
+        ]
+      },
+      {
+        "key": {
+          "kind": "derived",
+          "a": "k8s.node:aa5c53e361feac821c5d33b87121296e",
+          "b": "service.instance:bfe4546186f0156dbc66b1a4a1be3e3e",
+          "rule": "blast_radius.reach",
+          "detail": ""
+        },
+        "subject": "derived",
+        "rule": "blast_radius.reach",
+        "class": "stable",
+        "transitions": 0,
+        "paths": [
+          [
+            6
+          ]
+        ],
+        "pieces": [
+          {
+            "start": "0",
+            "end": "1800000000000",
+            "before": false,
+            "end_reason": "unknown",
+            "producers": [],
+            "ends": []
+          }
+        ]
+      }
+    ],
+    "keyframes": [
+      {
+        "at": "0",
+        "elements": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          6,
+          7,
+          9
+        ]
+      }
+    ],
+    "deltas": [
+      {
+        "at": "600000000000",
+        "element": 5,
+        "op": "appear",
+        "before": "absent:not_seen_in_window",
+        "after": "present"
+      },
+      {
+        "at": "600000000000",
+        "element": 8,
+        "op": "appear",
+        "before": "absent:not_seen_in_window",
+        "after": "present"
+      }
+    ],
+    "quarantine": {
+      "entities": [],
+      "edges": []
+    },
+    "sections": {
+      "truncated": {
+        "nodes": [],
+        "hosts": [],
+        "members": [],
+        "instances": [],
+        "seed_pods": [],
+        "depth": [],
+        "frontier": [],
+        "per_via": [],
+        "results": 0,
+        "pairs": 0,
+        "members_dropped": 0,
+        "suppressed_dropped": 0
+      },
+      "unattributed": [],
+      "unmapped": [],
+      "suppressed": [],
+      "pods": [],
+      "anchor": "none",
+      "ubiquity": {
+        "judged": false,
+        "frontier_nodes": 0
+      }
+    }
+  }
+}

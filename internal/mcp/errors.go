@@ -28,6 +28,12 @@ var (
 	// ErrNoListing is returned by find_entities on a store whose source found no
 	// listing read (see [Lister]).
 	ErrNoListing = errors.New("listing is not available on this store")
+	// ErrFutureToken is returned for a subgraph question whose asof is above the
+	// store's LastSeq: that surface refuses it and never clamps it.
+	ErrFutureToken = errors.New("the token is ahead of the store")
+	// ErrAnswerTooLarge is returned for a subgraph answer over its size cap: it is
+	// refused whole, never cut.
+	ErrAnswerTooLarge = errors.New("the answer is over the size cap")
 )
 
 // Error is the failure of a tool. Message is a plain sentence for the client;
@@ -127,8 +133,10 @@ func (s *Source) safeSentence(err error, named map[string]bool, what string) str
 //     [store.ErrInvalid] it wraps;
 //  5. a description recorded before the retention horizon ([interval.ErrRetained],
 //     with its seed in an [interval.RetainedError]);
-//  6. an invalid argument, or an identity error;
-//  7. an answer the last check refused for an endpoint id, which has a sentence
+//  6. a subgraph question's token ahead of the store, and a subgraph answer over
+//     its size cap;
+//  7. an invalid argument, or an identity error;
+//  8. an answer the last check refused for an endpoint id, which has a sentence
 //     of its own, and anything else, an internal error.
 func (s *Source) sentence(err error) (msg string, internal bool) {
 	var ee *egressError
@@ -153,6 +161,10 @@ func (s *Source) sentence(err error) (msg string, internal bool) {
 		return s.horizonSentence(err), false
 	case errors.Is(err, interval.ErrRetained):
 		return retainedSentence(err), false
+	case errors.Is(err, ErrFutureToken):
+		return "The token is ahead of the store; it is never clamped here.", false
+	case errors.Is(err, ErrAnswerTooLarge):
+		return "The answer is over the size cap; it is never cut. Narrow the window or the scope.", false
 	case errors.Is(err, store.ErrInvalid), isIdentityError(err):
 		return "The request was refused: " + strings.TrimSuffix(err.Error(), ": "+store.ErrInvalid.Error()) + ".", false
 	case errors.As(err, &ee):
