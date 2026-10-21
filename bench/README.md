@@ -24,6 +24,20 @@ Homebrew library on a Mac, or `ROCKSDB_PREFIX`, `CGO_CFLAGS` and `CGO_LDFLAGS` f
 built elsewhere. Only its formatting check needs neither, and it runs in the static
 shard.
 
+The Postgres baseline, `postgres/`, is a module of its own as well, to keep a database
+driver and a server to test against out of this module's graph. It is pure Go (build
+and test it with `CGO_ENABLED=0`). It asks whether a Postgres 17 table of interval
+ranges with GiST indexes answers the spike's reads as the reference engine does.
+`postgres/pgmodel` needs no server: the planner that turns records into interval rows
+(a re-fold of a subject from the start of the interval a late record lands in, with
+retention baselines) and a `Model`, an in-memory engine with the SQL's read semantics,
+which the spike's conformance test checks against the reference engine.
+`postgres/pgschema` is the DDL as text, `postgres/pginput` reads an activity file as
+engine records, and `postgres/g0` asks an engine every question of a plan and compares
+the answers with the plan's (`go run ./cmd/g0model -plan plan.json`, from `postgres/`).
+No Postgres server, image or driver is needed yet. Run its tests with `cd postgres &&
+go test ./... -p 2`; they are not wired into `mise` yet.
+
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
 mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
