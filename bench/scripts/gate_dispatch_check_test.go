@@ -53,7 +53,7 @@ func newRepo(t *testing.T) repo {
 // 24,576 from a gate-freeze tag of r's commit on main.
 func dispatch(r repo) map[string]string {
 	return map[string]string{
-		"REF": "refs/tags/gate-freeze-20261012", "SHA": r.onMain, "RUN_ID": "100", "RUN_ATTEMPT": "1",
+		"REF": "refs/tags/gate-freeze-20261012", "SHA": r.onMain,
 		"FAMILY": "rmae", "WINDOWS": "7", "CANDIDATES": "Lroot/off,Lroot/k64a2l1ns", "REPS": "3", "ARCHES": "both",
 		"PINS_WINDOW": "2", "SYNC": "true", "METRICS_EVERY": "10s", "GO_MEM_LIMIT": "11GiB", "MAX_PARALLEL": "12",
 		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain, "READ": "false",
@@ -115,7 +115,7 @@ func TestADispatchIsTakenFromMainOrAFreezeTagOnMain(t *testing.T) {
 	}
 	for _, want := range []string{
 		"retention_mode=background\n", "pace=4500\n", "retain_flush_dels=24576\n", "expected_sha=" + r.onMain + "\n",
-		"sync=true\n", "metrics_every=10s\n", "max_parallel=12\n", "plans_key=bench-plans-100-1\n",
+		"sync=true\n", "metrics_every=10s\n", "max_parallel=12\n", "rocksdb_oses=[]\n",
 		"go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "read=false\n",
 		`matrix={"include":[{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/off","slug":"Lroot_off","engine":"pebble","rep":1},`,
 	} {
@@ -172,6 +172,7 @@ func TestADispatchOfBothEnginesMarksEachJob(t *testing.T) {
 	}
 	for _, want := range []string{
 		"read=true\n", "go_mem_limit=11GiB\n", "pebble_memory_limit=11811160064\n", "retention_mode=sync\n",
+		`rocksdb_oses=["ubuntu-24.04","ubuntu-24.04-arm"]` + "\n",
 		`{"os":"ubuntu-24.04","window":30,"candidate":"L/off","slug":"L_off","engine":"pebble","rep":1}`,
 		`{"os":"ubuntu-24.04","window":30,"candidate":"RL/k64a2l5m","slug":"RL_k64a2l5m","engine":"rocksdb","rep":5}`,
 		`{"os":"ubuntu-24.04-arm","window":30,"candidate":"RL4/k64a2l5m","slug":"RL4_k64a2l5m","engine":"rocksdb","rep":1}`,

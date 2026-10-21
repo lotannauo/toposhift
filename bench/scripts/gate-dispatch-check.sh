@@ -9,7 +9,6 @@
 # command to the runner. What it reads:
 #
 #   REF, SHA                 the ref the run was dispatched from and its commit
-#   RUN_ID, RUN_ATTEMPT      the run and its attempt
 #   FAMILY WINDOWS CANDIDATES REPS ARCHES PINS_WINDOW SYNC METRICS_EVERY GO_MEM_LIMIT
 #   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ
 #                            the dispatch's inputs
@@ -256,6 +255,14 @@ for os in "${oses[@]}"; do
 done
 matrix+=']}'
 
+# The runners of the RocksDB library job, as a JSON list: every runner of the
+# dispatch when a candidate is built on RocksDB, else none (the job is skipped).
+rocksdb_oses='[]'
+if [ "$has_rocks" = true ]; then
+  rocksdb_oses="[$(printf '"%s",' "${oses[@]}")"
+  rocksdb_oses="${rocksdb_oses%,}]"
+fi
+
 {
   echo "matrix=$matrix"
   echo "family=$FAMILY"
@@ -272,7 +279,7 @@ matrix+=']}'
   echo "pace=$pace"
   echo "retain_flush_dels=$RETAIN_FLUSH_DELS"
   echo "expected_sha=$expected_sha"
-  echo "plans_key=bench-plans-${RUN_ID}-${RUN_ATTEMPT}"
+  echo "rocksdb_oses=$rocksdb_oses"
 } >>"$GITHUB_OUTPUT"
 
 {

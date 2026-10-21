@@ -21,8 +21,9 @@ import (
 // process in KiB, from GNU time's report (0 when it was not read). The other fields
 // are recorded by the workflow and not judged: the peak resident set of the read
 // that followed the build (0 for none), and, for a RocksDB build, the sha256 of its
-// library's build stamp, the cache entry the library came from, whether it was
-// restored, and the Ubuntu packages of the libraries it links.
+// library's build stamp, the cache entry the library came from, whether the run's
+// library job restored it from that entry (true) or built it with the same script
+// (false), and the Ubuntu packages of the libraries it links.
 type Job struct {
 	runner.Job
 	Engine             string `json:"engine"`

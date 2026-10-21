@@ -15,9 +15,14 @@ name: bench
 #
 # Layout L on RocksDB (the RL/ and RL4/ candidates, bench/rocksdb) is built and read
 # by rocksbench, with cgo, against the RocksDB library rocksdb.yml builds and caches
-# from main. A job here only restores that library, under rocksdb.yml's key and path,
-# and fails when it is not cached (run rocksdb.yml on main first): the library has
-# one writer, and no timed job spends its time compiling it. With the read input,
+# from main. A dispatch's library job restores that library once per architecture,
+# under rocksdb.yml's key and path, or builds it with the same script when the cache
+# has lost it, and hands it to the build jobs as an artifact of the run. Nothing here
+# saves a cache: rocksdb.yml on main stays the library's one writer. So every RocksDB
+# build of one run on one architecture links one library, no timed job spends its time
+# compiling it, and a push to main that evicts cache entries while a dispatch runs
+# changes nothing in that dispatch: the plans, too, reach the build jobs as an
+# artifact of the run, which the cache's eviction does not touch. With the read input,
 # repetition 1 of every candidate also reads its build afterwards, for the answers
 # and counters that rocksbench judge, the RocksDB rule's judge, compares between the
 # engines; the build alone is timed.
@@ -146,7 +151,7 @@ jobs:
       pace: ${{ steps.matrix.outputs.pace }}
       retain_flush_dels: ${{ steps.matrix.outputs.retain_flush_dels }}
       expected_sha: ${{ steps.matrix.outputs.expected_sha }}
-      plans_key: ${{ steps.matrix.outputs.plans_key }}
+      rocksdb_oses: ${{ steps.matrix.outputs.rocksdb_oses }}
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -182,8 +187,6 @@ jobs:
         env:
           REF: ${{ github.ref }}
           SHA: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
           FAMILY: ${{ inputs.family }}
           WINDOWS: ${{ inputs.windows }}
           CANDIDATES: ${{ inputs.candidates }}
@@ -202,7 +205,8 @@ jobs:
 
   # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
   # but the file is about 350 KB, so it is made here, where the memory is, and the
-  # build jobs on both architectures read it from the cache. The plan is expected
+  # build jobs on both architectures download it: the artifact this job keeps, which
+  # the judge reads too, so a build reads the very bytes that are kept. The plan is expected
   # to be the same file on any machine; the digests printed in the summary check
   # it, and a later check compares them with the plans made locally.
   plans:
@@ -322,12 +326,7 @@ jobs:
             done
           } >>"$GITHUB_STEP_SUMMARY"
 
-      - name: Save the plans for the build jobs
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/plans
-          key: ${{ needs.setup.outputs.plans_key }}
-
+      # The build jobs download this artifact by its name, so the name is fixed.
       - name: Keep the plans and their logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -341,13 +340,141 @@ jobs:
           overwrite: true
           retention-days: 90
 
+  # The RocksDB library of the run, once per architecture that builds a RocksDB
+  # candidate: restored from rocksdb.yml's cache, or, when the cache has lost it,
+  # built here by the same script (minutes), and kept as an artifact of the run for
+  # the build jobs. It saves no cache. On a pull request it runs for x86-64 only,
+  # for the RocksDB dry run, from the pull request's own script. The name must not
+  # start with "ci (".
+  rocksdb-library:
+    name: bench RocksDB library (${{ matrix.os }})
+    needs: setup
+    if: >-
+      !cancelled() && (github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && needs.setup.result == 'success' && needs.setup.outputs.rocksdb_oses != '[]'))
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Never an empty list, which a matrix refuses: x86-64 alone on a pull request,
+        # and for a dispatch whose setup gave none (the job is then skipped anyway).
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && needs.setup.outputs.rocksdb_oses != '[]' && needs.setup.outputs.rocksdb_oses || '["ubuntu-24.04"]') }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      # A dispatch's library is built by the script of the commit the dispatch names.
+      - name: Check the commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_SHA: ${{ needs.setup.outputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+            echo "::error::the checkout is not the commit the dispatch expects" >&2
+            exit 1
+          fi
+
+      # The library's key and path, exactly as rocksdb.yml names them (the dry run
+      # checks that the workflows agree).
+      - name: Name the RocksDB build
+        id: rocks
+        env:
+          OS_LABEL: ${{ matrix.os }}
+        run: |
+          script=bench/rocksdb/scripts/build-rocksdb.sh
+          version="$("$script" --version)"
+          hash="$(sha256sum "$script" | cut -d' ' -f1)"
+          {
+            echo "key=rocksdb-v1-${OS_LABEL}-${RUNNER_ARCH}-${version}-${hash}"
+            echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Only restored, never saved here. Restored first, so that a hit installs
+      # nothing.
+      - name: Restore the RocksDB build
+        id: rockscache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.rocks.outputs.prefix }}
+          key: ${{ steps.rocks.outputs.key }}
+
+      # Only for a build: as in rocksdb.yml, the compiler, Ubuntu's cmake and the
+      # compression libraries.
+      - name: Install the compiler and the libraries RocksDB links
+        if: steps.rockscache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev
+          dpkg-query --show build-essential cmake liblz4-dev libsnappy-dev libzstd-dev zlib1g-dev g++
+
+      - name: Build RocksDB
+        if: steps.rockscache.outputs.cache-hit != 'true'
+        timeout-minutes: 60
+        env:
+          CMAKE: /usr/bin/cmake
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          echo "::warning::no RocksDB library is cached under this key, so this run builds its own; rocksdb.yml on main saves the cached one"
+          bench/rocksdb/scripts/build-rocksdb.sh "$ROCKSDB_PREFIX"
+
+      - name: Show how the library was built
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          cat "$ROCKSDB_PREFIX/lib/rocksdb-build.stamp"
+          ls -l "$ROCKSDB_PREFIX/lib/librocksdb.a"
+
+      # One tar file, so that the layout and the modes are kept as they are, and a
+      # file that says whether the cache had the library.
+      - name: Pack the library
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+          CACHE_HIT: ${{ steps.rockscache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rocksdb-artifact"
+          mkdir -p "$out"
+          tar -C "$(dirname "$ROCKSDB_PREFIX")" -cf "$out/rocksdb.tar" "$(basename "$ROCKSDB_PREFIX")"
+          if [ "$CACHE_HIT" = true ]; then echo true; else echo false; fi >"$out/cache-hit"
+          (cd "$out" && sha256sum rocksdb.tar) | tee "$out/rocksdb.tar.sha256"
+          echo "- RocksDB library for ${RUNNER_ARCH}: restored from the cache: $(cat "$out/cache-hit"); tar sha256 \`$(cut -d' ' -f1 "$out/rocksdb.tar.sha256")\`" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the library for the build jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-rocksdb-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/rocksdb-artifact
+          if-no-files-found: error
+          overwrite: true
+          # As long as the build artifacts, so that a re-run of a failed build job
+          # finds it.
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 90 }}
+
   # One build per job, by spikebench or, for RL/ and RL4/, by rocksbench, so the
   # longest job is one 30-day build and, with the read input, its read. Every job
   # gets its own runner, and so its own disk and its own memory.
   build:
     name: "bench build (${{ matrix.os }} R${{ matrix.window }} ${{ matrix.candidate }} rep ${{ matrix.rep }})"
-    if: github.event_name == 'workflow_dispatch'
-    needs: [setup, plans]
+    # The library job is skipped for a dispatch with no RocksDB candidate, and a
+    # job whose needs were skipped is skipped too unless its condition says otherwise.
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' &&
+      needs.setup.result == 'success' && needs.plans.result == 'success' &&
+      (needs.rocksdb-library.result == 'success' || needs.rocksdb-library.result == 'skipped')
+    needs: [setup, plans, rocksdb-library]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 358
     permissions:
@@ -403,12 +530,13 @@ jobs:
           install_args: go
           cache: false
 
-      - name: Restore the plans
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The plans job's artifact of this run, which holds plans/ and logs/; only
+      # this run's artifacts can be named here (no run-id, no token).
+      - name: Fetch the plans
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: ${{ runner.temp }}/plans
-          key: ${{ needs.setup.outputs.plans_key }}
-          fail-on-cache-miss: true
+          name: bench-plans-${{ needs.setup.outputs.family }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/planset
 
       # time -v is how the build's peak memory and elapsed time are read.
       - name: Check that GNU time is present
@@ -446,16 +574,40 @@ jobs:
             echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
           } >> "$GITHUB_OUTPUT"
 
-      # Only restored, never built or saved here: rocksdb.yml on main is the one
-      # writer. A miss fails the job in minutes, not after a build of tens.
-      - name: Restore the RocksDB build
+      # The library job's library of this run, never the cache: every RocksDB build
+      # of the run on this architecture links the same one, whatever the cache holds
+      # by now.
+      - name: Fetch the RocksDB build
+        if: matrix.engine == 'rocksdb'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bench-rocksdb-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/rocksdb-artifact
+
+      # Unpacked at the path the library job built or restored it at, which is this
+      # job's too, and checked as a build is. cache-hit is what job.json records: true
+      # when the library job restored it from rocksdb.yml's cache, false when it built it.
+      - name: Unpack the RocksDB build
         if: matrix.engine == 'rocksdb'
         id: rockscache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.rocks.outputs.prefix }}
-          key: ${{ steps.rocks.outputs.key }}
-          fail-on-cache-miss: true
+        env:
+          ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          in="$RUNNER_TEMP/rocksdb-artifact"
+          (cd "$in" && sha256sum --check rocksdb.tar.sha256)
+          top="$(tar -tf "$in/rocksdb.tar" | cut -d/ -f1 | sort -u)"
+          if [ "$top" != "$(basename "$ROCKSDB_PREFIX")" ]; then
+            echo "::error::the library artifact holds $top, not $(basename "$ROCKSDB_PREFIX")" >&2
+            exit 1
+          fi
+          tar -C "$(dirname "$ROCKSDB_PREFIX")" --no-same-owner -xf "$in/rocksdb.tar"
+          bench/rocksdb/scripts/build-rocksdb.sh --check-library "$ROCKSDB_PREFIX/lib/librocksdb.a"
+          hit="$(cat "$in/cache-hit")"
+          case "$hit" in
+            true | false) echo "cache-hit=$hit" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::the library artifact's cache-hit is '$hit'" >&2; exit 1 ;;
+          esac
 
       - name: Show how the library was built
         if: matrix.engine == 'rocksdb'
@@ -509,7 +661,8 @@ jobs:
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
           mkdir -p "$WORK" "$RUNNER_TEMP/logs"
-          cp "$RUNNER_TEMP/plans/R$WINDOW/plan.json" "$WORK/plan.json"
+          cp "$RUNNER_TEMP/planset/plans/R$WINDOW/plan.json" "$WORK/plan.json"
+          sha256sum "$WORK/plan.json"
 
       # What the disk and the memory did over the build, a minute apart. The build
       # directory is kept under the runner's temp directory for now, which is on
@@ -795,7 +948,8 @@ jobs:
   # paced background build of the root store at a threshold, judged by the store
   # gate, with the refusals a dispatch of the gate relies on. Every step is timed
   # (no -untimed), so the guards of a timed build run exactly as they do in a
-  # dispatch. It uploads nothing.
+  # dispatch. It keeps nothing: its one artifact, the tiny plan handed to itself as
+  # the plans job hands plans to the build jobs, expires after a day.
   dry-run:
     name: bench dry run
     if: github.event_name == 'pull_request'
@@ -843,6 +997,40 @@ jobs:
           set -euo pipefail
           D="$RUNNER_TEMP/dry"
           "$RUNNER_TEMP/spikebench" plan -out "$D/R1" -preset tiny -events-per-second 0.05 -batch 40 -window 1 -pins "$D/pins.json" -full
+
+      # The plans job's upload and a build job's download, shaped as a dispatch has
+      # them: plans/ and logs/ under one directory, uploaded as one artifact, and the
+      # plan read back from plans/R<window>/plan.json.
+      - name: Lay the plan out as the plans job does
+        run: |
+          set -euo pipefail
+          K="$RUNNER_TEMP/kept"
+          mkdir -p "$K/plans/R1" "$K/logs"
+          cp "$RUNNER_TEMP/dry/R1/plan.json" "$K/plans/R1/plan.json"
+          cp "$RUNNER_TEMP/dry/pins.json" "$K/plans/pins.json"
+          echo "dry run" >"$K/logs/pins.log"
+
+      - name: Keep it as the plans job does
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-plans-dry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/kept/plans
+            ${{ runner.temp }}/kept/logs
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+      - name: Fetch it as a build job does
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bench-plans-dry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/planset
+
+      - name: Check that the fetched plan is the plan made
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/dry/R1/plan.json" "$RUNNER_TEMP/planset/plans/R1/plan.json"
 
       - name: Build the first candidate
         run: |
@@ -935,16 +1123,19 @@ jobs:
   # reads, and rocksbench judge run on the two. One repetition each is too few for the
   # rule, so the judge must refuse the set with status 3 for that reason alone, having
   # read every build, its read and its peak resident set, and having found every
-  # build a result: that proves the chain without a verdict. A pull request cannot
-  # save a cache, and this job never tries: on a miss (a pull request that changes
-  # the build script, or before rocksdb.yml has saved the library on main) it builds
-  # the library itself. It uploads nothing.
+  # build a result: that proves the chain without a verdict. It takes the library
+  # from the library job, as a timed job does, so the pull request proves that hand-
+  # off too; that job builds the library on a miss (a pull request that changes the
+  # build script, or before rocksdb.yml has saved the library on main). It uploads
+  # nothing. The library job needs setup, which a pull request skips, so this job's
+  # condition must say how it runs: without a status function it would get an
+  # implicit success(), which the skipped setup makes false.
   dry-run-rocksdb:
     name: bench dry run, RocksDB (${{ matrix.os }})
-    if: github.event_name == 'pull_request'
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.rocksdb-library.result == 'success' }}
+    needs: rocksdb-library
     runs-on: ${{ matrix.os }}
-    # A RocksDB build on a cache miss takes up to an hour.
-    timeout-minutes: 100
+    timeout-minutes: 40
     permissions:
       contents: read
     strategy:
@@ -962,16 +1153,17 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # The timed jobs restore the library rocksdb.yml saves, by its key and path, so
-      # the lines that name them must be the same in both workflows (twice here).
+      # The library job restores the library rocksdb.yml saves, by its key and path,
+      # and the jobs here unpack it at that path, so the lines that name them must be
+      # the same in both workflows (three times here).
       - name: Check that both workflows name the RocksDB build alike
         run: |
           set -euo pipefail
           for what in key prefix; do
             lines="$(grep -hF "echo \"$what=" .github/workflows/rocksdb.yml .github/workflows/bench.yml | sed 's/^ *//' | sort | uniq -c)"
             echo "$lines"
-            # One line, written three times.
-            if [ "$(awk '{ print $1 }' <<<"$lines")" != 3 ]; then
+            # One line, written four times.
+            if [ "$(awk '{ print $1 }' <<<"$lines")" != 4 ]; then
               echo "::error::rocksdb.yml and bench.yml do not name the RocksDB build's $what alike" >&2
               exit 1
             fi
@@ -1011,24 +1203,33 @@ jobs:
             echo "prefix=${RUNNER_TEMP}/rocksdb-${version}-${hash:0:16}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Restore the RocksDB build
-        id: rockscache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The two steps of a timed job, as it has them.
+      - name: Fetch the RocksDB build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: ${{ steps.rocks.outputs.prefix }}
-          key: ${{ steps.rocks.outputs.key }}
+          name: bench-rocksdb-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/rocksdb-artifact
 
-      # A timed job would fail here instead: say so, without failing a pull request
-      # that has a reason to miss.
-      - name: Build RocksDB
-        if: steps.rockscache.outputs.cache-hit != 'true'
-        timeout-minutes: 60
+      - name: Unpack the RocksDB build
+        id: rockscache
         env:
-          CMAKE: /usr/bin/cmake
           ROCKSDB_PREFIX: ${{ steps.rocks.outputs.prefix }}
         run: |
-          echo "::warning::no RocksDB library is cached under this key: a timed job would fail until rocksdb.yml on main has saved one"
-          bench/rocksdb/scripts/build-rocksdb.sh "$ROCKSDB_PREFIX"
+          set -euo pipefail
+          in="$RUNNER_TEMP/rocksdb-artifact"
+          (cd "$in" && sha256sum --check rocksdb.tar.sha256)
+          top="$(tar -tf "$in/rocksdb.tar" | cut -d/ -f1 | sort -u)"
+          if [ "$top" != "$(basename "$ROCKSDB_PREFIX")" ]; then
+            echo "::error::the library artifact holds $top, not $(basename "$ROCKSDB_PREFIX")" >&2
+            exit 1
+          fi
+          tar -C "$(dirname "$ROCKSDB_PREFIX")" --no-same-owner -xf "$in/rocksdb.tar"
+          bench/rocksdb/scripts/build-rocksdb.sh --check-library "$ROCKSDB_PREFIX/lib/librocksdb.a"
+          hit="$(cat "$in/cache-hit")"
+          case "$hit" in
+            true | false) echo "cache-hit=$hit" >>"$GITHUB_OUTPUT" ;;
+            *) echo "::error::the library artifact's cache-hit is '$hit'" >&2; exit 1 ;;
+          esac
 
       - name: Show how the library was built
         env:
