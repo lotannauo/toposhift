@@ -50,6 +50,11 @@
       "description": "The DuckDB baseline's pins are registered; never bumped.",
       "matchFileNames": ["bench/duckdb/**", ".github/workflows/duckdb.yml"],
       "enabled": false
+    },
+    {
+      "description": "The XTDB baseline's pins are registered; never bumped.",
+      "matchFileNames": ["bench/xtdb/**", ".github/workflows/xtdb.yml"],
+      "enabled": false
     }
   ]
 }

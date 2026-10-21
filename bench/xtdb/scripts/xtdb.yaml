@@ -1,0 +1,32 @@
+# The node configuration of the XTDB baseline: the one source of every setting of the
+# node. scripts/xt-server.sh mounts this file into the container and starts the node
+# with it, and the JVM options that go with it are in the script, so a measurement
+# records this file's hash and the script's options and has the whole configuration.
+#
+# What is not written here is the node's default, on purpose: the indexer (a block of
+# 102400 rows), the compactor's threads and the disk cache are as the image ships them,
+# so that the baseline is XTDB as it is, with only what a single node on a loopback
+# needs and a memory cache sized for a runner.
+#
+# The directories are those the container sees. The script mounts one host directory,
+# which is where the log and the storage can be measured from.
+
+server:
+  host: "*"
+  port: 5432
+
+healthz:
+  host: "*"
+  port: 8080
+
+log: !Local
+  path: /var/lib/xtdb/log
+
+storage: !Local
+  path: /var/lib/xtdb/storage
+
+# 2 GiB of the memory the JVM may map outside its heap (the script gives it 4 GiB of
+# direct memory): the default is half of that, and the same on every machine is better
+# than a ratio of the machine.
+memoryCache:
+  maxSizeBytes: 2147483648

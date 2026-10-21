@@ -62,6 +62,9 @@ func (c Counts) SegmentPortionDeletes() (n uint64) {
 	return n
 }
 
+// Add adds the counts of another plan or stream to c.
+func (c *Counts) Add(o Counts) { c.add(o) }
+
 func (c *Counts) add(o Counts) {
 	c.Batches += o.Batches
 	c.Records += o.Records

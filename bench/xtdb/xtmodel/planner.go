@@ -274,3 +274,41 @@ func segmentTables(s engine.Subject) []Table {
 	}
 	return []Table{Ent}
 }
+
+// Rebuilder rebuilds a planner's memory from the records of a log: for each (subject,
+// producer), the latest record by (event time, Seq) and where the segment it makes
+// ends. A server adapter opened over a database an earlier one left feeds it the
+// records of the forward log tables (the edge records of one direction and the entity
+// records), in any order, and gets the planner that adapter had.
+type Rebuilder struct {
+	latest map[segKey]*Rec
+}
+
+// NewRebuilder returns a rebuilder that has seen no record.
+func NewRebuilder() *Rebuilder { return &Rebuilder{latest: make(map[segKey]*Rec)} }
+
+// Add notes a record. The record must be valid. Its payload, which the planner does
+// not use, is not kept.
+func (b *Rebuilder) Add(r engine.Record) {
+	r.Payload = nil
+	b.add(newRec(r))
+}
+
+func (b *Rebuilder) add(c *Rec) {
+	sk := segKey{c.Subject, c.Producer}
+	if prev := b.latest[sk]; prev == nil || (logEntry{rec: prev}).cmp(logEntry{rec: c}) < 0 {
+		b.latest[sk] = c
+	}
+}
+
+// Len is the number of (subject, producer) pairs seen.
+func (b *Rebuilder) Len() int { return len(b.latest) }
+
+// Planner returns a planner over the log h that remembers what the records said.
+func (b *Rebuilder) Planner(h History) *Planner {
+	p := NewPlanner(h)
+	for sk, c := range b.latest {
+		p.restore(sk, segState{last: c.Event, end: c.deadline()})
+	}
+	return p
+}

@@ -115,10 +115,17 @@ the transaction that writes those segments and a `Model`, an in-memory bitempora
 with XTDB's semantics for those statements, which the spike's conformance test checks
 against the reference engine, and whose segments are compared with `lifecycle.Fold`.
 `xtdb/g0` asks an engine every question of a plan and compares the answers with the
-plan's (`go run ./cmd/g0model -plan plan.json`, from `xtdb/`). No XTDB server, image or
-driver is needed yet. Its checks are `mise run bench:xtdb:fmt:check`, `bench:xtdb:lint`,
-`bench:xtdb:vuln`, `bench:xtdb:test` and `bench:xtdb:test:race`; they run in
-`.github/workflows/xtdb.yml`, not in the `ci` shards.
+plan's (`go run ./cmd/g0model -plan plan.json`, from `xtdb/`). `xtdb/xtengine` is an
+`engine.Engine` over a real XTDB 2.1 node, reached over its Postgres wire protocol with
+the pgx driver: it writes the planner's transactions at the system time of each batch's
+ordinal and reads with `FOR VALID_TIME` and `FOR SYSTEM_TIME`. `xtdb/scripts/xt-server.sh`
+starts the node it is tested against (the image pinned by digest, the configuration of
+`xtdb/scripts/xtdb.yaml`) in a container, on a laptop and on CI; the engine's tests need
+it only for the tests named `TestProbe` and `TestServer`, which skip without
+`TOPOSHIFT_XTDB_DSN` and which `mise run bench:xtdb:test:server` runs against it, and
+everything else runs against a fake node. The checks are `mise run bench:xtdb:fmt:check`,
+`bench:xtdb:lint`, `bench:xtdb:vuln`, `bench:xtdb:test`, `bench:xtdb:test:race` and
+`bench:xtdb:test:server`; they run in `.github/workflows/xtdb.yml`, not in the `ci` shards.
 
 The Dolt baseline, `dolt/`, is a module of its own, to keep a database server to test
 against and its driver out of this module's graph, and it is pure Go (build and test it

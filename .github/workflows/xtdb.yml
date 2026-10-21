@@ -1,13 +1,16 @@
 name: xtdb
 
 # The XTDB baseline (bench/xtdb) is a module of its own, kept out of the four ci
-# shards because a later step tests it against an XTDB server that no shard has. This
-# workflow runs the module's format check, lint, vulnerability scan, tests and
-# race-detector tests on both architectures. It is not a required check, and it times
-# nothing.
+# shards because it is tested against an XTDB node that no shard has. The check job runs
+# the module's format check, lint, vulnerability scan, tests and race-detector tests on
+# both architectures. The integration job starts a node, with
+# bench/xtdb/scripts/xt-server.sh (the one way the node is ever started, here and on a
+# laptop), and runs the module's server tests against it: the behaviours the model
+# assumes of XTDB, the engine's conformance and the first gate of a plan. Neither is a
+# required check, and neither times anything.
 #
-# A pull request runs it when it touches the module or this file. A push to main also
-# runs it when it touches what the module links (bench/spike, internal, the module
+# A pull request runs them when it touches the module or this file. A push to main also
+# runs them when it touches what the module links (bench/spike, internal, the module
 # files). So a pull request that changes internal/** is caught by this workflow only
 # after it reaches main, which is acceptable for a baseline that is not required.
 
@@ -86,6 +89,101 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rapid-failures-xtdb-${{ matrix.os }}
+          path: "bench/xtdb/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
+  integration:
+    name: integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # The node's image and its data need room, and the runner images carry gigabytes of
+      # toolchains a test never uses. Best effort: a path that is not on this image is skipped,
+      # and nothing under the home directory is touched. The node is started after this, so the
+      # image it pulls is not pruned.
+      - name: Free disk space
+        run: |
+          echo "before:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          echo "after:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+
+      # The image is pinned by digest in the script, which pulls it. The node listens on
+      # loopback only, with the configuration of xtdb.yaml and the JVM options of the
+      # script, and trusts whoever can reach it.
+      - name: Start the XTDB node
+        run: |
+          export TOPOSHIFT_XTDB_DATA="$RUNNER_TEMP/xtdb"
+          bench/xtdb/scripts/xt-server.sh start
+
+      - name: Show the disk before the tests
+        run: |
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      - name: Test against the node
+        env:
+          TOPOSHIFT_XTDB_DSN: host=127.0.0.1 port=55433 user=xtdb dbname=xtdb
+        run: mise run bench:xtdb:test:server
+
+      # An indexer that fails stops the node's ingestion and the node answers nothing after
+      # it. The log then says "Ingestion stopped for 'xtdb' database: error processing log
+      # record" (the node gave the commit that met it "Ingestion stopped: ..." too), so a log
+      # that says "Ingestion stopped" fails the job, whatever the tests found. The failed
+      # statements the tests make on purpose (a write the node cannot plan) do not say it.
+      - name: Show the node's log and the disk, and fail if its indexer failed
+        if: always()
+        run: |
+          docker logs toposhift-xtdb > "$RUNNER_TEMP/xtdb.log" 2>&1 || true
+          tail -n 200 "$RUNNER_TEMP/xtdb.log"
+          df -h /
+          df -h "$RUNNER_TEMP"
+          if grep -q "Ingestion stopped" "$RUNNER_TEMP/xtdb.log"; then
+            echo "the node's log shows an indexer failure" >&2
+            grep "Ingestion stopped" "$RUNNER_TEMP/xtdb.log" | head -n 5 >&2
+            exit 1
+          fi
+
+      - name: Stop the XTDB node
+        if: always()
+        run: |
+          export TOPOSHIFT_XTDB_DATA="$RUNNER_TEMP/xtdb"
+          bench/xtdb/scripts/xt-server.sh stop
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-xtdb-integration-${{ matrix.os }}
           path: "bench/xtdb/**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14

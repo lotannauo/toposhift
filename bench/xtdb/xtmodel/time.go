@@ -100,10 +100,12 @@ func (b Bounds) Contains(ns int64) bool {
 // 2^63, which overflow a timestamp; an ordinal cannot, and it is strictly increasing,
 // which a transaction's system time must be.
 //
-// Unverified against XTDB 2.1: that a transaction may be given a system time earlier
-// than the server's clock. The server adapter tests it first; if the server refuses,
-// the base becomes the server's clock at the first batch, recorded, with the same
-// offsets.
+// A server adapter's ordinal counts every transaction it makes, a retention (which writes
+// the horizon) as well as a batch; the model, which keeps its horizon in memory, counts batches
+// only.
+//
+// XTDB 2.1.0 accepts a transaction at a system time earlier than the server's clock (package
+// xtengine's probes check it against a node, and its documentation records what was found).
 
 // BaseSystemTime is the system time of the zeroth batch: 2000-01-01T00:00:00Z.
 var BaseSystemTime = instantOf(time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC))
