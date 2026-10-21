@@ -96,6 +96,8 @@ func main() {
 		err = doReadTiming(args)
 	case "diagread":
 		err = doDiagRead(args)
+	case "phases":
+		err = doPhases(args)
 	default:
 		usage()
 	}
@@ -118,7 +120,7 @@ type exitCodeError struct {
 func (e exitCodeError) Error() string { return e.msg }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate|readtiming|diagread [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate|readtiming|diagread|phases [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 
@@ -506,6 +508,9 @@ type buildFlags struct {
 	// profileWindows writes CPU and mutex profiles of each retention pass of a background
 	// build (runner.BuildOptions.ProfileWindows).
 	profileWindows bool
+	// phaseLog writes the store's phases of each batch to phases.jsonl
+	// (runner.BuildOptions.PhaseLog).
+	phaseLog bool
 	// The table-shape and compaction settings of Pebble (runner.BuildOptions.Shape), all
 	// off by default, which leaves the store's own. resolve writes the two lists in their
 	// canonical form, so a step that is passed them makes the same.
@@ -548,6 +553,7 @@ const (
 )
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
+	fs.BoolVar(&b.phaseLog, "phase-log", false, "for a diagnostic build of an Lroot candidate: write phases.jsonl in the candidate's directory, one line for each batch with the store's own account of where its Write spent the time (validation, state reads, invalidation, the record commit, the checkpoint build and the second commit), for `spikebench phases`; the log wraps the build's recorder, so the build is not a measurement, and it is recorded in the manifest (default: off, and then the build makes no file and records nothing of it)")
 	fs.BoolVar(&b.serveOptions, "serve-options", false, "for the Lroot candidates (the root store's): open the store as serve does, with the lifecycle policy that names the boot key, L0 kept and L1 retained 60 days behind L2, an arm beside the default Lroot (which has no boot key and retains every layer alike), so that what ships is measured; recorded in the manifest (serve_options), and a family is built all with or all without it (default: off)")
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
 	fs.BoolVar(&b.canonical, "canonical-layout", false, "after compacting everything, rewrite the data once in key order into bottom-level tables of the target file size, so the tables and the blocks every read loads are a function of the data and not of how fast the build ran; recorded in the manifest, and a report refuses to compare builds with and without it")
@@ -756,6 +762,9 @@ func (b buildFlags) args() []string {
 	if b.profileWindows {
 		out = append(out, "-profile-windows")
 	}
+	if b.phaseLog {
+		out = append(out, "-phase-log")
+	}
 	if b.lbaseTargetMB != 0 {
 		out = append(out, "-lbase-target-mb="+strconv.Itoa(b.lbaseTargetMB))
 	}
@@ -791,7 +800,7 @@ func (b buildFlags) args() []string {
 
 func (b buildFlags) options() runner.BuildOptions {
 	return runner.BuildOptions{
-		RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows,
+		RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows, PhaseLog: b.phaseLog,
 		Shape: b.shape(), ServeOptions: b.serveOptions,
 	}
 }
@@ -1519,6 +1528,53 @@ func runStoreGate(args []string, stdout, stderr io.Writer) error {
 	case rep.Unexpected > 0:
 		return exitCodeError{2, fmt.Sprintf("the store gate: %d rows that the builds' mode should judge were not judged (listed under NOT JUDGED)", rep.Unexpected)}
 	}
+	return nil
+}
+
+// doPhases prints, from the phase log of a built candidate (build -phase-log), the
+// p50, p99 and maximum of each phase of a batch's Write and the share of the tail of
+// the batches that each phase accounts for.
+func doPhases(args []string) error { return runPhases(args, os.Stdout, os.Stderr) }
+
+// runPhases is [doPhases] with its streams given.
+func runPhases(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("phases", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var out, name, class string
+	var tail float64
+	fs.Float64Var(&tail, "tail", 0.99, "where the tail begins, as a quantile of the batches' wall time (0.99, the p99 the store gate's rows are read at; a lower one gives a tail of more batches, to see whether a figure of the p99 holds)")
+	fs.StringVar(&out, "out", "", "the directory the candidate was built under (required)")
+	fs.StringVar(&name, "candidate", "", "the candidate whose phase log to read (required)")
+	fs.StringVar(&class, "class", "", "report only this class of batches: outside, settling, inside, unpaced or excluded (default: every class there is)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return usageError{err.Error()}
+	}
+	if out == "" || name == "" {
+		return usageError{"-out and -candidate are required"}
+	}
+	if !(tail > 0 && tail < 1) {
+		return usageError{fmt.Sprintf("-tail %v: give a quantile above 0 and below 1", tail)}
+	}
+	dir := runner.CandidateDir(out, name)
+	m, err := runner.LoadManifest(dir)
+	if err != nil {
+		return err
+	}
+	if m.Gate == nil {
+		return fmt.Errorf("%s: the manifest has no gate trace: the build was not through the root store", dir)
+	}
+	recs, err := runner.LoadPhaseLog(dir)
+	if err != nil {
+		return fmt.Errorf("%w (build with -phase-log)", err)
+	}
+	if len(recs) == 0 {
+		return fmt.Errorf("%s: the phase log is empty", dir)
+	}
+	fmt.Fprintf(stdout, "%s  %s  (local diagnostic: a build with the log is not a measurement, and its figures are never published)\n", name, dir)
+	runner.AnalyzePhasesAt(recs, m.Gate, tail).Format(stdout, class)
 	return nil
 }
 

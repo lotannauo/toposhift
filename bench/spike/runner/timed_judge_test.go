@@ -726,6 +726,7 @@ func TestTimingLabels(t *testing.T) {
 			return runner.RevisionCheck{Err: "the revision is not in the checkout"}
 		}}, "the revision could not be checked against origin/main: the revision is not in the checkout", "WARNING: the revision could not be checked against origin/main: the revision is not in the checkout"},
 		{"every build paced", full(3).with(every, func(b *fixtureBuild) { b.Pace = "4500" }), verified(), "a paced build is judged by the store gate only", ""},
+		{"every build with the phase log", full(3).with(every, func(b *fixtureBuild) { b.PhaseLog = "true" }), verified(), "built with the phase log: a diagnostic, not a measurement", ""},
 		{"every build synced", full(3).with(every, func(b *fixtureBuild) { b.Sync = "true" }), verified(), "these builds synced every commit: G2, G3 and G4 are judged on builds that do not, and a synced build is a separate measurement", "a sync of every commit"},
 		{"every build rested", full(3).with(every, func(b *fixtureBuild) { b.Rest = "true" }), verified(), "these builds rested after each retention", "a rest after each retention"},
 		{"no build records whether it rested", full(3).with(every, func(b *fixtureBuild) { b.Rest = "-" }), verified(), "these builds do not record whether they rested after each retention", ""},

@@ -181,6 +181,8 @@ type buildSink struct {
 	now func() time.Time
 	// prof writes the profiles of the windows; nil for a build without them.
 	prof *windowProfiler
+	// phases logs the store's phases of each batch; nil for a build without the log.
+	phases *phaseLog
 }
 
 // clock is the time now on the clock that times a batch.
@@ -272,6 +274,9 @@ func (s buildSink) Write(batch []engine.Record) error {
 		return err
 	}
 	s.gate.batch(start, d, len(batch))
+	if s.phases != nil {
+		s.phases.batch(s.gate.off(start), d, len(batch))
+	}
 	s.prof.batch(d)
 	s.prog.batch()
 	if got, want := s.e.LastSeq(), batch[len(batch)-1].Seq; got != want {
@@ -410,6 +415,15 @@ type BuildOptions struct {
 	// build starts no profile, sets no fraction, writes no file under [ProfilesDir] and
 	// records nothing of it.
 	ProfileWindows bool
+	// PhaseLog makes a build through the root store write PhaseLogFile in the
+	// candidate's directory: one line for each batch with the store's own account of
+	// where the batch's Write spent its time (see [PhaseRecord]). Off, the build wraps
+	// no recorder, makes no file and records nothing of it: the store is the same
+	// either way, since it samples its phases for any recorder it has. Wrapping the
+	// recorder adds a lock and a copy to the six samples a Write makes after its spans
+	// have closed, so a build with the log is a diagnostic and not a measurement; it
+	// is recorded in the manifest (Describe, key phase_log).
+	PhaseLog bool
 	// Shape holds the table-shape and compaction settings of the build, the fields of
 	// [pebblekv.Tuning] from LBaseTargetFileSize on (the sizing fields of it are not
 	// read: the candidate keeps the bench tuning's, and the plan's block cache). With
@@ -486,6 +500,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if err := checkServeOptions(v, opts); err != nil {
 		return nil, err
 	}
+	if err := checkPhaseLog(v, opts); err != nil {
+		return nil, err
+	}
 	if err := CheckOutside(dir); err != nil {
 		return nil, err
 	}
@@ -506,6 +523,11 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if v.Root() {
 		maxima = newMaxRecorder(rec)
 		recorder = maxima
+	}
+	var phaseRec *phaseRecorder // nil unless the build logs its phases
+	if opts.PhaseLog {
+		phaseRec = &phaseRecorder{Recorder: recorder}
+		recorder = phaseRec
 	}
 	var gate *gateTracker // nil for a candidate that is not built through the root store
 	if v.Root() {
@@ -551,6 +573,15 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 		}
 	}()
 
+	var plog *phaseLog // nil for a build that does not log its phases
+	if phaseRec != nil {
+		if plog, err = newPhaseLog(dir, phaseRec); err != nil {
+			return nil, fmt.Errorf("runner: %s: phase log: %w", v.Name, err)
+		}
+		defer func() { _ = plog.close() }()
+		plog.discard() // what opening the database sampled is not a batch's
+	}
+
 	prog := newBuildProgress()
 	var samp *sampler
 	if opts.MetricsEvery > 0 {
@@ -571,7 +602,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 			return nil, fmt.Errorf("runner: %s retains in the background and cannot be waited for", v.Name)
 		}
 	}
-	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background, prof: prof}
+	sink := buildSink{ctx: ctx, e: e, t: &timing, afterRetention: &after, post: &postState{n: postBatches}, rest: opts.RestAfterRetention, prog: prog, gate: gate, background: background, prof: prof, phases: plog}
 	if opts.Pace > 0 {
 		sink.pace = &paceState{pacer: newPacer(opts.Pace), fromDay: paceFrom, streamAt: plan.Stream.Start}
 	} else if gate != nil {
@@ -688,6 +719,12 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	}
 	if opts.ServeOptions {
 		m.Describe[ServeOptionsKey] = "true"
+	}
+	if plog != nil {
+		if err := plog.close(); err != nil {
+			return nil, fmt.Errorf("runner: %s: phase log: %w", v.Name, err)
+		}
+		m.Describe[PhaseLogKey] = "true"
 	}
 	parts, err := e.Breakdown()
 	if err != nil {

@@ -1011,6 +1011,32 @@ at 4,500 records/s with a flush threshold of 32,768, Sync on and a 7-day window,
 store gate would not judge; a build with no judged window, no batch inside one or no live heap
 sample; and a missing or unreadable file. It reads files only.
 
+#### Where a batch's time goes: build -phase-log and phases
+
+`spikebench build -phase-log` (off by default; an Lroot candidate only) writes
+`phases.jsonl` in the candidate's directory: one line for each batch, in order, with the
+batch's wall time and start on the gate's clock and the store's own account of its
+`Write`: validation, the state reads, the invalidation, the record commit, the checkpoint
+build (the decision, the reads that learn a prefix's checkpoints, and the walks, which
+are also given alone) and the second commit. The store samples those phases for any
+recorder it has, so the option changes nothing in `internal/`: off, the build wraps no
+recorder, makes no file and says nothing of it in the manifest; on, it wraps the recorder
+(a lock and a copy per sample), records `phase_log` in the manifest, and the build is a
+diagnostic and not a measurement: the store gate, `diagread`, the timing judge and
+`readtiming` refuse a build that has it. A test builds the same plan with and without it
+and compares what the store stored. What the store does not sample, including the wait
+for its lock, is the `other` column: wall time less the six phases.
+
+`spikebench phases -out D -candidate C` classifies the batches by the gate's windows
+(outside, settling, inside, and the unpaced and excluded batches of a paced build) and
+prints, for each class, the p50, p99, maximum and mean of each phase in milliseconds,
+and for the batches at or above the class's p99 (`-tail Q` moves the cut) each
+phase's share of their time, its share of their excess over the other batches, and how
+many of them it led. "= build+commit" is the sum that moving the checkpoint build off
+the writer's commit path would remove, and "= walk+commit" what a builder beside the
+writer could move. Timings from it are local and decide nothing; they are never
+published.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

@@ -574,6 +574,7 @@ func TestLoadReadTimings(t *testing.T) {
 
 	// manifestCache is the block cache the build's manifest describes; "-" leaves the key out.
 	good := fmt.Sprint(runner.ReadTimingCacheBytes)
+	phaseLog := "" // the manifest's description phase_log; "" leaves the key out
 	write := func(t *testing.T, manifestCache string, mutate func(dir string, b *fixtureBuild, tm *runner.ReadTimings, res *runner.Results)) (string, error) {
 		t.Helper()
 		root := t.TempDir()
@@ -584,6 +585,9 @@ func TestLoadReadTimings(t *testing.T) {
 		m := fb.manifest()
 		if manifestCache != "-" {
 			m.Describe["cache_bytes"] = manifestCache
+		}
+		if phaseLog != "" {
+			m.Describe[runner.PhaseLogKey] = phaseLog
 		}
 		writeJSON(t, filepath.Join(dir, runner.ManifestFile), m)
 		raw, err := os.ReadFile(filepath.Join(dir, runner.ManifestFile))
@@ -618,6 +622,12 @@ func TestLoadReadTimings(t *testing.T) {
 			t.Errorf("a manifest with cache %q: err = %v", mc, err)
 		}
 	}
+	// A build with the phase log is a diagnostic: the read of its database is refused.
+	phaseLog = "true"
+	if _, err := write(t, good, nil); err == nil || !strings.Contains(err.Error(), "built with the phase log: a diagnostic, not a measurement") {
+		t.Errorf("a manifest with the phase log: err = %v", err)
+	}
+	phaseLog = ""
 	for _, c := range []struct {
 		name   string
 		mutate func(dir string, b *fixtureBuild, tm *runner.ReadTimings, res *runner.Results)

@@ -1313,6 +1313,8 @@ func (b *StoreGateBuild) refusal() string {
 		return "built without the gate's record (by an earlier binary)"
 	case m.Gate.Mode == "":
 		return "no retention mode recorded"
+	case m.Describe[PhaseLogKey] == "true":
+		return "built with the phase log: a diagnostic, not a measurement"
 	}
 	if m.Gate.Mode == "background" {
 		if why := b.paceRefusal(); why != "" {

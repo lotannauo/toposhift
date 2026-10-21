@@ -568,6 +568,7 @@ func TestWhatCannotBeJudgedIsSaidAndNotGuessed(t *testing.T) {
 	}{
 		{"no window", synth("Lroot/k64a2l1ns", trace(func(g *runner.GateTrace) { g.Windows = nil })), "no retention window"},
 		{"untimed", synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) { b.Manifest.Untimed = true }), "untimed"},
+		{"with the phase log", synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PhaseLogKey] = "true" }), "built with the phase log: a diagnostic, not a measurement"},
 		{"not through the root store", synth("L/k64a2l1ns"), "not a build through the root store"},
 		{"no trace", synth("Lroot/k64a2l1ns", func(b *runner.StoreGateBuild) { b.Manifest.Gate = nil }), "earlier binary"},
 		{"no mode", synth("Lroot/k64a2l1ns", trace(func(g *runner.GateTrace) { g.Mode = "" })), "no retention mode"},
@@ -1767,6 +1768,7 @@ func TestTheBaselineOfQ5MustBeJudgeableAndSampledAlike(t *testing.T) {
 		why  string
 	}{
 		{"an untimed baseline", func(b *runner.StoreGateBuild) { b.Manifest.Untimed = true }, "baseline cannot be used: an untimed build"},
+		{"a baseline built with the phase log", func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PhaseLogKey] = "true" }, "baseline cannot be used: built with the phase log"},
 		{"a baseline of an earlier binary", func(b *runner.StoreGateBuild) { b.Manifest.Gate = nil }, "baseline cannot be used: built without the gate's record"},
 		{"a baseline sampled at another interval", func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.MetricsKey] = "30s" }, runner.MetricsKey + " differs"},
 	} {
