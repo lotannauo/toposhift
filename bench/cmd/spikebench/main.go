@@ -12,6 +12,7 @@
 //	spikebench gaps   -out DIR -candidate L/k64a2l1ns  where a build's checkpoints lie in the pinned node prefixes
 //	spikebench timing -in DIR...                     judge G2, G3 and G4 from the bench workflow's artifacts
 //	spikebench storegate [-commit SHA] DIR...        judge the root store's retention (Q1 to Q5) from builds
+//	spikebench diagread -commit SHA -run ID DIR      the figures of each build of a CI diag run, judged by nothing
 //
 // Build with CGO_ENABLED=0 and without -race or the invariants tag, from a clean
 // tree; the program refuses to produce a result otherwise (-untimed allows it
@@ -93,6 +94,8 @@ func main() {
 		err = doStoreGate(args)
 	case "readtiming":
 		err = doReadTiming(args)
+	case "diagread":
+		err = doDiagRead(args)
 	default:
 		usage()
 	}
@@ -115,7 +118,7 @@ type exitCodeError struct {
 func (e exitCodeError) Error() string { return e.msg }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate|readtiming [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate|readtiming|diagread [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 

@@ -899,6 +899,41 @@ build may not fit the 6 hours of a job.
   `metrics.jsonl`, `manifest.json`, `job.json`, the sync probe and the logs (never
   `db/`) for 30 days. The report job writes one table of the whole dispatch.
 
+#### Reading a diag run: diagread
+
+A diag run's report job prints what each job ran on and no figure of a build.
+`spikebench diagread` prints the figures of the table-shape comparison from the downloaded
+artifacts, and judges nothing: no verdict, no limit and no ratio.
+
+```sh
+gh run download <run> -p 'diag-build-<run>-*' -D artifacts
+spikebench diagread -commit <commit> -run <run> -expect control=none \
+    -expect "p5shape=$SHAPE" -json diagread.json artifacts   # SHAPE: the variant's pebble_shape text
+```
+
+It reads each `diag-build-<run>-<os>-<name>-rep<n>/` directory (its `job.json`,
+`manifest.json`, `metrics.jsonl` and `logs/time.txt`) and prints, for every build, its os,
+architecture, configuration, role, repetition, CPU model, binary sha256 and attempt; Q1, the
+longest batch inside a retention window, with the longest outside beside it; Q2, the top of
+the bucket holding the 99th percentile inside, with the batches inside; R, the longest
+rewrite over the judged windows (a pass that a later retention replaced or that outlived the
+stream counts at its lower bound), with the number of such passes; the peak live heap
+(`go.heap_live`) in MB of 10^6 bytes; and `peak_rss_mib`, for information. Then, per
+architecture, CPU model and configuration, the count, the median (the lower of the middle two
+for an even count), the least and the largest of Q1, Q2, R and the heap. The figures are the
+store gate's own, computed by the functions behind its Q1, Q2, Q3 and Q5 rows
+(`runner.DiagFigures`). A duration is printed exactly, and `-json` writes the same report with
+nanoseconds.
+
+It refuses, with status 3 and nothing printed: a build whose `base_sha` or manifest revision is
+not `-commit`, that was patched, or that is not attempt 1; jobs of more than one run or of a
+run other than `-run`; more than one binary on an architecture; two builds of one
+architecture, configuration and repetition; a `pebble_shape` that differs from `-expect`
+(`none` stands for a manifest without one); a manifest that is not background retention paced
+at 4,500 records/s with a flush threshold of 32,768, Sync on and a 7-day window, or that the
+store gate would not judge; a build with no judged window, no batch inside one or no live heap
+sample; and a missing or unreadable file. It reads files only.
+
 ### Adding a candidate
 
 Implement `engine.Engine` and, in the candidate's own package, run the

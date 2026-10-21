@@ -1,0 +1,86 @@
+diag run 1000000001, commit 0123456789abcdef0123456789abcdef01234567, 6 builds
+figures only: no verdict, no limit and no ratio; a duration is exact, the heap is in MB of 10^6 bytes
+
+build os=ubuntu-24.04-arm arch=aarch64 name=control role=A rep=1
+  cpu_model="synthetic cpu aarch64"
+  binary_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  run_attempt=1 pebble_shape="none"
+  Q1 140ms (outside maximum 20ms over 1000 batches)
+  Q2 20.97152ms over 101 inside batches
+  R 52s (0 passes counted at a lower bound)
+  peak heap 4100.000 MB
+  peak_rss_mib 2048 (information only)
+
+build os=ubuntu-24.04-arm arch=aarch64 name=control role=A rep=2
+  cpu_model="synthetic cpu aarch64"
+  binary_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  run_attempt=1 pebble_shape="none"
+  Q1 120ms (outside maximum 20ms over 1000 batches)
+  Q2 23.068672ms over 101 inside batches
+  R 1m40s (1 passes counted at a lower bound)
+  peak heap 4300.000 MB
+  peak_rss_mib 2048 (information only)
+
+build os=ubuntu-24.04-arm arch=aarch64 name=p5shape role=B rep=1
+  cpu_model="synthetic cpu aarch64"
+  binary_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  run_attempt=1 pebble_shape="target_file_sizes=67108864,4194304,8388608,67108864,134217728,268435456,536870912 delete_only_compactions=off"
+  Q1 90ms (outside maximum 20ms over 1000 batches)
+  Q2 15.72864ms over 101 inside batches
+  R 40s (0 passes counted at a lower bound)
+  peak heap 4500.000 MB
+  peak_rss_mib 2048 (information only)
+
+build os=ubuntu-24.04-arm arch=aarch64 name=p5shape role=B rep=2
+  cpu_model="synthetic cpu aarch64"
+  binary_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  run_attempt=1 pebble_shape="target_file_sizes=67108864,4194304,8388608,67108864,134217728,268435456,536870912 delete_only_compactions=off"
+  Q1 95ms (outside maximum 20ms over 1000 batches)
+  Q2 16.777216ms over 101 inside batches
+  R 41s (0 passes counted at a lower bound)
+  peak heap 4400.000 MB
+  peak_rss_mib 2048 (information only)
+
+build os=ubuntu-24.04 arch=x86_64 name=control role=A rep=1
+  cpu_model="synthetic cpu x86_64"
+  binary_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  run_attempt=1 pebble_shape="none"
+  Q1 200ms (outside maximum 20ms over 1000 batches)
+  Q2 31.45728ms over 101 inside batches
+  R 1m10s (0 passes counted at a lower bound)
+  peak heap 5000.000 MB
+  peak_rss_mib 2048 (information only)
+
+build os=ubuntu-24.04 arch=x86_64 name=p5shape role=B rep=1
+  cpu_model="synthetic cpu x86_64"
+  binary_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  run_attempt=1 pebble_shape="target_file_sizes=67108864,4194304,8388608,67108864,134217728,268435456,536870912 delete_only_compactions=off"
+  Q1 210ms (outside maximum 20ms over 1000 batches)
+  Q2 31.45728ms over 101 inside batches
+  R 1m11s (0 passes counted at a lower bound)
+  peak heap 5100.000 MB
+  peak_rss_mib 2048 (information only)
+
+group arch=aarch64 cpu_model="synthetic cpu aarch64" name=control n=2
+  Q1 median 120ms min 120ms max 140ms
+  Q2 median 20.97152ms min 20.97152ms max 23.068672ms
+  R median 52s min 52s max 1m40s (a lower bound among the passes of 1 of 2 builds)
+  peak heap median 4100.000 MB min 4100.000 MB max 4300.000 MB
+
+group arch=aarch64 cpu_model="synthetic cpu aarch64" name=p5shape n=2
+  Q1 median 90ms min 90ms max 95ms
+  Q2 median 15.72864ms min 15.72864ms max 16.777216ms
+  R median 40s min 40s max 41s (a lower bound among the passes of 0 of 2 builds)
+  peak heap median 4400.000 MB min 4400.000 MB max 4500.000 MB
+
+group arch=x86_64 cpu_model="synthetic cpu x86_64" name=control n=1
+  Q1 median 200ms min 200ms max 200ms
+  Q2 median 31.45728ms min 31.45728ms max 31.45728ms
+  R median 1m10s min 1m10s max 1m10s (a lower bound among the passes of 0 of 1 builds)
+  peak heap median 5000.000 MB min 5000.000 MB max 5000.000 MB
+
+group arch=x86_64 cpu_model="synthetic cpu x86_64" name=p5shape n=1
+  Q1 median 210ms min 210ms max 210ms
+  Q2 median 31.45728ms min 31.45728ms max 31.45728ms
+  R median 1m11s min 1m11s max 1m11s (a lower bound among the passes of 0 of 1 builds)
+  peak heap median 5100.000 MB min 5100.000 MB max 5100.000 MB
