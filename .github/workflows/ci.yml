@@ -34,7 +34,7 @@ env:
     ~/.cache/golangci-lint
 
 jobs:
-  # mise run ci is five shards (see mise.toml), and each runs here as its own job
+  # mise run ci is six shards (see mise.toml), and each runs here as its own job
   # on each architecture. These names must not start with "ci (": those are the
   # required checks, which the ci job below reports for all the shards together.
   shard:
@@ -50,7 +50,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
         # check:ci-shards reads this line and fails unless it lists exactly the
         # shards mise run ci depends on.
-        shard: [static, bench, raceheavy, racerest, benchrace]
+        shard: [static, bench, raceheavy, racerest, benchraceheavy, benchracerest]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -112,7 +112,8 @@ jobs:
           GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
         run: |
           mkdir -p "$TEST_REPORT_DIR"
-          if [ "$SHARD" = raceheavy ] || [ "$SHARD" = racerest ] || [ "$SHARD" = benchrace ]; then
+          case "$SHARD" in
+          raceheavy | racerest | benchraceheavy | benchracerest)
             # Evidence for a killed run: one line a minute while the tests run,
             # and a full snapshot if this step is signalled. Neither can change
             # the step's result.
@@ -138,12 +139,14 @@ jobs:
             wait "$tests" || status=$?
             kill "$sampler" 2>/dev/null || true
             exit "$status"
-          else
+            ;;
+          *)
             mise run "ci:${SHARD}"
-          fi
+            ;;
+          esac
 
       - name: Show the runner's state
-        if: ${{ always() && (matrix.shard == 'raceheavy' || matrix.shard == 'racerest' || matrix.shard == 'benchrace') }}
+        if: ${{ always() && contains(fromJSON('["raceheavy", "racerest", "benchraceheavy", "benchracerest"]'), matrix.shard) }}
         continue-on-error: true
         run: |
           {
@@ -234,10 +237,10 @@ jobs:
   # request runs the race detector on the part of the tests that starts goroutines
   # and everything else with Pebble's invariant checks on (mise run ci). This is
   # not a required check: it reports a race the day it is merged, not before. It
-  # builds what the race and benchrace shards build (-short changes what a test
-  # does, not the build), and starts from the heavy race shard's cache, which
-  # holds the root module's slowest packages and the dependencies both modules
-  # share, else the other race shard's.
+  # builds what the race shards build (-short changes what a test does, not the
+  # build), and starts from the heavy race shard's cache, which holds the root
+  # module's slowest packages and the dependencies both modules share, else the
+  # other race shard's.
   deep:
     name: deep (${{ matrix.os }})
     if: github.event_name != 'pull_request'

@@ -69,6 +69,33 @@ description = "Run the bench module's trimmed tests with the race detector"
 dir = "bench"
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-race.json"} -- -race -short -timeout 15m ./...'
 
+# The same tier in two halves, as test:race:heavy and test:race:rest split the
+# root module (see the ci task): raceshards' bench list names the slowest
+# packages, run from the root module, where the command lives.
+[tasks."bench:test:race:heavy"]
+description = "The slowest packages of the bench module's trimmed tests with the race detector (see internal/raceshards)"
+hide = true
+dir = "bench"
+run = '''
+set -eu
+all="$(go list ./...)"
+pkgs="$(printf '%s\n' "$all" | (cd .. && go run ./internal/raceshards -module bench heavy))"
+# shellcheck disable=SC2086 # the list is one package a line
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-raceheavy.json"} -- -race -short -timeout 15m $pkgs
+'''
+
+[tasks."bench:test:race:rest"]
+description = "The other packages of the bench module's trimmed tests with the race detector (see internal/raceshards)"
+hide = true
+dir = "bench"
+run = '''
+set -eu
+all="$(go list ./...)"
+pkgs="$(printf '%s\n' "$all" | (cd .. && go run ./internal/raceshards -module bench rest))"
+# shellcheck disable=SC2086 # the list is one package a line
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-test-racerest.json"} -- -race -short -timeout 15m $pkgs
+'''
+
 [tasks."bench:test:deep"]
 description = "Run the bench module's full tests with the race detector, in random order"
 dir = "bench"
@@ -522,7 +549,7 @@ description = "Build the toposhift binary into ./bin, without cgo"
 env = { CGO_ENABLED = "0" }
 run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
-# ci is exactly five shards, and CI runs each shard as its own job on both
+# ci is exactly six shards, and CI runs each shard as its own job on both
 # architectures, so the shards build and test side by side on separate runners
 # instead of all of them sharing one. A job named ci (<runner>) passes only when
 # every shard passed on both. check and test:fast are not shards and not part of
@@ -533,14 +560,16 @@ run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 # The root module's race tests are two shards, raceheavy and racerest, because
 # the few slowest packages under the race detector took as long as all the
 # others together on a runner's four processors (about 15 min for the whole
-# module on x86-64, about 8 for either half). internal/raceshards names the heavy
-# packages and prints each half from go list ./...; the halves partition the
-# module by construction, and a stale name fails the task (the guard that runs
-# on every shard) and the package's own test, which stats each named directory.
-# mise run test is still the whole module in one go.
+# module on x86-64, about 8 for either half), and the bench module's trimmed
+# race tier is two the same way (benchraceheavy, benchracerest: about 12 min
+# whole on x86-64). internal/raceshards names each module's heavy packages and
+# prints each half from go list ./...; the halves partition the module by
+# construction, and a stale name fails the task (the guard that runs on every
+# shard) and the command's own test, which stats each named directory. mise run
+# test and bench:test:race are still the whole module in one go.
 [tasks.ci]
 description = "Everything CI runs on a pull request"
-depends = ["ci:static", "ci:bench", "ci:raceheavy", "ci:racerest", "ci:benchrace"]
+depends = ["ci:static", "ci:bench", "ci:raceheavy", "ci:racerest", "ci:benchraceheavy", "ci:benchracerest"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows, secrets and the collector configuration"
@@ -584,9 +613,13 @@ pkgs="$(printf '%s\n' "$all" | go run ./internal/raceshards rest)"
 gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-racerest.json"} -- -race -timeout 15m $pkgs
 '''
 
-[tasks."ci:benchrace"]
-description = "CI shard: the bench module's trimmed tests under the race detector, and the Postgres module's"
-depends = ["bench:test:race", "bench:postgres:test:race"]
+[tasks."ci:benchraceheavy"]
+description = "CI shard: the slowest packages of the bench module's trimmed tests under the race detector"
+depends = ["bench:test:race:heavy"]
+
+[tasks."ci:benchracerest"]
+description = "CI shard: the other packages of the bench module's trimmed tests under the race detector, and the Postgres module's"
+depends = ["bench:test:race:rest", "bench:postgres:test:race"]
 
 [tasks."check:no-results"]
 description = "Fail if measurement output is tracked: numbers from a laptop or a VM are never published"

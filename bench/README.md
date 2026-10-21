@@ -967,12 +967,13 @@ tiers, and `mise run ci` runs both:
   never reused from an earlier run. It runs on every push to `main` and nightly,
   through `mise run ci:deep`.
 
-CI runs `mise run ci` as five jobs on each architecture: `ci:static` (formatting,
+CI runs `mise run ci` as six jobs on each architecture: `ci:static` (formatting,
 lint, spelling, vulnerabilities, workflows, secrets), `ci:bench` (`bench:test`,
 `bench:purego`), `ci:raceheavy` and `ci:racerest` (the root module's tests under the
-race detector, the slowest packages apart from the rest; `internal/raceshards` names
-them) and `ci:benchrace` (`bench:test:race`). The required checks `ci (ubuntu-24.04)`
-and `ci (ubuntu-24.04-arm)` pass only when all ten passed.
+race detector, the slowest packages apart from the rest) and `ci:benchraceheavy` and
+`ci:benchracerest` (`bench:test:race` the same way; `internal/raceshards` names each
+module's slowest packages). The required checks `ci (ubuntu-24.04)` and
+`ci (ubuntu-24.04-arm)` pass only when all twelve passed.
 
 Without the environment variable the packages run `rapid` at their own defaults: 25 in
 the conformance package, whose tests run the oracle and about fifty deliberately
