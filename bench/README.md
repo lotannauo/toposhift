@@ -36,7 +36,30 @@ which the spike's conformance test checks against the reference engine.
 engine records, and `postgres/g0` asks an engine every question of a plan and compares
 the answers with the plan's (`go run ./cmd/g0model -plan plan.json`, from `postgres/`).
 No Postgres server, image or driver is needed yet. Run its tests with `cd postgres &&
-go test ./... -p 2`; they are not wired into `mise` yet.
+go test ./... -p 2`; `mise run bench:postgres:test` and its siblings (`bench:postgres:test:race`,
+`bench:postgres:lint`, `bench:postgres:vuln`, `bench:postgres:purego`) run them in the CI shards.
+
+The metrics-store baseline, `victoria/`, is a module of its own as well and shares nothing
+with the Postgres one (pure Go: build and test it with `CGO_ENABLED=0`). It asks what a
+PromQL-compatible metrics store (VictoriaMetrics single-node) holds and answers when the
+spike's streams are written to it as samples, the way kube-state-metrics' placement series
+are, and says what it cannot answer. Nothing in it needs a server, an image or a new third-party
+module yet. `victoria/vmmodel` is the series model (`topo_entity`, `topo_edge`), the
+converter from the every-sample stream (the generator with `CoalesceRuns` off) to samples
+and staleness markers with its deterministic counts, the registered table of producers and
+the window each is read with, the reference's existence intervals and the classification of
+an instant near a change as a boundary instant (counted, never compared), the capability
+table (a question the store cannot express is a row there, never a loss and never timed;
+a question whose only holder asserts once is tallied apart as not modelled yet),
+and the check that the coalesced and the every-sample stream describe the same existence.
+`victoria/vmwrite` encodes remote-write requests by hand, `victoria/vmquery` rewrites the
+spike's reads as instant queries with one term per producer, reads the answers as an
+engine returns them and has a model of the server for those queries, against which a
+plan's answers are checked without a server. Everything it says about the server's own
+behaviour is marked as an unverified assumption in `vmmodel`'s documentation. Run its tests
+with `cd victoria && CGO_ENABLED=0 go test ./... -p 2`; `mise run bench:victoria:test`,
+`bench:victoria:test:race`, `bench:victoria:lint`, `bench:victoria:vuln` and
+`bench:victoria:purego` are its tasks, in the CI shards.
 
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
