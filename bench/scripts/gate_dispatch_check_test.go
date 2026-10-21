@@ -57,6 +57,7 @@ func dispatch(r repo) map[string]string {
 		"FAMILY": "rmae", "WINDOWS": "7", "CANDIDATES": "Lroot/off,Lroot/k64a2l1ns", "REPS": "3", "ARCHES": "both",
 		"PINS_WINDOW": "2", "SYNC": "true", "METRICS_EVERY": "10s", "GO_MEM_LIMIT": "11GiB", "MAX_PARALLEL": "12",
 		"RETENTION_MODE": "background", "RETAIN_FLUSH_DELS": "24576", "EXPECTED_SHA": r.onMain, "READ": "false", "READ_TIMED": "false",
+		"SHAPE": "", "SERVE_OPTIONS": "false",
 	}
 }
 
@@ -406,5 +407,271 @@ func TestTheDispatchCheckPassesShellcheck(t *testing.T) {
 	out, err := exec.CommandContext(t.Context(), "shellcheck", "gate-dispatch-check.sh").CombinedOutput()
 	if err != nil {
 		t.Errorf("shellcheck: %v\n%s", err, out)
+	}
+}
+
+// The shape and serve_options inputs: a background dispatch of the root store's
+// candidates may name a table shape, as build flags each of which is one exact word, and
+// serve's options. A dispatch that names neither has the outputs and the summary it had
+// before the inputs existed, byte for byte, and neither input adds a job.
+
+// A dispatch that names no shape and not serve's options comes to the same outputs and
+// summary as before the inputs existed: a background dispatch of the store gate's arm
+// and a synchronous one that times its reads are pinned here, byte for byte. A shape of
+// spaces alone is no shape.
+func TestADispatchWithoutAShapeOrServeOptionsIsUnchanged(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	for _, shape := range []string{"", "   "} {
+		env := dispatch(r)
+		env["ARCHES"], env["REPS"], env["SHAPE"] = "x64", "1", shape
+		got := run(t, r, env)
+		if got.code != 0 {
+			t.Fatalf("shape %q: exit %d\n%s", shape, got.code, got.stderr)
+		}
+		wantOutput := `matrix={"include":[` +
+			`{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/off","slug":"Lroot_off","engine":"pebble","rep":1},` +
+			`{"os":"ubuntu-24.04","window":7,"candidate":"Lroot/k64a2l1ns","slug":"Lroot_k64a2l1ns","engine":"pebble","rep":1}]}` + "\n" +
+			"family=rmae\nfamily_flags=-run-max-age 30m\nwindows=7\npins_window=2\nsync=true\nmetrics_every=10s\n" +
+			"go_mem_limit=11GiB\npebble_memory_limit=11811160064\nread=false\nread_timed=false\nplan_flags=\nmax_parallel=12\n" +
+			"retention_mode=background\npace=4500\nretain_flush_dels=24576\nexpected_sha=" + r.onMain + "\nrocksdb_oses=[]\n"
+		if got.output != wantOutput {
+			t.Errorf("shape %q: the outputs changed:\n got %q\nwant %q", shape, got.output, wantOutput)
+		}
+		wantSummary := "### Planned jobs: 2\n\n" +
+			"- ref: `refs/tags/gate-freeze-20261012`; commit: `" + r.onMain + "`\n" +
+			"- family: `rmae` (scenario flags `-run-max-age 30m`)\n" +
+			"- windows: `7` days; pins chosen from the `2`-day window\n" +
+			"- sync: `true`; metrics every: `10s`\n" +
+			"- retention mode: `background`; pace: `4500` records/s (0: unpaced); retention flush threshold: `24576`\n" +
+			"- Go memory limit: `11GiB` (a RocksDB build's: that less the plan's cache and four memtables; `-pebble-memory-limit 11811160064`)\n" +
+			"- read repetition 1 after its build: `false`\n" +
+			"- time the reads of every repetition: `false` (extra plan flags: `none`)\n" +
+			"- at most `12` build jobs at once\n\n" +
+			"| runner | window (days) | candidate | engine | repetition |\n|---|---|---|---|---|\n" +
+			"| ubuntu-24.04 | 7 | `Lroot/off` | pebble | 1 |\n" +
+			"| ubuntu-24.04 | 7 | `Lroot/k64a2l1ns` | pebble | 1 |\n"
+		if got.summary != wantSummary {
+			t.Errorf("shape %q: the summary changed:\n got %q\nwant %q", shape, got.summary, wantSummary)
+		}
+	}
+
+	env := timedDispatch(r)
+	env["ARCHES"], env["REPS"], env["CANDIDATES"] = "arm64", "1", "L/k64a2l5m"
+	got := run(t, r, env)
+	if got.code != 0 {
+		t.Fatalf("a timed read: exit %d\n%s", got.code, got.stderr)
+	}
+	wantOutput := `matrix={"include":[{"os":"ubuntu-24.04-arm","window":7,"candidate":"L/k64a2l5m","slug":"L_k64a2l5m","engine":"pebble","rep":1}]}` + "\n" +
+		"family=rmae\nfamily_flags=-run-max-age 30m\nwindows=7\npins_window=2\nsync=false\nmetrics_every=\n" +
+		"go_mem_limit=\npebble_memory_limit=none\nread=true\nread_timed=true\nplan_flags=-cache-mb 256\nmax_parallel=12\n" +
+		"retention_mode=sync\npace=0\nretain_flush_dels=default\nexpected_sha=" + r.offMain + "\nrocksdb_oses=[]\n"
+	if got.output != wantOutput {
+		t.Errorf("a timed read: the outputs changed:\n got %q\nwant %q", got.output, wantOutput)
+	}
+	wantSummary := "### Planned jobs: 1\n\n" +
+		"- ref: `refs/heads/main`; commit: `" + r.offMain + "`\n" +
+		"- family: `rmae` (scenario flags `-run-max-age 30m`)\n" +
+		"- windows: `7` days; pins chosen from the `2`-day window\n" +
+		"- sync: `false`; metrics every: `off`\n" +
+		"- retention mode: `sync`; pace: `0` records/s (0: unpaced); retention flush threshold: `default`\n" +
+		"- Go memory limit: `none` (a RocksDB build's: that less the plan's cache and four memtables; `-pebble-memory-limit none`)\n" +
+		"- read repetition 1 after its build: `true`\n" +
+		"- time the reads of every repetition: `true` (extra plan flags: `-cache-mb 256`)\n" +
+		"- at most `12` build jobs at once\n\n" +
+		"| runner | window (days) | candidate | engine | repetition |\n|---|---|---|---|---|\n" +
+		"| ubuntu-24.04-arm | 7 | `L/k64a2l5m` | pebble | 1 |\n"
+	if got.summary != wantSummary {
+		t.Errorf("a timed read: the summary changed:\n got %q\nwant %q", got.summary, wantSummary)
+	}
+}
+
+// outputsWithout is the outputs of a dispatch less the lines of the two inputs.
+func outputsWithout(output string) string {
+	var kept []string
+	for line := range strings.SplitSeq(output, "\n") {
+		if !strings.HasPrefix(line, "shape=") && !strings.HasPrefix(line, "serve_options=") {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
+// Every word of a shape is taken alone and with the others it may go with, in any
+// order and with any number of spaces between, and is passed on as it was given, joined
+// by single spaces. Serve's options are taken alone and with a shape. Each is written to
+// the outputs and to the summary, and the rest of the outputs, the matrix with them,
+// are the dispatch's without the inputs: they add no job.
+func TestADispatchTakesAShapeAndServeOptions(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	base := run(t, r, dispatch(r))
+	if base.code != 0 {
+		t.Fatalf("a dispatch without the inputs: exit %d\n%s", base.code, base.stderr)
+	}
+	const p5 = "-target-sizes-mb=64,4,8,64,128,256,512"
+	for _, c := range []struct{ shape, serve, want string }{
+		{"-lbase-target-mb=4", "false", "-lbase-target-mb=4"},
+		{p5, "false", p5},
+		{"-disable-delete-only", "false", "-disable-delete-only"},
+		{"-compaction-concurrency=1,3", "false", "-compaction-concurrency=1,3"},
+		{"-compression=snappy", "false", "-compression=snappy"},
+		{"-compression=zstd", "false", "-compression=zstd"},
+		{"-compression=balanced", "false", "-compression=balanced"},
+		{p5 + " -disable-delete-only", "false", p5 + " -disable-delete-only"},
+		{p5 + " -disable-delete-only -compaction-concurrency=1,3", "true", p5 + " -disable-delete-only -compaction-concurrency=1,3"},
+		{"  -compression=zstd   " + p5 + "  -compaction-concurrency=1,3 -disable-delete-only ", "true", "-compression=zstd " + p5 + " -compaction-concurrency=1,3 -disable-delete-only"},
+		{"-lbase-target-mb=4 -disable-delete-only -compaction-concurrency=1,3 -compression=balanced", "false", "-lbase-target-mb=4 -disable-delete-only -compaction-concurrency=1,3 -compression=balanced"},
+		{"", "true", ""},
+	} {
+		env := dispatch(r)
+		env["SHAPE"], env["SERVE_OPTIONS"] = c.shape, c.serve
+		got := run(t, r, env)
+		if got.code != 0 {
+			t.Errorf("shape %q, serve's options %s: exit %d\n%s", c.shape, c.serve, got.code, got.stderr)
+			continue
+		}
+		wantShape, wantServe := "", ""
+		if c.want != "" {
+			wantShape = "shape=" + c.want + "\n"
+		}
+		if c.serve == "true" {
+			wantServe = "serve_options=true\n"
+		}
+		if want := wantShape + wantServe; !strings.HasSuffix(got.output, "rocksdb_oses=[]\n"+want) {
+			t.Errorf("shape %q, serve's options %s: the outputs do not end with %q:\n%s", c.shape, c.serve, want, got.output)
+		}
+		if n := strings.Count(got.output, "shape="); n > 1 {
+			t.Errorf("shape %q: %d shape outputs", c.shape, n)
+		}
+		if rest := outputsWithout(got.output); rest != base.output {
+			t.Errorf("shape %q, serve's options %s: the other outputs changed:\n got %q\nwant %q", c.shape, c.serve, rest, base.output)
+		}
+		shown := c.want
+		if shown == "" {
+			shown = "Pebble's own"
+		}
+		line := "- table shape: `" + shown + "`; serve's options: `" + c.serve +
+			"` (passed to every build; each manifest records them as pebble_shape and serve_options)\n"
+		if want := "retention flush threshold: `24576`\n" + line + "- Go memory limit:"; !strings.Contains(got.summary, want) {
+			t.Errorf("shape %q, serve's options %s: the summary lacks %q:\n%s", c.shape, c.serve, want, got.summary)
+		}
+		if rest := strings.Replace(got.summary, line, "", 1); rest != base.summary {
+			t.Errorf("shape %q, serve's options %s: the summary changed beyond its one line:\n got %q\nwant %q", c.shape, c.serve, rest, base.summary)
+		}
+	}
+}
+
+// A shape or serve's options is refused, with exit 1 and an error that names the input
+// and does not repeat it, for any word that is not exactly one of the shape's (another
+// value, an empty one, a flag without its = or with its value as the next word,
+// capitals, a prefix or a suffix, a second value or a second =, two dashes, an
+// abbreviation, a glob, shell syntax, another flag of the program, a word hidden in the
+// value of another), for a flag given twice, for more words or characters than a shape
+// can have, and for a dispatch that is not a background build of the root store's
+// candidates.
+func TestAShapeOrServeOptionsIsRefused(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	const (
+		evil = "x::set-output name=y::z"
+		p5   = "-target-sizes-mb=64,4,8,64,128,256,512"
+		word = "shape: every word is"
+	)
+	type refusal struct {
+		name string
+		set  map[string]string
+		want string
+	}
+	shape := func(s string) map[string]string { return map[string]string{"SHAPE": s} }
+	cases := []refusal{
+		{"an input as the shape", shape(evil), "shape: build flags separated by spaces"},
+		{"another base-level target", shape("-lbase-target-mb=8"), word},
+		{"another list of sizes", shape("-target-sizes-mb=64,4,8"), word},
+		{"a list of sizes with one more", shape(p5 + ",1024"), word},
+		{"another concurrency", shape("-compaction-concurrency=1,4"), word},
+		{"another compression", shape("-compression=lz4"), word},
+		{"an empty compression", shape("-compression="), word},
+		{"an empty list of sizes", shape("-target-sizes-mb="), word},
+		{"a compression without =", shape("-compression"), word},
+		{"a base-level target without =", shape("-lbase-target-mb"), word},
+		{"a compression as the next word", shape("-compression zstd"), word},
+		{"a list of sizes as the next word", shape("-target-sizes-mb 64,4,8,64,128,256,512"), word},
+		{"a value given to a switch", shape("-disable-delete-only=true"), word},
+		{"a switch turned off", shape("-disable-delete-only=false"), word},
+		{"capitals", shape("-Compression=zstd"), "shape: build flags separated by spaces"},
+		{"a capital value", shape("-compression=ZSTD"), "shape: build flags separated by spaces"},
+		{"a suffix on a value", shape("-compression=zstdx"), word},
+		{"a prefix on a value", shape("-compression=xzstd"), word},
+		{"a prefix on a flag", shape("x-compression=zstd"), word},
+		{"a suffix on a switch", shape("-disable-delete-onlyx"), word},
+		{"two values", shape("-compression=zstd,snappy"), word},
+		{"a second =", shape("-compression=zstd=zstd"), word},
+		{"two dashes", shape("--compression=zstd"), word},
+		{"two dashes on a switch", shape("--disable-delete-only"), word},
+		{"an abbreviation", shape("-disable-delete"), word},
+		{"an abbreviated flag", shape("-target-sizes=64,4,8,64,128,256,512"), word},
+		{"a glob as the value", shape("-compression=*"), "shape: build flags separated by spaces"},
+		{"a glob in the value", shape("-target-sizes-mb=64,4,8,64,128,256,51?"), "shape: build flags separated by spaces"},
+		{"a bracket glob", shape("-compression=[z]std"), "shape: build flags separated by spaces"},
+		{"a command after a word", shape("-compression=zstd;true"), "shape: build flags separated by spaces"},
+		{"a substitution", shape("-compression=$(true)"), "shape: build flags separated by spaces"},
+		{"a backquote", shape("-compression=`true`"), "shape: build flags separated by spaces"},
+		{"quotes", shape(`"-compression=zstd"`), "shape: build flags separated by spaces"},
+		{"a single quote", shape("'-disable-delete-only'"), "shape: build flags separated by spaces"},
+		{"a second line", shape("-disable-delete-only\n-serve-options"), "shape: build flags separated by spaces"},
+		{"a tab", shape("-disable-delete-only\t-compression=zstd"), "shape: build flags separated by spaces"},
+		{"serve's options as a word of the shape", shape("-serve-options"), word},
+		{"serve's options after a word", shape("-disable-delete-only -serve-options"), word},
+		{"another flag of the program", shape("-l0-stop-writes=20"), word},
+		{"the retention mode", shape("-retention-mode=sync"), word},
+		{"a pace", shape("-pace=0"), word},
+		{"an untimed build", shape("-untimed"), word},
+		{"profiles", shape("-profile-windows"), word},
+		{"a read-ahead", shape("-read-ahead=8"), word},
+		{"a candidate", shape("-candidate=L/off"), "shape: build flags separated by spaces"},
+		{"a word inside the list of sizes", shape(p5 + ",-serve-options"), word},
+		{"a word inside the concurrency", shape("-compaction-concurrency=1,3,-disable-delete-only"), word},
+		{"a word inside the compression", shape("-compression=zstd,-disable-delete-only"), word},
+		{"a compression given twice", shape("-compression=zstd -compression=zstd"), "shape: a flag is given twice"},
+		{"two compressions", shape("-compression=zstd -compression=snappy"), "shape: a flag is given twice"},
+		{"a switch given twice", shape("-disable-delete-only " + p5 + " -disable-delete-only"), "shape: a flag is given twice"},
+		{"a list of sizes given twice", shape(p5 + " " + p5), "shape: a flag is given twice"},
+		{"a base-level target and a list of sizes", shape("-lbase-target-mb=4 " + p5), "shape: -lbase-target-mb and -target-sizes-mb: give one"},
+		{"a list of sizes and a base-level target", shape(p5 + " -disable-delete-only -lbase-target-mb=4"), "shape: -lbase-target-mb and -target-sizes-mb: give one"},
+		{"five words", shape("-lbase-target-mb=4 -disable-delete-only -compaction-concurrency=1,3 -compression=zstd " + p5), "shape: at most 4 words"},
+		{"201 characters", shape(strings.Repeat(" ", 201-len("-disable-delete-only")) + "-disable-delete-only"), "shape: longer than 200 characters"},
+		{"a shape with retention_mode sync", map[string]string{"SHAPE": p5, "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default"}, "shape: a table shape is measured only with retention_mode background"},
+		{"a shape of a candidate not through the root store", map[string]string{"SHAPE": "-disable-delete-only", "RETAIN_FLUSH_DELS": "default", "CANDIDATES": "Lroot/off,L/off"}, "shape: a table shape is for the candidates built through the root store"},
+		{"a shape of a RocksDB candidate", map[string]string{"SHAPE": "-compression=zstd", "CANDIDATES": "RL/off", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default", "METRICS_EVERY": ""}, "shape: a table shape is measured only with retention_mode background"},
+
+		{"an input as serve's options", map[string]string{"SERVE_OPTIONS": evil}, "serve_options: not true or false"},
+		{"serve's options as a word", map[string]string{"SERVE_OPTIONS": "yes"}, "serve_options: not true or false"},
+		{"serve's options in capitals", map[string]string{"SERVE_OPTIONS": "TRUE"}, "serve_options: not true or false"},
+		{"serve's options as a number", map[string]string{"SERVE_OPTIONS": "1"}, "serve_options: not true or false"},
+		{"serve's options empty", map[string]string{"SERVE_OPTIONS": ""}, "serve_options: not true or false"},
+		{"serve's options with a flag", map[string]string{"SERVE_OPTIONS": "true -disable-delete-only"}, "serve_options: not true or false"},
+		{"serve's options with retention_mode sync", map[string]string{"SERVE_OPTIONS": "true", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default"}, "serve_options: serve's options are measured only with retention_mode background"},
+		{"serve's options of a candidate not through the root store", map[string]string{"SERVE_OPTIONS": "true", "RETAIN_FLUSH_DELS": "default", "CANDIDATES": "Lroot/off,L/k64a2l5m"}, "serve_options: serve's options are for the candidates built through the root store"},
+		{"serve's options of a RocksDB candidate", map[string]string{"SERVE_OPTIONS": "true", "CANDIDATES": "RL4/k64a2l5m", "RETENTION_MODE": "sync", "RETAIN_FLUSH_DELS": "default", "METRICS_EVERY": ""}, "serve_options: serve's options are measured only with retention_mode background"},
+	}
+	for _, c := range cases {
+		env := dispatch(r)
+		for k, v := range c.set {
+			env[k] = v
+		}
+		got := run(t, r, env)
+		if got.code != 1 || !strings.Contains(got.stderr, "::error::"+c.want) {
+			t.Errorf("%s: exit %d, %q; want 1 and an error starting %q", c.name, got.code, got.stderr, c.want)
+		}
+		if strings.Contains(got.stderr, "set-output") || strings.Contains(got.stderr, "$(true)") {
+			t.Errorf("%s: the error repeats the input: %q", c.name, got.stderr)
+		}
+		if got.output != "" {
+			t.Errorf("%s: outputs were written: %q", c.name, got.output)
+		}
 	}
 }

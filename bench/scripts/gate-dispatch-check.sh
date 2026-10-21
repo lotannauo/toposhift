@@ -10,8 +10,8 @@
 #
 #   REF, SHA                 the ref the run was dispatched from and its commit
 #   FAMILY WINDOWS CANDIDATES REPS ARCHES PINS_WINDOW SYNC METRICS_EVERY GO_MEM_LIMIT
-#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ READ_TIMED
-#                            the dispatch's inputs
+#   MAX_PARALLEL RETENTION_MODE RETAIN_FLUSH_DELS EXPECTED_SHA READ READ_TIMED SHAPE
+#   SERVE_OPTIONS            the dispatch's inputs
 #   GITHUB_OUTPUT, GITHUB_STEP_SUMMARY, RUNNER_TEMP
 #
 # A dispatch from a tag needs the history of origin/main, to check that the tag's
@@ -226,6 +226,65 @@ if [ "$RETAIN_FLUSH_DELS" != default ]; then
     fail "retain_flush_dels: a threshold is for the candidates built through the root store (Lroot/...) only"
 fi
 
+# The table shape of the builds: empty for Pebble's own, or build flags of spikebench,
+# each word exactly one of those below. They are literal patterns, never a glob or an
+# expression, so a word that is anything else (another value, an empty one, a flag
+# without its =, capitals, two dashes, an abbreviation) is refused, and nothing but
+# one of these words reaches a build's command line. The string may hold only
+# lowercase letters, digits, "-", "=", "," and spaces, so no other whitespace splits
+# it, and a flag is given once. A shape is a setting of the store gate's arm: a
+# background dispatch of the root store's candidates.
+shape=""
+if [ -n "${SHAPE//[[:space:]]/}" ]; then
+  [ "${#SHAPE}" -le 200 ] || fail "shape: longer than 200 characters"
+  re='^[a-z0-9=, -]+$'
+  [[ $SHAPE =~ $re ]] ||
+    fail "shape: build flags separated by spaces, of lowercase letters, digits, '-', '=' and ','"
+  read -ra shape_words <<<"$SHAPE"
+  [ "${#shape_words[@]}" -le 4 ] || fail "shape: at most 4 words"
+  shape_names=" "
+  for w in "${shape_words[@]}"; do
+    case "$w" in
+      -lbase-target-mb=4) ;;
+      -target-sizes-mb=64,4,8,64,128,256,512) ;;
+      -disable-delete-only) ;;
+      -compaction-concurrency=1,3) ;;
+      -compression=snappy | -compression=zstd | -compression=balanced) ;;
+      *) fail "shape: every word is -lbase-target-mb=4, -target-sizes-mb=64,4,8,64,128,256,512, -disable-delete-only, -compaction-concurrency=1,3, -compression=snappy, -compression=zstd or -compression=balanced" ;;
+    esac
+    case "$shape_names" in
+      *" ${w%%=*} "*) fail "shape: a flag is given twice" ;;
+    esac
+    shape_names="$shape_names${w%%=*} "
+    shape="${shape:+$shape }$w"
+  done
+  # The program refuses this too; here the mistake fails before the plans are made.
+  case "$shape_names" in
+    *" -lbase-target-mb "*)
+      case "$shape_names" in
+        *" -target-sizes-mb "*) fail "shape: -lbase-target-mb and -target-sizes-mb: give one" ;;
+      esac
+      ;;
+  esac
+  [ "$RETENTION_MODE" = background ] ||
+    fail "shape: a table shape is measured only with retention_mode background"
+  [ "$all_root" = true ] ||
+    fail "shape: a table shape is for the candidates built through the root store (Lroot/...) only"
+fi
+
+# Serve's options (spikebench build -serve-options): the root store opened as serve
+# opens it, the store gate's serve arm. Only the root store's candidates take them.
+case "$SERVE_OPTIONS" in
+  true | false) ;;
+  *) fail "serve_options: not true or false" ;;
+esac
+if [ "$SERVE_OPTIONS" = true ]; then
+  [ "$RETENTION_MODE" = background ] ||
+    fail "serve_options: serve's options are measured only with retention_mode background"
+  [ "$all_root" = true ] ||
+    fail "serve_options: serve's options are for the candidates built through the root store (Lroot/...) only"
+fi
+
 # A background dispatch is one arm of the store gate: one window of 7 or 30 days, its
 # commits synced, its metrics sampled (Q5 reads the live heap from them), the root
 # store's candidates only (only they are paced), and the commit it expects named.
@@ -310,6 +369,15 @@ fi
   echo "retain_flush_dels=$RETAIN_FLUSH_DELS"
   echo "expected_sha=$expected_sha"
   echo "rocksdb_oses=$rocksdb_oses"
+  # Written only when the dispatch names them, so that a dispatch that names neither
+  # has the outputs it had before these inputs existed, byte for byte. The build step
+  # reads an output that was not written as empty.
+  if [ -n "$shape" ]; then
+    echo "shape=$shape"
+  fi
+  if [ "$SERVE_OPTIONS" = true ]; then
+    echo "serve_options=true"
+  fi
 } >>"$GITHUB_OUTPUT"
 
 {
@@ -320,6 +388,11 @@ fi
   echo "- windows: \`$windows\` days; pins chosen from the \`$PINS_WINDOW\`-day window"
   echo "- sync: \`$SYNC\`; metrics every: \`${metrics_every:-off}\`"
   echo "- retention mode: \`$RETENTION_MODE\`; pace: \`$pace\` records/s (0: unpaced); retention flush threshold: \`$RETAIN_FLUSH_DELS\`"
+  if [ -n "$shape" ] || [ "$SERVE_OPTIONS" = true ]; then
+    shown="$shape"
+    [ -n "$shown" ] || shown="Pebble's own"
+    echo "- table shape: \`$shown\`; serve's options: \`$SERVE_OPTIONS\` (passed to every build; each manifest records them as pebble_shape and serve_options)"
+  fi
   echo "- Go memory limit: \`${go_mem_limit:-none}\` (a RocksDB build's: that less the plan's cache and four memtables; \`-pebble-memory-limit $pebble_memory_limit\`)"
   echo "- read repetition 1 after its build: \`$READ\`"
   echo "- time the reads of every repetition: \`$READ_TIMED\` (extra plan flags: \`${plan_flags:-none}\`)"

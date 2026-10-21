@@ -28,6 +28,10 @@ name: bench
 # engines; the build alone is timed. With the read_timed input, every repetition reads
 # its build and times the reads (spikebench read -timed), and the plans are made at the
 # product's block cache; the judge of those timings is spikebench readtiming, offline.
+# With the shape and serve_options inputs, a background dispatch builds every root-store
+# candidate at a table shape (spikebench build's table-shape flags, each word one the
+# setup's check names exactly) and with serve's options (-serve-options); each build's
+# manifest records them (pebble_shape, serve_options), and they add no job.
 #
 # A dispatch waits at its setup job for approval: that job runs in the environment
 # bench-approval, which a maintainer creates beforehand (Settings, Environments) with
@@ -103,6 +107,14 @@ on:
         description: With read, every repetition reads its build and times the reads (spikebench read -timed), and the plans are made at the product's 256 MiB block cache. Pebble candidates only, retention_mode sync, windows of at most 7 days, go_mem_limit empty.
         type: boolean
         default: false
+      shape:
+        description: "The table shape of every build, as spikebench build flags separated by spaces, or empty for Pebble's own. Every word is exactly one of -lbase-target-mb=4, -target-sizes-mb=64,4,8,64,128,256,512, -disable-delete-only, -compaction-concurrency=1,3, -compression=snappy, -compression=zstd and -compression=balanced, and a flag is given once. retention_mode background and Lroot candidates only."
+        type: string
+        default: ""
+      serve_options:
+        description: Pass -serve-options to every build, which opens the root store as serve does (the boot key, L0 kept, L1 retained 60 days behind L2). retention_mode background and Lroot candidates only.
+        type: boolean
+        default: false
   # A change to this workflow or to the program it runs gets a dry run at the
   # tiny preset, which proves the whole chain in minutes.
   pull_request:
@@ -160,6 +172,8 @@ jobs:
       retain_flush_dels: ${{ steps.matrix.outputs.retain_flush_dels }}
       expected_sha: ${{ steps.matrix.outputs.expected_sha }}
       rocksdb_oses: ${{ steps.matrix.outputs.rocksdb_oses }}
+      shape: ${{ steps.matrix.outputs.shape }}
+      serve_options: ${{ steps.matrix.outputs.serve_options }}
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -210,6 +224,8 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           READ: ${{ inputs.read }}
           READ_TIMED: ${{ inputs.read_timed }}
+          SHAPE: ${{ inputs.shape }}
+          SERVE_OPTIONS: ${{ inputs.serve_options }}
         run: bash bench/scripts/gate-dispatch-check.sh
 
   # Makes the plans once. A 30-day plan takes about 8.5 to 12.5 GB of memory to make
@@ -727,6 +743,9 @@ jobs:
           RETENTION_MODE: ${{ needs.setup.outputs.retention_mode }}
           PACE: ${{ needs.setup.outputs.pace }}
           RETAIN_FLUSH_DELS: ${{ needs.setup.outputs.retain_flush_dels }}
+          # Both empty unless the dispatch named them: the setup writes them only then.
+          SHAPE: ${{ needs.setup.outputs.shape }}
+          SERVE_OPTIONS: ${{ needs.setup.outputs.serve_options }}
         run: |
           set -euo pipefail
           WORK="$RUNNER_TEMP/bench/R$WINDOW"
@@ -751,6 +770,16 @@ jobs:
             fi
             if [ "$RETAIN_FLUSH_DELS" != default ]; then
               extra+=(-retain-flush-dels "$RETAIN_FLUSH_DELS")
+            fi
+            # The table shape's words, each one the setup checked exactly (never free
+            # text), split into words on purpose; and serve's options. The setup gives
+            # either only to a background dispatch of root-store candidates.
+            if [ -n "$SHAPE" ]; then
+              read -ra shape <<<"$SHAPE"
+              extra+=("${shape[@]}")
+            fi
+            if [ "$SERVE_OPTIONS" = true ]; then
+              extra+=(-serve-options)
             fi
             # Explicit, so that an empty input leaves the variable unset.
             if [ -n "$GO_MEM_LIMIT" ]; then
