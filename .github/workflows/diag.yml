@@ -1,12 +1,13 @@
 name: diag
 
 # Diagnostic builds of the storage-engine spike on GitHub-hosted runners: profiling
-# builds, and builds of table shapes and read-ahead, in pairs. A dispatch builds one
-# candidate in two to four configurations (the first is the control, A; the others
-# are variants, B) on the runners it names, each configuration two or three times on
-# each runner. The repetitions of the control are the noise floor of that runner
-# label: a variant is read only where it differs from the control by more than the
-# control's own repetitions differ, and only within one CPU model.
+# builds, and builds of table shapes, read-ahead and block compression, in pairs. A
+# dispatch builds one candidate in two to four configurations (the first is the
+# control, A; the others are variants, B) on the runners it names, each configuration
+# two or three times on each runner. The repetitions of the control are the noise
+# floor of that runner label: a variant is read only where it differs from the
+# control by more than the control's own repetitions differ, and only within one CPU
+# model.
 #
 # Nothing this workflow produces is a judged arm. The judged arms stay on bench.yml,
 # from the frozen tag. A diag run needs no tag; it records the commit, the tree, the
@@ -68,7 +69,7 @@ on:
         type: string
         default: ""
       configs:
-        description: 'A JSON list of 2 to 4 configurations, the first the control: [{"name": "control", "build_flags": "-profile-windows", "plan_flags": ""}, ...]. Build flags are words of -profile-windows, -disable-delete-only, -lbase-target-mb=N, -target-sizes-mb=N,N and -read-ahead=N; plan flags are -cache-mb=N.'
+        description: 'A JSON list of 2 to 4 configurations, the first the control: [{"name": "control", "build_flags": "-profile-windows", "plan_flags": ""}, ...]. Build flags are words of -profile-windows, -disable-delete-only, -lbase-target-mb=N, -target-sizes-mb=N,N, -read-ahead=N and -compression=snappy, -compression=zstd or -compression=balanced; plan flags are -cache-mb=N.'
         type: string
         required: true
       candidate:
