@@ -1,6 +1,6 @@
 module github.com/lotannauo/toposhift/bench/rocksdb
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/linxGnu/grocksdb v1.11.1

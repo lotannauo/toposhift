@@ -1,6 +1,6 @@
 module github.com/lotannauo/toposhift/bench
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
