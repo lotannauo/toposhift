@@ -264,18 +264,35 @@ func TestOutputInsideARepositoryIsRefused(t *testing.T) {
 // Windows of retained history through the real program: pins chosen once from the
 // shortest window, a run of each candidate over each window with only the pinned
 // prefixes written, and a judgement of G1 from them, with the guards on.
+// windowsCandidatesFor is the candidates the windows family of
+// TestWindowsRunEndToEnd is built with: every type in the deep tier (layout L
+// plain and with checkpoints, and layout M), and the two of layout L on a pull
+// request, where the two families of the test are two thirds of the bench
+// shard's longest package. What a pull request loses is the M candidate's
+// end-to-end run, which the deep run makes after the merge and nightly; the
+// pins, the three windows and the judgement across them are run on every pull
+// request as before.
+func windowsCandidatesFor(deep bool) []string {
+	if deep {
+		return []string{"L/off", "L/k64a4l1ns", "M/crdb1"}
+	}
+	return []string{"L/off", "L/k64a4l1ns"}
+}
+
 func TestWindowsRunEndToEnd(t *testing.T) {
 	t.Parallel()
 	conformance.SkipWhenTrimmed(t) // builds a binary and runs it; the full tier does
 
 	bin := binary(t)
 	out := filepath.Join(t.TempDir(), "out")
+	candidates := windowsCandidatesFor(raceTag)
+	lastCandidate := candidates[len(candidates)-1]
 	stdout, stderr, err := run(t, bin, "windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
-		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-canonical-layout", "-out", out)
+		"-windows", "1,2,3", "-candidates", strings.Join(candidates, ","), "-canonical-layout", "-out", out)
 	if err != nil {
 		t.Fatalf("windows: %v\n%.2000s\n%.2000s", err, stdout, stderr)
 	}
-	for _, f := range []string{"pins.json", "g1.txt", "g1.json", "R1/plan.json", "R2/plan.json", "R3/plan.json", "R3/L_off/results.json", "R1/M_crdb1/results.json", "R2/L_k64a4l1ns/manifest.json"} {
+	for _, f := range []string{"pins.json", "g1.txt", "g1.json", "R1/plan.json", "R2/plan.json", "R3/plan.json", "R3/L_off/results.json", "R1/" + strings.ReplaceAll(lastCandidate, "/", "_") + "/results.json", "R2/L_k64a4l1ns/manifest.json"} {
 		if _, err := os.Stat(filepath.Join(out, f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
@@ -310,12 +327,16 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	}
 	// An untimed build rests after each retention by default, and its manifest says so;
 	// windows passes -canonical-layout to the builds of every window.
-	for _, f := range []string{"R3/L_off/manifest.json", "R1/M_crdb1/manifest.json", "R2/L_k64a4l1ns/manifest.json"} {
+	for _, f := range []string{"R3/L_off/manifest.json", "R1/" + strings.ReplaceAll(lastCandidate, "/", "_") + "/manifest.json", "R2/L_k64a4l1ns/manifest.json"} {
 		if b, err := os.ReadFile(filepath.Join(out, f)); err != nil || !strings.Contains(string(b), `"rest_after_retention": "true"`) || !strings.Contains(string(b), `"canonical_layout": "true"`) {
 			t.Errorf("%s does not say it rested after each retention and was rewritten in the canonical layout: %v", f, err)
 		}
 	}
-	for _, want := range []string{"G1 (rules", "L/off: ", "L/k64a4l1ns: ", "M/crdb1: ", "projected", "not decided, marked ?"} {
+	wants := []string{"G1 (rules", "projected", "not decided, marked ?"}
+	for _, c := range candidates {
+		wants = append(wants, c+": ")
+	}
+	for _, want := range wants {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("the judgement lacks %q:\n%.1500s", want, stdout)
 		}
@@ -327,7 +348,7 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	var report runner.G1Report
 	if b, err := os.ReadFile(filepath.Join(out, "g1.json")); err != nil || json.Unmarshal(b, &report) != nil {
 		t.Errorf("g1.json: %v", err)
-	} else if len(report.Verdicts) != 3 || len(report.Cells) == 0 || report.RulesVersion != runner.RulesVersion || len(report.Problems) != 0 {
+	} else if len(report.Verdicts) != len(candidates) || len(report.Cells) == 0 || report.RulesVersion != runner.RulesVersion || len(report.Problems) != 0 {
 		t.Errorf("g1.json holds %d verdicts, %d cells, rules version %d, problems %v", len(report.Verdicts), len(report.Cells), report.RulesVersion, report.Problems)
 	} else {
 		for _, v := range report.Verdicts {
@@ -357,7 +378,7 @@ func TestWindowsRunEndToEnd(t *testing.T) {
 	// and refused if they are not: the pins are of the scenario they were chosen from.
 	same := []string{
 		"windows", "-untimed", "-preset", "tiny", "-events-per-second", "0.05", "-batch", "40",
-		"-windows", "1,2,3", "-candidates", "L/off,L/k64a4l1ns,M/crdb1", "-canonical-layout", "-out", out,
+		"-windows", "1,2,3", "-candidates", strings.Join(candidates, ","), "-canonical-layout", "-out", out,
 	}
 	if stdout, stderr, err := run(t, bin, same...); err != nil {
 		t.Errorf("windows resumed with the same flags: %v\n%.1500s\n%.1500s", err, stdout, stderr)
