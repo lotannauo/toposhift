@@ -78,6 +78,30 @@
 // callers and callees last. The service is the only entity the request names:
 // no endpoint id is printed.
 //
+// # Temporal subgraphs
+//
+// [Source.ScopeSubgraph], [Source.CoResidentsSubgraph],
+// [Source.ServiceContextSubgraph] and [Source.BlastRadiusSubgraph] answer four
+// questions with a temporal subgraph (package subgraph) instead of a list. They
+// are not tools: no MCP client calls them, and no tool's answer changes. Each runs
+// in the frame of every tool, with its slot, its deadline and its last check, and
+// reads at one token: a token above the store's LastSeq is refused
+// ([ErrFutureToken]), never clamped, because a restored store reuses tokens. The
+// answer ([SubgraphAnswer]) carries the subgraph's wire JSON twin as a JSON
+// value, labelled derived once, and beside it the names of the dictionary's
+// entities, in its order, read as every name is, and the counts of what was
+// withheld.
+//
+// An endpoint id the request did not name is withheld by building the subgraph
+// again without every element that names it (subgraph.Without), so the ids, the
+// keyframes and the deltas hold for what is printed, and each element taken out is
+// counted. A dictionary that still names such an endpoint, which only a section
+// could keep there, refuses the answer before it is written, and the last check
+// scans the whole answer, the document included; no section of the four
+// questions names an endpoint. A subgraph that cannot be built again fails the
+// answer as an internal error, never with the subgraph from before. An answer
+// over [MaxSubgraphAnswerBytes] is refused whole ([ErrAnswerTooLarge]), never cut.
+//
 // # Refusals
 //
 // A failure is a [*Error] whose message is a plain sentence for the client.
