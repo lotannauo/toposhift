@@ -17,12 +17,24 @@ import (
 	"github.com/lotannauo/toposhift/internal/mcp"
 )
 
+// slow is a deadline for the command's own work (building the demo's world and
+// serving it), longer under the race detector: the deep run, every package under
+// the detector at once on a 4-vCPU runner, took the build past 20 s on the slowest
+// hosts, where the same tests pass on faster ones. The deadline bounds a hang; it
+// is not what is checked, and nothing is skipped.
+func slow(d time.Duration) time.Duration {
+	if raceEnabled {
+		return 4 * d
+	}
+	return d
+}
+
 // demoRun runs `toposhift demo args...` to its end in this process, with no
 // environment. A run that serves, as it must not for the arguments the tests
 // refuse, is ended by the deadline and fails them on its status.
 func demoRun(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), slow(20*time.Second))
 	defer cancel()
 	var out, errb bytes.Buffer
 	code = run(ctx, append([]string{"demo"}, args...), noEnv, &out, &errb)
@@ -128,11 +140,11 @@ func startDemo(t *testing.T, args ...string) *served {
 		select {
 		case code := <-s.done:
 			s.done <- code
-		case <-time.After(15 * time.Second):
+		case <-time.After(slow(15 * time.Second)):
 			t.Error("demo did not stop")
 		}
 	})
-	deadline := time.After(30 * time.Second)
+	deadline := time.After(slow(30 * time.Second))
 	for {
 		if m := listeningRE.FindStringSubmatch(s.stderr.String()); m != nil {
 			s.base = "http://" + m[1]
@@ -354,7 +366,7 @@ func TestDemoStdioSmoke(t *testing.T) {
 		_ = outR.Close()
 		select {
 		case <-exited:
-		case <-time.After(30 * time.Second):
+		case <-time.After(slow(30 * time.Second)):
 			t.Errorf("the demo did not end after its pipes were closed:\n%s", stderr)
 		}
 	})
@@ -376,8 +388,8 @@ func TestDemoStdioSmoke(t *testing.T) {
 			if !ok {
 				t.Fatalf("no reply (%v); stderr:\n%s", frames.Err(), stderr)
 			}
-		case <-time.After(30 * time.Second):
-			t.Fatalf("no reply within 30s; stderr:\n%s", stderr)
+		case <-time.After(slow(30 * time.Second)):
+			t.Fatalf("no reply within the deadline; stderr:\n%s", stderr)
 		}
 		var m map[string]any
 		if err := json.Unmarshal(frames.Bytes(), &m); err != nil {
@@ -450,7 +462,7 @@ func TestDemoStdioSmoke(t *testing.T) {
 		if code != 0 {
 			t.Errorf("exit %d after the client closed its input:\n%s", code, stderr)
 		}
-	case <-time.After(30 * time.Second):
+	case <-time.After(slow(30 * time.Second)):
 		t.Fatalf("demo did not end:\n%s", stderr)
 	}
 	if n := onlyFrames(t, stdout.String()); n != 4 {
