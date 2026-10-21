@@ -113,9 +113,16 @@ records to store records. `duckdb/g0` asks an engine every question of a plan an
 compares the answers with the plan's. `duckdb/duckengine` builds the files of three arms
 from a plan's stream (the archive as written, record files sorted both ways, and
 interval files), answers every question of a plan from them with SQL, and counts the
-work of each read in rows, row groups and bytes; `duckspike` drives it (`build`, `read`,
-`explain`, `sizes`, `env`, and `g0`), prints no time, and keeps its output out of the git
-work tree. Its tasks (`mise run bench:duckdb:fmt:check`, `bench:duckdb:lint`,
+work of each read in rows, row groups and bytes; a fourth, diagnostic arm holds the
+record files for each hour of ingest and is read through a glob, counting the files a
+read opens. `duckdb/filestream` replays an activity file that no generator made (an hour
+of a trace) as the runner replays a generated stream, and makes from it a question set,
+which takes the place of a plan: the runner's questions with the reference engine's answer
+to each. A build from a question set copies the activity file as it is, and an archive
+that was made before is adopted by its SHA-256, checked to hold the file's rows, and read
+as it is. `duckspike` drives it (`questions`, `build`, `adopt`, `read`, `explain`,
+`sizes`, `env`, and `g0`), prints no time, and keeps its output out of the git work tree.
+Its tasks (`mise run bench:duckdb:fmt:check`, `bench:duckdb:lint`,
 `bench:duckdb:vuln`, `bench:duckdb:test` and `bench:duckdb:test:race`) run in
 `duckdb.yml`, not in the shards.
 

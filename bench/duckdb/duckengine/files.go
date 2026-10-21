@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -26,18 +28,28 @@ const (
 	// ArmI is the interval files, with A2's record files behind them for the reads an
 	// interval cannot answer.
 	ArmI Arm = "I"
+	// ArmH is the diagnostic arm: A2's two record files, one pair for each hour of
+	// ingest, the pairs holding consecutive ranges of Seq, as a store that appends a file
+	// for each hour instead of rewriting one would hold them. A read opens them all
+	// through a glob. It is counted and never timed, and is not one of [Arms], which are
+	// the three arms a baseline's figures are made of.
+	ArmH Arm = "H"
 )
 
-// Arms lists the arms in the order they are built and printed.
+// Arms lists the arms in the order they are built and printed: the three arms of the
+// baseline. The diagnostic arm [ArmH] is built and read only when it is asked for by name.
 var Arms = []Arm{ArmA1, ArmA2, ArmI}
+
+// AllArms is [Arms] and the diagnostic arm.
+var AllArms = []Arm{ArmA1, ArmA2, ArmI, ArmH}
 
 // ParseArms reads a comma separated list of arms.
 func ParseArms(list string) ([]Arm, error) {
 	var out []Arm
 	for _, name := range strings.Split(list, ",") {
 		a := Arm(strings.ToUpper(strings.TrimSpace(name)))
-		if !slices.Contains(Arms, a) {
-			return nil, fmt.Errorf("no arm %q: the arms are A1, A2 and I", name)
+		if !slices.Contains(AllArms, a) {
+			return nil, fmt.Errorf("no arm %q: the arms are A1, A2, I and, as a diagnostic, H", name)
 		}
 		if slices.Contains(out, a) {
 			return nil, fmt.Errorf("arm %s is listed twice", a)
@@ -59,7 +71,43 @@ const (
 	RoleIFwd     Role = "ifwd"
 	RoleIRev     Role = "irev"
 	RoleIEnt     Role = "ient"
+	// RoleHFwd and RoleHRev are the forward and the reverse record files of each hour of
+	// the diagnostic arm: a role of many files, the paths of which are
+	// [SegmentPath](i, role).
+	RoleHFwd Role = "hfwd"
+	RoleHRev Role = "hrev"
 )
+
+// SegmentPath is the path, relative to a build's directory, of a segment's file of a
+// role of the diagnostic arm.
+func SegmentPath(i int, r Role) string {
+	name := "fwd"
+	if r == RoleHRev {
+		name = "rev"
+	}
+	return fmt.Sprintf("h/%06d/%s.parquet", i, name)
+}
+
+var segmentFile = regexp.MustCompile(`^h/([0-9]{6,})/(fwd|rev)\.parquet$`)
+
+// segmentOf reads the segment and the role a path of the diagnostic arm names.
+func segmentOf(path string) (int, Role, bool) {
+	m := segmentFile.FindStringSubmatch(path)
+	if m == nil {
+		return 0, "", false
+	}
+	i, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, "", false
+	}
+	role := RoleHFwd
+	if m[2] == "rev" {
+		role = RoleHRev
+	}
+	return i, role, true
+}
+
+func isSegmentRole(r Role) bool { return r == RoleHFwd || r == RoleHRev }
 
 // The paths of the files of a build, relative to its directory.
 var rolePath = map[Role]string{
@@ -77,6 +125,7 @@ var armRoles = map[Arm][]Role{
 	ArmA1: {RoleArchive},
 	ArmA2: {RoleFwd, RoleRev},
 	ArmI:  {RoleIFwd, RoleIRev, RoleIEnt},
+	ArmH:  {RoleHFwd, RoleHRev},
 }
 
 // readRoles are the files a reader of an arm opens, which for the interval arm include
@@ -122,6 +171,28 @@ type Stream struct {
 	Retentions   int
 }
 
+// Segment is one hour of ingest of the diagnostic arm: the records of a range of Seq,
+// which a pair of files holds. Segments are in ascending Seq and no two share one.
+type Segment struct {
+	Index int
+	// StartNanos is the start of the hour, in Unix nanoseconds, that the newest event time
+	// of the batches the segment holds had reached.
+	StartNanos        int64
+	FirstSeq, LastSeq uint64
+	Records           int64
+}
+
+// Adopted says that an arm's file was not written by the build but is a file that was
+// made before, checked to hold the records of the stream.
+type Adopted struct {
+	// ArchiveSHA256 is the file's SHA-256, the one it was named by.
+	ArchiveSHA256 string
+	// Records are its rows, and Content the order-free digest of every column of every row, which
+	// the activity file it was made from has too.
+	Records int64
+	Content string
+}
+
 // Manifest says what a build's directory holds. It records no time and no path outside
 // the directory, so a build repeated gives the same manifest.
 type Manifest struct {
@@ -129,13 +200,19 @@ type Manifest struct {
 	DuckDB         string
 	SettingsSHA256 string
 	Stream         Stream
-	// Arms are the arms built, in the order of [Arms].
+	// Arms are the arms built, in the order of [AllArms].
 	Arms []Arm
 	// Files are the activity file and the files of every arm built, by path.
 	Files []FileInfo
+	// SegmentNanos and Segments describe the hours of the diagnostic arm, if it was
+	// built.
+	SegmentNanos int64     `json:",omitempty"`
+	Segments     []Segment `json:",omitempty"`
+	// Adopted is set for a directory made by [Adopt].
+	Adopted *Adopted `json:",omitempty"`
 }
 
-// File returns the entry for a role.
+// File returns the first entry for a role: the only one of every role but the segments'.
 func (m *Manifest) File(r Role) (FileInfo, bool) {
 	for _, f := range m.Files {
 		if f.Role == r {
@@ -143,6 +220,17 @@ func (m *Manifest) File(r Role) (FileInfo, bool) {
 		}
 	}
 	return FileInfo{}, false
+}
+
+// FilesOf returns every entry for a role, in the order of the manifest, which is by path.
+func (m *Manifest) FilesOf(r Role) []FileInfo {
+	var out []FileInfo
+	for _, f := range m.Files {
+		if f.Role == r {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Has reports whether an arm was built.
@@ -164,11 +252,51 @@ func ReadManifest(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("duckengine: %s is format %d, not %d", filepath.Join(dir, ManifestName), m.Format, ManifestFormat)
 	}
 	for _, f := range m.Files {
+		if isSegmentRole(f.Role) {
+			if i, role, ok := segmentOf(f.Path); !ok || role != f.Role || i >= len(m.Segments) {
+				return nil, fmt.Errorf("duckengine: %s lists %q at %q, which is not a file of one of its %d segments", ManifestName, f.Role, f.Path, len(m.Segments))
+			}
+			continue
+		}
 		if want, ok := rolePath[f.Role]; !ok || want != f.Path {
 			return nil, fmt.Errorf("duckengine: %s lists %q at %q", ManifestName, f.Role, f.Path)
 		}
 	}
+	if m.Has(ArmH) {
+		if err := m.checkSegments(); err != nil {
+			return nil, err
+		}
+	}
 	return &m, nil
+}
+
+// checkSegments refuses a manifest whose hours do not make one stream: the segments are
+// in ascending Seq, each has a pair of files, and the pairs hold the rows the segments say.
+func (m *Manifest) checkSegments() error {
+	if len(m.Segments) == 0 || m.SegmentNanos <= 0 {
+		return fmt.Errorf("duckengine: %s has the diagnostic arm and no segments", ManifestName)
+	}
+	for i, s := range m.Segments {
+		if s.Index != i || s.Records <= 0 || s.FirstSeq > s.LastSeq || i > 0 && s.FirstSeq <= m.Segments[i-1].LastSeq {
+			return fmt.Errorf("duckengine: %s: segment %d (%+v) does not follow the one before it", ManifestName, i, s)
+		}
+		for _, r := range []Role{RoleHFwd, RoleHRev} {
+			var found *FileInfo
+			for _, f := range m.FilesOf(r) {
+				if f.Path == SegmentPath(i, r) {
+					f := f
+					found = &f
+				}
+			}
+			if found == nil || found.Rows != s.Records {
+				return fmt.Errorf("duckengine: %s: segment %d has no %s file of %d rows", ManifestName, i, r, s.Records)
+			}
+		}
+	}
+	if len(m.FilesOf(RoleHFwd)) != len(m.Segments) || len(m.FilesOf(RoleHRev)) != len(m.Segments) {
+		return fmt.Errorf("duckengine: %s lists files of segments that do not exist", ManifestName)
+	}
+	return nil
 }
 
 func writeManifest(dir string, m *Manifest) error {

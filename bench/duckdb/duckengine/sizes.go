@@ -34,13 +34,13 @@ func Sizes(m *Manifest) SizeReport {
 		}
 		return float64(b) / float64(rep.Records)
 	}
-	for _, a := range Arms {
+	for _, a := range AllArms {
 		if !slices.Contains(m.Arms, a) {
 			continue
 		}
 		s := ArmSize{Arm: a}
 		for _, role := range armRoles[a] {
-			if f, ok := m.File(role); ok {
+			for _, f := range m.FilesOf(role) {
 				s.Files = append(s.Files, f)
 				s.Bytes += f.Bytes
 			}

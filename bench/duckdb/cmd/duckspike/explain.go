@@ -18,10 +18,9 @@ func runExplain(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	fs := flag.NewFlagSet("duckspike explain", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "", "the directory of a build")
-	plan := fs.String("plan", "", "the plan.json the build was made from")
-	expect := fs.String("expect-plan", "", "the SHA-256 of the plan file, as hex; required")
-	armName := fs.String("arm", "", "the arm to audit: A1, A2 or I")
-	queries := fs.String("query", "", "the questions to audit, by position in the plan, comma separated; by default the first of each shape of question, at most -max of them")
+	in := addInputFlags(fs)
+	armName := fs.String("arm", "", "the arm to audit: A1, A2, I or H")
+	queries := fs.String("query", "", "the questions to audit, by position in the plan or question set, comma separated; by default the first of each shape of question, at most -max of them")
 	max := fs.Int("max", 40, "how many shapes to audit by default")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -31,9 +30,9 @@ func runExplain(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	arms, err := duckengine.ParseArms(*armName)
 	if err != nil || len(arms) != 1 {
-		return fmt.Errorf("-arm names one arm: A1, A2 or I")
+		return fmt.Errorf("-arm names one arm: A1, A2, I or H")
 	}
-	p, sum, err := loadPlan(*plan, *expect, true)
+	input, err := in.load()
 	if err != nil {
 		return err
 	}
@@ -41,10 +40,10 @@ func runExplain(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	if err := checkBuildIsOfPlan(m, p, sum); err != nil {
+	if err := checkBuildIsOf(m, input); err != nil {
 		return err
 	}
-	picks, err := pickQueries(p, *queries, *max)
+	picks, err := pickQueries(input.queries, *queries, *max)
 	if err != nil {
 		return err
 	}
@@ -64,10 +63,10 @@ func runExplain(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	}
 	defer r.Close()
 
-	fmt.Fprintf(stdout, "plan sha256 %s\narm %s, a connection that caches nothing and logs the file system's reads\n", sum, arms[0])
+	fmt.Fprintf(stdout, "%s sha256 %s\narm %s, a connection that caches nothing and logs the file system's reads\n", input.kind, input.sum, arms[0])
 	differs := 0
 	for _, i := range picks {
-		q := p.Queries[i]
+		q := input.queries[i]
 		ans, err := runner.Ask(r, q)
 		if err != nil {
 			return fmt.Errorf("question %d (%s): %w", i, q.Name(), err)
@@ -88,7 +87,12 @@ func runExplain(ctx context.Context, args []string, stdout, stderr io.Writer) er
 				a.Role, a.Admitted.Groups, a.Total.Groups, a.Admitted.Rows, a.Admitted.Bytes, scans[j].Cardinality, a.BoundsOnly.Groups, bound)
 			fmt.Fprintf(stdout, "  read from the file: row groups %d (%v), bytes of pages %d, of bloom filters %d, other %d\n", len(o.Groups), o.Groups, o.DataBytes, o.BloomBytes, o.OtherBytes)
 			verdict := "agrees"
+			if a.Files > 0 {
+				fmt.Fprintf(stdout, "  files: %d opened by the count, %d by DuckDB; pages read of %d by the count, %d by DuckDB\n", a.Files, o.Files, a.FilesRead, o.FilesRead)
+			}
 			switch {
+			case a.Files > 0 && (o.Files != a.Files || !a.Bound && o.FilesRead != a.FilesRead || a.Bound && o.FilesRead > a.FilesRead):
+				verdict, differs = "DIFFERS: files", differs+1
 			case a.Bound && len(o.Groups) > a.Admitted.Groups:
 				verdict, differs = "DIFFERS: more row groups read than the upper bound", differs+1
 			case !a.Bound && !slices.Equal(o.Groups, a.IDs):
@@ -111,13 +115,13 @@ func indent(s string) string {
 
 // pickQueries is the questions named, or the first of each shape: operation, direction,
 // age and layer.
-func pickQueries(p *runner.Plan, list string, max int) ([]int, error) {
+func pickQueries(queries []runner.Query, list string, max int) ([]int, error) {
 	if list != "" {
 		var out []int
 		for _, f := range strings.Split(list, ",") {
 			i, err := strconv.Atoi(strings.TrimSpace(f))
-			if err != nil || i < 0 || i >= len(p.Queries) {
-				return nil, fmt.Errorf("-query %q: the plan has questions 0 to %d", f, len(p.Queries)-1)
+			if err != nil || i < 0 || i >= len(queries) {
+				return nil, fmt.Errorf("-query %q: there are questions 0 to %d", f, len(queries)-1)
 			}
 			out = append(out, i)
 		}
@@ -125,7 +129,7 @@ func pickQueries(p *runner.Plan, list string, max int) ([]int, error) {
 	}
 	seen := map[string]bool{}
 	var out []int
-	for i, q := range p.Queries {
+	for i, q := range queries {
 		k := fmt.Sprintf("%s/%s/%s/%s", q.Op, q.Dir, q.Age, q.Layer)
 		if seen[k] || len(out) >= max {
 			continue

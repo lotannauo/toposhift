@@ -209,7 +209,8 @@ func TestNoCounterIsWrittenWhenAnAnswerIsWrong(t *testing.T) {
 	// The files of one stream asked the questions of another: G0 fails, and no counter
 	// comes of it.
 	var out bytes.Buffer
-	cf, err := readArm(ctx, build, duckengine.ArmA2, pB, nil, &out, true)
+	inB := &input{kind: "plan", queries: pB.Queries, queriesDigest: pB.QueriesDigest, stream: pB.Stream, plan: pB}
+	cf, err := readArm(ctx, build, duckengine.ArmA2, inB, nil, &out, true)
 	if err == nil || cf != nil || !strings.Contains(err.Error(), "no counter is kept") {
 		t.Fatalf("the questions of another plan: %v, %v", cf, err)
 	}

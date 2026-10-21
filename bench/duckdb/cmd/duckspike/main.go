@@ -1,22 +1,33 @@
 // Command duckspike is the driver of the DuckDB baseline.
 //
-//	duckspike g0      -plan plan.json [-expect-plan sha256] [-arms records,intervals]
-//	duckspike build   -plan plan.json -expect-plan sha256 -out dir [-arms A1,A2,I]
-//	duckspike read    -dir dir -plan plan.json -expect-plan sha256 [-arms A1,A2,I] [-out dir]
-//	duckspike explain -dir dir -plan plan.json -expect-plan sha256 -arm A2 [-query n,...]
-//	duckspike sizes   -dir dir [-verify-hashes]
+//	duckspike g0        -plan plan.json [-expect-plan sha256] [-arms records,intervals]
+//	duckspike questions -activity file -expect-digest sha256:hex -start time -duration d -out file [-batch n] [-hot n] [-median n] [-min-non-empty x]
+//	duckspike build     (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256 -activity file) -out dir [-arms A1,A2,I,H] [-segment d]
+//	duckspike adopt     -questions file -expect-questions sha256 -activity file -archive file -expect-archive sha256 -out dir
+//	duckspike read      -dir dir (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256) [-arms A1,A2,I,H] [-out dir]
+//	duckspike explain   -dir dir (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256) -arm A2 [-query n,...]
+//	duckspike sizes     -dir dir [-verify-hashes]
 //	duckspike env
 //
 // g0 regenerates the stream of a plan into the in-memory model of each arm's files and
 // asks every question of the plan: the model's answer must equal the reference engine's.
 // It needs no DuckDB.
 //
+// questions makes a question set from an activity file that no generator made (one hour of
+// a trace, reduced to the records a store takes): the questions the runner would choose
+// from the stream, with the reference engine's answer to each. The set takes the place of
+// a plan wherever one is named, and the SHA-256 of its file names it.
+//
 // build writes the Parquet files of the arms from the plan's stream, with the retention
-// applied once, and a manifest. read opens them through DuckDB and asks every question of
-// the plan: no counter is kept for an arm unless all the answers are the plan's, and
-// every question is asked twice and must cost the same. explain audits the counting of
-// some questions against what DuckDB read from the files. sizes reports the bytes of a
-// build; env, where the binary runs.
+// applied once, and a manifest; from a question set it writes them from the very bytes of
+// the activity file the questions were made from. adopt makes a directory of one arm, A1,
+// of an archive that was made before: it is checked by its SHA-256 and to hold the rows of
+// the activity file, and read as it is. read opens the arms through DuckDB and asks every
+// question: no counter is kept for an arm unless all the answers are the reference
+// engine's, and every question is asked twice and must cost the same. explain audits the
+// counting of some questions against what DuckDB read from the files. sizes reports the
+// bytes of a build; env, where the binary runs. The arm H is a diagnostic: A2's files for
+// each hour of ingest, read through a glob.
 //
 // Counters are rows, row groups and bytes. The commands print no time, and refuse an -out
 // inside a git work tree: what they write is local scratch, not a result.
@@ -47,11 +58,13 @@ func main() {
 }
 
 const usage = `usage:
-  duckspike g0      -plan plan.json [-expect-plan sha256] [-arms records,intervals]
-  duckspike build   -plan plan.json -expect-plan sha256 -out dir [-arms A1,A2,I]
-  duckspike read    -dir dir -plan plan.json -expect-plan sha256 [-arms A1,A2,I] [-out dir]
-  duckspike explain -dir dir -plan plan.json -expect-plan sha256 -arm A2 [-query n,...]
-  duckspike sizes   -dir dir [-verify-hashes]
+  duckspike g0        -plan plan.json [-expect-plan sha256] [-arms records,intervals]
+  duckspike questions -activity file -expect-digest sha256:hex -start time -duration d -out file [-batch n] [-hot n] [-median n] [-min-non-empty x]
+  duckspike build     (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256 -activity file) -out dir [-arms A1,A2,I,H] [-segment d]
+  duckspike adopt     -questions file -expect-questions sha256 -activity file -archive file -expect-archive sha256 -out dir
+  duckspike read      -dir dir (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256) [-arms A1,A2,I,H] [-out dir]
+  duckspike explain   -dir dir (-plan plan.json -expect-plan sha256 | -questions file -expect-questions sha256) -arm A2 [-query n,...]
+  duckspike sizes     -dir dir [-verify-hashes]
   duckspike env`
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -61,8 +74,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "g0":
 		return runG0(ctx, args[1:], stdout, stderr)
+	case "questions":
+		return runQuestions(ctx, args[1:], stdout, stderr)
 	case "build":
 		return runBuild(ctx, args[1:], stdout, stderr)
+	case "adopt":
+		return runAdopt(ctx, args[1:], stdout, stderr)
 	case "read":
 		return runRead(ctx, args[1:], stdout, stderr)
 	case "explain":

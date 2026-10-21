@@ -113,11 +113,17 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 // it, or one Run wrote it to). The report's Stream is left empty: the caller knows how
 // the engine came by the stream.
 func Check(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Progress) (*Report, error) {
-	tell(say, "g0: asking %d questions", len(plan.Queries))
-	rep := &Report{Queries: len(plan.Queries)}
+	return CheckQueries(ctx, plan.Queries, e, say)
+}
+
+// CheckQueries is [Check] for questions that are not a plan's: those of a question set
+// made from an activity file, whose answers are the reference engine's all the same.
+func CheckQueries(ctx context.Context, queries []runner.Query, e engine.Engine, say runner.Progress) (*Report, error) {
+	tell(say, "g0: asking %d questions", len(queries))
+	rep := &Report{Queries: len(queries)}
 	groups := map[[2]string]*Group{}
 	var order [][2]string
-	for _, q := range plan.Queries {
+	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

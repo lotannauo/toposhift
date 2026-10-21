@@ -7,6 +7,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -47,6 +48,12 @@ type Source struct {
 	// Horizon is the retention horizon the stream ends with, the zero time if it never
 	// moves one. The files keep what a retention at that horizon, applied once, keeps.
 	Horizon time.Time
+	// File, if set, is the activity file the stream is replayed from, and a build copies it
+	// as the build's activity file instead of writing one from the records, so that the
+	// files of the arms are made from the very bytes of the input: columns the engine's
+	// records do not hold (the event time basis, a boot id) are kept as they are. It is
+	// for a stream with no horizon, and its Replay must read this file.
+	File string
 	// Replay writes the whole stream to the sink, batches in ascending Seq and a call
 	// of Retain each time the horizon moves, and returns the stream's digest. It is
 	// called twice when the stream has a horizon, once otherwise, and must produce the
@@ -65,6 +72,20 @@ type BuildOptions struct {
 	// several row groups from a small stream. DuckDB rounds a size to a multiple of
 	// 2,048. A zero keeps the baseline's size.
 	RowGroups RowGroupRows
+	// Segment is the length of an hour of ingest for the diagnostic arm, which is an hour
+	// unless a test wants several segments of a short stream. A segment ends when the
+	// newest event time the stream has reached passes into the next multiple of it.
+	Segment time.Duration
+}
+
+// DefaultSegment is the hour of the diagnostic arm.
+const DefaultSegment = time.Hour
+
+func (o BuildOptions) segment() time.Duration {
+	if o.Segment == 0 {
+		return DefaultSegment
+	}
+	return o.Segment
 }
 
 // RowGroupRows are the row group sizes of the three kinds of file.
@@ -116,26 +137,63 @@ func (p *passSink) Retain(h time.Time) error {
 // file, and, when asked, to a model of the interval arm.
 type keepSink struct {
 	passSink
+	// w is nil when the activity file is the input's own and is copied.
 	w     *activity.Writer
 	model *duckmodel.Model
 	kept  uint64
+
+	// The hours of ingest: segment is how long one is, frontier the newest event time the
+	// stream has reached, and segs the hours that hold a kept record.
+	segment  time.Duration
+	frontier time.Time
+	segs     []Segment
+}
+
+// segmentByEventTime, if set, puts each record in the hour of its own event time and not
+// of the hour of ingest: a test sets it to see that a build with that fault is caught.
+var segmentByEventTime bool
+
+// hourOf is the start of the segment an event time falls in, in Unix nanoseconds.
+func hourOf(t time.Time, seg time.Duration) int64 {
+	n, d := t.UnixNano(), int64(seg)
+	return n - ((n%d)+d)%d
 }
 
 func (k *keepSink) Write(batch []engine.Record) error {
 	var forModel []engine.Record
+	// The batch is ingested at once, so it belongs to the hour the stream has reached when
+	// it arrives: a late event is in the hour it arrives in, not the hour it is about.
+	for _, r := range batch {
+		if r.EventTime.After(k.frontier) {
+			k.frontier = r.EventTime
+		}
+	}
+	hour := hourOf(k.frontier, k.segment)
 	for _, r := range batch {
 		k.seen++
 		k.lastSeq = r.Seq
 		if !k.filter.Keep(r) {
 			continue
 		}
-		sr, err := duckmodel.StoreRecord(r)
-		if err != nil {
-			return err
+		if k.w != nil {
+			sr, err := duckmodel.StoreRecord(r)
+			if err != nil {
+				return err
+			}
+			if err := k.w.Write(sr); err != nil {
+				return err
+			}
 		}
-		if err := k.w.Write(sr); err != nil {
-			return err
+		at := hour
+		if segmentByEventTime { // the fault: a late event is put in the hour it is about
+			at = hourOf(r.EventTime, k.segment)
 		}
+		if n := len(k.segs); n == 0 || k.segs[n-1].StartNanos != at {
+			k.segs = append(k.segs, Segment{Index: n, StartNanos: at, FirstSeq: r.Seq})
+		}
+		last := &k.segs[len(k.segs)-1]
+		last.LastSeq = r.Seq
+		last.Records++
 		k.kept++
 		if k.model != nil {
 			r.Payload = nil // a fold reads no payload, and a model of a plan is large
@@ -164,6 +222,9 @@ func Build(ctx context.Context, db *DB, dir string, src Source, arms []Arm, opts
 	if len(arms) == 0 {
 		return nil, errors.New("duckengine: no arm to build")
 	}
+	if opts.Segment < 0 {
+		return nil, fmt.Errorf("duckengine: an hour of ingest of %s", opts.Segment)
+	}
 	if src.Replay == nil {
 		return nil, errors.New("duckengine: a build needs a stream to replay")
 	}
@@ -191,32 +252,24 @@ func Build(ctx context.Context, db *DB, dir string, src Source, arms []Arm, opts
 	}
 
 	actPath := rolePathIn(dir, RoleActivity)
-	f, err := os.Create(actPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	bw := bufio.NewWriterSize(f, 1<<20)
-	w, err := activity.NewWriter(bw, activity.WriterOptions{})
-	if err != nil {
-		return nil, err
-	}
-	second := &keepSink{passSink: passSink{filter: filter}, w: w}
+	second := &keepSink{passSink: passSink{filter: filter}, segment: opts.segment()}
 	if opts.VerifyModel && slices.Contains(arms, ArmI) {
 		second.model = duckmodel.New(duckmodel.ArmIntervals)
 	}
-	d, err := src.Replay(ctx, second)
-	if err != nil {
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	if err := bw.Flush(); err != nil {
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
-		return nil, err
+	var d string
+	if src.File != "" {
+		if !src.Horizon.IsZero() {
+			return nil, errors.New("duckengine: a stream replayed from an activity file has no horizon")
+		}
+		var err error
+		if d, err = replayFile(ctx, src, actPath, second); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		if d, err = replayRecords(ctx, src, actPath, second); err != nil {
+			return nil, err
+		}
 	}
 	if first != nil {
 		if d != digest || first.seen != second.seen || first.lastSeq != second.lastSeq || first.retentions != second.retentions {
@@ -255,6 +308,12 @@ func Build(ctx context.Context, db *DB, dir string, src Source, arms []Arm, opts
 			return nil, err
 		}
 	}
+	if slices.Contains(arms, ArmH) {
+		m.SegmentNanos, m.Segments = int64(opts.segment()), second.segs
+		if err := buildSegments(ctx, db, dir, actPath, second.segs, opts.sizes().Record); err != nil {
+			return nil, err
+		}
+	}
 
 	roles := []Role{RoleActivity}
 	for _, a := range Arms {
@@ -266,11 +325,23 @@ func Build(ctx context.Context, db *DB, dir string, src Source, arms []Arm, opts
 		roles = append(roles, armRoles[ArmA2]...) // the interval arm's record files
 	}
 	for _, r := range uniqueRoles(roles) {
-		fi, err := describe(ctx, db, dir, r)
+		fi, err := describe(ctx, db, dir, r, rolePath[r])
 		if err != nil {
 			return nil, err
 		}
 		m.Files = append(m.Files, fi)
+	}
+	for _, sg := range m.Segments {
+		for _, r := range []Role{RoleHFwd, RoleHRev} {
+			fi, err := describe(ctx, db, dir, r, SegmentPath(sg.Index, r))
+			if err != nil {
+				return nil, err
+			}
+			if fi.Rows != sg.Records {
+				return nil, fmt.Errorf("duckengine: %s has %d rows, its segment kept %d records", fi.Path, fi.Rows, sg.Records)
+			}
+			m.Files = append(m.Files, fi)
+		}
 	}
 	if err := writeManifest(dir, m); err != nil {
 		return nil, err
@@ -278,9 +349,57 @@ func Build(ctx context.Context, db *DB, dir string, src Source, arms []Arm, opts
 	return m, nil
 }
 
+// replayRecords writes the stream's kept records to the activity file.
+func replayRecords(ctx context.Context, src Source, actPath string, k *keepSink) (string, error) {
+	f, err := os.Create(actPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	bw := bufio.NewWriterSize(f, 1<<20)
+	w, err := activity.NewWriter(bw, activity.WriterOptions{})
+	if err != nil {
+		return "", err
+	}
+	k.w = w
+	d, err := src.Replay(ctx, k)
+	if err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+	if err := bw.Flush(); err != nil {
+		return "", err
+	}
+	return d, f.Close()
+}
+
+// replayFile copies the input's activity file as the build's, and replays the stream
+// from the input for the counts and the model.
+func replayFile(ctx context.Context, src Source, actPath string, k *keepSink) (string, error) {
+	in, err := os.Open(src.File)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.Create(actPath)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	return src.Replay(ctx, k)
+}
+
 func normalizeArms(arms []Arm) []Arm {
 	var out []Arm
-	for _, a := range Arms {
+	for _, a := range AllArms {
 		if slices.Contains(arms, a) {
 			out = append(out, a)
 		}
@@ -337,9 +456,31 @@ func copyRecords(ctx context.Context, db *DB, src, dst, order string, rowGroup i
 	return nil
 }
 
-// describe measures a file of the build.
-func describe(ctx context.Context, db *DB, dir string, r Role) (FileInfo, error) {
-	p := rolePathIn(dir, r)
+// buildSegments writes the diagnostic arm: for each hour of ingest, the records of its
+// range of Seq, sorted as A2's two files are, as a file of their own.
+func buildSegments(ctx context.Context, db *DB, dir, act string, segs []Segment, rowGroup int) error {
+	for _, sg := range segs {
+		for _, c := range []struct {
+			role  Role
+			order string
+		}{{RoleHFwd, ArchiveOrder}, {RoleHRev, ReverseOrder}} {
+			dst := filepath.Join(dir, filepath.FromSlash(SegmentPath(sg.Index, c.role)))
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			stmt := fmt.Sprintf("COPY (SELECT * FROM read_parquet(%s) WHERE seq >= %d AND seq <= %d ORDER BY %s) TO %s (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE %d)",
+				quote(act), sg.FirstSeq, sg.LastSeq, c.order, quote(dst), rowGroup)
+			if _, err := db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("duckengine: writing %s: %w", SegmentPath(sg.Index, c.role), err)
+			}
+		}
+	}
+	return nil
+}
+
+// describe measures a file of the build, at a path relative to the directory.
+func describe(ctx context.Context, db *DB, dir string, r Role, rel string) (FileInfo, error) {
+	p := filepath.Join(dir, filepath.FromSlash(rel))
 	st, err := os.Stat(p)
 	if err != nil {
 		return FileInfo{}, err
@@ -348,7 +489,7 @@ func describe(ctx context.Context, db *DB, dir string, r Role) (FileInfo, error)
 	if err != nil {
 		return FileInfo{}, err
 	}
-	fi := FileInfo{Role: r, Path: rolePath[r], Bytes: st.Size(), SHA256: sum}
+	fi := FileInfo{Role: r, Path: rel, Bytes: st.Size(), SHA256: sum}
 	err = db.QueryRowContext(ctx, "SELECT num_rows, num_row_groups FROM parquet_file_metadata("+quote(p)+")").Scan(&fi.Rows, &fi.RowGroups)
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("duckengine: reading the footer of %s: %w", fi.Path, err)
