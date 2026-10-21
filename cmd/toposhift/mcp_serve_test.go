@@ -97,6 +97,7 @@ func resolveAtArgs(uid string, at time.Time) map[string]any {
 // that was answered 200 is alive to resolve_entity at the next call, at a token,
 // and the range tools answer on it, with names.
 func TestServeServesTheToolsFromTheStore(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir))
 	waitIngestOn(t, s.base)
@@ -182,6 +183,7 @@ func TestServeServesTheToolsFromTheStore(t *testing.T) {
 // Reading needs no cluster name: when ingest stays off for a change of the name,
 // the tools still read the store.
 func TestServeReadsWhileIngestIsOffForTheClusterName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir), "--cluster-name", "prod")
 	waitIngestOn(t, s.base)
@@ -264,6 +266,7 @@ func TestServeToolsGateLikeTheReceiver(t *testing.T) {
 // On a listener that is not loopback the tools are not mounted, and the log says
 // so once. The server has no authentication yet.
 func TestServeLeavesTheToolsOffOnANonLoopbackListener(t *testing.T) {
+	t.Parallel()
 	s := startServe(t, dirEnv(t, t.TempDir()), "--listen", "0.0.0.0:0")
 	base := strings.Replace(s.base, "0.0.0.0", "127.0.0.1", 1)
 	waitIngestOn(t, base)
@@ -401,6 +404,7 @@ func (f *stopFixture) send(t *testing.T, base string) {
 // call that is queued are waited for, and the store closes only after both have
 // returned.
 func TestStopDrainsTheToolsBeforeTheStoreCloses(t *testing.T) {
+	t.Parallel()
 	f := newStopFixture(t)
 	ts := httptest.NewServer(f.mux())
 	defer ts.Close()

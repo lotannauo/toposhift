@@ -23,6 +23,7 @@ import (
 // none is set; it retains in the background, with the observer given; every
 // other option is the one every command opens its store with.
 func TestServeStoreOptionsRankTheProducers(t *testing.T) {
+	t.Parallel()
 	obs := newRetainLog(slog.New(slog.DiscardHandler), storeOptions())
 	for _, tt := range []struct {
 		name    string
@@ -93,6 +94,7 @@ func (a acceptAll) AcceptPartial(context.Context, capture.LogsData) (otlphttp.Pa
 // The receiver's sink answers as the sink it holds now: a gate's 503, then a
 // sink that accepts in part.
 func TestSwitchSink(t *testing.T) {
+	t.Parallel()
 	var s switchSink
 	s.set(gateSink{message: ingestStarting})
 	_, err := s.AcceptPartial(t.Context(), capture.LogsData{})
@@ -111,6 +113,7 @@ func TestSwitchSink(t *testing.T) {
 
 // serve -h documents the ingest flags.
 func TestServeHelpDocumentsIngest(t *testing.T) {
+	t.Parallel()
 	var stderr bytes.Buffer
 	if code := run(t.Context(), []string{"serve", "-h"}, noEnv, io.Discard, &stderr); code != 0 {
 		t.Fatalf("exit code = %d", code)
