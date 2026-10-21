@@ -14,7 +14,7 @@ jq = "1.8.2"
 gotestsum = "1.13.0"
 
 [tasks.fmt]
-description = "Format Go code in place, including the bench module and its RocksDB, Postgres, metrics-store, DuckDB and XTDB modules"
+description = "Format Go code in place, including the bench module and its RocksDB, Postgres, metrics-store, DuckDB, XTDB and Dolt modules"
 run = [
   "golangci-lint fmt",
   "cd bench && golangci-lint fmt",
@@ -23,6 +23,7 @@ run = [
   "cd bench/victoria && golangci-lint fmt",
   "cd bench/duckdb && golangci-lint fmt",
   "cd bench/xtdb && golangci-lint fmt",
+  "cd bench/dolt && golangci-lint fmt",
 ]
 
 [tasks."fmt:check"]
@@ -370,6 +371,38 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 description = "Run the XTDB module's trimmed tests with the race detector"
 dir = "bench/xtdb"
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-xtdb-test-race.json"} -- -race -short -p 2 -timeout 25m ./...'
+
+# The Dolt baseline (bench/dolt) is a module of its own so that a database server to
+# test against and the driver that talks to it (neither is there yet) stay out of the
+# bench module's graph. It is pure Go. No shard runs these tasks: .github/workflows/dolt.yml
+# does, so that a baseline that needs a server never holds up a pull request that
+# touches nothing under bench/dolt. Its tests that need a Dolt server skip without
+# TOPOSHIFT_DOLT_DSN (there are none yet).
+[tasks."bench:dolt:fmt:check"]
+description = "Fail if any Go file in the Dolt module is not formatted"
+dir = "bench/dolt"
+run = "golangci-lint fmt --diff"
+
+[tasks."bench:dolt:lint"]
+description = "Lint the Dolt module"
+dir = "bench/dolt"
+run = "golangci-lint run --allow-parallel-runners"
+
+[tasks."bench:dolt:vuln"]
+description = "Scan the Dolt module's dependencies for known vulnerabilities"
+dir = "bench"
+run = "go tool govulncheck -C dolt ./..."
+
+[tasks."bench:dolt:test"]
+description = "Run the Dolt module's full tests, cgo off"
+dir = "bench/dolt"
+env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-dolt-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:dolt:test:race"]
+description = "Run the Dolt module's trimmed tests with the race detector"
+dir = "bench/dolt"
+run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-dolt-test-race.json"} -- -race -short -p 2 -timeout 25m ./...'
 
 # toposhift must build and boot with CGO disabled. Pebble picks its zstd by a
 # build constraint: pure Go when cgo is off or the pebblegozstd tag is set, the

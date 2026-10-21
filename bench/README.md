@@ -107,6 +107,28 @@ driver is needed yet. Its checks are `mise run bench:xtdb:fmt:check`, `bench:xtd
 `bench:xtdb:vuln`, `bench:xtdb:test` and `bench:xtdb:test:race`; they run in
 `.github/workflows/xtdb.yml`, not in the `ci` shards.
 
+The Dolt baseline, `dolt/`, is a module of its own, to keep a database server to test
+against and its driver out of this module's graph, and it is pure Go (build and test it
+with `CGO_ENABLED=0`). It puts the question "version a current-state table in Dolt,
+commit every batch, read the past with `AS OF`: why build a store?" to the spike's
+reads. `dolt/doltmodel` needs no server: it is the tables of that design (an append-only
+log of every record, a state table holding each producer's newest record, and a commit
+per batch that versions the state) and the rule that settles each key of a read from the
+state table as of a commit or from the log, as a `Model` that implements the engine
+contract in two arms (with commits, and without as a control), with the tables' columns
+and keys as data. The conformance test, a per-key-equals-log property and mutants of each
+rule hold it to the reference engine. It also holds the diagnostic
+arm, which reads a commit's place in history as an event time and so counts the answers
+that shortcut gets wrong. `dolt/g0` asks an engine every question of a plan and reports,
+per age, how many keys the state settled and how many went to the log (`go run
+./cmd/g0model -plan plan.json -arm commit`, from `dolt/`). No Dolt server, image or
+driver is used yet, and nothing about how Dolt behaves is checked: the versioning
+semantics Dolt is taken to have are listed as unverified in the `doltmodel` package
+documentation. The module's tasks (`mise run bench:dolt:test`, `bench:dolt:test:race`,
+`bench:dolt:lint`, `bench:dolt:fmt:check`, `bench:dolt:vuln`) run in
+`.github/workflows/dolt.yml`, not in the `ci` shards, so that a baseline that will need
+a database server never holds up a pull request that touches nothing under `dolt/`.
+
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
 mise run bench:test:race   # the trimmed tests under the race detector (go test -short)
