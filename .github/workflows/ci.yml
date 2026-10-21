@@ -14,10 +14,14 @@ on:
 permissions: {}
 
 concurrency:
-  # A newer push to a pull request cancels its older run; runs on main are never
-  # cancelled. The event is in the group so the nightly run neither waits behind
-  # a push to main nor replaces one that is waiting.
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A newer push to a pull request cancels its older run. Every other run (a
+  # push to main, the nightly, a dispatch) has a group of its own, so it is never
+  # queued and never cancelled: a push to main must run its shards at once, since
+  # those are what save the Go cache every pull request restores. Only the deep
+  # job runs one at a time, with its own group below. (One group for all pushes
+  # to main used to hold each push behind the previous push's deep job, and a
+  # third push cancelled the waiting one, which then saved no cache at all.)
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -238,6 +242,15 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
+    # One deep job at a time per architecture and event, never cancelled while it
+    # runs. GitHub keeps one waiting job per group: a third push to main within
+    # the hour replaces the waiting one, so that commit gets no deep run of its
+    # own, and the run that held it is reported cancelled although its shards
+    # passed and saved their cache. The nightly has its own group through the
+    # event name, so it neither waits behind a push nor replaces one.
+    concurrency:
+      group: ci-deep-${{ github.event_name }}-${{ matrix.os }}
+      cancel-in-progress: false
     permissions:
       contents: read
     strategy:
