@@ -247,7 +247,8 @@ done
 # server it is tested against stays out of the bench module's graph. It is pure Go, so
 # all of its checks fit the shards. It links layout L's shared code and so Pebble, hence
 # the cgo-free build check. Its tests that need a metrics-store server skip without
-# TOPOSHIFT_VM_URL (there are none yet).
+# TOPOSHIFT_VM_URL; bench:victoria:test:server runs them against a server, and only
+# victoria.yml, which starts one, does.
 [tasks."bench:victoria:fmt:check"]
 description = "Fail if any Go file in the metrics-store module is not formatted"
 dir = "bench/victoria"
@@ -268,6 +269,16 @@ description = "Run the metrics-store module's full tests, cgo off"
 dir = "bench/victoria"
 env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-victoria-test.json"} -- -p 2 -timeout 25m ./...'
+
+[tasks."bench:victoria:test:server"]
+description = "Run the metrics-store module's server tests against a live server (TOPOSHIFT_VM_URL names it; bench/victoria/scripts/vm-server.sh starts the one the flags are written for, on an empty data directory)"
+dir = "bench/victoria"
+env = { CGO_ENABLED = "0" }
+run = '''
+set -eu
+: "${TOPOSHIFT_VM_URL:?TOPOSHIFT_VM_URL must name the server, see bench/victoria/scripts/vm-server.sh}"
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-victoria-test-server.json"} -- -count=1 -p 1 -timeout 40m ./vmengine/...
+'''
 
 [tasks."bench:victoria:test:race"]
 description = "Run the metrics-store module's trimmed tests with the race detector"

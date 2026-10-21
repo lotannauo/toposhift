@@ -1,0 +1,117 @@
+name: victoria
+
+# The metrics-store baseline (bench/victoria) is checked against a live VictoriaMetrics
+# server: its engine answers the first gate of a plan over HTTP, the server's own counters
+# are checked against the converter's, and the behaviour of windows and staleness markers
+# the model rests on is tested. No shard has a server, so this workflow starts one, with
+# bench/victoria/scripts/vm-server.sh (the one way the server is ever started, here and on
+# a laptop; the image is pinned there by the digest of its multi-architecture index) and
+# runs bench:victoria:test:server against it on both architectures. It is not a required
+# check, and it times nothing: the shards run the module's tests that need no server. A
+# pull request that changes only mise.toml or internal/** is not checked here until it
+# reaches main, which is acceptable for a baseline that is not a required check.
+
+on:
+  pull_request:
+    paths:
+      - "bench/victoria/**"
+      - "bench/spike/**"
+      - "bench/go.mod"
+      - "bench/go.sum"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/victoria.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bench/victoria/**"
+      - "bench/spike/**"
+      - "bench/go.mod"
+      - "bench/go.sum"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      # The task it runs and the pinned tools, and the packages of the root module's tree
+      # the module links.
+      - "mise.toml"
+      - ".github/workflows/victoria.yml"
+  # By hand, by someone with write access, to run a branch. It has no inputs.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # As in rocksdb.yml: a newer push to a pull request cancels its older run; runs on
+  # main are never cancelled.
+  group: victoria-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for
+    # an unnamed bash step does not set pipefail).
+    shell: bash
+
+jobs:
+  integration:
+    name: integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # The image is pinned by digest in the script, and pulled by it. The server listens
+      # on the loopback of the runner only, with the flags of flags.conf, on an empty data
+      # directory in the runner's temporary directory.
+      - name: Start the server
+        run: |
+          export TOPOSHIFT_VM_DATA="$RUNNER_TEMP/vmdata"
+          bench/victoria/scripts/vm-server.sh start
+          curl --silent --fail http://127.0.0.1:8428/health
+
+      - name: Test against the server
+        env:
+          TOPOSHIFT_VM_URL: http://127.0.0.1:8428
+        run: mise run bench:victoria:test:server
+
+      - name: Show the server's log and the disk
+        if: always()
+        run: |
+          docker logs toposhift-vm 2>&1 | tail -n 200 || true
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      - name: Stop the server
+        if: always()
+        run: |
+          export TOPOSHIFT_VM_DATA="$RUNNER_TEMP/vmdata"
+          bench/victoria/scripts/vm-server.sh stop
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-victoria-${{ matrix.os }}
+          path: "bench/victoria/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14

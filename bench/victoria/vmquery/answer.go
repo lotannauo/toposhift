@@ -15,14 +15,14 @@ import (
 
 // Result is one series of an instant query's answer: its labels and the text of its
 // value. The metric name is not relied on: a function over a window may drop it, and
-// the labels name everything an answer needs [U] (d).
+// the labels name everything an answer needs (assumption (d), verified).
 type Result struct {
 	Labels map[string]string
 	Value  string
 }
 
 // present reports whether the series is there. A NaN value is a staleness marker the
-// store returned instead of a sample, which is the series having ended [U] (k).
+// store returned instead of a sample, which is the series having ended (assumption (k): a window holding only a marker returns nothing, so the server does not give one in a vector).
 func (r Result) present() bool {
 	f, err := strconv.ParseFloat(r.Value, 64)
 	return err == nil && !math.IsNaN(f)

@@ -59,6 +59,49 @@ func Touches(set map[identity.Fingerprint]struct{}, r engine.Record) bool {
 	return false
 }
 
+// Projection returns a sink that gives each of the sinks only the records that touch an
+// entity of the set, as the reference engine's projection does (see [Touches]), and every
+// record if the set is nil. The converter and the worlds of a plan that is read at pinned
+// prefixes are written through it.
+func Projection(set map[identity.Fingerprint]struct{}, sinks ...runner.Sink) runner.Sink {
+	return projection{set: set, sinks: sinks}
+}
+
+type projection struct {
+	set   map[identity.Fingerprint]struct{}
+	sinks []runner.Sink
+}
+
+func (p projection) Write(batch []engine.Record) error {
+	if p.set != nil {
+		kept := make([]engine.Record, 0, len(batch))
+		for _, r := range batch {
+			if Touches(p.set, r) {
+				kept = append(kept, r)
+			}
+		}
+		batch = kept
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+	for _, s := range p.sinks {
+		if err := s.Write(batch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p projection) Retain(h time.Time) error {
+	for _, s := range p.sinks {
+		if err := s.Retain(h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // FactsReport is what [CheckSameFacts] found.
 type FactsReport struct {
 	// Subjects is the number of subjects compared. Identical of them have equal existence
@@ -99,7 +142,7 @@ func (*factSink) Retain(time.Time) error { return nil }
 // The plans' expected answers come from the coalesced stream and the store is written the
 // every-sample one, so every comparison of the two rests on this. The check is made on
 // the registry's windows: the bound of a subject is the fraction of the longest window
-// among its holders.
+// among its refreshing holders (a producer in watch mode has no run to extend).
 //
 // The generator's ingest-side coalescer (bench/spike/workload/coalesce.go) takes no
 // random numbers, so both streams share their events. CheckSameFacts fails if that is
@@ -127,7 +170,7 @@ func extensionBound(spec runner.Spec, reg *Registry, s engine.Subject) time.Dura
 			return w.ExtendEvery
 		}
 		if w.ExtendTTLFraction > 0 {
-			return time.Duration(w.ExtendTTLFraction * float64(reg.SubjectWindow(s)))
+			return time.Duration(w.ExtendTTLFraction * float64(reg.RefreshWindow(s)))
 		}
 	}
 	return 0
