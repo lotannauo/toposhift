@@ -1,0 +1,45 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Index Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Scan Direction": "Forward",
+      "Index Name": "log_g_dst",
+      "Relation Name": "log",
+      "Alias": "log",
+      "Startup Cost": 0.28,
+      "Total Cost": 281.80,
+      "Plan Rows": 524,
+      "Plan Width": 145,
+      "Actual Rows": 926,
+      "Actual Loops": 1,
+      "Index Cond": "((dst = '\\x6b38732e6e6f646500213ed3a485ca17496c1239e0349e0347'::bytea) AND (layer = '3'::smallint) AND (event_ns >= '1767228000000000000'::bigint) AND (event_ns < '1767231600000000000'::bigint) AND (seq <= '9223372036854775807'::bigint))",
+      "Rows Removed by Index Recheck": 0,
+      "Shared Hit Blocks": 59,
+      "Shared Read Blocks": 198,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning": {
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Triggers": [
+    ]
+  }
+]

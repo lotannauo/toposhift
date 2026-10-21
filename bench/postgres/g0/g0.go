@@ -81,20 +81,37 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckStream(plan, info, e.LastSeq()); err != nil {
+		return nil, err
+	}
+	return Ask(ctx, plan.Queries, info, e, say)
+}
+
+// CheckStream checks that a stream written to an engine is the plan's: what was
+// regenerated has the digest, the counts and the old token of the plan's stream, and the
+// engine's token (its last sequence number) is where the stream ended. Without that, no
+// answer can be compared.
+func CheckStream(plan *runner.Plan, info runner.StreamInfo, engineSeq uint64) error {
 	want := plan.Stream
 	if info.Digest != want.Digest || info.Records != want.Records || info.LastSeq != want.LastSeq || info.OldToken != want.OldToken || info.Dropped != want.Dropped || len(info.Retentions) != len(want.Retentions) {
-		return nil, fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
+		return fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
 			ErrStreamDiffers, info.Digest, info.Records, info.LastSeq, info.OldToken, want.Digest, want.Records, want.LastSeq, want.OldToken)
 	}
-	if got := e.LastSeq(); got != want.LastSeq {
-		return nil, fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, got, want.LastSeq)
+	if engineSeq != want.LastSeq {
+		return fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, engineSeq, want.LastSeq)
 	}
+	return nil
+}
 
-	tell(say, "g0: asking %d questions", len(plan.Queries))
-	rep := &Report{Stream: info, Queries: len(plan.Queries)}
+// Ask asks e every query and compares each answer with the reference's, which the query
+// carries. info is the stream the engine holds, for the report. The engine must hold
+// the stream the queries were made for ([CheckStream]).
+func Ask(ctx context.Context, queries []runner.Query, info runner.StreamInfo, e engine.Engine, say runner.Progress) (*Report, error) {
+	tell(say, "g0: asking %d questions", len(queries))
+	rep := &Report{Stream: info, Queries: len(queries)}
 	groups := map[[2]string]*Group{}
 	var order [][2]string
-	for _, q := range plan.Queries {
+	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

@@ -74,3 +74,45 @@ func TestClippedTablesDoNotDependOnHowARowSpellsItsEnd(t *testing.T) {
 		t.Error("end sources are not compared")
 	}
 }
+
+// TestADigestWriterGivesTheDigestOfTheTablesItWasFedFrom: rows added one at a time, as
+// a scan of a table too large for memory would add them, digest as the tables do, and
+// with a horizon as the clipped tables do.
+func TestADigestWriterGivesTheDigestOfTheTablesItWasFedFrom(t *testing.T) {
+	var tb pgmodel.Tables
+	tb.Edges = []pgmodel.EdgeRow{
+		{Src: pod1, Dst: node1, Rel: catalog.ScheduledOn, Layer: catalog.L2, Row: pgmodel.Final(5, 20, lifecycle.EndProducer)},
+		{Src: pod1, Dst: node1, Rel: catalog.ScheduledOn, Layer: catalog.L2, Row: pgmodel.Provisional(30, 50, lifecycle.EndLivenessExpiry)},
+		{Src: pod1, Dst: node1, Rel: catalog.ScheduledOn, Layer: catalog.L2, Row: pgmodel.OpenRow(60)},
+	}
+	tb.Entities = []pgmodel.EntityRow{
+		{Fp: pod1, Layer: catalog.L2, Row: pgmodel.Final(1, 9, lifecycle.EndProducer)},
+		{Fp: pod1, Layer: catalog.L2, Row: pgmodel.OpenRow(12)},
+	}
+	for _, horizon := range []int64{math.MinInt64, 0, 10, 25, 55, 100} {
+		w := pgmodel.NewDigestWriter(horizon)
+		for _, e := range tb.Edges {
+			w.Edge(e)
+		}
+		for _, e := range tb.Entities {
+			w.Entity(e)
+		}
+		want := tb
+		if horizon != math.MinInt64 {
+			want = tb.Clipped(horizon)
+		}
+		if got := w.Sum(); got != want.Digest() {
+			t.Errorf("horizon %d: digest %s, the tables' %s", horizon, got, want.Digest())
+		}
+		if int(w.Rows()) != want.Len() {
+			t.Errorf("horizon %d: %d rows, the tables have %d", horizon, w.Rows(), want.Len())
+		}
+	}
+	// The digest depends on the rows and their order.
+	a, b := pgmodel.NewDigestWriter(math.MinInt64), pgmodel.NewDigestWriter(math.MinInt64)
+	a.Edge(tb.Edges[0])
+	b.Edge(tb.Edges[2])
+	if a.Sum() == b.Sum() {
+		t.Error("two different rows have one digest")
+	}
+}

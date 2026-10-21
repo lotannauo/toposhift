@@ -1,0 +1,73 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Result",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 2.51,
+      "Total Cost": 2.52,
+      "Plan Rows": 1,
+      "Plan Width": 1,
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 4,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0,
+      "Plans": [
+        {
+          "Node Type": "Index Only Scan",
+          "Parent Relationship": "InitPlan",
+          "Subplan Name": "InitPlan 1",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "entities_b",
+          "Relation Name": "entities",
+          "Alias": "entities",
+          "Startup Cost": 0.28,
+          "Total Cost": 2.51,
+          "Plan Rows": 1,
+          "Plan Width": 0,
+          "Actual Rows": 1,
+          "Actual Loops": 1,
+          "Index Cond": "((fp = '\\x6b38732e6e6f64650011f012f952136f8ed1ad904c16432ae0'::bytea) AND (layer = '3'::smallint) AND ((COALESCE(upper(during), '9223372036854775807'::bigint)) > '1767231600000000000'::bigint))",
+          "Rows Removed by Index Recheck": 0,
+          "Filter": "(lower(during) <= '1767231600000000000'::bigint)",
+          "Rows Removed by Filter": 0,
+          "Heap Fetches": 1,
+          "Shared Hit Blocks": 0,
+          "Shared Read Blocks": 4,
+          "Shared Dirtied Blocks": 0,
+          "Shared Written Blocks": 0,
+          "Local Hit Blocks": 0,
+          "Local Read Blocks": 0,
+          "Local Dirtied Blocks": 0,
+          "Local Written Blocks": 0,
+          "Temp Read Blocks": 0,
+          "Temp Written Blocks": 0
+        }
+      ]
+    },
+    "Planning": {
+      "Shared Hit Blocks": 0,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Triggers": [
+    ]
+  }
+]

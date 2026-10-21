@@ -56,6 +56,19 @@ The data is under `~/spikebench/pg/17` unless `TOPOSHIFT_PG_DATA` says otherwise
 Unix socket replaces the port when `TOPOSHIFT_PG_SOCKET_DIR` is set, as on CI
 (`.github/workflows/postgres.yml`, which is not a required check).
 
+`postgres/cmd/pgspike` loads a stream into the tables of a bulk arm and records what its
+reads cost there, in counts and bytes, never in time. `load` writes a plan's stream (or an
+activity file's) into the log with COPY, applies the plan's retentions, folds the log into
+intervals (refusing, before it holds any, a load whose interval rows would need more memory than `-max-interval-mem`, 2 GiB by default), builds the indexes and vacuums, and records the log written by phase, the rows,
+a digest of the interval tables and the bytes of every relation; `read` asks every question
+of the load, refuses the run if any answer differs from the plan's, and then explains each
+question's statements with the buffers of the schema emptied, as often as asked, requiring
+equal counters; `sizes` records the bytes as left and compacted; `diff` holds two records
+of one stream to each other. Every command refuses a server whose settings differ from
+`settings.conf`, a plan that is not named by its SHA-256 and an output directory inside a
+git work tree, and nothing it writes holds a time. `questions` chooses and answers the
+questions of an activity file before any load.
+
 The metrics-store baseline, `victoria/`, is a module of its own as well and shares nothing
 with the Postgres one (pure Go: build and test it with `CGO_ENABLED=0`). It asks what a
 PromQL-compatible metrics store (VictoriaMetrics single-node) holds and answers when the
