@@ -34,7 +34,7 @@ env:
     ~/.cache/golangci-lint
 
 jobs:
-  # mise run ci is four shards (see mise.toml), and each runs here as its own job
+  # mise run ci is five shards (see mise.toml), and each runs here as its own job
   # on each architecture. These names must not start with "ci (": those are the
   # required checks, which the ci job below reports for all the shards together.
   shard:
@@ -50,7 +50,7 @@ jobs:
         os: [ubuntu-24.04, ubuntu-24.04-arm]
         # check:ci-shards reads this line and fails unless it lists exactly the
         # shards mise run ci depends on.
-        shard: [static, bench, race, benchrace]
+        shard: [static, bench, raceheavy, racerest, benchrace]
     steps:
       - name: Harden runner
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
@@ -112,7 +112,7 @@ jobs:
           GOFLAGS: ${{ github.event_name == 'schedule' && '-count=1' || '' }}
         run: |
           mkdir -p "$TEST_REPORT_DIR"
-          if [ "$SHARD" = race ] || [ "$SHARD" = benchrace ]; then
+          if [ "$SHARD" = raceheavy ] || [ "$SHARD" = racerest ] || [ "$SHARD" = benchrace ]; then
             # Evidence for a killed run: one line a minute while the tests run,
             # and a full snapshot if this step is signalled. Neither can change
             # the step's result.
@@ -143,7 +143,7 @@ jobs:
           fi
 
       - name: Show the runner's state
-        if: ${{ always() && (matrix.shard == 'race' || matrix.shard == 'benchrace') }}
+        if: ${{ always() && (matrix.shard == 'raceheavy' || matrix.shard == 'racerest' || matrix.shard == 'benchrace') }}
         continue-on-error: true
         run: |
           {
@@ -235,8 +235,9 @@ jobs:
   # and everything else with Pebble's invariant checks on (mise run ci). This is
   # not a required check: it reports a race the day it is merged, not before. It
   # builds what the race and benchrace shards build (-short changes what a test
-  # does, not the build), and starts from the race shard's cache, which holds the
-  # root module and the dependencies both modules share.
+  # does, not the build), and starts from the heavy race shard's cache, which
+  # holds the root module's slowest packages and the dependencies both modules
+  # share, else the other race shard's.
   deep:
     name: deep (${{ matrix.os }})
     if: github.event_name != 'pull_request'
@@ -278,9 +279,10 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.GO_CACHE_PATHS }}
-          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-race-${{ github.sha }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-raceheavy-${{ github.sha }}
           restore-keys: |
-            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-race-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-raceheavy-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-racerest-
             go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
             go-v2-${{ runner.os }}-${{ runner.arch }}-
 

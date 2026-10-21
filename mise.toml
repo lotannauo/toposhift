@@ -522,16 +522,25 @@ description = "Build the toposhift binary into ./bin, without cgo"
 env = { CGO_ENABLED = "0" }
 run = "go build -trimpath -o bin/toposhift ./cmd/toposhift"
 
-# ci is exactly four shards, and CI runs each shard as its own job on both
+# ci is exactly five shards, and CI runs each shard as its own job on both
 # architectures, so the shards build and test side by side on separate runners
 # instead of all of them sharing one. A job named ci (<runner>) passes only when
 # every shard passed on both. check and test:fast are not shards and not part of
 # ci. check:ci-shards fails if ci depends on anything but the shards, or if the
 # workflow's list of shards differs from them, so a task added to ci directly,
 # or a shard the workflow does not run, cannot pass locally and be missed by CI.
+#
+# The root module's race tests are two shards, raceheavy and racerest, because
+# the few slowest packages under the race detector took as long as all the
+# others together on a runner's four processors (about 15 min for the whole
+# module on x86-64, about 8 for either half). internal/raceshards names the heavy
+# packages and prints each half from go list ./...; the halves partition the
+# module by construction, and a stale name fails the task (the guard that runs
+# on every shard) and the package's own test, which stats each named directory.
+# mise run test is still the whole module in one go.
 [tasks.ci]
 description = "Everything CI runs on a pull request"
-depends = ["ci:static", "ci:bench", "ci:race", "ci:benchrace"]
+depends = ["ci:static", "ci:bench", "ci:raceheavy", "ci:racerest", "ci:benchrace"]
 
 [tasks."ci:static"]
 description = "CI shard: formatting, lint, spelling, vulnerabilities, the Pebble pin and the cgo-free build, workflows, secrets and the collector configuration"
@@ -541,9 +550,39 @@ depends = ["fmt:check", "lint", "spelling", "check:replace", "check:pebble-pin",
 description = "CI shard: the bench module's full tests and its cgo-free build, and the Postgres module's"
 depends = ["bench:test", "bench:purego", "bench:postgres:test", "bench:postgres:purego"]
 
-[tasks."ci:race"]
-description = "CI shard: the root module's tests under the race detector"
-depends = ["test"]
+[tasks."ci:raceheavy"]
+description = "CI shard: the slowest packages of the root module under the race detector"
+depends = ["test:race:heavy"]
+
+[tasks."ci:racerest"]
+description = "CI shard: the other packages of the root module under the race detector"
+depends = ["test:race:rest"]
+
+# The same flags as test, on one half of the packages each. The package list and
+# the half are taken in assignments first (a pipeline into a substitution would
+# hide a failing go list), so that a failure of either, such as a stale name in
+# raceshards' heavy list, fails the task instead of leaving go test an empty list.
+[tasks."test:race:heavy"]
+description = "The slowest packages of the root module with the race detector (see internal/raceshards)"
+hide = true
+run = '''
+set -eu
+all="$(go list ./...)"
+pkgs="$(printf '%s\n' "$all" | go run ./internal/raceshards heavy)"
+# shellcheck disable=SC2086 # the list is one package a line
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-raceheavy.json"} -- -race -timeout 15m $pkgs
+'''
+
+[tasks."test:race:rest"]
+description = "The other packages of the root module with the race detector (see internal/raceshards)"
+hide = true
+run = '''
+set -eu
+all="$(go list ./...)"
+pkgs="$(printf '%s\n' "$all" | go run ./internal/raceshards rest)"
+# shellcheck disable=SC2086 # the list is one package a line
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/test-racerest.json"} -- -race -timeout 15m $pkgs
+'''
 
 [tasks."ci:benchrace"]
 description = "CI shard: the bench module's trimmed tests under the race detector, and the Postgres module's"
