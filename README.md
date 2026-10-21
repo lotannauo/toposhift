@@ -85,7 +85,7 @@ Or, in a checkout, `mise install && mise run build` writes `bin/toposhift` ([bui
 ## Retention
 `toposhift serve` can discard old history once a day: L2 and L3 (pods, nodes, containers, services) keep 30 days, L1 (hosts) 90, and L0 is kept. `--retain on` or `off`, or `TOPOSHIFT_RETAIN`, chooses; the flag wins.
 - **Releases**, from v0.1.0 on, ship with retention **off** until background retention passes its latency check on CI hardware, which it has not yet done. The store then grows as long as `serve` runs. A `release-*` branch builds the same way.
-- **Builds of `main`** (`go install …@main`, or `mise run build` in a checkout) have retention **on**. Until v0.1.0 is tagged, `go install …@latest` builds main; after that, the newest release.
+- **Builds of `main`** (`go install …@main`, or `mise run build` in a checkout) have retention **on**. `go install …@latest` builds the newest release, v0.1.0 so far, which has retention off.
 - `GET /status` says which mode is in force and what set it; on a release, for example, `"retention":{"mode":"off","set_by":"default"}`. More: [retention](docs/operate.md#retention).
 
 ## Known shortcomings

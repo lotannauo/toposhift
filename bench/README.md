@@ -1039,3 +1039,38 @@ Results written under `bench/results/` are git-ignored. Numbers measured on a
 laptop or a VM choose between designs and are never published; published
 performance numbers come only from CI hardware. The deterministic counts the
 findings report may quote are described in `findings/README.md`.
+
+### Known failures of the CI tiers
+
+Each entry says what is known and what is not, and is dated.
+
+- **A concurrent read in `spike/pebblemvcc` matched no committed state once (2026-10-21).**
+  `TestConforms/crdb1/concurrent_reads` failed in the `verify bench (ubuntu-24.04)` job of
+  `verify` run 39549744035, attempt 1 (a patch on a commit of `main`): "a concurrent read
+  matched no committed state" for a batched read of every node's pods, between two equal
+  tokens. The same job rerun passed, and every other job of that attempt passed. The cause
+  is not found: whether the reader of layout M returned a view that was never committed, or
+  the check judged a read of an instant near a retention horizon wrongly, is not known.
+  `pebblemvcc` is a candidate of this spike and is not in the product build. A second
+  occurrence in any run is the reason to run the check many times under `-race` and decide
+  between fixing the reader and fixing the check.
+- **`deep (ubuntu-24.04)` failed on slow hosts because of the demo tests' fixed deadlines
+  (2026-10-17 to 2026-10-21; fixed in #199).** `TestDemoNoServePrintsTheBanner`,
+  `TestDemoEndToEnd` and `TestDemoOnATakenPort` in `cmd/toposhift` failed with `context
+  deadline exceeded`: the demo builds its cluster in memory before it serves, and with
+  every package running under the race detector at once on a 4-vCPU runner that took
+  longer than the deadlines (28.37 s in nightly 39400829188). Three of the four failed runs
+  read (39039943774, 39365679498, 39400829188) were on `AMD EPYC 7763` hosts; the fourth,
+  push run 39559075805, was on an `AMD EPYC 9V74` host, so a slow host, not one CPU model,
+  is the condition. #199 gives these tests four times the deadline under the race
+  detector; what they assert is unchanged. The nightly 39576583196, which contains #199,
+  passed this job on an `AMD EPYC 7763` host: one green run on the host class that failed
+  most, not proof that it is closed. A `deep (ubuntu-24.04)` failure on a commit that
+  contains #199 is a new failure to read, not a rerun.
+- **`internal/coalesce` `TestWithNothingAbsorbedTheCoalescedStreamFoldsLikeTheRawOne`
+  failed once in the `deep` job of push run 39636383439 (2026-10-21;
+  `-rapid.seed=2047047424587645809`).** The cause was a counting error in the property,
+  not in the coalescer: a byte-identical confirmation repeated at one instant was counted
+  as absorbed. The property now counts such a repeat separately and still requires the
+  coalesced stream to fold exactly like the raw one. The shipped coalescer and v0.1.0 are
+  unaffected.
