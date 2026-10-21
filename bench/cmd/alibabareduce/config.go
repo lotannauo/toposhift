@@ -84,9 +84,29 @@ func (c *Config) callTTL() time.Duration {
 	return callEdgeTTL
 }
 
+// defaultExtendFraction is the share of its TTL after which the product's coalescer
+// re-asserts a run: a half.
+const defaultExtendFraction = 0.5
+
 // coalesceConfig is the product's ingest coalescer configuration.
 func coalesceConfig() coalesce.Config {
-	return coalesce.Config{ExtendTTLFraction: 0.5, RunAgeFromTTL: true}
+	return coalesce.Config{ExtendTTLFraction: defaultExtendFraction, RunAgeFromTTL: true}
+}
+
+// placementCoalesce is the coalescer configuration of the placement streams (C60 and
+// C300): the product's, with the run's extension interval set by -extend-fraction. The
+// calls and the fixture keep the product's.
+func (c *Config) placementCoalesce() coalesce.Config {
+	cc := coalesceConfig()
+	cc.ExtendTTLFraction = c.ExtendFraction
+	return cc
+}
+
+// placementChoice is the coalescer of the stream of a placement cadence. It is sharded
+// where the grid flush stands in for the whole coalescer's, and whole otherwise
+// (see [gridFlushHolds]) or when -whole-coalescer says so.
+func (c *Config) placementChoice(spec cadenceSpec) coalescerChoice {
+	return coalescerChoice{cfg: c.placementCoalesce(), ttl: spec.withFactor(int32(c.TTLFactor)).ttl(), whole: c.WholeCoalescer}
 }
 
 // mutant is a deliberate fault. Only tests set one: each is the fault a test
@@ -132,6 +152,18 @@ type Config struct {
 	// TTLFactor is how many sampling intervals a placement sample promises. The
 	// call edges' TTL is not a multiple of it.
 	TTLFactor int
+	// ExtendFraction is the share of a placement run's TTL after which the coalescer
+	// re-asserts it, in (0, 1]. The product's is a half. It applies to the C60 and C300
+	// streams only.
+	ExtendFraction float64
+	// WholeCoalescer makes the placement streams use one coalescer, flushed as the
+	// product's is, where the default splits it by subject and flushes one deadline at a
+	// time. The two give the same stream for an extension interval the split can stand in
+	// for; for another the split is not used.
+	WholeCoalescer bool
+	// Recency makes the C60 and C300 sinks count, at each sample, how many sampling
+	// intervals the stored end of the subject's run is behind that sample.
+	Recency bool
 	// WriteS and WriteI say whether each cadence also writes its every-sample
 	// stream (S) and its one-record-per-maximal-interval stream (I).
 	WriteS, WriteI bool
@@ -168,6 +200,7 @@ func defaultConfig() Config {
 		FixtureMinutes:       10,
 		FixtureNodes:         200,
 		TTLFactor:            defaultTTLFactor,
+		ExtendFraction:       defaultExtendFraction,
 		WriteC60:             true,
 		MaxFileBytes:         1 << 30,
 		MaxCallKeys:          8_000_000,
@@ -241,6 +274,8 @@ func (c *Config) validate() error {
 		return errors.New("the fixture needs at least one minute and one node")
 	case c.TTLFactor < minTTLFactor || c.TTLFactor > maxTTLFactor:
 		return fmt.Errorf("the TTL factor must be between %d and %d, not %d", minTTLFactor, maxTTLFactor, c.TTLFactor)
+	case !(c.ExtendFraction > 0 && c.ExtendFraction <= 1): // also false for NaN
+		return fmt.Errorf("the extension fraction must be in (0, 1], not %g", c.ExtendFraction)
 	case c.VerifyStreams && c.WriteI && !c.WriteC60:
 		return errors.New("the maximal-interval stream is checked against the raw assertions of the coalesced stream, which -write-c60=false does not keep")
 	case c.MaxCallKeys < 1 || c.MaxEdges < 1:

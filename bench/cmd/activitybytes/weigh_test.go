@@ -429,3 +429,101 @@ func TestArchiveSQLUsesVariablesDuckDBAccepts(t *testing.T) {
 		}
 	}
 }
+
+// TestTheDefaultCompressionLeavesTheOutputAsItWas shows that naming the default, or
+// naming nothing, writes the same row and the same result file, with the columns and
+// the keys they had before -compression: the flag adds nothing to a measurement that
+// does not use it.
+func TestTheDefaultCompressionLeavesTheOutputAsItWas(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	n := fmt.Sprint(len(f.records))
+	outs := make([]string, 2)
+	rows := make([]string, 2)
+	for i, extra := range [][]string{nil, {"-compression", "default"}} {
+		out := t.TempDir()
+		args := append([]string{"-header", "-in", f.path, "-out", out, "-label", "T/D", "-batch", "37", "-expect-records", n, "-samples", fmt.Sprint(f.samples)}, extra...)
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("run(%v) = %d: %s", extra, code, stderr.String())
+		}
+		outs[i], rows[i] = out, stdout.String()
+	}
+	if rows[0] != rows[1] {
+		t.Errorf("the row differs:\n%s\n%s", rows[0], rows[1])
+	}
+	header := strings.Split(strings.SplitN(rows[0], "\n", 2)[0], "\t")
+	if !slices.Equal(header, []string{
+		"label", "records", "keys", "checkpoints", "checkpoints_entity", "checkpoints_edge",
+		"live_table_bytes", "blob_live_bytes", "bytes_per_record", "bytes_per_sample",
+		"tables_per_level", "data_digest", "checkpoint_setting", "input_digest",
+	}) {
+		t.Errorf("the header is %v", header)
+	}
+	a, err := os.ReadFile(filepath.Join(outs[0], "T_D.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(outs[1], "T_D.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The input is the same file in both, so the two results are the same bytes.
+	if !bytes.Equal(a, b) {
+		t.Errorf("the result files differ:\n%s\n%s", a, b)
+	}
+	if bytes.Contains(a, []byte("compression")) {
+		t.Errorf("the result of a default measurement names a compression:\n%s", a)
+	}
+	_, base, _ := baseline(t)
+	if base.DataDigest != frozenDataDigest || base.Compression != "" {
+		t.Errorf("the baseline holds data %s, compression %q", base.DataDigest, base.Compression)
+	}
+	if !strings.Contains(string(a), fmt.Sprintf(`"live_table_bytes": %d`, base.LiveTableBytes)) {
+		t.Errorf("the default flag weighs other table bytes than the baseline's %d:\n%s", base.LiveTableBytes, a)
+	}
+}
+
+// TestCompressionChangesTheTableBytesAndNothingElse shows that a store written under
+// another block compression holds the same keys and values as the default, is named in
+// the result, and, but for explicit Snappy (which is the default written out), weighs
+// other table bytes.
+func TestCompressionChangesTheTableBytesAndNothingElse(t *testing.T) {
+	t.Parallel()
+
+	f, base, _ := baseline(t)
+	for _, name := range []string{"snappy", "zstd", "balanced"} {
+		cfg := testConfig(t, f, "T/"+name)
+		cfg.Compression = name
+		res, diag := load(t, cfg)
+		if err := checkSettled(res, diag); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		if res.DataDigest != frozenDataDigest || res.Keys != base.Keys || res.Records != base.Records || res.Checkpoints != base.Checkpoints {
+			t.Errorf("%s: the store holds other data than the default's", name)
+		}
+		if res.Compression != name {
+			t.Errorf("%s: the result says %q", name, res.Compression)
+		}
+		if same := res.LiveTableBytes == base.LiveTableBytes; same != (name == "snappy") {
+			t.Errorf("%s: %d table bytes, the default's %d", name, res.LiveTableBytes, base.LiveTableBytes)
+		}
+	}
+}
+
+func TestACompressionThatIsNotOneIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"", "default", "snappy", "zstd", "balanced", "lz4", "zstd1", "ZSTD", "Snappy"} {
+		cfg := config{Empty: true, Out: t.TempDir(), Label: "E", Checkpoints: checkpointsDefault, Batch: DefaultBatch, Compression: name}
+		ok := slices.Contains([]string{"", "default", "snappy", "zstd", "balanced"}, name)
+		if err := cfg.validate(); ok != (err == nil) {
+			t.Errorf("-compression %q: %v", name, err)
+		}
+	}
+	var o, e bytes.Buffer
+	if code := run([]string{"-empty", "-out", t.TempDir(), "-label", "E", "-compression", "lz4"}, &o, &e); code != 2 || o.Len() != 0 {
+		t.Errorf("run with -compression lz4 = %d, printed %q", code, o.String())
+	}
+}

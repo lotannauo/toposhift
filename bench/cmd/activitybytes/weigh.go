@@ -36,6 +36,12 @@ const (
 	checkpointsOff     = "off"
 )
 
+// compressionErr is the error of a -compression that is not one of the names.
+func compressionErr(name string) error {
+	_, err := rootkv.ParseCompression(name)
+	return err
+}
+
 // labelPattern is what a -label may hold.
 var labelPattern = regexp.MustCompile(`^[A-Za-z0-9/._-]+$`)
 
@@ -51,6 +57,9 @@ type config struct {
 	Label string
 	// Checkpoints is checkpointsDefault or checkpointsOff.
 	Checkpoints string
+	// Compression is the block compression of the store's tables, by the names
+	// [rootkv.ParseCompression] takes; empty is "default", which sets nothing.
+	Compression string
 	// Batch is the number of records per write.
 	Batch int
 	// ExpectRecords, if not zero, is the number of records the file must hold.
@@ -111,6 +120,8 @@ func (c *config) validate() error {
 		return fmt.Errorf("-label %q must be one or more of A-Z a-z 0-9 / . _ -", c.Label)
 	case c.Checkpoints != checkpointsDefault && c.Checkpoints != checkpointsOff:
 		return fmt.Errorf("-checkpoints %q must be %s or %s", c.Checkpoints, checkpointsDefault, checkpointsOff)
+	case compressionErr(c.Compression) != nil:
+		return fmt.Errorf("-compression %q must be default, snappy, zstd or balanced", c.Compression)
 	case c.Batch < 1:
 		return fmt.Errorf("-batch %d must be at least 1", c.Batch)
 	case c.ExpectRecords < 0 || c.Samples < 0:
@@ -182,10 +193,14 @@ type result struct {
 	// dbhash -data prints.
 	DataDigest        string `json:"data_digest"`
 	CheckpointSetting string `json:"checkpoint_setting"`
-	Batch             int    `json:"batch"`
-	GoVersion         string `json:"go_version"`
-	VCSRevision       string `json:"vcs_revision"`
-	VCSModified       bool   `json:"vcs_modified"`
+	// Compression is the block compression the tables were written under. It is left
+	// out for the default, so that a result made with no -compression is as it was
+	// before the flag.
+	Compression string `json:"compression,omitempty"`
+	Batch       int    `json:"batch"`
+	GoVersion   string `json:"go_version"`
+	VCSRevision string `json:"vcs_revision"`
+	VCSModified bool   `json:"vcs_modified"`
 }
 
 // diagnostics are the counters of the engine that depend on how the compactions
@@ -262,6 +277,14 @@ func weigh(ctx context.Context, cfg config) (_ *result, _ diagnostics, err error
 	opts := pebblestore.DefaultOptions()
 	opts.Config = pebblekv.Quiet(opts.Config)
 	opts.Sync = false
+	comp, err := rootkv.ParseCompression(cfg.Compression)
+	if err != nil {
+		return nil, diag, err
+	}
+	opts.Tuning.Compression = comp
+	if comp != rootkv.CompressionDefault {
+		res.Compression = comp.String()
+	}
 	if cfg.Checkpoints == checkpointsOff && cfg.mut != mutCheckpointsIgnored {
 		opts.Checkpoints = &pebblestore.CheckpointOptions{}
 	}

@@ -92,13 +92,16 @@ func reduce(cfg Config) (*results, error) {
 	d := res.ids
 
 	// Placement.
-	c60, err := newSink("placement_c60", filepath.Join(o.out, "placement_c60.parquet"), cfg.WriteC60, cfg.MaxFileBytes, cfg.VerifyStreams && cfg.WriteC60)
+	c60, err := newSinkConfig(cfg.placementChoice(cadenceC60), "placement_c60", filepath.Join(o.out, "placement_c60.parquet"), cfg.WriteC60, cfg.MaxFileBytes, cfg.VerifyStreams && cfg.WriteC60)
 	if err != nil {
 		return nil, err
 	}
-	c300, err := newSink("placement_c300", filepath.Join(o.out, "placement_c300.parquet"), true, cfg.MaxFileBytes, cfg.VerifyStreams)
+	c300, err := newSinkConfig(cfg.placementChoice(cadenceC300), "placement_c300", filepath.Join(o.out, "placement_c300.parquet"), true, cfg.MaxFileBytes, cfg.VerifyStreams)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Recency {
+		c60.rec, c300.rec = newRecency(cadenceC60.step), newRecency(cadenceC300.step)
 	}
 	specs := cfg.cadences()
 	res.cads = []*cadence{
