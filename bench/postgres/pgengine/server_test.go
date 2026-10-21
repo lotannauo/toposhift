@@ -13,6 +13,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/postgres/pgschema"
 	"github.com/lotannauo/toposhift/bench/spike/conformance"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/bench/spike/workload"
 )
 
 // The tests in this file need a Postgres server: TOPOSHIFT_PG_DSN names it (a pgx
@@ -100,4 +101,14 @@ func sqlConn(t testing.TB, e *pgengine.Engine) *pgx.Conn {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+// newWorkload is a generator of the workload a config describes.
+func newWorkload(t testing.TB, cfg workload.Config) *workload.Generator {
+	t.Helper()
+	g, err := workload.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }

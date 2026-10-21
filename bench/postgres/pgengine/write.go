@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/lotannauo/toposhift/bench/postgres/pgmodel"
 	"github.com/lotannauo/toposhift/bench/postgres/pgschema"
@@ -26,39 +28,46 @@ FROM unnest($1::bigint[], $2::bigint[], $3::smallint[], $4::text[], $5::bytea[],
 // The statements that apply a batch's row changes, one of each kind per table. They
 // are set-based over arrays, so a batch costs a statement per kind however many rows
 // it changes.
+//
+// An update or a delete finds its row by ctid, which the statement that read the
+// subject's rows returned, and not by the key of the row. A statement that finds rows
+// by key may be planned as a nested loop over an index scan of the GiST index, and the
+// planner does choose that over the primary key once the table has grown. Such an
+// update scans the index while it inserts the new versions of rows into it, and on the
+// server this baseline is written for that left the index entries of the new versions
+// marked dead, so the live rows were no longer found by the index (see
+// TestWritesAreNeverPlannedThroughAGiSTIndex). A ctid is a plan with no index in it.
+// It stays valid because one writer at a time changes the tables, in a transaction that
+// read the rows first, and changes a row once.
 const (
-	edgesDelete = `DELETE FROM edges e
-USING unnest($1::bytea[], $2::bytea[], $3::text[], $4::bigint[]) AS d(src, dst, rel, start_ns)
-WHERE e.src = d.src AND e.dst = d.dst AND e.rel = d.rel AND e.start_ns = d.start_ns`
-	edgesUpdate = `UPDATE edges e SET during = int8range(d.start_ns, d.end_ns), deadline_ns = d.deadline_ns, end_source = d.end_source
-FROM unnest($1::bytea[], $2::bytea[], $3::text[], $4::bigint[], $5::bigint[], $6::bigint[], $7::smallint[])
-  AS d(src, dst, rel, start_ns, end_ns, deadline_ns, end_source)
-WHERE e.src = d.src AND e.dst = d.dst AND e.rel = d.rel AND e.start_ns = d.start_ns`
+	edgesDelete = `DELETE FROM edges WHERE ctid = ANY($1::tid[])`
+	edgesUpdate = `UPDATE edges e SET during = int8range(e.start_ns, d.end_ns), deadline_ns = d.deadline_ns, end_source = d.end_source
+FROM unnest($1::tid[], $2::bigint[], $3::bigint[], $4::smallint[]) AS d(tid, end_ns, deadline_ns, end_source)
+WHERE e.ctid = ANY($1::tid[]) AND e.ctid = d.tid`
 	edgesInsert = `INSERT INTO edges (src, dst, rel, layer, start_ns, during, deadline_ns, end_source)
 SELECT d.src, d.dst, d.rel, d.layer, d.start_ns, int8range(d.start_ns, d.end_ns), d.deadline_ns, d.end_source
 FROM unnest($1::bytea[], $2::bytea[], $3::text[], $4::smallint[], $5::bigint[], $6::bigint[], $7::bigint[], $8::smallint[])
   AS d(src, dst, rel, layer, start_ns, end_ns, deadline_ns, end_source)`
 
-	entitiesDelete = `DELETE FROM entities e
-USING unnest($1::bytea[], $2::bigint[]) AS d(fp, start_ns)
-WHERE e.fp = d.fp AND e.start_ns = d.start_ns`
-	entitiesUpdate = `UPDATE entities e SET during = int8range(d.start_ns, d.end_ns), deadline_ns = d.deadline_ns, end_source = d.end_source
-FROM unnest($1::bytea[], $2::bigint[], $3::bigint[], $4::bigint[], $5::smallint[]) AS d(fp, start_ns, end_ns, deadline_ns, end_source)
-WHERE e.fp = d.fp AND e.start_ns = d.start_ns`
+	entitiesDelete = `DELETE FROM entities WHERE ctid = ANY($1::tid[])`
+	entitiesUpdate = `UPDATE entities e SET during = int8range(e.start_ns, d.end_ns), deadline_ns = d.deadline_ns, end_source = d.end_source
+FROM unnest($1::tid[], $2::bigint[], $3::bigint[], $4::smallint[]) AS d(tid, end_ns, deadline_ns, end_source)
+WHERE e.ctid = ANY($1::tid[]) AND e.ctid = d.tid`
 	entitiesInsert = `INSERT INTO entities (fp, layer, start_ns, during, deadline_ns, end_source)
 SELECT d.fp, d.layer, d.start_ns, int8range(d.start_ns, d.end_ns), d.deadline_ns, d.end_source
 FROM unnest($1::bytea[], $2::smallint[], $3::bigint[], $4::bigint[], $5::bigint[], $6::smallint[]) AS d(fp, layer, start_ns, end_ns, deadline_ns, end_source)`
 )
 
 // The stored rows of a subject from the start of the last row that begins at or
-// before $4 (or from $5, the smallest start, if there is none), and then the log of the
-// subject, baselines included, from that start. The second query is given that start.
+// before $4 (or from $5, the smallest start, if there is none), each with the ctid that
+// finds it again, and then the log of the subject, baselines included, from that start.
+// The second query is given that start.
 const (
-	edgeRows = `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source, layer
+	edgeRows = `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source, layer, ctid
 FROM edges WHERE src = $1 AND dst = $2 AND rel = $3
   AND start_ns >= coalesce((SELECT max(start_ns) FROM edges WHERE src = $1 AND dst = $2 AND rel = $3 AND start_ns <= $4::bigint), $5::bigint)
 ORDER BY start_ns`
-	entityRows = `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source, layer
+	entityRows = `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source, layer, ctid
 FROM entities WHERE fp = $1
   AND start_ns >= coalesce((SELECT max(start_ns) FROM entities WHERE fp = $1 AND start_ns <= $2::bigint), $3::bigint)
 ORDER BY start_ns`
@@ -105,6 +114,7 @@ type subjectBatch struct {
 	// Filled in as the batch is planned.
 	start   int64
 	old     []pgmodel.Row
+	oldTID  map[int64]pgtype.TID // where each old row is, by its start
 	input   []pgmodel.LogRow
 	changes pgmodel.Changes
 }
@@ -230,7 +240,8 @@ func (e *Engine) load(ctx context.Context, tx pgx.Tx, subjects []*subjectBatch) 
 			_ = br.Close()
 			return fmt.Errorf("pgengine: reading rows: %w", err)
 		}
-		layer, err := scanRows(rows, &sb.old)
+		sb.oldTID = make(map[int64]pgtype.TID)
+		layer, err := scanRows(rows, &sb.old, sb.oldTID)
 		if err != nil {
 			_ = br.Close()
 			return err
@@ -286,10 +297,10 @@ func layerError(sb *subjectBatch, stored catalog.Layer) error {
 	return fmt.Errorf("record seq %d: subject is stored in layer %s, not %s: %w", sb.records[0].Seq, stored, sb.layer, engine.ErrInvalid)
 }
 
-// scanRows reads interval rows, ascending by start, and returns the layer they
+// scanRows reads interval rows, ascending by start, with their ctids by start, and returns the layer they
 // carry (zero if there are none, and the first layer if they disagree, which the
 // caller then reports against the batch).
-func scanRows(rows pgx.Rows, into *[]pgmodel.Row) (catalog.Layer, error) {
+func scanRows(rows pgx.Rows, into *[]pgmodel.Row, tids map[int64]pgtype.TID) (catalog.Layer, error) {
 	defer rows.Close()
 	var layer catalog.Layer
 	for rows.Next() {
@@ -297,7 +308,8 @@ func scanRows(rows pgx.Rows, into *[]pgmodel.Row) (catalog.Layer, error) {
 		var end, deadline *int64
 		var inf bool
 		var source, l int16
-		if err := rows.Scan(&start, &end, &inf, &deadline, &source, &l); err != nil {
+		var tid pgtype.TID
+		if err := rows.Scan(&start, &end, &inf, &deadline, &source, &l, &tid); err != nil {
 			return 0, fmt.Errorf("pgengine: reading rows: %w", err)
 		}
 		r := pgmodel.Row{Start: start, EndSource: lifecycle.EndSource(source)}
@@ -316,6 +328,7 @@ func scanRows(rows pgx.Rows, into *[]pgmodel.Row) (catalog.Layer, error) {
 			layer = catalog.Layer(l)
 		}
 		*into = append(*into, r)
+		tids[start] = tid
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("pgengine: reading rows: %w", err)
@@ -379,34 +392,55 @@ func (e *Engine) createPartitions(ctx context.Context, tx pgx.Tx, batch []engine
 	return created, nil
 }
 
+// observeStatement, if set, is called with each statement of a batch, in its transaction
+// and before the batch is sent. It exists for the tests that ask the server how a
+// statement is planned.
+var observeStatement atomic.Pointer[func(ctx context.Context, tx pgx.Tx, sql string, args []any)]
+
 // apply stores the records and the row changes of a batch, and moves the token, in
 // one round trip.
 func apply(ctx context.Context, tx pgx.Tx, batch []engine.Record, subjects []*subjectBatch, last int64) error {
 	b := &pgx.Batch{}
 	b.Queue(logInsert, logArrays(batch)...)
 
-	var edgeDel edgeDeletes
-	var edgeUpd, edgeIns edgeCols
-	var entityDel entityDeletes
-	var entityUpd, entityIns entityCols
+	var edgeDel, entityDel []pgtype.TID
+	var edgeUpd, entityUpd tidRows
+	var edgeIns edgeCols
+	var entityIns entityCols
 	for _, sb := range subjects {
 		layer := int16(sb.layer)
+		edge := sb.subject.Kind == engine.SubjectEdge
+		where := func(start int64) (pgtype.TID, error) {
+			tid, ok := sb.oldTID[start]
+			if !ok {
+				return tid, fmt.Errorf("pgengine: a change to the row of %s at %d, which was not read", sb.subject.A, start)
+			}
+			return tid, nil
+		}
 		for _, start := range sb.changes.Deleted {
-			if sb.subject.Kind == engine.SubjectEdge {
-				edgeDel.add(sb.subject, start)
+			tid, err := where(start)
+			if err != nil {
+				return err
+			}
+			if edge {
+				edgeDel = append(edgeDel, tid)
 			} else {
-				entityDel.add(sb.subject, start)
+				entityDel = append(entityDel, tid)
 			}
 		}
 		for _, r := range sb.changes.Updated {
-			if sb.subject.Kind == engine.SubjectEdge {
-				edgeUpd.add(sb.subject, layer, r)
+			tid, err := where(r.Start)
+			if err != nil {
+				return err
+			}
+			if edge {
+				edgeUpd.add(tid, layer, r)
 			} else {
-				entityUpd.add(sb.subject, layer, r)
+				entityUpd.add(tid, layer, r)
 			}
 		}
 		for _, r := range sb.changes.Inserted {
-			if sb.subject.Kind == engine.SubjectEdge {
+			if edge {
 				edgeIns.add(sb.subject, layer, r)
 			} else {
 				entityIns.add(sb.subject, layer, r)
@@ -417,17 +451,17 @@ func apply(ctx context.Context, tx pgx.Tx, batch []engine.Record, subjects []*su
 		return err
 	}
 	// Deletes first: a primary key is free before an insert needs it.
-	if len(edgeDel.src) > 0 {
-		b.Queue(edgesDelete, edgeDel.src, edgeDel.dst, edgeDel.rel, edgeDel.start)
+	if len(edgeDel) > 0 {
+		b.Queue(edgesDelete, edgeDel)
 	}
-	if len(entityDel.fp) > 0 {
-		b.Queue(entitiesDelete, entityDel.fp, entityDel.start)
+	if len(entityDel) > 0 {
+		b.Queue(entitiesDelete, entityDel)
 	}
-	if len(edgeUpd.src) > 0 {
-		b.Queue(edgesUpdate, edgeUpd.src, edgeUpd.dst, edgeUpd.rel, edgeUpd.start, edgeUpd.end, edgeUpd.deadline, edgeUpd.source)
+	if len(edgeUpd.tid) > 0 {
+		b.Queue(edgesUpdate, edgeUpd.tid, edgeUpd.end, edgeUpd.deadline, edgeUpd.source)
 	}
-	if len(entityUpd.fp) > 0 {
-		b.Queue(entitiesUpdate, entityUpd.fp, entityUpd.start, entityUpd.end, entityUpd.deadline, entityUpd.source)
+	if len(entityUpd.tid) > 0 {
+		b.Queue(entitiesUpdate, entityUpd.tid, entityUpd.end, entityUpd.deadline, entityUpd.source)
 	}
 	if len(edgeIns.src) > 0 {
 		b.Queue(edgesInsert, edgeIns.src, edgeIns.dst, edgeIns.rel, edgeIns.layer, edgeIns.start, edgeIns.end, edgeIns.deadline, edgeIns.source)
@@ -437,6 +471,11 @@ func apply(ctx context.Context, tx pgx.Tx, batch []engine.Record, subjects []*su
 	}
 	b.Queue("UPDATE meta SET last_seq = $1", last)
 
+	if observe := observeStatement.Load(); observe != nil {
+		for _, q := range b.QueuedQueries {
+			(*observe)(ctx, tx, q.SQL, q.Arguments)
+		}
+	}
 	br := tx.SendBatch(ctx, b)
 	for range b.Len() {
 		if _, err := br.Exec(); err != nil {
@@ -494,30 +533,8 @@ func logArrays(batch []engine.Record) []any {
 }
 
 // The parallel arrays of the row statements. A row's end is null when its range is
-// unbounded, and its deadline is null unless it is provisional.
-
-type edgeDeletes struct {
-	src, dst [][]byte
-	rel      []string
-	start    []int64
-}
-
-func (d *edgeDeletes) add(s engine.Subject, start int64) {
-	d.src = append(d.src, pgmodel.EncodeFingerprint(s.A))
-	d.dst = append(d.dst, pgmodel.EncodeFingerprint(s.B))
-	d.rel = append(d.rel, string(s.Relation))
-	d.start = append(d.start, start)
-}
-
-type entityDeletes struct {
-	fp    [][]byte
-	start []int64
-}
-
-func (d *entityDeletes) add(s engine.Subject, start int64) {
-	d.fp = append(d.fp, pgmodel.EncodeFingerprint(s.A))
-	d.start = append(d.start, start)
-}
+// unbounded, and its deadline is null unless it is provisional. A row to update is
+// named by its ctid.
 
 type rowColumns struct {
 	layer    []int16
@@ -560,6 +577,17 @@ func (c *edgeCols) add(s engine.Subject, layer int16, r pgmodel.Row) {
 	c.src = append(c.src, pgmodel.EncodeFingerprint(s.A))
 	c.dst = append(c.dst, pgmodel.EncodeFingerprint(s.B))
 	c.rel = append(c.rel, string(s.Relation))
+	c.rowColumns.add(layer, r)
+}
+
+// tidRows are the rows to update, by ctid.
+type tidRows struct {
+	rowColumns
+	tid []pgtype.TID
+}
+
+func (c *tidRows) add(tid pgtype.TID, layer int16, r pgmodel.Row) {
+	c.tid = append(c.tid, tid)
 	c.rowColumns.add(layer, r)
 }
 
