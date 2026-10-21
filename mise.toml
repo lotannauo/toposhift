@@ -26,10 +26,27 @@ run = [
 description = "Fail if any Go file is not formatted"
 run = "golangci-lint fmt --diff"
 
+# The lints and the vulnerability scans each load every package of their module
+# with its tests, which compiles the whole graph when the build cache is cold (a
+# runner after a Go toolchain bump). Four of them at once on four processors each
+# compiled the same packages, since the build cache shares a package only once
+# one of them has written it, and the linter ran past its timeout. So they wait
+# for warm, which compiles each module's graph once, test variants included, the
+# way go/packages asks for it (export data). With a warm cache it is seconds.
+[tasks.warm]
+description = "Compile both modules' packages and tests once into the build cache, for the lints and scans"
+hide = true
+run = '''
+set -eu
+go list -export -test -deps ./... >/dev/null
+cd bench && go list -export -test -deps ./... >/dev/null
+'''
+
 # golangci-lint takes a file lock by default and fails a second concurrent run.
 # `mise run ci` runs the root and bench lints at the same time, so both allow it.
 [tasks.lint]
 description = "Lint Go code"
+depends = ["warm"]
 run = "golangci-lint run --allow-parallel-runners"
 
 # The bench module is separate (it carries a replace directive the root module
@@ -42,6 +59,7 @@ run = "golangci-lint fmt --diff"
 [tasks."bench:lint"]
 description = "Lint the bench module"
 dir = "bench"
+depends = ["warm"]
 run = "golangci-lint run --allow-parallel-runners"
 
 # The bench tests run in two tiers. Pebble turns its own invariant checks on with
@@ -104,6 +122,7 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 [tasks."bench:vuln"]
 description = "Scan the bench module's dependencies for known vulnerabilities"
 dir = "bench"
+depends = ["warm"]
 run = "go tool govulncheck ./..."
 
 # The RocksDB baseline (layout L on RocksDB) is a module of its own, bench/rocksdb,
@@ -529,6 +548,7 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 
 [tasks.vuln]
 description = "Scan dependencies for known vulnerabilities"
+depends = ["warm"]
 run = "go tool govulncheck ./..."
 
 [tasks.secrets]
