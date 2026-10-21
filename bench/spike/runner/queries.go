@@ -242,30 +242,61 @@ type Answer struct {
 // digest covers the answer in the order the engine returned it, which the
 // engine contract fixes, so a wrong order is a wrong answer.
 func Ask(e engine.Engine, q Query) (Answer, error) {
+	f, err := fetch(e, q)
+	if err != nil {
+		return Answer{}, err
+	}
+	return f.answer(q)
+}
+
+// fetched is what the engine returned for one query, before it is reduced to a
+// digest. Only the field of the query's operation is set.
+type fetched struct {
+	ns    []engine.Neighbor
+	all   [][]engine.Neighbor
+	alive bool
+	rs    []engine.Record
+}
+
+// fetch puts the query to the engine and does nothing else with the answer: the
+// engine's work is all there is in it, which is what a timed read times (see
+// [TimeQueries]).
+func fetch(e engine.Engine, q Query) (fetched, error) {
 	sc := engine.Scope{Layer: q.Layer, AsOf: q.AsOf}
+	var f fetched
+	var err error
+	switch q.Op {
+	case OpNeighbors:
+		f.ns, err = e.Neighbors(q.Fps[0], q.Dir, q.At, sc)
+	case OpBatch:
+		f.all, err = e.NeighborsBatch(q.Fps, q.Dir, q.At, sc)
+	case OpAlive:
+		f.alive, err = e.Alive(q.Fps[0], q.At, sc)
+	case OpWindow:
+		f.rs, err = e.Window(q.Fps[0], q.Dir, q.From, q.To, sc)
+	default:
+		return fetched{}, fmt.Errorf("runner: unknown read %q", q.Op)
+	}
+	return f, err
+}
+
+// answer reduces what the engine returned for q to its digest and size.
+func (f fetched) answer(q Query) (Answer, error) {
 	h := sha256.New()
 	var buf []byte
 	size := 0
 	switch q.Op {
 	case OpNeighbors:
-		ns, err := e.Neighbors(q.Fps[0], q.Dir, q.At, sc)
-		if err != nil {
-			return Answer{}, err
-		}
-		size = len(ns)
-		for _, n := range ns {
+		size = len(f.ns)
+		for _, n := range f.ns {
 			buf = appendNeighbor(buf[:0], n)
 			h.Write(buf)
 		}
 	case OpBatch:
-		all, err := e.NeighborsBatch(q.Fps, q.Dir, q.At, sc)
-		if err != nil {
-			return Answer{}, err
+		if len(f.all) != len(q.Fps) {
+			return Answer{}, fmt.Errorf("runner: a batch of %d entities was answered with %d lists", len(q.Fps), len(f.all))
 		}
-		if len(all) != len(q.Fps) {
-			return Answer{}, fmt.Errorf("runner: a batch of %d entities was answered with %d lists", len(q.Fps), len(all))
-		}
-		for _, ns := range all {
+		for _, ns := range f.all {
 			size += len(ns)
 			buf = binary.BigEndian.AppendUint32(buf[:0], uint32(len(ns)))
 			h.Write(buf)
@@ -275,23 +306,15 @@ func Ask(e engine.Engine, q Query) (Answer, error) {
 			}
 		}
 	case OpAlive:
-		ok, err := e.Alive(q.Fps[0], q.At, sc)
-		if err != nil {
-			return Answer{}, err
-		}
-		if ok {
+		if f.alive {
 			size = 1
 			h.Write([]byte{1})
 		} else {
 			h.Write([]byte{0})
 		}
 	case OpWindow:
-		rs, err := e.Window(q.Fps[0], q.Dir, q.From, q.To, sc)
-		if err != nil {
-			return Answer{}, err
-		}
-		size = len(rs)
-		for _, r := range rs {
+		size = len(f.rs)
+		for _, r := range f.rs {
 			buf = appendRecord(buf[:0], r)
 			h.Write(buf)
 		}

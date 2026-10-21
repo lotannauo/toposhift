@@ -4,6 +4,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 )
@@ -17,6 +18,9 @@ type Capture struct {
 	mu   sync.Mutex
 	sums map[string]int64
 	all  map[string]int64
+	// muted counts the holds on the recorder: while it is above zero, what the engine
+	// reports is dropped (see [Capture.Mute]).
+	muted atomic.Int32
 }
 
 var _ engine.Recorder = (*Capture)(nil)
@@ -33,10 +37,24 @@ func (c *Capture) Count(name string, n int64) { c.add(name, n) }
 func (c *Capture) Sample(name string, v int64) { c.add(name, v) }
 
 func (c *Capture) add(name string, n int64) {
+	if c.muted.Load() > 0 {
+		return
+	}
 	c.mu.Lock()
 	c.sums[name] += n
 	c.all[name] += n
 	c.mu.Unlock()
+}
+
+// Mute makes the recorder drop everything it is given until the function it returns
+// is called, so that a timed read pays one atomic load for each counter the engine
+// reports and not a lock and a map write. Holds add up: the recorder records again
+// when the last of them is released. Calling the returned function again does
+// nothing.
+func (c *Capture) Mute() (unmute func()) {
+	c.muted.Add(1)
+	var once sync.Once
+	return func() { once.Do(func() { c.muted.Add(-1) }) }
 }
 
 // Take returns what has been added since the last Take and starts again.

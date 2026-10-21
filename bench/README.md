@@ -236,7 +236,7 @@ sets what the reads cost side by side. It reads **counters, not clocks**: Pebble
 iterator statistics for every read, the bytes each layout holds, what retention did. A
 counter repeats from one run to the next (every query is asked twice and one whose cost
 differs is flagged), so it can choose a design locally; a timing is only a confirmation
-and comes later, from CI hardware. Three counters are known not to repeat and are never
+and comes from CI hardware (`read -timed`, below): the counters choose, and a timing only confirms. Three counters are known not to repeat and are never
 decided on as they are: the bytes a read was served from the block cache; the allocations of a read, which depend on the process (they are the fewest of three runs after two to fill the pools, never required to repeat, and read only above their floor); and, for the batched reads
 of layout M, the number of points Pebble reports with a value in a value block (a few
 more or fewer from one pass to the next; unexplained).
@@ -473,6 +473,56 @@ runs git only with `-git`, never touches the network and writes nothing but `-js
 
 Builds may run under a Go memory limit (the workflow's `go_mem_limit` input, applied to the builds and not to the
 plans), which is recorded in the manifest as `go_memory_limit` and in `job.json`; the judge and the report refuse a mix of builds under different limits.
+
+#### Timed reads on CI hardware: read -timed and readtiming
+
+`read` counts what a query costs; `read -timed` also times it, after everything `read` does, and writes a
+second file, `timings.json`, beside `results.json`. `results.json` is complete, and written, before the first timed
+ask, and is the same file a read without `-timed` writes. Local timings have no use, so `run` and `windows` never
+pass `-timed`, and the command prints counts only (`read L/off: 869 queries timed, 3 warm-ups and 31 timed asks each,
+2 not warm`): no duration reaches a log, so nobody sees a figure before the registered reading.
+
+What is timed is the engine's call for one query (`engine.Engine`'s `Neighbors`, `NeighborsBatch`, `Alive` or
+`Window`), on a monotonic clock, and nothing else: the answer is hashed after the clock is read, and the recorder that
+collects the engine's counters is muted for the whole timing, so a counter costs one atomic load and not a lock and a
+map write. The engine's own counter reporting (the iterator's statistics) still runs inside the interval. The
+collector is left as it is (`GOGC` is not changed, and the judge refuses a job that set it); the
+collections that ran during a query's timed asks are counted in `timings.json`. Per query there are `-timed-warmup`
+untimed asks (3) and then `-timed-reps` timed ones (31, odd, at least 3), one reader, in the plan's order, on the
+open store after the cold passes, so "warm" means warm for that query. A query whose timed asks moved the engine's
+warm counter (for Pebble, the block cache's misses: `pebble.block_cache_misses`) is not warm and is left out of its
+cell. The plan's block cache is the store's; a timed dispatch reads at the product's 256 MiB (`plan -cache-mb 256`,
+and its pins made at 256 MiB too, since the pins name the scenario they were chosen from, which has the cache in it;
+the pinned prefixes, the queries and their expected answers do not depend on it).
+
+The loop is written against `engine.Engine`, not Pebble. To time another engine, implement `engine.Engine` and a
+`runner.WarmProbe` (a counter that grows when a read is served from outside the memory the engine was given), call
+`runner.TimeQueries`, write a `timings.json` and the bench workflow's `job.json`, and load them into
+`[]runner.TimedRead` (`Results` may be nil: the answers are then checked against the plan's by each query's `Digest`);
+the judge and its rules are the same. Version 1 of the judge loads only the spike's artifacts (it needs `manifest.json`
+and `results.json`).
+
+`spikebench readtiming` judges the artifacts of a run offline, on rules of its own whose text and digest are
+printed on its first line (a constant in `runner/readtiming.go`, a test pins the digest; the spike's rules version 5
+and its digest are not touched):
+
+```sh
+spikebench readtiming -commit <sha> -plans <run>/artifacts/bench-plans-<family>-<id> -base L/k64a2l5m -jobs 5 \
+    -primary 'service<- hot-records neighbors@now' -json readtiming.json <run>/artifacts
+```
+
+It reports and decides nothing. A candidate's cell (a group of the plan at an age) is never one number: it is the
+job values in microseconds to three significant figures with their minimum, median and maximum, the spread (the largest
+job value over the smallest), and, against `-base`, the ratio of the medians with the bound from the smallest
+over the base's largest to the largest over the base's smallest. A job's value in a cell is the statistic G1 uses
+over its warm queries' medians (the largest for the hottest prefixes, the lower median for the median group); a
+job with a query left out is partial in that cell, and is printed apart and not counted. The collections that ran during the timed asks are printed as a diagnostic column ("collections counted", per job and per query where there was one, and per query in the JSON) and enter nothing. Jobs on a CPU model that no reported scope of a cell holds are named under the cell, and an architecture's summary line says how many there are and on which models; neither changes the exit status. A duration under a
+microsecond is printed `< 1 µs`, and no ratio or spread is formed from it. It refuses, with exit status 3 and nothing
+judged, jobs of more than one commit, run or attempt, the same job twice, more than one binary per architecture, an untimed read, a block
+cache other than 256 MiB, other asks than 3, 31 and 1, `GOGC` or a memory limit, any answer that differs from the
+reference engine's and fewer jobs than `-jobs`; a cell that cannot be reported (fewer than three counted jobs, or CPU
+models that cannot be compared) is named and ends it with status 2. It reads files only, runs no git and no network,
+and writes nothing but `-json`. A timing is quoted only from its output on the artifacts of a CI run, with the run id.
 
 #### The store's retention gate: storegate
 

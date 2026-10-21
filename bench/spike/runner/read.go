@@ -2,10 +2,15 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
@@ -65,37 +70,114 @@ var stable = []string{
 // the plan's, whose tables are not the ones the build left, or that works while it
 // is being read, is refused.
 func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress) (*Results, error) {
+	res, _, err := read(ctx, plan, v, dir, g, say, nil)
+	return res, err
+}
+
+// PebbleWarmCounter is the name under which a timed read of a Pebble candidate records
+// its probe: the block cache's misses.
+const PebbleWarmCounter = "pebble.block_cache_misses"
+
+// statsProbe is the probe of an engine that reports the block cache's misses in its
+// statistics.
+type statsProbe struct{ e measurable }
+
+func (p statsProbe) WarmCounter() (string, int64, error) {
+	n, ok := p.e.Stats()["cache_misses"]
+	if !ok {
+		return PebbleWarmCounter, 0, errors.New("runner: the engine's statistics have no cache_misses: every query would look warm")
+	}
+	return PebbleWarmCounter, n, nil
+}
+
+// ReadTimed is [Read] and then, on the same open engine, a timed read of every query
+// (see [TimeQueries]). The results are complete, and results.json written, before the
+// first timed ask is made; the timings are written to [TimingsFile] after the timed
+// asks, if the database did no work during them. The timings are returned even when an
+// answer differed from the reference engine's (the queries say which), so that the
+// caller can report that, and the error then is the caller's to make.
+func ReadTimed(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, o TimedReadOptions, say Progress) (*Results, *ReadTimings, error) {
+	return read(ctx, plan, v, dir, g, say, func(e measurable, rec *Capture, res *Results, manifestDigest string) (*ReadTimings, error) {
+		probe := statsProbe{e}
+		name, _, err := probe.WarmCounter()
+		if err != nil {
+			return nil, err
+		}
+		if o.Mute == nil {
+			o.Mute = rec.Mute
+		}
+		if o.Warmup == 0 {
+			o.Warmup = DefaultTimedWarmup
+		}
+		if o.Reps == 0 {
+			o.Reps = DefaultTimedReps
+		}
+		say.say("read %s: timed asks", v.Name)
+		qs, err := TimeQueries(ctx, e, probe, plan, o)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+		}
+		// The shape of the tables must not have changed under the timed asks either.
+		after := e.Stats()
+		for _, k := range []string{"flushes", "compactions", "read_compactions"} {
+			if res.StatsAfter[k] != after[k] {
+				return nil, fmt.Errorf("runner: %s did work while being timed (%s went from %d to %d): its timings are not written",
+					v.Name, k, res.StatsAfter[k], after[k])
+			}
+		}
+		cache, err := strconv.ParseInt(res.Describe["cache_bytes"], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("runner: %s does not say its block cache (cache_bytes %q)", v.Name, res.Describe["cache_bytes"])
+		}
+		t := &ReadTimings{
+			Version: ReadTimingsVersion, Candidate: res.Candidate, PlanDigest: res.PlanDigest, ManifestDigest: manifestDigest,
+			Build: res.Build, Untimed: res.Untimed,
+			GOMAXPROCS: runtime.GOMAXPROCS(0), NumCPU: runtime.NumCPU(), GOGC: os.Getenv("GOGC"), GoMemLimit: debug.SetMemoryLimit(-1),
+			CacheBytes: cache, Warmup: o.Warmup, Reps: o.Reps, Readers: 1, WarmCounter: name, Queries: qs,
+		}
+		if err := writeJSON(filepath.Join(dir, TimingsFile), t); err != nil {
+			return nil, err
+		}
+		return t, nil
+	})
+}
+
+// read is [Read], and then, when after is not nil, calls it with the engine still open
+// once results.json has been written. What after returns is returned with the results.
+func read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g Guards, say Progress,
+	after func(e measurable, rec *Capture, res *Results, manifestDigest string) (*ReadTimings, error),
+) (*Results, *ReadTimings, error) {
 	if err := g.CheckFor(v); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	m, manifestDigest, err := readManifest(dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	planDigest, err := plan.Digest()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	switch {
 	case m.PlanDigest != planDigest:
-		return nil, fmt.Errorf("runner: %s was built from another plan: %w", dir, errMismatch)
+		return nil, nil, fmt.Errorf("runner: %s was built from another plan: %w", dir, errMismatch)
 	case m.Candidate != v.Name:
-		return nil, fmt.Errorf("runner: %s holds %s, not %s: %w", dir, m.Candidate, v.Name, errMismatch)
+		return nil, nil, fmt.Errorf("runner: %s holds %s, not %s: %w", dir, m.Candidate, v.Name, errMismatch)
 	}
 
 	rec := NewCapture()
 	e, err := openReadOnly(plan, v, dir, rec, m.Describe[SyncKey] == "true")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = e.Close() }()
 
 	desc, err := e.Describe()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := sameAsBuilt(e, desc, m, plan); err != nil {
-		return nil, fmt.Errorf("runner: %s %w", v.Name, err)
+		return nil, nil, fmt.Errorf("runner: %s %w", v.Name, err)
 	}
 
 	// A database that is not read-only reads the tables it has just opened in the
@@ -103,7 +185,7 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	// blocks it loads compete with the first queries. A read-only one has nothing
 	// running, and a candidate that opens read-write (a test double) waits.
 	if err := e.Quiesce(ctx); err != nil {
-		return nil, fmt.Errorf("runner: %s: %w", v.Name, err)
+		return nil, nil, fmt.Errorf("runner: %s: %w", v.Name, err)
 	}
 
 	res := &Results{
@@ -115,11 +197,11 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	rec.Take()
 	for i, q := range plan.Queries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		a, err := Ask(e, q)
 		if err != nil {
-			return nil, fmt.Errorf("runner: %s: %s: %w", v.Name, q.Name(), err)
+			return nil, nil, fmt.Errorf("runner: %s: %s: %w", v.Name, q.Name(), err)
 		}
 		res.Queries[i] = QueryResult{Digest: a.Digest, Size: a.Size, Counters: rec.Take()}
 		if a.Digest != q.Expect {
@@ -128,11 +210,11 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	}
 	for i, q := range plan.Queries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		a, err := Ask(e, q)
 		if err != nil {
-			return nil, fmt.Errorf("runner: %s: %s (second pass): %w", v.Name, q.Name(), err)
+			return nil, nil, fmt.Errorf("runner: %s: %s (second pass): %w", v.Name, q.Name(), err)
 		}
 		second := rec.Take()
 		first := res.Queries[i]
@@ -149,15 +231,15 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	say.say("read %s: cold and allocation passes", v.Name)
 	for i, q := range plan.Queries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		first, c1, err := coldAsk(e, rec, q)
 		if err != nil {
-			return nil, fmt.Errorf("runner: %s: %s (cold): %w", v.Name, q.Name(), err)
+			return nil, nil, fmt.Errorf("runner: %s: %s (cold): %w", v.Name, q.Name(), err)
 		}
 		second, c2, err := coldAsk(e, rec, q)
 		if err != nil {
-			return nil, fmt.Errorf("runner: %s: %s (cold, again): %w", v.Name, q.Name(), err)
+			return nil, nil, fmt.Errorf("runner: %s: %s (cold, again): %w", v.Name, q.Name(), err)
 		}
 		if first.Digest != res.Queries[i].Digest || second.Digest != res.Queries[i].Digest || !sameValues(c1, c2) {
 			res.Unstable = append(res.Unstable, q.Name()+" (cold)")
@@ -166,25 +248,29 @@ func Read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	}
 	for i, q := range plan.Queries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		allocs, err := allocAsk(e, rec, q)
 		if err != nil {
-			return nil, fmt.Errorf("runner: %s: %s (allocations): %w", v.Name, q.Name(), err)
+			return nil, nil, fmt.Errorf("runner: %s: %s (allocations): %w", v.Name, q.Name(), err)
 		}
 		maps.Copy(res.Queries[i].Counters, allocs)
 	}
 	res.StatsAfter = e.Stats()
 	for _, k := range []string{"flushes", "compactions", "read_compactions"} {
 		if res.StatsBefore[k] != res.StatsAfter[k] {
-			return nil, fmt.Errorf("runner: %s did work while being read (%s went from %d to %d): the shape of its tables changed under the reads",
+			return nil, nil, fmt.Errorf("runner: %s did work while being read (%s went from %d to %d): the shape of its tables changed under the reads",
 				v.Name, k, res.StatsBefore[k], res.StatsAfter[k])
 		}
 	}
 	if err := writeJSON(filepath.Join(dir, ResultsFile), res); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return res, nil
+	if after == nil {
+		return res, nil, nil
+	}
+	timings, err := after(e, rec, res, manifestDigest)
+	return res, timings, err
 }
 
 // openReadOnly opens the database a build left under dir as a read opens it:
