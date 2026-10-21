@@ -39,10 +39,23 @@ type shardedCoalescer struct {
 	parts map[partKey]*coalesce.Coalescer
 	order []partKey // the keys of parts, in the order of the subjects they hold
 
+	// whole, if not nil, is one coalescer that is flushed as the product does, for a
+	// configuration whose extension interval the grid flush below cannot stand in for
+	// (see [gridFlushHolds]); parts and order are then unused.
+	whole *coalesce.Coalescer
+
 	started bool
 	origin  time.Time // the event time of the first record: a point of the grid
 	done    time.Time // every deadline up to this grid point has been flushed
 	buf     []store.Record
+}
+
+// gridFlushHolds is whether the flush one grid point at a time gives a run of this TTL the
+// records the whole coalescer's flush would: the extension interval must be longer than a
+// flush lead and a second, and so must the rest of the TTL (see add).
+func gridFlushHolds(cfg coalesce.Config, ttl time.Duration) bool {
+	every := cfg.ExtensionInterval(ttl)
+	return every == 0 || (every > coalesce.FlushLead+time.Second && ttl-every > coalesce.FlushLead+time.Second)
 }
 
 // partKey is the start of a subject's sort key: its kind, the type of its first
@@ -68,6 +81,33 @@ func newShardedCoalescer(cfg coalesce.Config) (*shardedCoalescer, error) {
 		return nil, err
 	}
 	return &shardedCoalescer{cfg: cfg, parts: make(map[partKey]*coalesce.Coalescer)}, nil
+}
+
+// newCoalescerFor is a sharded coalescer for a stream whose records have this TTL, or,
+// if the grid flush cannot hold at that TTL (or whole is set), one whole coalescer. A
+// zero ttl is sharded unless whole is set.
+func newCoalescerFor(cfg coalesce.Config, ttl time.Duration, whole bool) (*shardedCoalescer, error) {
+	c, err := newShardedCoalescer(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if usesWhole(cfg, ttl, whole) {
+		c.whole, _ = coalesce.New(cfg) // checked above
+	}
+	return c, nil
+}
+
+// usesWhole is whether [newCoalescerFor] gives one whole coalescer.
+func usesWhole(cfg coalesce.Config, ttl time.Duration, whole bool) bool {
+	return whole || (ttl > 0 && !gridFlushHolds(cfg, ttl))
+}
+
+// flushName is how the coalescer flushes, as the manifest names it.
+func (c *shardedCoalescer) flushName() string {
+	if c.whole != nil {
+		return "whole"
+	}
+	return "split"
 }
 
 // part returns the coalescer for a key, making it if it is new.
@@ -97,6 +137,12 @@ func (c *shardedCoalescer) add(r store.Record, out []store.Record) ([]store.Reco
 	if r.EventTime.Before(c.origin) {
 		return out, fmt.Errorf("a record at %s is before the stream's first, at %s", r.EventTime.Format(time.RFC3339), c.origin.Format(time.RFC3339))
 	}
+	if c.whole != nil {
+		if keepsRun(r) && (r.TTL <= 0 || r.TTL%sampleInterval != 0 || r.EventTime.Sub(c.origin)%sampleInterval != 0) {
+			return out, fmt.Errorf("a record at %s with TTL %s is off the minute grid of the stream", r.EventTime.Format(time.RFC3339), r.TTL)
+		}
+		return c.whole.Add(r, out), nil
+	}
 	if keepsRun(r) {
 		if r.TTL <= 0 || r.TTL%sampleInterval != 0 || r.EventTime.Sub(c.origin)%sampleInterval != 0 {
 			return out, fmt.Errorf("a record at %s with TTL %s is off the minute grid of the stream", r.EventTime.Format(time.RFC3339), r.TTL)
@@ -123,6 +169,14 @@ func keepsRun(r store.Record) bool {
 // flush gives write the records [coalesce.Coalescer.Flush] would return for now,
 // in its order, a part of them at a time. write must not keep the slice.
 func (c *shardedCoalescer) flush(now time.Time, write func([]store.Record) error) error {
+	if c.whole != nil {
+		c.buf = c.whole.Flush(now, c.buf[:0])
+		err := write(c.buf)
+		if cap(c.buf) > bufferKeep {
+			c.buf = nil
+		}
+		return err
+	}
 	return c.flushThrough(now.Add(coalesce.FlushLead), write)
 }
 
@@ -153,6 +207,12 @@ func (c *shardedCoalescer) flushThrough(limit time.Time, write func([]store.Reco
 // holds nothing absorbed: if one does, a record was off the grid, and that is an
 // error and not a record in the wrong place.
 func (c *shardedCoalescer) flushAll(latest time.Time, maxTTL time.Duration, write func([]store.Record) error) error {
+	if c.whole != nil {
+		c.buf = c.whole.FlushAll(c.buf[:0])
+		err := write(c.buf)
+		c.buf = nil
+		return err
+	}
 	if err := c.flushThrough(latest.Add(maxTTL), write); err != nil {
 		return err
 	}

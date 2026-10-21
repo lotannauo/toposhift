@@ -435,6 +435,26 @@ Size: the three-day `ci` preset is 7.9 million records and about 300 MB of table
 - One seed, until `-seed` is varied: a family of windows is one seed and one scenario: the pins record the scenario they were chosen from (the hubs are the same entities in every seed, so the pins of another seed would otherwise be taken for its busiest prefixes), and a plan with the pins of another scenario is refused. How a read grows with retained history is what the windows measure (see above); a window of R days is a stream of 2R + 1.5 days, and the projection that makes the long ones cheap has a shallower index than a full store, so its block counters are lower. The prefixes asked about are ranked by the records a store still holds after the final retention, not by the whole stream: on a heartbeat prefix the busiest over the whole stream is the one with an unbroken run, which a retention folds into the baseline.
 - The workload is synthetic and every default of it is provisional until the Alibaba and kwok replays exist.
 
+#### Exploratory flags: -extend-fraction and -compression
+
+Two flags let an exploratory run vary one setting of the product, so that its counts can be reproduced from a
+commit. Neither changes a default: a run that names neither writes what it wrote before them.
+
+`alibabareduce -extend-fraction F` sets the share of a placement run's TTL after which the coalescer re-asserts
+the run, in (0, 1]; the default is 0.5, the product's. It applies to the C60 and C300 streams; the call edges and the fixture keep the product's coalescer. The sharded flush stands in
+for the product's whole coalescer only where the extension interval and the rest of the TTL both exceed a flush
+lead and a second; for a fraction and a TTL where it does not, that cadence runs through one whole coalescer, and
+`-whole-coalescer` asks for that at any fraction (it writes the same stream with more memory). `-recency` counts,
+at each sample, how many sampling intervals the stored end of the subject's run is behind it. The manifest's
+`coalescer` is the configuration C60 and C300 ran with, `product_coalescer` the product's, each output's
+`coalescer_flush` says whether its coalescer was split or whole, and each written output's `content_digest` is
+the digest in its file's footer, so repeats are compared by it and not by the file's bytes.
+
+`activitybytes -compression default|snappy|zstd|balanced` sets the block compression of the store's tables
+(`pebblekv.Tuning.Compression`); the default is `default`, which sets nothing, and its row and result are those
+of a run without the flag. Under any other value the result file names the compression. The store holds the same
+keys and values under each; only the table bytes differ.
+
 #### Timed builds on CI hardware: timing
 
 G2, G3 and G4 are judged on builds made on GitHub-hosted runners by the `bench` workflow, which
