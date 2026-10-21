@@ -8,8 +8,9 @@
 // with the lifecycle policy that names no boot key (the bench's streams carry no
 // boots, and a boot key would make every entity write fold an assertion and every
 // existence read fold the whole prefix, which would change both the timings and
-// the read counters), with the Pebble configuration the runner chose, unchanged
-// except that Pebble's messages are dropped as the spike's own engines drop them,
+// the read counters; [Options].ServeOptions opens the store with `serve`'s policy
+// and layers instead, as an arm beside it), with the Pebble configuration the
+// runner chose, unchanged except that Pebble's messages are dropped as the spike's own engines drop them,
 // and with the checkpoint policy of the variant stated outright, so that "off" is
 // off and not the store's default.
 //

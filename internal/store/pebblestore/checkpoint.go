@@ -245,7 +245,7 @@ func (s *Store) forgetLayers(ls []retainLayer) {
 // horizon, which the step leaves; it deletes the keys before the horizon and the
 // checkpoint at it, and writes a baseline at it, none of which a read reaches or
 // counts. So the state is what a read finds after the step too, and it needs no
-// read. It is not kept for an entity prefix under a boot key, whose checkpoints no
+// read. It is not kept for a host's prefix under a boot key, whose checkpoints no
 // read uses and whose step folds the prefix's boots.
 //
 // A kept state takes the counts a read would find since its newest checkpoint as its
@@ -274,7 +274,7 @@ func (s *Store) keepLayers(ls []retainLayer) map[string]struct{} {
 	kept := s.states.staleUnlessKept(
 		func(k string) bool { i := layerIndex(k); return i >= 0 && i < layers && moved[i] },
 		func(k string, st *prefixState) bool {
-			if !st.exact || len(st.ckpts) == 0 || (s.policy.BootKey != "" && k[prefixLen-1] == dirEntity) {
+			if !st.exact || len(st.ckpts) == 0 || s.foldsWholeKey(k) {
 				return false
 			}
 			h := hNs[layerIndex(k)]
@@ -712,11 +712,12 @@ func (s *Store) writeCheckpoints(touched map[string]struct{}, ph *writePhases) {
 		if st == nil || !s.ckpt.due(st) {
 			continue
 		}
-		if s.policy.BootKey != "" && k[prefixLen-1] == dirEntity {
-			// Under a boot key an entity's existence is folded from its whole prefix
-			// (see aliveFolded) and no read uses its checkpoints, so the policy places
-			// none; the ones that exist (from the instrument's hook) are still deleted
-			// when a record makes them untrue.
+		if s.foldsWholeKey(k) {
+			// Under a boot key a host's existence is folded from its whole prefix (see
+			// aliveFolded) and no read uses its checkpoints, so the policy places none;
+			// the ones that exist (from the instrument's hook) are still deleted when a
+			// record makes them untrue. Every other prefix is read by the walk that
+			// stops at a checkpoint, and has them.
 			continue
 		}
 		c, ok := s.ckpt.at(st)

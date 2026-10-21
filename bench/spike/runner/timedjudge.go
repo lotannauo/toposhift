@@ -670,6 +670,13 @@ func (j *judge) buildsWhy(builds []*tbuild) (binary, settings string) {
 			return "", fmt.Sprintf("%s was built with a retention flush threshold of %s range deletions, not this binary's default of %s: a build at another threshold is a measurement of the store gate, and its timing is not the spike's", b.label(), v, def)
 		}
 	}
+	// Serve's options (the boot key, L0 kept, L1 behind) are another store from the one
+	// the timing gates judge, which has none of them.
+	for _, b := range builds {
+		if describedOr(b.Manifest, ServeOptionsKey, "false") != "false" {
+			return "", fmt.Sprintf("%s was built with serve's options (%s): a build with the boot key, L0 kept and L1 retained behind is a measurement of the store gate's serve arm, and its timing is not the spike's", b.label(), ServeOptionsKey)
+		}
+	}
 	for _, b := range builds {
 		if describedOr(b.Manifest, SyncKey, "false") != "false" {
 			return "", "these builds synced every commit: G2, G3 and G4 are judged on builds that do not, and a synced build is a separate measurement"

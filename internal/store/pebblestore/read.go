@@ -311,8 +311,8 @@ func (s *Store) NeighborsBatch(ctx context.Context, fps []identity.Fingerprint, 
 }
 
 // Alive implements [store.Store]. With a policy that names a boot key it folds
-// every record of the entity the scope sees (see quarantine.go); otherwise it
-// walks the entity's records back to the first live reference.
+// every record of a host the scope sees (see quarantine.go and foldsWhole);
+// otherwise it walks the entity's records back to the first live reference.
 func (s *Store) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time, sc store.Scope) (bool, error) {
 	if s.closed.Load() {
 		return false, closedError("Alive")
@@ -329,7 +329,7 @@ func (s *Store) Alive(ctx context.Context, fp identity.Fingerprint, t time.Time,
 	if !ok {
 		return false, nil
 	}
-	if s.policy.BootKey != "" {
+	if s.foldsWhole(prefix) {
 		return r.aliveFolded(prefix, fp, t, sc)
 	}
 	tNs, empty := instant(t)

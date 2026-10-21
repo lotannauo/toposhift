@@ -204,7 +204,7 @@ func Gaps(plan *Plan, v candidates.Variant, dir string) (*GapReport, error) {
 	case m.Candidate != v.Name:
 		return nil, fmt.Errorf("runner: %s holds %s, not %s: %w", dir, m.Candidate, v.Name, errMismatch)
 	}
-	e, err := openReadOnly(plan, v, dir, NewCapture(), m.Describe[SyncKey] == "true")
+	e, err := openReadOnly(plan, v, dir, NewCapture(), m.Describe[SyncKey] == "true", m.Describe[ServeOptionsKey] == "true")
 	if err != nil {
 		return nil, err
 	}

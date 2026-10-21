@@ -94,6 +94,11 @@ type Options struct {
 	// ([pebblestore.Options.RetainFlushDels]); 0 is the store's default,
 	// [pebblestore.DefaultRetainFlushDels]. The store refuses a negative value.
 	RetainFlushDels int
+	// ServeOptions is, for the Lroot variants only (every other variant ignores it),
+	// [rootlog.Options].ServeOptions: the store is opened with `serve`'s lifecycle
+	// policy (the boot key), L0 kept and L1 retained behind L2, as an arm beside the
+	// default Lroot, which has none of them. False is the default.
+	ServeOptions bool
 	// TallyPrefixes makes a variant of the spike's own layout L (not the root
 	// store's) keep per-prefix counts of the checkpoints a record deleted and a
 	// write put back, in memory (see [pebblelog.Options]); the others ignore it.
@@ -264,7 +269,7 @@ func LrootNoCheckpoints() Variant {
 		if err != nil {
 			return nil, err
 		}
-		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels})
+		return rootlog.Open(dir, rootlog.Options{Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels, ServeOptions: o.ServeOptions})
 	}}
 }
 
@@ -277,7 +282,7 @@ func LrootCheckpoints(kMin int, alpha float64, lag time.Duration) Variant {
 			return nil, err
 		}
 		return rootlog.Open(dir, rootlog.Options{
-			Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels,
+			Config: o.config(), Recorder: o.Recorder, Retention: mode, Observer: o.RetainObserver, RetainFlushDels: o.RetainFlushDels, ServeOptions: o.ServeOptions,
 			Checkpoints: pebblestore.CheckpointOptions{On: true, KMin: kMin, Alpha: alpha, Lag: lag},
 		})
 	}}

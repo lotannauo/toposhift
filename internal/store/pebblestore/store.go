@@ -50,6 +50,10 @@ type Store struct {
 	ids    *pebblekv.IDs
 	rec    Recorder
 	policy lifecycle.Policy
+	// hostType is the id of the host entity type in the two bytes a key carries it
+	// in, and hasHostType is false for a catalog without a host type: see foldsWhole.
+	hostType    [2]byte
+	hasHostType bool
 
 	// lastSeq is the highest Seq committed. It is raised only after the commit
 	// that carries it, so a read pinned to it never sees less than it names.
@@ -324,6 +328,10 @@ func Open(dir string, o Options) (*Store, error) {
 		beforeFlushWait: o.beforeFlushWait, beforeApply: o.beforeApply, beforeKVClose: o.beforeKVClose,
 	}
 	s.policy.Rank = maps.Clone(o.Policy.Rank)
+	if id, ok := s.ids.EntityID(catalog.Host); ok {
+		binary.BigEndian.PutUint16(s.hostType[:], uint16(id))
+		s.hasHostType = true
+	}
 	if s.retention == Background && !cfg.ReadOnly {
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 		s.wake = make(chan struct{}, 1)

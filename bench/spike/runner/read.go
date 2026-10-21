@@ -166,7 +166,7 @@ func read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 	}
 
 	rec := NewCapture()
-	e, err := openReadOnly(plan, v, dir, rec, m.Describe[SyncKey] == "true")
+	e, err := openReadOnly(plan, v, dir, rec, m.Describe[SyncKey] == "true", m.Describe[ServeOptionsKey] == "true")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -276,11 +276,13 @@ func read(ctx context.Context, plan *Plan, v candidates.Variant, dir string, g G
 // openReadOnly opens the database a build left under dir as a read opens it:
 // read-only, with the plan's block cache, nothing compacting. A read-only database
 // commits nothing, so sync (whether the build synced every commit) only makes its
-// description the build's: one of the descriptions a read compares.
-func openReadOnly(plan *Plan, v candidates.Variant, dir string, rec *Capture, sync bool) (measurable, error) {
+// description the build's: one of the descriptions a read compares. serve says the
+// build opened the root store with serve's options (the manifest's serve_options), which
+// a database fixes when it is created.
+func openReadOnly(plan *Plan, v candidates.Variant, dir string, rec *Capture, sync, serve bool) (measurable, error) {
 	opened, err := v.Open(filepath.Join(dir, DBDir), candidates.Options{
 		CacheBytes: plan.CacheBytes, Recorder: rec, DisableAutoCompactions: true, DisableReadCompactions: true, ReadOnly: true,
-		Sync: sync,
+		Sync: sync, ServeOptions: serve,
 	})
 	if err != nil {
 		return nil, err

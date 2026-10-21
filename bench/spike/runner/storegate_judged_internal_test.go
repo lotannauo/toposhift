@@ -270,3 +270,48 @@ func TestTheTimingJudgeRefusesAnotherFlushThreshold(t *testing.T) {
 		}
 	}
 }
+
+// The builds through the root store are set side by side only all with or all without
+// serve's options; a manifest without the key is without them; a build that is not
+// through the root store has none and is left out.
+func TestAFamilyIsBuiltAllWithOrAllWithoutServesOptions(t *testing.T) {
+	t.Parallel()
+	root := func(v string) *Manifest {
+		m := &Manifest{Describe: map[string]string{"store": "root"}}
+		if v != "" {
+			m.Describe[ServeOptionsKey] = v
+		}
+		return m
+	}
+	spike := &Manifest{Describe: map[string]string{}}
+	if why := serveOptionsMix([]string{"L/off", "Lroot/off", "Lroot/k64a2l1ns"}, []*Manifest{spike, root(""), root("false")}); why != "" {
+		t.Errorf("none with them: %s", why)
+	}
+	if why := serveOptionsMix([]string{"Lroot/off", "Lroot/k64a2l1ns"}, []*Manifest{root("true"), root("true")}); why != "" {
+		t.Errorf("all with them: %s", why)
+	}
+	if why := serveOptionsMix([]string{"Lroot/off", "Lroot/k64a2l1ns"}, []*Manifest{root(""), root("true")}); !strings.Contains(why, `serve_options="true": Lroot/k64a2l1ns`) || !strings.Contains(why, `serve_options="false": Lroot/off`) {
+		t.Errorf("one with and one without: %q", why)
+	}
+}
+
+// The timing judge refuses a build with serve's options and takes one without.
+func TestTheTimingJudgeRefusesABuildWithServesOptions(t *testing.T) {
+	t.Parallel()
+	j := &judge{r: DefaultRules()}
+	build := func(v string) *tbuild {
+		m := &Manifest{Build: BuildInfo{Revision: "r"}, Describe: map[string]string{}}
+		if v != "" {
+			m.Describe[ServeOptionsKey] = v
+		}
+		return &tbuild{TimedBuild: TimedBuild{Job: Job{Candidate: "Lroot/k64a2l1ns", Window: 7, Arch: "x86_64"}, Manifest: m}}
+	}
+	if _, why := j.buildsWhy([]*tbuild{build("true")}); !strings.Contains(why, "serve's options") {
+		t.Errorf("a build with them: %q", why)
+	}
+	for _, v := range []string{"", "false"} {
+		if _, why := j.buildsWhy([]*tbuild{build(v)}); strings.Contains(why, "serve's options") {
+			t.Errorf("%q: %q", v, why)
+		}
+	}
+}

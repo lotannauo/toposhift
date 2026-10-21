@@ -273,36 +273,41 @@ func checkpointsByDir(t *testing.T, s *Store) (entity, edge int) {
 	return entity, edge
 }
 
-// Under a boot key nothing reads the checkpoints of an entity's own prefix (Alive
-// folds the whole prefix), so the policy places none there, and places them on edge
-// prefixes as before; with no boot key it places them on both. One that exists is
-// still deleted when a record makes it untrue.
-func TestNoEntityCheckpointIsPlacedUnderABootKey(t *testing.T) {
+// Under a boot key nothing reads the checkpoints of a host's own prefix (Alive folds
+// the whole prefix), so the policy places none there; it places them on the prefixes
+// of other entities, which are read by the walk that stops at a checkpoint, and on
+// edge prefixes as before. With no boot key it places them on all. One that exists
+// on a host's prefix is still deleted when a record makes it untrue.
+func TestNoHostCheckpointIsPlacedUnderABootKey(t *testing.T) {
 	t.Parallel()
 	host := hostObservation(0, t0, "").Subject.A
 	writeAll := func(p *pair) {
 		for i := range 6 {
-			p.write(hostObservation(uint64(2*i+1), t0.Add(time.Duration(i)*time.Second), "boot-a"),
-				edgeRecord(uint64(2*i+2), "p", t0.Add(time.Duration(i)*time.Second), lifecycle.Observe, 0))
+			at := t0.Add(time.Duration(i) * time.Second)
+			p.write(hostObservation(uint64(3*i+1), at, "boot-a"),
+				edgeRecord(uint64(3*i+2), "p", at, lifecycle.Observe, 0),
+				entityRecord(uint64(3*i+3), podFP, "p", at))
 		}
 	}
 	for name, tc := range map[string]struct {
 		policy     lifecycle.Policy
-		wantEntity bool
+		wantHost   bool
+		wantOthers bool
 	}{
-		"a boot key":  {storetest.QuarantinePolicy(), false},
-		"no boot key": {lifecycle.Policy{}, true},
+		"a boot key":  {storetest.QuarantinePolicy(), false, true},
+		"no boot key": {lifecycle.Policy{}, true, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			p := newPair(t, Options{Policy: tc.policy, Checkpoints: policy(stress(0))})
 			writeAll(p)
-			entity, edge := checkpointsByDir(t, p.s)
+			_, edge := checkpointsByDir(t, p.s)
 			if edge == 0 {
 				t.Fatal("no checkpoint on an edge prefix: the test shows nothing")
 			}
-			if (entity > 0) != tc.wantEntity {
-				t.Errorf("%d checkpoints on entity prefixes, want some: %v", entity, tc.wantEntity)
+			hosts, others := entityCheckpointsOf(t, p.s)
+			if (hosts > 0) != tc.wantHost || (others > 0) != tc.wantOthers {
+				t.Errorf("%d checkpoints on the prefix of a host and %d on those of other entities; want some: %v and %v", hosts, others, tc.wantHost, tc.wantOthers)
 			}
 		})
 	}
@@ -313,15 +318,15 @@ func TestNoEntityCheckpointIsPlacedUnderABootKey(t *testing.T) {
 		if err := p.s.Instrument().CheckpointEntity(catalog.L1, host, t0.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		if entity, _ := checkpointsByDir(t, p.s); entity != 1 {
-			t.Fatalf("%d entity checkpoints after the hook, want 1", entity)
+		if hosts, _ := entityCheckpointsOf(t, p.s); hosts != 1 {
+			t.Fatalf("%d checkpoints on the host's prefix after the hook, want 1", hosts)
 		}
 		// A record before it, and enough of them to make the policy want a checkpoint.
 		for i := range 3 {
 			p.write(hostObservation(uint64(20+i), t0.Add(time.Duration(10+i)*time.Second), "boot-a"))
 		}
-		if entity, _ := checkpointsByDir(t, p.s); entity != 0 {
-			t.Errorf("%d entity checkpoints after records that make it untrue, want 0 (and none placed)", entity)
+		if hosts, _ := entityCheckpointsOf(t, p.s); hosts != 0 {
+			t.Errorf("%d checkpoints on the host's prefix after records that make it untrue, want 0 (and none placed)", hosts)
 		}
 	})
 }

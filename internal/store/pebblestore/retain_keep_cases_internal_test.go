@@ -903,7 +903,7 @@ func TestACarriedOverLayerKeepsItsStatesAgainstItsOwnHorizon(t *testing.T) {
 	waitRetained(t, bgs)
 }
 
-// Under a boot key an entity's prefix is never kept, even with a checkpoint by hand
+// Under a boot key the prefix of a host is never kept, even with a checkpoint by hand
 // and a state that is exact.
 func TestAHostsPrefixUnderABootKeyIsNeverKept(t *testing.T) {
 	t.Parallel()
@@ -940,6 +940,46 @@ func TestAHostsPrefixUnderABootKeyIsNeverKept(t *testing.T) {
 	}
 	if has(keep, entity) || stateOf(sc.bg, entity) != nil {
 		t.Errorf("the entity's prefix under a boot key is kept (%v) or its state is valid (%v)", has(keep, entity), stateOf(sc.bg, entity) != nil)
+	}
+	sc.finish()
+}
+
+// Under a boot key the prefix of an entity that is not a host is kept as it is with no
+// boot key: it has no boots to fold, and a read of it stops at its checkpoint.
+func TestAPodsPrefixUnderABootKeyIsKept(t *testing.T) {
+	t.Parallel()
+	policyOf := storetest.QuarantinePolicy()
+	sc := newKeepScene(t, sceneConfig{
+		ck:    policy(CheckpointOptions{On: true, KMin: 1000}),
+		tweak: func(o *Options) { o.Policy = policyOf },
+		ref:   memstore.Options{Policy: policyOf},
+		hook: func(t *testing.T, s *Store, sc *keepScene) {
+			if err := s.Instrument().CheckpointEntity(catalog.L2, sc.pods[2], asyncAt(130)); err != nil {
+				t.Fatal(err)
+			}
+			hookAt(map[int][]int{2: {130}})(t, s, sc)
+		},
+	}, func(sc *keepScene) []store.Record {
+		var recs []store.Record
+		for _, at := range []int{10, 125} {
+			sc.seq++
+			recs = append(recs, store.Record{
+				Layer: catalog.L2, Subject: store.EntitySubject(sc.pods[2]), Producer: "agent", EventTime: asyncAt(at), Seq: sc.seq,
+				Kind: lifecycle.Observe, Payload: []byte("pod"),
+			})
+		}
+		return append(recs, sc.edges(2, 10, 20, 125)...)
+	})
+	entity, ok := sc.bg.prefixOf(catalog.L2, sc.pods[2], dirEntity)
+	if !ok {
+		t.Fatal("the pod's type is not in the catalog")
+	}
+	_, keep, _ := sc.sets()
+	if !has(keep, sc.forward(2)) {
+		t.Error("the edges' prefix, which has the same shape, is not kept")
+	}
+	if !has(keep, entity) || stateOf(sc.bg, entity) == nil {
+		t.Errorf("the pod's prefix under a boot key is not kept (%v) or its state is not valid (%v)", has(keep, entity), stateOf(sc.bg, entity) != nil)
 	}
 	sc.finish()
 }

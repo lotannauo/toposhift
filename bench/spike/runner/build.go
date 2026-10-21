@@ -420,6 +420,12 @@ type BuildOptions struct {
 	// one. The candidates built through Pebble take
 	// it; a candidate made by [candidates.External] may refuse it.
 	Shape pebblekv.Tuning
+	// ServeOptions opens the root store as `serve` does: its lifecycle policy (the
+	// boot key), L0 kept and L1 retained behind L2, an arm beside the default
+	// Lroot ([candidates.Options].ServeOptions). Only a build through the root store
+	// takes it. It is recorded in the manifest (Describe, key serve_options) and
+	// builds with and without it are never compared or pooled.
+	ServeOptions bool
 }
 
 // RetainFlushDelsOf is the threshold a build through the root store runs with when it
@@ -477,6 +483,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if err := pebblekv.BenchTuning().WithShapeOf(opts.Shape).Validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
+	if err := checkServeOptions(v, opts); err != nil {
+		return nil, err
+	}
 	if err := CheckOutside(dir); err != nil {
 		return nil, err
 	}
@@ -509,7 +518,7 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	background := v.Root() && opts.RetentionMode == candidates.RetentionBackground
 	// An untimed build keeps the per-prefix tallies of layout L: it changes no stored
 	// byte, and a build whose time may be a result does not carry its cost.
-	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, RetainFlushDels: opts.RetainFlushDels, TallyPrefixes: g.Untimed}
+	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, RetainFlushDels: opts.RetainFlushDels, ServeOptions: opts.ServeOptions, TallyPrefixes: g.Untimed}
 	if opts.Shape.HasShape() {
 		co.Tuning = pebblekv.BenchTuning().WithShapeOf(opts.Shape)
 	}
@@ -677,6 +686,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if opts.ProfileWindows {
 		m.Describe[ProfileWindowsKey] = "true"
 	}
+	if opts.ServeOptions {
+		m.Describe[ServeOptionsKey] = "true"
+	}
 	parts, err := e.Breakdown()
 	if err != nil {
 		return nil, err
@@ -814,7 +826,7 @@ func windowOf(s Spec) (int, error) {
 // checkAsRead opens the database a build has closed read-only, as [Read] does, and
 // returns the first way it differs from what the manifest records.
 func checkAsRead(plan *Plan, v candidates.Variant, dir string, m *Manifest) error {
-	e, err := openReadOnly(plan, v, dir, NewCapture(), m.Describe[SyncKey] == "true")
+	e, err := openReadOnly(plan, v, dir, NewCapture(), m.Describe[SyncKey] == "true", m.Describe[ServeOptionsKey] == "true")
 	if err != nil {
 		return err
 	}
