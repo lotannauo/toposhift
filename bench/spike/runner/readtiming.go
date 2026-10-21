@@ -158,6 +158,8 @@ func crossCheckTimings(dir string, b TimedBuild, c *Candidate, t *ReadTimings) e
 		return bad("not of the plan the manifest and the results are of")
 	case t.ManifestDigest != c.Results.ManifestDigest:
 		return bad("not read from the manifest the results were read from")
+	case b.Manifest.Describe[PhaseLogKey] == "true":
+		return bad("built with the phase log: a diagnostic, not a measurement")
 	case b.Manifest.Describe["cache_bytes"] != strconv.FormatInt(t.CacheBytes, 10):
 		return bad(fmt.Sprintf("read at another block cache than the build's (%d bytes, the manifest says %q)", t.CacheBytes, b.Manifest.Describe["cache_bytes"]))
 	case t.Build.Executable != b.Job.BinarySHA256:

@@ -134,6 +134,9 @@ type fixtureBuild struct {
 	// Pace is the description pace_records_per_second; the default leaves the key out, as
 	// the manifest of a build that was not paced does.
 	Pace string
+	// PhaseLog is the description phase_log; the default leaves the key out, as the
+	// manifest of a build without the phase log does.
+	PhaseLog string
 	// Stream names the stream of the plan (default: one per window), ManifestStream
 	// the one the manifest says it holds (default: the plan's).
 	Stream, ManifestStream string
@@ -273,7 +276,7 @@ func (b fixtureBuild) manifest() *runner.Manifest {
 	for k, v := range map[string]string{
 		runner.SyncKey: b.Sync, runner.RestKey: b.Rest, runner.CanonicalKey: b.Canonical, runner.MetricsKey: b.Metrics,
 		runner.SettleKey: b.Settle, "settle_deadline": b.Deadline, runner.PostRetentionKey: b.PostBatches,
-		runner.GoMemoryLimitKey: b.MemLimit, runner.RetentionModeKey: b.RetentionMode, runner.PaceKey: b.Pace,
+		runner.GoMemoryLimitKey: b.MemLimit, runner.RetentionModeKey: b.RetentionMode, runner.PaceKey: b.Pace, runner.PhaseLogKey: b.PhaseLog,
 	} {
 		if v != "-" && v != "" {
 			describe[k] = v

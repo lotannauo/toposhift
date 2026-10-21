@@ -677,6 +677,13 @@ func (j *judge) buildsWhy(builds []*tbuild) (binary, settings string) {
 			return "", fmt.Sprintf("%s was built with serve's options (%s): a build with the boot key, L0 kept and L1 retained behind is a measurement of the store gate's serve arm, and its timing is not the spike's", b.label(), ServeOptionsKey)
 		}
 	}
+	// The phase log wraps the build's recorder: a build with it is a diagnostic, and
+	// none of its timings is a measurement.
+	for _, b := range builds {
+		if b.Manifest.Describe[PhaseLogKey] == "true" {
+			return "", fmt.Sprintf("%s was built with the phase log: a diagnostic, not a measurement", b.label())
+		}
+	}
 	for _, b := range builds {
 		if describedOr(b.Manifest, SyncKey, "false") != "false" {
 			return "", "these builds synced every commit: G2, G3 and G4 are judged on builds that do not, and a synced build is a separate measurement"

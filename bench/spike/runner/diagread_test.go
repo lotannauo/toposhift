@@ -499,6 +499,7 @@ var refusalCases = []refusalCase{
 	{name: "a flush threshold not recorded", which: 2, mutate: manifestSet(func(m *runner.Manifest) { delete(m.Describe, runner.RetainFlushDelsKey) }), want: runner.RetainFlushDelsKey},
 	{name: "a pace of 4000", which: 1, mutate: describe(runner.PaceKey, "4000"), want: "pace is"},
 	{name: "no pace", which: 1, mutate: manifestSet(func(m *runner.Manifest) { delete(m.Describe, runner.PaceKey) }), want: "pace is"},
+	{name: "built with the phase log", which: 1, mutate: describe(runner.PhaseLogKey, "true"), want: "built with the phase log: a diagnostic, not a measurement"},
 	{name: "Sync off", which: 3, mutate: describe(runner.SyncKey, "false"), want: "sync is"},
 	{name: "a window of 30 days", which: 0, mutate: manifestSet(func(m *runner.Manifest) {
 		m.Gate.KeepNs = int64(30 * 24 * time.Hour)
