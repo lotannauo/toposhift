@@ -194,8 +194,9 @@ func TestVariantsChangeWhatTheySay(t *testing.T) {
 
 // A variant is measured beside its registered fixture, and the registered
 // report, its geometric mean and its largest ratio are the same with the
-// variants run or not.
+// variants run or not. Parallel with the small-fixtures test (see there).
 func TestRunVariantsBesideTheRegisteredFixtures(t *testing.T) {
+	t.Parallel()
 	rep, err := bytesgate.Run(ctx, small())
 	if err != nil {
 		t.Fatal(err)

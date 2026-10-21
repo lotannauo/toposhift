@@ -124,7 +124,13 @@ func TestTableStatesNoVerdict(t *testing.T) {
 // size is the length of its encoding, and each compressed size is the length of a
 // brotli stream that decompresses to it. The figures are not asserted: they are of
 // fixtures far smaller than the gate's.
+//
+// Parallel with the variants test, the other run of the pipeline: the two are the
+// package's slow tests (they build and encode every fixture), and under the race
+// detector each runs for minutes on a CI runner. Run reads nothing but its
+// arguments and the package's constants, and writes nothing but its result.
 func TestRunOnSmallFixtures(t *testing.T) {
+	t.Parallel()
 	docs := build(t, small())
 	rep, err := bytesgate.Run(ctx, small())
 	if err != nil {
