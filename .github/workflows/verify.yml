@@ -18,6 +18,13 @@ name: verify
 # the maintainer; commits are signed already. Creating the branch and advancing it are
 # writes to the repository's refs, made by a maintainer.
 #
+# The shards check the source out where ci.yml does, at the root of the workspace,
+# because the Go build cache keys every package of this repository by its directory
+# (cmd/go hashes "dir <path>" into a package's action id unless -trimpath is set), so
+# a checkout under another path could reuse nothing main's cache holds and would
+# compile and test everything again. The scripts are checked out first and copied
+# out of the workspace, since the checkout must hold the patched tree and nothing else.
+#
 # The patch is code, and code in a job can write to the cache of the ref the job runs
 # on, through a later action of the same job. So the jobs only restore the Go caches
 # that main saved (a branch can read the default branch's caches) and have no step
@@ -259,6 +266,10 @@ jobs:
         with:
           egress-policy: audit
 
+      # The scripts come from the commit this run was dispatched at, never from the
+      # patch. They are copied out of the workspace so that the source can be checked
+      # out at its root (see the note at the top): actions/checkout accepts no path
+      # outside the workspace, and the checkout below must hold nothing but the tree.
       - name: Check out the scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -266,43 +277,52 @@ jobs:
           sparse-checkout: .github/scripts
           persist-credentials: false
 
+      - name: Move the scripts out of the workspace
+        env:
+          TOOLS: ${{ runner.temp }}/tools
+        run: |
+          mkdir -p "$TOOLS"
+          cp -R tools/.github "$TOOLS/"
+          rm -rf tools
+
       - name: Fetch the patch
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: verify-patch-${{ github.run_id }}
           path: ${{ runner.temp }}/patch
 
+      # At the root of the workspace, the path ci.yml's shards use, so that the Go
+      # cache main saved applies.
       - name: Check out the base commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.base_sha }}
-          path: src
           # The whole history for static, where gitleaks scans it; the last commit
           # elsewhere.
           fetch-depth: ${{ matrix.shard != 'static' && 1 || 0 }}
           persist-credentials: false
 
       - name: Apply the patch, and check the tree
-        working-directory: src
         env:
           BASE_SHA: ${{ needs.setup.outputs.base_sha }}
           PATCH_FILE: ${{ runner.temp }}/patch/verify.patch
           PATCH_SHA256: ${{ inputs.patch_sha256 }}
           TREE: ${{ inputs.tree }}
-        run: bash ../tools/.github/scripts/apply-patch.sh apply
+          TOOLS: ${{ runner.temp }}/tools
+        run: bash "$TOOLS/.github/scripts/apply-patch.sh" apply
 
       # As in ci.yml: go test keys a cached result by the modification times of the
       # files a test read, and a checkout writes every file at the current time.
       - name: Give checked-out files times derived from their content
-        working-directory: src
-        run: python3 ../tools/.github/scripts/stable-mtimes.py
+        env:
+          TOOLS: ${{ runner.temp }}/tools
+        run: python3 "$TOOLS/.github/scripts/stable-mtimes.py"
 
       - name: Install pinned tools
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install: true
           cache: false
-          working_directory: src
 
       # Only restores, whatever the ref: the verify branch saves nothing, and reads
       # the entries main saved. The keys are the ones ci.yml's shards use, so a shard
@@ -313,14 +333,13 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.GO_CACHE_PATHS }}
-          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-${{ matrix.shard }}-verify-${{ github.run_id }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ matrix.shard }}-verify-${{ github.run_id }}
           restore-keys: |
-            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-${{ matrix.shard }}-
-            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/go.sum', 'src/bench/go.sum') }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-${{ matrix.shard }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'bench/go.sum') }}-
             go-v2-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Run the shard, as local development does
-        working-directory: src
         env:
           SHARD: ${{ matrix.shard }}
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
@@ -331,7 +350,6 @@ jobs:
       - name: Report the slowest tests
         if: ${{ always() }}
         continue-on-error: true
-        working-directory: src
         env:
           TEST_REPORT_DIR: ${{ runner.temp }}/test-reports
         run: |
@@ -352,7 +370,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verify-rapid-failures-${{ matrix.shard }}-${{ matrix.os }}-${{ github.run_id }}
-          path: "src/**/testdata/rapid/**"
+          path: "**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14
 
