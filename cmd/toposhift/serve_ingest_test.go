@@ -206,6 +206,7 @@ func TestServeRecordsTheClusterNameBeforeIngestStarts(t *testing.T) {
 // ignored with a warning, and neither does a variable of that name accept
 // anything; the flag naming the configured name starts ingest and records it.
 func TestServeChecksTheClusterNameAtBoot(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir), "--cluster-name", "prod")
 	waitIngestOn(t, s.base)
@@ -247,6 +248,7 @@ func TestServeChecksTheClusterNameAtBoot(t *testing.T) {
 // The environment twin of --cluster-name names the cluster, and an empty one is
 // no name: a new store records that none is set.
 func TestServeClusterNameFromTheEnvironment(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		value string
 		set   bool
@@ -267,6 +269,7 @@ func TestServeClusterNameFromTheEnvironment(t *testing.T) {
 // minute to an hour, are mistakes in how serve was called: exit 2, before anything
 // listens.
 func TestServeRefusesBadIngestFlags(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("c", store.MaxClusterNameLen+1)
 	tests := []struct {
 		name    string
@@ -301,6 +304,7 @@ func TestServeRefusesBadIngestFlags(t *testing.T) {
 // holds the run's extension through the second pull. The stop takes less than
 // the server's 8 s and the sequencer's 5 s.
 func TestServeGracefulStopWritesAbsorbedRefreshes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, dirEnv(t, dir))
 	waitIngestOn(t, s.base)

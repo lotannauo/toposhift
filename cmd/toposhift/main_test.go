@@ -12,6 +12,7 @@ import (
 func noEnv(string) string { return "" }
 
 func TestRunExitCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		args     []string
@@ -46,6 +47,7 @@ func TestRunExitCodes(t *testing.T) {
 }
 
 func TestServeListenPrecedence(t *testing.T) {
+	t.Parallel()
 	// An unusable address makes serve fail fast, and the error names the
 	// address that won, which shows which layer took precedence.
 	tests := []struct {
@@ -80,6 +82,7 @@ func TestServeListenPrecedence(t *testing.T) {
 // A server that stops on a signal is timed in the log even when the goroutine
 // that notes the signal runs late: here the callback is held for 50 ms.
 func TestWatchStopLogsWhenTheSignalIsNotedLate(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	entered, release := make(chan struct{}), make(chan struct{})
 	logStop := watchStop(ctx, func() {
@@ -102,6 +105,7 @@ func TestWatchStopLogsWhenTheSignalIsNotedLate(t *testing.T) {
 // A server that returns while ctx is live, as one that failed at startup does,
 // logs nothing and does not wait for a signal that never comes.
 func TestWatchStopDoesNotWaitWhenNothingSignalled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	logStop := watchStop(ctx, nil)

@@ -114,6 +114,7 @@ func postMetrics(t testing.TB, base, ctype string, body []byte) (status int, ret
 // has a part of a second or is outside two minutes to 8784 hours is a mistake in how
 // serve was called: exit 2 before anything listens.
 func TestServeDependencyExpiryAndInstanceTTL(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name         string
 		env          map[string]string
@@ -214,6 +215,7 @@ func (s *holdSink) AcceptMetrics(context.Context, otlpmetrics.Data) (otlphttp.Pa
 // held in the sink makes the metrics route answer 503 with Retry-After: 1 at
 // once, and the reverse. Nothing listens: the routes are served in process.
 func TestReceiverRoutesShareOneBudget(t *testing.T) {
+	t.Parallel()
 	const n = 64
 	// An empty request in n bytes: an unknown field, which both messages drop.
 	body := protowire.AppendBytes(protowire.AppendTag(nil, 15, protowire.BytesType), make([]byte, n-2))
@@ -276,6 +278,7 @@ func TestReceiverRoutesShareOneBudget(t *testing.T) {
 
 // serve -h documents the metrics receiver, the two flags and the status.
 func TestServeHelpDocumentsServiceGraph(t *testing.T) {
+	t.Parallel()
 	var stderr bytes.Buffer
 	if code := run(t.Context(), []string{"serve", "-h"}, noEnv, io.Discard, &stderr); code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -296,6 +299,7 @@ func TestServeHelpDocumentsServiceGraph(t *testing.T) {
 // in GET /status; with no data directory, the metrics route is off in the way the
 // logs route is, and JSON metrics are refused first.
 func TestServeTakesMetrics(t *testing.T) {
+	t.Parallel()
 	t.Run("ingest on", func(t *testing.T) {
 		s := startServe(t, dirEnv(t, t.TempDir()), "--retain", "off")
 		waitIngestOn(t, s.base)

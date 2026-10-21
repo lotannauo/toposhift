@@ -210,6 +210,7 @@ func TestReadmeNamesOnlyCommandsThatExist(t *testing.T) {
 // the instants the README quotes are the ones the demo's story has, so a change
 // to the demo that moves one fails here and the README is edited with it.
 func TestReadmeCurlCommandsAnswer(t *testing.T) {
+	t.Parallel()
 	text := readmeText(t)
 	story := demo.NewWorld(demo.DefaultSeed).Story()
 	rfc := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }

@@ -198,6 +198,7 @@ func TestServeWithoutADataDirectoryKeepsIngestOff(t *testing.T) {
 }
 
 func TestServeWithADataDirectoryLaysItOut(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := startServe(t, testEnv(t, map[string]string{"TOPOSHIFT_DATA_DIR": dir}))
 
@@ -237,6 +238,7 @@ func TestServeWithADataDirectoryLaysItOut(t *testing.T) {
 }
 
 func TestServeDataDirFlagBeatsTheVariable(t *testing.T) {
+	t.Parallel()
 	flagDir, envDir := t.TempDir(), t.TempDir()
 	s := startServe(t, testEnv(t, map[string]string{"TOPOSHIFT_DATA_DIR": envDir}), "--data-dir", flagDir)
 	if _, err := os.Stat(filepath.Join(flagDir, "meta", "format")); err != nil {
@@ -251,6 +253,7 @@ func TestServeDataDirFlagBeatsTheVariable(t *testing.T) {
 }
 
 func TestServePrintsASymlinkAndItsTarget(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	real := filepath.Join(root, "real")
 	link := filepath.Join(root, "link")
@@ -277,6 +280,7 @@ func TestServePrintsASymlinkAndItsTarget(t *testing.T) {
 }
 
 func TestServeRefusesWhatItCannotUse(t *testing.T) {
+	t.Parallel()
 	held := t.TempDir()
 	d, err := datadir.Open(datadir.Result{Dir: held})
 	if err != nil {
@@ -317,6 +321,7 @@ func TestServeRefusesWhatItCannotUse(t *testing.T) {
 }
 
 func TestServeBootsWhenTheDefaultDirectoryCannotBeUsed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		setup func(t *testing.T, home string)
@@ -368,6 +373,7 @@ func TestServeBootsWhenTheDefaultDirectoryCannotBeUsed(t *testing.T) {
 }
 
 func TestServeReleasesTheDataDirectoryWhenItCannotListen(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var stderr bytes.Buffer
 	code := run(t.Context(), []string{"serve", "--listen", "127.0.0.1:bad"}, testEnv(t, map[string]string{"TOPOSHIFT_DATA_DIR": dir}), io.Discard, &stderr)
@@ -382,6 +388,7 @@ func TestServeReleasesTheDataDirectoryWhenItCannotListen(t *testing.T) {
 }
 
 func TestServeHelpDocumentsTheDataDirectory(t *testing.T) {
+	t.Parallel()
 	var stderr bytes.Buffer
 	if code := run(t.Context(), []string{"serve", "-h"}, noEnv, io.Discard, &stderr); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
