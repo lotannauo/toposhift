@@ -342,6 +342,11 @@ func RecordParts(v Value, dir byte, total int) (kind string, kindBytes int, payl
 	return kind, total - len(v.Payload), payload, len(v.Payload)
 }
 
+// ShapeKey is the key of [KV.Describe] that says which table-shape and compaction
+// settings the database was opened with beyond the tuning's sizes (see
+// [rootkv.Tuning.ShapeString] for the words), and is present only when there is one.
+const ShapeKey = "pebble_shape"
+
 // Describe says how the database is set up, in what a measurement should record
 // next to its numbers: the settings it was opened with and, read from its tables,
 // what they were really written with (the key schema, and the block-property
@@ -383,6 +388,11 @@ func (k *KV) Describe() (map[string]string, error) {
 		for name := range p.UserProperties {
 			collectors[name] = true
 		}
+	}
+	// Written only for a database opened with a table shape or compaction setting of
+	// its own; a manifest without the key is of a build with Pebble's rule.
+	if shape := t.ShapeString(); shape != "" {
+		out[ShapeKey] = shape
 	}
 	out["key_schema_in_tables"] = joinSorted(schemas)
 	out["collectors_in_tables"] = joinSorted(collectors)

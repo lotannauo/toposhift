@@ -1532,8 +1532,10 @@ const defaultRetainFlushDels = 32768
 
 // defaultRetainFlushL0Margin is how many sublevels below its stop threshold level 0
 // must be for a pass to start a flush (see above): with Pebble's default threshold
-// of 12, a flush is put off at 10 sublevels or more. Provisional.
-const defaultRetainFlushL0Margin = 2
+// of 12, a flush is put off at 10 sublevels or more. The margin is pebblekv's, which
+// refuses a stop threshold that would leave the flush put off at the depth where level 0
+// is normally compacted. Provisional.
+const defaultRetainFlushL0Margin = pebblekv.RetainFlushL0Margin
 
 // flushBound is the store's count of the range deletions retention has committed,
 // and of the flush it started to bound them. It is guarded by the store's lock.

@@ -755,8 +755,16 @@ func TestADatabaseMadeByAnotherPebbleIsRefused(t *testing.T) {
 func TestDefaultOptionsAreTheProducts(t *testing.T) {
 	t.Parallel()
 	o := DefaultOptions()
-	if !o.Sync || !o.SettleRetention || o.Policy.BootKey != lifecycle.BootID || o.Retention != Synchronous || o.Tuning != pebblekv.BenchTuning() {
+	if !o.Sync || !o.SettleRetention || o.Policy.BootKey != lifecycle.BootID || o.Retention != Synchronous || o.Tuning != pebblekv.ProductTuning() {
 		t.Errorf("DefaultOptions() = %+v", o)
+	}
+	// The product's Pebble options are those of the benchmark tuning's: the sizes are
+	// the same, and nothing is shaped.
+	if b := pebblekv.BenchTuning(); o.Tuning.WithShapeOf(b) != b || o.Tuning.HasShape() {
+		t.Errorf("the product tuning %+v differs from the benchmark tuning %+v in more than the signals written out", o.Tuning, b)
+	}
+	if got := defaultRetainFlushL0Margin; got != pebblekv.RetainFlushL0Margin {
+		t.Errorf("the retention flush margin is %d, pebblekv refuses stop thresholds by %d", got, pebblekv.RetainFlushL0Margin)
 	}
 }
 
