@@ -320,10 +320,10 @@ for cgo in 0 1; do
 done
 '''
 
-# The DuckDB baseline (bench/duckdb) is a module of its own: its driver, which a later
-# change adds, links DuckDB's native library, so its checks run in duckdb.yml, outside the
-# four ci shards, as the RocksDB module's do. Until the driver exists it is pure Go, and
-# its tests run with cgo off.
+# The DuckDB baseline (bench/duckdb) is a module of its own: its driver links DuckDB's
+# native library, so its checks run in duckdb.yml, outside the four ci shards, as the
+# RocksDB module's do, and its tests need cgo. Its model (duckmodel) and its first gate
+# (g0) are pure Go and also pass with cgo off.
 [tasks."bench:duckdb:fmt:check"]
 description = "Fail if any Go file in the DuckDB module is not formatted"
 dir = "bench/duckdb"
@@ -340,9 +340,9 @@ dir = "bench"
 run = "go tool govulncheck -C duckdb ./..."
 
 [tasks."bench:duckdb:test"]
-description = "Run the DuckDB module's full tests, cgo off"
+description = "Run the DuckDB module's full tests (cgo on: the driver links DuckDB)"
 dir = "bench/duckdb"
-env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "40" }
+env = { CGO_ENABLED = "1", TOPOSHIFT_RAPID_CHECKS = "40" }
 run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-duckdb-test.json"} -- -p 2 -timeout 25m ./...'
 
 [tasks."bench:duckdb:test:race"]

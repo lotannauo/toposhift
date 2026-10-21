@@ -1,24 +1,37 @@
-// Command duckspike is the driver of the DuckDB baseline. It has one subcommand so far:
+// Command duckspike is the driver of the DuckDB baseline.
 //
-//	duckspike g0 -plan plan.json [-expect-plan sha256] [-arms records,intervals]
+//	duckspike g0      -plan plan.json [-expect-plan sha256] [-arms records,intervals]
+//	duckspike build   -plan plan.json -expect-plan sha256 -out dir [-arms A1,A2,I]
+//	duckspike read    -dir dir -plan plan.json -expect-plan sha256 [-arms A1,A2,I] [-out dir]
+//	duckspike explain -dir dir -plan plan.json -expect-plan sha256 -arm A2 [-query n,...]
+//	duckspike sizes   -dir dir [-verify-hashes]
+//	duckspike env
 //
 // g0 regenerates the stream of a plan into the in-memory model of each arm's files and
-// asks every question of the plan, as the first gate of the baseline does for DuckDB:
-// the model's answer must equal the reference engine's. It also prints what the model
-// holds at the end, which is a count of rows (a function of the stream), not a
-// measurement of DuckDB.
+// asks every question of the plan: the model's answer must equal the reference engine's.
+// It needs no DuckDB.
 //
-// It prints no time. The model holds the whole stream in memory.
+// build writes the Parquet files of the arms from the plan's stream, with the retention
+// applied once, and a manifest. read opens them through DuckDB and asks every question of
+// the plan: no counter is kept for an arm unless all the answers are the plan's, and
+// every question is asked twice and must cost the same. explain audits the counting of
+// some questions against what DuckDB read from the files. sizes reports the bytes of a
+// build; env, where the binary runs.
+//
+// Counters are rows, row groups and bytes. The commands print no time, and refuse an -out
+// inside a git work tree: what they write is local scratch, not a result.
 package main
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lotannauo/toposhift/bench/duckdb/duckmodel"
@@ -33,7 +46,13 @@ func main() {
 	}
 }
 
-const usage = "usage: duckspike g0 -plan plan.json [-expect-plan sha256] [-arms records,intervals]"
+const usage = `usage:
+  duckspike g0      -plan plan.json [-expect-plan sha256] [-arms records,intervals]
+  duckspike build   -plan plan.json -expect-plan sha256 -out dir [-arms A1,A2,I]
+  duckspike read    -dir dir -plan plan.json -expect-plan sha256 [-arms A1,A2,I] [-out dir]
+  duckspike explain -dir dir -plan plan.json -expect-plan sha256 -arm A2 [-query n,...]
+  duckspike sizes   -dir dir [-verify-hashes]
+  duckspike env`
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -42,8 +61,78 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch args[0] {
 	case "g0":
 		return runG0(ctx, args[1:], stdout, stderr)
+	case "build":
+		return runBuild(ctx, args[1:], stdout, stderr)
+	case "read":
+		return runRead(ctx, args[1:], stdout, stderr)
+	case "explain":
+		return runExplain(ctx, args[1:], stdout, stderr)
+	case "sizes":
+		return runSizes(ctx, args[1:], stdout, stderr)
+	case "env":
+		return runEnv(ctx, args[1:], stdout, stderr)
 	}
 	return fmt.Errorf("no subcommand %q; %s", args[0], usage)
+}
+
+// loadPlan reads a plan file, refusing it if its SHA-256 is not the expected one, and
+// returns the plan and the digest. An empty expectation is allowed only where the caller
+// says so.
+func loadPlan(path, expect string, required bool) (*runner.Plan, string, error) {
+	if path == "" {
+		return nil, "", errors.New("no -plan")
+	}
+	if required && expect == "" {
+		return nil, "", errors.New("-expect-plan is required: a counter is only of a plan that was named in advance")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(b)
+	got := hex.EncodeToString(sum[:])
+	if expect != "" && !strings.EqualFold(expect, got) {
+		return nil, "", fmt.Errorf("%s has SHA-256 %s, not the expected %s", path, got, expect)
+	}
+	p, err := runner.LoadPlan(path)
+	if err != nil {
+		return nil, "", err
+	}
+	return p, got, nil
+}
+
+// refuseInWorkTree refuses a directory inside a git work tree: what these commands write
+// is local scratch and never a result, so it does not belong where `git add` would find
+// it. The directory need not exist; its nearest ancestor that does is looked at.
+func refuseInWorkTree(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	p := abs
+	for {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		p = real
+	}
+	for {
+		if _, err := os.Lstat(filepath.Join(p, ".git")); err == nil {
+			return fmt.Errorf("%s is inside the git work tree %s: write scratch outside it (for example under ~/spikebench/duckdb)", dir, p)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return nil
+		}
+		p = parent
+	}
 }
 
 func parseArms(list string) ([]duckmodel.Arm, error) {
@@ -84,16 +173,7 @@ func runG0(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	b, err := os.ReadFile(*plan)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(b)
-	got := hex.EncodeToString(sum[:])
-	if *expect != "" && !strings.EqualFold(*expect, got) {
-		return fmt.Errorf("%s has SHA-256 %s, not the expected %s", *plan, got, *expect)
-	}
-	p, err := runner.LoadPlan(*plan)
+	p, got, err := loadPlan(*plan, *expect, false)
 	if err != nil {
 		return err
 	}

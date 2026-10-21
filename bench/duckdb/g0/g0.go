@@ -66,6 +66,17 @@ func tell(say runner.Progress, format string, args ...any) {
 	}
 }
 
+// CheckStream reports, with an error wrapping [ErrStreamDiffers], whether a regenerated
+// stream is the one the plan was made from: the digest, the counts and the old snapshot
+// token decide it.
+func CheckStream(info, want runner.StreamInfo) error {
+	if info.Digest != want.Digest || info.Records != want.Records || info.LastSeq != want.LastSeq || info.OldToken != want.OldToken || info.Dropped != want.Dropped || len(info.Retentions) != len(want.Retentions) {
+		return fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
+			ErrStreamDiffers, info.Digest, info.Records, info.LastSeq, info.OldToken, want.Digest, want.Records, want.LastSeq, want.OldToken)
+	}
+	return nil
+}
+
 // sink writes a stream to an engine.
 type sink struct{ e engine.Engine }
 
@@ -82,16 +93,28 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 		return nil, err
 	}
 	want := plan.Stream
-	if info.Digest != want.Digest || info.Records != want.Records || info.LastSeq != want.LastSeq || info.OldToken != want.OldToken || info.Dropped != want.Dropped || len(info.Retentions) != len(want.Retentions) {
-		return nil, fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
-			ErrStreamDiffers, info.Digest, info.Records, info.LastSeq, info.OldToken, want.Digest, want.Records, want.LastSeq, want.OldToken)
+	if err := CheckStream(info, want); err != nil {
+		return nil, err
 	}
 	if got := e.LastSeq(); got != want.LastSeq {
 		return nil, fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, got, want.LastSeq)
 	}
 
+	rep, err := Check(ctx, plan, e, say)
+	if err != nil {
+		return nil, err
+	}
+	rep.Stream = info
+	return rep, nil
+}
+
+// Check asks e every question of the plan and compares each answer with the reference
+// engine's, for an engine that already holds the plan's stream (one that was built from
+// it, or one Run wrote it to). The report's Stream is left empty: the caller knows how
+// the engine came by the stream.
+func Check(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Progress) (*Report, error) {
 	tell(say, "g0: asking %d questions", len(plan.Queries))
-	rep := &Report{Stream: info, Queries: len(plan.Queries)}
+	rep := &Report{Queries: len(plan.Queries)}
 	groups := map[[2]string]*Group{}
 	var order [][2]string
 	for _, q := range plan.Queries {

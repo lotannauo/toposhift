@@ -1,0 +1,79 @@
+{
+ "Metrics": {
+  "ATTACH_LOAD_STORAGE_LATENCY": "0.0",
+  "ATTACH_REPLAY_WAL_LATENCY": "0.0",
+  "BLOCKED_THREAD_TIME": "0.0",
+  "CHECKPOINT_LATENCY": "0.0",
+  "COMMIT_LOCAL_STORAGE_LATENCY": "0.0",
+  "CPU_TIME": "0.000172624",
+  "CUMULATIVE_CARDINALITY": "3",
+  "CUMULATIVE_ROWS_SCANNED": "403",
+  "EXTRA_INFO": "{}",
+  "LATENCY": "0.000911584",
+  "QUERY_NAME": "SELECT count(*) FROM ient WHERE layer = $1 AND a = $2 AND start_ns \u003c= $3 AND (end_ns IS NULL OR end_ns \u003e $3)",
+  "RESULT_SET_SIZE": "8",
+  "ROWS_RETURNED": "1",
+  "SYSTEM_PEAK_BUFFER_MEMORY": "654972",
+  "SYSTEM_PEAK_TEMP_DIR_SIZE": "0",
+  "TOTAL_BYTES_READ": "47",
+  "TOTAL_BYTES_WRITTEN": "0",
+  "TOTAL_MEMORY_ALLOCATED": "0",
+  "WAITING_TO_ATTACH_LATENCY": "0.0",
+  "WAL_REPLAY_ENTRY_COUNT": "0",
+  "WRITE_TO_WAL_LATENCY": "0.0"
+ },
+ "Children": [
+  {
+   "Metrics": {
+    "CPU_TIME": "0.00017191599999999999",
+    "CUMULATIVE_CARDINALITY": "3",
+    "CUMULATIVE_ROWS_SCANNED": "403",
+    "EXTRA_INFO": "{Aggregates='count_star()'}",
+    "OPERATOR_CARDINALITY": "1",
+    "OPERATOR_NAME": "UNGROUPED_AGGREGATE",
+    "OPERATOR_ROWS_SCANNED": "0",
+    "OPERATOR_TIMING": "9.17e-07",
+    "OPERATOR_TYPE": "UNGROUPED_AGGREGATE",
+    "RESULT_SET_SIZE": "8",
+    "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+    "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+   },
+   "Children": [
+    {
+     "Metrics": {
+      "CPU_TIME": "0.000170999",
+      "CUMULATIVE_CARDINALITY": "2",
+      "CUMULATIVE_ROWS_SCANNED": "403",
+      "EXTRA_INFO": "{__projections__=42, __estimated_cardinality__=80}",
+      "OPERATOR_CARDINALITY": "1",
+      "OPERATOR_NAME": "PROJECTION",
+      "OPERATOR_ROWS_SCANNED": "0",
+      "OPERATOR_TIMING": "2.08e-07",
+      "OPERATOR_TYPE": "PROJECTION",
+      "RESULT_SET_SIZE": "4",
+      "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+      "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+     },
+     "Children": [
+      {
+       "Metrics": {
+        "CPU_TIME": "0.000170791",
+        "CUMULATIVE_CARDINALITY": "1",
+        "CUMULATIVE_ROWS_SCANNED": "403",
+        "EXTRA_INFO": "{Function=READ_PARQUET, Projections='', Filters='layer=\\'L2\\'\na=\\'k8s.node:11f012f952136f8ed1ad904c16432ae0\\'\n((end_ns IS NULL) OR (end_ns \u003e 1767226800000000000))', __estimated_cardinality__=80, Total Files Read=1, 'Filename(s)'=/build/i/entities.parquet}",
+        "OPERATOR_CARDINALITY": "1",
+        "OPERATOR_NAME": "READ_PARQUET",
+        "OPERATOR_ROWS_SCANNED": "403",
+        "OPERATOR_TIMING": "0.000170791",
+        "OPERATOR_TYPE": "TABLE_SCAN",
+        "RESULT_SET_SIZE": "48",
+        "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+        "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

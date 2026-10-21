@@ -1,0 +1,205 @@
+{
+ "Metrics": {
+  "ATTACH_LOAD_STORAGE_LATENCY": "0.0",
+  "ATTACH_REPLAY_WAL_LATENCY": "0.0",
+  "BLOCKED_THREAD_TIME": "0.0",
+  "CHECKPOINT_LATENCY": "0.0",
+  "COMMIT_LOCAL_STORAGE_LATENCY": "0.0",
+  "CPU_TIME": "0.0014381249999999997",
+  "CUMULATIVE_CARDINALITY": "575",
+  "CUMULATIVE_ROWS_SCANNED": "2189",
+  "EXTRA_INFO": "{}",
+  "LATENCY": "0.00268425",
+  "QUERY_NAME": "SELECT target, relation FROM (\n  SELECT target, relation, kind, ttl_ns, through_ns, event_time_ns FROM fwd\n  WHERE layer = $1 AND subject_kind = 'edge' AND source = $2 AND event_time_ns \u003c= $3 AND seq \u003c= $4::UBIGINT\n  QUALIFY row_number() OVER (PARTITION BY target, relation, producer ORDER BY event_time_ns DESC, seq DESC) = 1)\nWHERE kind = 'observe' AND (ttl_ns = 0 OR greatest(event_time_ns, coalesce(through_ns, event_time_ns)) + ttl_ns \u003e $3)\nGROUP BY target, relation",
+  "RESULT_SET_SIZE": "64",
+  "ROWS_RETURNED": "2",
+  "SYSTEM_PEAK_BUFFER_MEMORY": "5055902",
+  "SYSTEM_PEAK_TEMP_DIR_SIZE": "0",
+  "TOTAL_BYTES_READ": "0",
+  "TOTAL_BYTES_WRITTEN": "0",
+  "TOTAL_MEMORY_ALLOCATED": "9961472",
+  "WAITING_TO_ATTACH_LATENCY": "0.0",
+  "WAL_REPLAY_ENTRY_COUNT": "0",
+  "WRITE_TO_WAL_LATENCY": "0.0"
+ },
+ "Children": [
+  {
+   "Metrics": {
+    "CPU_TIME": "0.0014352499999999997",
+    "CUMULATIVE_CARDINALITY": "575",
+    "CUMULATIVE_ROWS_SCANNED": "2189",
+    "EXTRA_INFO": "{Groups=#0\n#1, Aggregates='', __estimated_cardinality__=86}",
+    "OPERATOR_CARDINALITY": "2",
+    "OPERATOR_NAME": "HASH_GROUP_BY",
+    "OPERATOR_ROWS_SCANNED": "0",
+    "OPERATOR_TIMING": "0.000152876",
+    "OPERATOR_TYPE": "HASH_GROUP_BY",
+    "RESULT_SET_SIZE": "64",
+    "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+    "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+   },
+   "Children": [
+    {
+     "Metrics": {
+      "CPU_TIME": "0.0012823739999999998",
+      "CUMULATIVE_CARDINALITY": "573",
+      "CUMULATIVE_ROWS_SCANNED": "2189",
+      "EXTRA_INFO": "{__projections__=target\nrelation, __estimated_cardinality__=87}",
+      "OPERATOR_CARDINALITY": "2",
+      "OPERATOR_NAME": "PROJECTION",
+      "OPERATOR_ROWS_SCANNED": "0",
+      "OPERATOR_TIMING": "8.3e-08",
+      "OPERATOR_TYPE": "PROJECTION",
+      "RESULT_SET_SIZE": "64",
+      "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+      "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+     },
+     "Children": [
+      {
+       "Metrics": {
+        "CPU_TIME": "0.0012822909999999999",
+        "CUMULATIVE_CARDINALITY": "571",
+        "CUMULATIVE_ROWS_SCANNED": "2189",
+        "EXTRA_INFO": "{__projections__=#0\n#1, __estimated_cardinality__=87}",
+        "OPERATOR_CARDINALITY": "2",
+        "OPERATOR_NAME": "PROJECTION",
+        "OPERATOR_ROWS_SCANNED": "0",
+        "OPERATOR_TIMING": "8.4e-08",
+        "OPERATOR_TYPE": "PROJECTION",
+        "RESULT_SET_SIZE": "64",
+        "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+        "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+       },
+       "Children": [
+        {
+         "Metrics": {
+          "CPU_TIME": "0.0012822069999999998",
+          "CUMULATIVE_CARDINALITY": "569",
+          "CUMULATIVE_ROWS_SCANNED": "2189",
+          "EXTRA_INFO": "{__expression__='((ttl_ns = 0) OR ((greatest(event_time_ns, event_time_ns) + ttl_ns) \u003e 1767226800000000000))', __estimated_cardinality__=87}",
+          "OPERATOR_CARDINALITY": "2",
+          "OPERATOR_NAME": "FILTER",
+          "OPERATOR_ROWS_SCANNED": "0",
+          "OPERATOR_TIMING": "1.2209000000000001e-05",
+          "OPERATOR_TYPE": "FILTER",
+          "RESULT_SET_SIZE": "112",
+          "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+          "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+         },
+         "Children": [
+          {
+           "Metrics": {
+            "CPU_TIME": "0.0012699979999999998",
+            "CUMULATIVE_CARDINALITY": "567",
+            "CUMULATIVE_ROWS_SCANNED": "2189",
+            "EXTRA_INFO": "{__projections__=target\nrelation\nttl_ns\nthrough_ns\nevent_time_ns, __estimated_cardinality__=87}",
+            "OPERATOR_CARDINALITY": "2",
+            "OPERATOR_NAME": "PROJECTION",
+            "OPERATOR_ROWS_SCANNED": "0",
+            "OPERATOR_TIMING": "1.66e-07",
+            "OPERATOR_TYPE": "PROJECTION",
+            "RESULT_SET_SIZE": "112",
+            "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+            "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+           },
+           "Children": [
+            {
+             "Metrics": {
+              "CPU_TIME": "0.0012698319999999998",
+              "CUMULATIVE_CARDINALITY": "565",
+              "CUMULATIVE_ROWS_SCANNED": "2189",
+              "EXTRA_INFO": "{__projections__=#1\n#2\n#3\n#6\n#7, __estimated_cardinality__=87}",
+              "OPERATOR_CARDINALITY": "2",
+              "OPERATOR_NAME": "PROJECTION",
+              "OPERATOR_ROWS_SCANNED": "0",
+              "OPERATOR_TIMING": "1.67e-07",
+              "OPERATOR_TYPE": "PROJECTION",
+              "RESULT_SET_SIZE": "112",
+              "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+              "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+             },
+             "Children": [
+              {
+               "Metrics": {
+                "CPU_TIME": "0.001269665",
+                "CUMULATIVE_CARDINALITY": "563",
+                "CUMULATIVE_ROWS_SCANNED": "2189",
+                "EXTRA_INFO": "{__expression__='((#8 = 1) AND (kind = \\'observe\\'))', __estimated_cardinality__=87}",
+                "OPERATOR_CARDINALITY": "2",
+                "OPERATOR_NAME": "FILTER",
+                "OPERATOR_ROWS_SCANNED": "0",
+                "OPERATOR_TIMING": "2.8874000000000002e-05",
+                "OPERATOR_TYPE": "FILTER",
+                "RESULT_SET_SIZE": "208",
+                "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+                "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+               },
+               "Children": [
+                {
+                 "Metrics": {
+                  "CPU_TIME": "0.001240791",
+                  "CUMULATIVE_CARDINALITY": "561",
+                  "CUMULATIVE_ROWS_SCANNED": "2189",
+                  "EXTRA_INFO": "{__projections__=#0\n#1\n#2\n#3\n#4\n#5\n#6\n#7\n#8, __estimated_cardinality__=437}",
+                  "OPERATOR_CARDINALITY": "187",
+                  "OPERATOR_NAME": "PROJECTION",
+                  "OPERATOR_ROWS_SCANNED": "0",
+                  "OPERATOR_TIMING": "1.375e-06",
+                  "OPERATOR_TYPE": "PROJECTION",
+                  "RESULT_SET_SIZE": "19448",
+                  "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+                  "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+                 },
+                 "Children": [
+                  {
+                   "Metrics": {
+                    "CPU_TIME": "0.001239416",
+                    "CUMULATIVE_CARDINALITY": "374",
+                    "CUMULATIVE_ROWS_SCANNED": "2189",
+                    "EXTRA_INFO": "{Projections='ROW_NUMBER() OVER (PARTITION BY target, relation, producer ORDER BY event_time_ns DESC NULLS LAST, seq DESC NULLS LAST)'}",
+                    "OPERATOR_CARDINALITY": "187",
+                    "OPERATOR_NAME": "WINDOW",
+                    "OPERATOR_ROWS_SCANNED": "0",
+                    "OPERATOR_TIMING": "0.000849959",
+                    "OPERATOR_TYPE": "WINDOW",
+                    "RESULT_SET_SIZE": "19448",
+                    "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+                    "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+                   },
+                   "Children": [
+                    {
+                     "Metrics": {
+                      "CPU_TIME": "0.000389457",
+                      "CUMULATIVE_CARDINALITY": "187",
+                      "CUMULATIVE_ROWS_SCANNED": "2189",
+                      "EXTRA_INFO": "{Function=READ_PARQUET, Projections=seq\nevent_time_ns\ntarget\nrelation\nproducer\nkind\nttl_ns\nthrough_ns, Filters='layer=\\'L2\\'\nsubject_kind=\\'edge\\'\nsource=\\'k8s.pod:ec15bb27407825d41555cf51c227b512\\'', __estimated_cardinality__=437, Total Files Read=1, 'Filename(s)'=/build/a2/fwd.parquet}",
+                      "OPERATOR_CARDINALITY": "187",
+                      "OPERATOR_NAME": "READ_PARQUET",
+                      "OPERATOR_ROWS_SCANNED": "2189",
+                      "OPERATOR_TIMING": "0.000389457",
+                      "OPERATOR_TYPE": "TABLE_SCAN",
+                      "RESULT_SET_SIZE": "17952",
+                      "SYSTEM_PEAK_BUFFER_MEMORY": "0",
+                      "SYSTEM_PEAK_TEMP_DIR_SIZE": "0"
+                     }
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
