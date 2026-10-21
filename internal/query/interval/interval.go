@@ -114,6 +114,42 @@ type Element struct {
 	// has no description there; an Uncascaded edge is described where its own
 	// uncut pieces are. A quarantined entity has neither.
 	AtFrom, AtLast *Description
+	// Last is set only by a reader with [Options].Evidence: the evidence at the
+	// window's last instant, To-1ns, if a piece contains that instant (for an
+	// edge read with the cascade, a cut piece), and otherwise nil. It has one
+	// [Evidence] for each producer whose reference is live at that instant,
+	// ascending by producer. A quarantined entity has none.
+	Last []Evidence
+}
+
+// Evidence is the record that decides one producer's reference to a subject at
+// an instant: the producer's latest assertion at or before it, by event time and
+// then by sequence number, among the records the token sees. It is derived: a
+// copy of what the store holds, with both time axes, and no payload. A reference
+// that is live at the instant is decided by an Observe, so the record says how
+// long the producer promised to stay silent without being heard to be gone (TTL,
+// or none) and the last instant it says the producer saw the subject (Through if
+// set and later than EventTime, else EventTime; see [store.LastOf]).
+type Evidence struct {
+	// Producer is the producer whose reference the record decides.
+	Producer lifecycle.Producer
+	// EventTime is the record's event time, in UTC.
+	EventTime time.Time
+	// Through is the record's Through, in UTC, or the zero time when it has none.
+	Through time.Time
+	// TTL is the record's TTL: zero promises nothing, and only a Delete ends the
+	// reference.
+	TTL time.Duration
+	// Seq is the record's sequence number, at or below the answer's token.
+	Seq uint64
+	// Latest is the latest last instant any record of the producer that the call
+	// read names, among those at or before the instant (see [store.LastOf]): at
+	// least the deciding record's own, and later when a record of the producer
+	// with an earlier event time attests a span that reaches past it. It is not
+	// clipped to the instant. The call reads the producer's seed and the window's
+	// records, so a record before the window's start that is not the seed is not
+	// among them.
+	Latest time.Time
 }
 
 // Description is the merged description of a subject at one instant: the
