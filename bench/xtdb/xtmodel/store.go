@@ -237,25 +237,16 @@ func (im *image) Next(s engine.Subject, p lifecycle.Producer, after int64) (int6
 	return ts[k], true, nil
 }
 
-// planner returns a planner over the image's log that remembers what the log says:
-// for each (subject, producer), the latest record by (event time, seq), and where the
-// segment it makes ends. It is how an engine reopened over the image gets the memory
-// it had.
+// planner returns a planner over the image's log that remembers what the log says: it
+// is how an engine reopened over the image gets the memory it had.
 func (im *image) planner() *Planner {
-	p := NewPlanner(im)
-	latest := make(map[segKey]*Rec)
+	b := NewRebuilder()
 	for _, t := range []Table{LogF, LogE} {
 		for _, l := range im.logs[t] {
 			for _, e := range l {
-				sk := segKey{e.rec.Subject, e.rec.Producer}
-				if prev := latest[sk]; prev == nil || (logEntry{rec: prev}).cmp(e) < 0 {
-					latest[sk] = e.rec
-				}
+				b.add(e.rec)
 			}
 		}
 	}
-	for sk, c := range latest {
-		p.restore(sk, segState{last: c.Event, end: c.deadline()})
-	}
-	return p
+	return b.Planner(im)
 }

@@ -46,16 +46,16 @@
 //
 // # Times
 //
-// The model holds nanoseconds. XTDB's temporal columns are taken to be microseconds
-// (not established; the server adapter tests it), so the planner counts the records
-// that have a boundary off a whole microsecond ([Counts].OffMicrosecond), which an
-// adapter cannot write; the plans of the spike have none.
+// The model holds nanoseconds. XTDB's temporal columns are microseconds, so the planner
+// counts the records that have a boundary off a whole microsecond
+// ([Counts].OffMicrosecond), which a server adapter cannot write and refuses; the plans of
+// the spike have none.
 //
-// # Unverified
+// # Assumed of the node
 //
-// Nothing here has been checked against an XTDB server; the server adapter's tests
-// (the next step) check each of these first. The model is exact about them only in the
-// sense that it assumes them:
+// The model is exact about XTDB only in the sense that it assumes the following of it, and
+// package xtengine's tests (TestProbe...) ask a live node about each of them and fail if it
+// behaves otherwise; what each was found to do is recorded in that package's documentation.
 //
 //   - a transaction may be given a system time earlier than the server's clock
 //     ([BaseSystemTime]); if not, the base becomes the server's clock at the first
@@ -67,7 +67,7 @@
 //   - an INSERT on an existing _id overwrites only its valid-time range;
 //   - a portion delete of an absent document is a no-op;
 //   - FOR SYSTEM_TIME AS OF sys includes the transaction committed at sys;
-//   - a read with no clause sees the newest transaction once COMMIT SYNC has returned.
+//   - a read with no clause sees the newest transaction once the commit has returned.
 //
 // If statements are not applied in order, the line the planner paints ([merge]) can be
 // written as disjoint statements instead, one insert or delete per stretch, which need
