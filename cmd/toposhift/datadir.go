@@ -49,7 +49,8 @@ Data directory
   Boot prints the absolute path, and the symlink target when it differs.
 
   Missing directories are created with mode 0700; an existing directory is
-  never chmodded or chowned. It holds store/, bus/ and meta/. One instance owns
+  never chmodded or chowned. It holds store/, bus/ and meta/, and backup/ once
+  serve has run with --backup on. One instance owns
   a directory at a time; a second one is refused and told which pid and host
   hold it. A directory with files in it that toposhift did not put there is
   refused.

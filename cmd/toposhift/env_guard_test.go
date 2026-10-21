@@ -14,7 +14,7 @@ import (
 
 // TestMain gives the whole test process an environment with no data directory
 // in it: HOME is an empty temp directory, and the variables that name a data
-// directory are unset. A test that starts a program, or a code path that reads
+// directory or turn the backup on are unset. A test that starts a program, or a code path that reads
 // the environment itself, still cannot reach the data directory of whoever runs
 // the tests. The locations the go command keeps its caches and toolchains in
 // are pinned first, because they default to places under HOME.
@@ -29,7 +29,7 @@ func testMain(m *testing.M) int {
 	}
 	defer func() { _ = os.RemoveAll(home) }()
 	_ = os.Setenv("HOME", home)
-	for _, k := range []string{"XDG_DATA_HOME", "STATE_DIRECTORY", "TOPOSHIFT_DATA_DIR"} {
+	for _, k := range []string{"XDG_DATA_HOME", "STATE_DIRECTORY", "TOPOSHIFT_DATA_DIR", envBackup, envBackupEvery} {
 		_ = os.Unsetenv(k)
 	}
 	return m.Run()
@@ -58,6 +58,18 @@ func pinGoDirs() {
 	}
 	if first := filepath.SplitList(gopath); len(first) > 0 {
 		set("GOMODCACHE", filepath.Join(first[0], "pkg", "mod"))
+	}
+}
+
+// TestTheTestProcessHasNoBackupVariables checks that a backup variable in the
+// environment of whoever runs the tests does not reach them: a binary a test
+// starts would otherwise inherit it and keep a backup.
+func TestTheTestProcessHasNoBackupVariables(t *testing.T) {
+	t.Parallel()
+	for _, k := range []string{envBackup, envBackupEvery} {
+		if v, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s=%q is set in the test process", k, v)
+		}
 	}
 }
 
