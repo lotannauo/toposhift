@@ -134,6 +134,96 @@ func TestADiagDispatchIsTakenFromMainOrFromTheVerifyBranch(t *testing.T) {
 	}
 }
 
+// A block compression is chosen by one of three exact words, and the word reaches the
+// matrix as it was given, in the build flags of its configuration and nowhere else.
+func TestADiagDispatchTakesABlockCompression(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	env := diagDispatch(r)
+	env["RUNNERS"], env["REPS"] = "ubuntu-24.04", "2"
+	env["CONFIGS"] = `[{"name":"snappy","build_flags":"-profile-windows -compression=snappy","plan_flags":""},` +
+		`{"name":"zstd","build_flags":"-profile-windows -compression=zstd","plan_flags":""},` +
+		`{"name":"balanced","build_flags":"-compression=balanced -profile-windows -read-ahead=8","plan_flags":"-cache-mb=2048"}]`
+	got := runDiag(t, r, env)
+	if got.code != 0 {
+		t.Fatalf("a dispatch of the three compressions: exit %d\n%s", got.code, got.stderr)
+	}
+	for _, want := range []string{
+		`"name":"snappy","role":"A","build_flags":"-profile-windows -compression=snappy","plan":"p1","rep":1}`,
+		`"name":"zstd","role":"B","build_flags":"-profile-windows -compression=zstd","plan":"p1","rep":1}`,
+		`"name":"balanced","role":"B","build_flags":"-compression=balanced -profile-windows -read-ahead=8","plan":"p2","rep":1}`,
+		`plans=[{"id":"p1","flags":""},{"id":"p2","flags":"-cache-mb=2048"}]` + "\n",
+	} {
+		if !strings.Contains(got.output, want) {
+			t.Errorf("the outputs lack %q:\n%s", want, got.output)
+		}
+	}
+	if n := strings.Count(got.output, `"rep":`); n != 6 {
+		t.Errorf("%d jobs in the matrix, want 1 runner x 3 configurations x 2 repetitions", n)
+	}
+	for _, want := range []string{"### Diagnostic dispatch: 6 build jobs", "| ubuntu-24.04 | `zstd` | B | 1 | `-profile-windows -compression=zstd` | p1 |"} {
+		if !strings.Contains(got.summary, want) {
+			t.Errorf("the summary lacks %q:\n%s", want, got.summary)
+		}
+	}
+
+	// The control may name one too: the default's own spelling against another.
+	env["CONFIGS"] = `[{"name":"a","build_flags":"-compression=snappy","plan_flags":""},{"name":"b","build_flags":"-compression=zstd","plan_flags":""}]`
+	if got = runDiag(t, r, env); got.code != 0 {
+		t.Fatalf("a compression as the whole of the build flags: exit %d\n%s", got.code, got.stderr)
+	}
+
+	// A candidate not through the root store takes the flag as well: the program does.
+	env["CANDIDATE"], env["RETENTION_MODE"], env["PACE"] = "L/off", "sync", "0"
+	if got = runDiag(t, r, env); got.code != 0 {
+		t.Fatalf("a compression of a candidate not through the root store: exit %d\n%s", got.code, got.stderr)
+	}
+}
+
+// A dispatch that names no compression comes to the same outputs and summary as before
+// the flag was accepted: the matrix, the plans and the table of the summary are pinned
+// here, byte for byte, for a dispatch of the words that were accepted then.
+func TestADiagDispatchWithoutACompressionIsUnchanged(t *testing.T) {
+	t.Parallel()
+	r := newRepo(t)
+
+	env := diagDispatch(r)
+	env["RUNNERS"] = "ubuntu-24.04"
+	env["CONFIGS"] = `[` + control + `,{"name":"lbase","build_flags":"-profile-windows -lbase-target-mb=256 -read-ahead=8","plan_flags":"-cache-mb=2048"}]`
+	got := runDiag(t, r, env)
+	if got.code != 0 {
+		t.Fatalf("exit %d\n%s", got.code, got.stderr)
+	}
+	wantOutput := `matrix={"include":[` +
+		`{"os":"ubuntu-24.04","name":"control","role":"A","build_flags":"-profile-windows","plan":"p1","rep":1},` +
+		`{"os":"ubuntu-24.04","name":"lbase","role":"B","build_flags":"-profile-windows -lbase-target-mb=256 -read-ahead=8","plan":"p2","rep":1},` +
+		`{"os":"ubuntu-24.04","name":"control","role":"A","build_flags":"-profile-windows","plan":"p1","rep":2},` +
+		`{"os":"ubuntu-24.04","name":"lbase","role":"B","build_flags":"-profile-windows -lbase-target-mb=256 -read-ahead=8","plan":"p2","rep":2}]}` + "\n" +
+		`plans=[{"id":"p1","flags":""},{"id":"p2","flags":"-cache-mb=2048"}]` + "\n" +
+		"patched=false\nlabel=p5\nbase_sha=" + r.onMain + "\ntree=\npatch_sha256=\nfamily=rmae\n" +
+		"family_flags=-run-max-age 30m\nwindow=7\npins_window=2\ncandidate=Lroot/k64a2l5m\ncandidate_slug=Lroot_k64a2l5m\n" +
+		"retention_mode=background\nretain_flush_dels=default\nsync=true\nmetrics_every=10s\ngo_mem_limit=\npace=4500\n" +
+		"max_parallel=8\nreps=2\nrunners=ubuntu-24.04\n"
+	if got.output != wantOutput {
+		t.Errorf("the outputs changed:\n got %q\nwant %q", got.output, wantOutput)
+	}
+	wantSummary := "### Diagnostic dispatch: 4 build jobs\n\n" +
+		"**Diagnostic only.** Nothing from this run is a judged arm, goes into a pool, or is compared with a figure from another machine or another runner label. The builds run with GOMAXPROCS=10, set explicitly, which bench.yml's do not: their figures are not comparable with this run's.\n\n" +
+		"- ref: `refs/heads/main`; base commit: `" + r.onMain + "`\n- patch: none\n" +
+		"- candidate: `Lroot/k64a2l5m`; window: `7` days; pins chosen from the `2`-day window; family: `rmae`\n" +
+		"- retention mode: `background`; pace: `4500` records/s; retention flush threshold: `default`; sync: `true`; metrics every: `10s`; Go memory limit: `none`\n" +
+		"- `GOMAXPROCS` 10 on every build; at most `8` build jobs at once\n\n" +
+		"| runner | configuration | role | repetition | build flags | plan |\n|---|---|---|---|---|---|\n" +
+		"| ubuntu-24.04 | `control` | A | 1 | `-profile-windows` | p1 |\n" +
+		"| ubuntu-24.04 | `lbase` | B | 1 | `-profile-windows -lbase-target-mb=256 -read-ahead=8` | p2 |\n" +
+		"| ubuntu-24.04 | `control` | A | 2 | `-profile-windows` | p1 |\n" +
+		"| ubuntu-24.04 | `lbase` | B | 2 | `-profile-windows -lbase-target-mb=256 -read-ahead=8` | p2 |\n"
+	if got.summary != wantSummary {
+		t.Errorf("the summary changed:\n got %q\nwant %q", got.summary, wantSummary)
+	}
+}
+
 // Every input that is not well formed is refused, with exit 1 and an error that names the
 // input and does not repeat it.
 func TestADiagDispatchRefusesEveryMalformedInput(t *testing.T) {
@@ -201,6 +291,35 @@ func TestADiagDispatchRefusesEveryMalformedInput(t *testing.T) {
 		{"both table shapes", variant("-lbase-target-mb=256 -target-sizes-mb=64,128"), "build_flags: -lbase-target-mb and -target-sizes-mb"},
 		{"a read-ahead above the bound", variant("-read-ahead=65"), "build_flags: -read-ahead"},
 		{"a read-ahead of a word", variant("-read-ahead=x"), "build_flags: -read-ahead"},
+		{"a compression that is not offered", variant("-compression=lz4"), "build_flags:"},
+		{"a compression with no value", variant("-compression="), "build_flags:"},
+		{"a compression with no equals sign", variant("-compression"), "build_flags:"},
+		{"a compression with its value as the next word", variant("-compression zstd"), "build_flags:"},
+		{"a compression in capitals", variant("-compression=ZSTD"), "build_flags:"},
+		{"a compression value with a suffix", variant("-compression=zstdx"), "build_flags:"},
+		{"a compression value with a prefix", variant("-compression=xzstd"), "build_flags:"},
+		{"a compression of two values", variant("-compression=zstd,snappy"), "build_flags:"},
+		{"a compression with a second equals sign", variant("-compression=zstd=1"), "build_flags:"},
+		{"a compression with a command after it", variant("-compression=zstd;id"), "build_flags:"},
+		{"a compression with a substitution", variant("-compression=$(id)"), "build_flags:"},
+		{"a compression with a quote", variant(`-compression=\"zstd`), "build_flags:"},
+		{"a compression with two dashes", variant("--compression=zstd"), "build_flags:"},
+		{"an abbreviated compression", variant("-compress=zstd"), "build_flags:"},
+		{"a compression named for its level", variant("-compression-level=3"), "build_flags:"},
+		{"a compression given twice with one value", variant("-compression=zstd -compression=zstd"), "build_flags: a flag is given twice"},
+		{"a compression given twice with two", variant("-compression=snappy -compression=zstd"), "build_flags: a flag is given twice"},
+		{"a compression given twice with a bare one", variant("-compression=zstd -compression"), "build_flags:"},
+		{"a compression smuggled into a base target", variant("-lbase-target-mb=256,-compression=zstd"), "build_flags: -lbase-target-mb"},
+		{"a compression smuggled into a target list", variant("-target-sizes-mb=64,-compression=zstd"), "build_flags: -target-sizes-mb"},
+		{"a compression smuggled into a read-ahead", variant("-read-ahead=8,-compression=zstd"), "build_flags: -read-ahead"},
+		{"a compression smuggled into a read-ahead by a space and a quote", variant(`-read-ahead=8\" -compression=zstd`), "build_flags: -read-ahead"},
+		{"a compression after a flag that is not offered", variant("-sync -compression=zstd"), "build_flags:"},
+		{"a compression and a flag in one word", variant("-profile-windows=-compression=zstd"), "build_flags:"},
+		{"a compression in a name", cfgs(`{"name":"b -compression=zstd","build_flags":"","plan_flags":""}`), "configs: every name"},
+		{"a compression among the plan flags", cfgs(`{"name":"b","build_flags":"","plan_flags":"-compression=zstd"}`), "plan_flags:"},
+		{"a compression after a plan flag", cfgs(`{"name":"b","build_flags":"","plan_flags":"-cache-mb=2048 -compression=zstd"}`), "plan_flags:"},
+		{"a compression smuggled into a plan flag", cfgs(`{"name":"b","build_flags":"","plan_flags":"-cache-mb=2048,-compression=zstd"}`), "plan_flags: -cache-mb"},
+		{"a variant that is the control's compression again", map[string]string{"CONFIGS": `[{"name":"a","build_flags":"-compression=zstd","plan_flags":""},{"name":"b","build_flags":"-compression=zstd","plan_flags":""}]`}, "configs: a variant has the control's flags"},
 		{"a plan flag among the build flags", variant("-cache-mb=2048"), "build_flags:"},
 		{"seven words", variant("-profile-windows -disable-delete-only -read-ahead=1 -lbase-target-mb=1 -x -y -z"), "build_flags:"},
 		{"a build flag among the plan flags", cfgs(`{"name":"b","build_flags":"","plan_flags":"-read-ahead=8"}`), "plan_flags:"},
