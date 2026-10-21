@@ -91,6 +91,8 @@ func main() {
 		err = doTiming(ctx, args)
 	case "storegate":
 		err = doStoreGate(args)
+	case "readtiming":
+		err = doReadTiming(args)
 	default:
 		usage()
 	}
@@ -113,7 +115,7 @@ type exitCodeError struct {
 func (e exitCodeError) Error() string { return e.msg }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate [flags]   (spikebench <command> -h for the flags)")
+	fmt.Fprintln(os.Stderr, "usage: spikebench plan|build|read|report|run|pins|windows|g1|gaps|timing|storegate|readtiming [flags]   (spikebench <command> -h for the flags)")
 	os.Exit(2)
 }
 
@@ -857,13 +859,56 @@ func (b buildFlags) agreeAll(out string) error {
 	return nil
 }
 
+// readFlags are the flags of read beyond the common ones.
+type readFlags struct {
+	timed  bool
+	warmup int
+	reps   int
+}
+
+func (r *readFlags) flags(fs *flag.FlagSet) {
+	fs.BoolVar(&r.timed, "timed", false, "after the passes, time the warm reads of every query and write timings.json beside results.json (a result only on CI hardware; no duration is printed)")
+	fs.IntVar(&r.warmup, "timed-warmup", runner.DefaultTimedWarmup, "with -timed: untimed asks per query before the timed ones (at least 1)")
+	fs.IntVar(&r.reps, "timed-reps", runner.DefaultTimedReps, "with -timed: timed asks per query (odd, at least 3)")
+}
+
+// validate refuses flags that only -timed takes without it, and counts that make no
+// timed read: no warm-up, or too few or an even number of timed asks (an odd number
+// has an exact median).
+func (r readFlags) validate(fs *flag.FlagSet) error {
+	if !r.timed {
+		var given []string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "timed-warmup" || f.Name == "timed-reps" {
+				given = append(given, "-"+f.Name)
+			}
+		})
+		if len(given) > 0 {
+			return fmt.Errorf("%s is for -timed: give -timed as well", strings.Join(given, " and "))
+		}
+		return nil
+	}
+	switch {
+	case r.warmup < 1:
+		return fmt.Errorf("-timed-warmup %d: at least 1 untimed ask is made before the timed ones", r.warmup)
+	case r.reps < 3 || r.reps%2 == 0:
+		return fmt.Errorf("-timed-reps %d: an odd number of at least 3 (the median of an odd number is one of them)", r.reps)
+	}
+	return nil
+}
+
 func doRead(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("read", flag.ExitOnError)
 	var c common
 	var name string
+	var rf readFlags
 	c.flags(fs)
+	rf.flags(fs)
 	fs.StringVar(&name, "candidate", "", "the candidate to read (required)")
 	_ = fs.Parse(args)
+	if err := rf.validate(fs); err != nil {
+		return err
+	}
 	plan, err := loadPlan(c)
 	if err != nil {
 		return err
@@ -872,13 +917,35 @@ func doRead(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := runner.Read(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), progress)
+	var res *runner.Results
+	var timings *runner.ReadTimings
+	if rf.timed {
+		res, timings, err = runner.ReadTimed(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), runner.TimedReadOptions{Warmup: rf.warmup, Reps: rf.reps}, progress)
+	} else {
+		res, err = runner.Read(ctx, plan, v, runner.CandidateDir(c.out, v.Name), c.guards(), progress)
+	}
 	if err != nil {
 		return err
 	}
 	progress("%s: %d queries, %d answers differ from the reference engine's, %d unstable", v.Name, len(res.Queries), len(res.Mismatches), len(res.Unstable))
 	if n := len(res.Mismatches); n > 0 {
 		return fmt.Errorf("%s answered %d queries differently from the reference engine (the first: %s); the results are written", v.Name, n, res.Mismatches[0])
+	}
+	if timings != nil {
+		// Counts only: a duration is read from the file by the judge, on the artifacts of a run.
+		notWarm, wrong := 0, ""
+		for _, q := range timings.Queries {
+			if !q.Warm {
+				notWarm++
+			}
+			if q.Mismatch && wrong == "" {
+				wrong = q.Name
+			}
+		}
+		progress("read %s: %d queries timed, %d warm-ups and %d timed asks each, %d not warm", v.Name, len(timings.Queries), timings.Warmup, timings.Reps, notWarm)
+		if wrong != "" {
+			return fmt.Errorf("%s answered differently from the reference engine in the timed asks (the first: %s); the timings are written", v.Name, wrong)
+		}
 	}
 	return nil
 }
@@ -1414,6 +1481,69 @@ func runStoreGate(args []string, stdout, stderr io.Writer) error {
 		return exitCodeError{1, fmt.Sprintf("the store gate: %d rows are over their limit (listed above)", rep.Over)}
 	case rep.Unexpected > 0:
 		return exitCodeError{2, fmt.Sprintf("the store gate: %d rows that the builds' mode should judge were not judged (listed under NOT JUDGED)", rep.Unexpected)}
+	}
+	return nil
+}
+
+func doReadTiming(args []string) error { return runReadTiming(args, os.Stdout, os.Stderr) }
+
+// runReadTiming is [doReadTiming] with its streams given. It reads the timed reads
+// under the directories after the flags and prints the judge's report, the digest of
+// its rules first. Reads that are not to be judged, and a mistake of the command line,
+// end it with status 3 (the digest is printed first all the same); a report in which
+// some cell is not reported ends it with status 2.
+func runReadTiming(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("readtiming", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var commit, plans, base, jsonOut string
+	var jobs int
+	var primary stringList
+	fs.StringVar(&commit, "commit", "", "the commit every job must be of, as 40 hexadecimal digits (required)")
+	fs.StringVar(&plans, "plans", "", "the directory of the run's plans (required)")
+	fs.StringVar(&base, "base", "", "the candidate the others are compared with (required)")
+	fs.IntVar(&jobs, "jobs", 0, "the fewest jobs a candidate must have on an architecture (required)")
+	fs.Var(&primary, "primary", "a primary cell as 'group@age' (repeatable)")
+	fs.StringVar(&jsonOut, "json", "", "also write the report here as JSON")
+	refuse := func(err error) error {
+		_, _ = fmt.Fprintln(stdout, runner.ReadTimingDigestLine())
+		return exitCodeError{runner.ReadTimingStatusRefused, err.Error()}
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return refuse(err)
+	}
+	switch {
+	case fs.NArg() == 0:
+		return refuse(errors.New("readtiming: give the directories of the run's artifacts"))
+	case plans == "" || base == "" || commit == "" || jobs < 1:
+		return refuse(errors.New("readtiming: -commit, -plans, -base and -jobs (at least 1) are required"))
+	}
+	reads, err := runner.LoadReadTimings(fs.Args())
+	if err != nil {
+		return refuse(err)
+	}
+	ps, err := runner.LoadReadTimingPlans([]string{plans})
+	if err != nil {
+		return refuse(err)
+	}
+	rep, err := runner.JudgeReadTimings(reads, runner.ReadTimingOptions{Commit: commit, Plans: ps, Base: base, Jobs: jobs, Primary: primary})
+	if err != nil {
+		return refuse(err)
+	}
+	runner.WriteReadTimings(stdout, rep)
+	if jsonOut != "" {
+		b, err := json.MarshalIndent(rep, "", " ")
+		if err != nil {
+			return refuse(err)
+		}
+		if err := os.WriteFile(jsonOut, append(b, '\n'), 0o644); err != nil {
+			return refuse(err)
+		}
+	}
+	if n := len(rep.NotReported); n > 0 {
+		return exitCodeError{runner.ReadTimingStatusPartial, fmt.Sprintf("read timing: %d cells are not reported (listed above)", n)}
 	}
 	return nil
 }
