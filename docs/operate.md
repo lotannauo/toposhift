@@ -10,7 +10,7 @@ This page is for whoever runs `toposhift serve` and decides what it keeps. The [
 
 `serve` needs no configuration. It listens on `127.0.0.1:7070` and keeps its data under `$HOME/.local/share/toposhift` (`--data-dir` or `TOPOSHIFT_DATA_DIR` names another directory).
 
-It takes OpenTelemetry logs at `POST /v1/logs` and metrics at `POST /v1/metrics`, serves the read-only tools at `POST /mcp`, and reports its state at `GET /status`. `GET /healthz` answers while the process is up. `./bin/toposhift serve -h` lists the flags.
+It takes OpenTelemetry logs at `POST /v1/logs` and metrics at `POST /v1/metrics`, serves the read-only tools at `POST /mcp` and the four temporal subgraph routes under `POST /api/v1/subgraph/` ([the subgraph API](api.md)), and reports its state at `GET /status`. `GET /healthz` answers while the process is up. `./bin/toposhift serve -h` lists the flags.
 
 A ready-made collector configuration, with its README, is in [deploy/otel-collector](../deploy/otel-collector).
 
@@ -30,9 +30,9 @@ Without a data directory, `serve` still boots and answers `/healthz`, but ingest
 
 ## Loopback and the tools
 
-The tools are served only when `serve` listens on loopback, because the server has no authentication yet. A collector inside a cluster cannot reach loopback, and the collector README tells it to set `TOPOSHIFT_LISTEN` to an address the cluster can reach.
+The tools and the subgraph routes are served only when `serve` listens on loopback, because the server has no authentication yet. A collector inside a cluster cannot reach loopback, and the collector README tells it to set `TOPOSHIFT_LISTEN` to an address the cluster can reach.
 
-So today one `serve` either takes ingest from a remote collector or serves the tools, not both, unless the collector reaches the machine's loopback: a collector on the same machine, or a forwarded port (whatever reaches the forward reaches every route). With an address that is not loopback, `serve` says at start that the tools are off.
+So today one `serve` either takes ingest from a remote collector or serves the tools, not both, unless the collector reaches the machine's loopback: a collector on the same machine, or a forwarded port (whatever reaches the forward reaches every route). With an address that is not loopback, `serve` says at start that the tools and the subgraph routes are off.
 
 The ingest routes accept whatever reaches them. Restrict who can reach them with the network.
 

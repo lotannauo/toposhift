@@ -92,7 +92,7 @@ func addWithSchema[In, Out any](s *Server, t core.Tool, schema any, readsStore f
 		Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &off},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in In) (*sdk.CallToolResult, Out, error) {
 		var zero Out
-		src, err := s.source(readsStore(in))
+		src, err := s.Source(readsStore(in))
 		if err != nil {
 			return nil, zero, err
 		}

@@ -171,9 +171,12 @@ func (s *Server) Drain(ctx context.Context) error {
 	return cur.src.Drain(ctx)
 }
 
-// source is the source a call runs on. A tool that reads the store has none
-// until one is attached, and gets the sentence instead.
-func (s *Server) source(readsStore bool) (*core.Source, error) {
+// Source is the source a call runs on. A call that reads the store has none
+// until one is attached, and gets the sentence instead: an [*core.Error] that
+// wraps [core.ErrShuttingDown] once the server is drained. Every caller gets the
+// same source, so a surface beside the tools that runs its calls on it shares
+// their slots, their deadline and their drain.
+func (s *Server) Source(readsStore bool) (*core.Source, error) {
 	st := s.state.Load()
 	switch {
 	case st.src != nil:

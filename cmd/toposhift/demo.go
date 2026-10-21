@@ -38,8 +38,11 @@ one simplification is that an evicted pod is deleted at once; the API would keep
 it terminating until its kubelet confirms. What is built is printed first: the
 window, the number of records, a digest of them, and three questions to ask.
 
-The tools are served at POST /mcp, on the loopback listener only (the server has
-no authentication), beside GET /healthz. There is no ingest: POST /v1/logs and
+The tools are served at POST /mcp, and the temporal subgraph of a scope, a pod's
+co-residents, a service's context and an entity's blast radius as JSON at
+POST /api/v1/subgraph/scope, /co_residents, /service_context and /blast_radius,
+on the loopback listener only (the server has no authentication), beside
+GET /healthz. There is no ingest: POST /v1/logs and
 POST /v1/metrics are not served. With --stdio the tools are served to one client
 on standard input and output instead, one JSON-RPC message per line, and nothing
 else is written to the output. With --no-serve the command prints what it built
@@ -179,8 +182,10 @@ func runDemo(ctx context.Context, listen string, mode demoMode, stdin io.Reader,
 			}
 			break
 		}
-		_, _ = fmt.Fprintf(stderr, "serving the tools at http://%s/mcp (POST), loopback only\n", ln.Addr())
-		if err := server.Serve(ctx, ln, log, server.Route{Pattern: mcpPattern, Handler: reads.Handler()}); err != nil {
+		_, _ = fmt.Fprintf(stderr, "serving the tools at http://%s/mcp (POST) and the subgraph routes under http://%s%s (POST), loopback only\n",
+			ln.Addr(), ln.Addr(), apiPrefix)
+		routes := append([]server.Route{{Pattern: mcpPattern, Handler: reads.Handler()}}, apiRoutes(reads)...)
+		if err := server.Serve(ctx, ln, log, routes...); err != nil {
 			serveErr = err
 		}
 	}

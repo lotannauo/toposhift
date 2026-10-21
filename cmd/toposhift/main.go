@@ -258,8 +258,10 @@ func serve(ctx context.Context, args []string, getenv func(string) string, stder
 	reads.Unavailable(gate)
 	if cfg.IsLoopback() {
 		cfg.Routes = append(cfg.Routes, server.Route{Pattern: mcpPattern, Handler: reads.Handler()})
+		cfg.Routes = append(cfg.Routes, apiRoutes(reads)...)
 	} else {
-		log.Info("the tools at " + mcpPattern + " are off: the server listens on a non-loopback address and has no authentication yet")
+		log.Info("the tools at " + mcpPattern + " and the subgraph routes under " + apiPrefix +
+			" are off: the server listens on a non-loopback address and has no authentication yet")
 	}
 	logStop := watchStop(ctx, nil)
 	stopped := make(chan struct{})
