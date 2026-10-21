@@ -188,7 +188,7 @@ type walkStats struct {
 	since                      [2]int // WindowSince calls by kind, edge then entity
 	walks                      [2]int
 	maxRecords, maxStamps      [2]int64
-	entityOver                 int
+	entityLong                 int // entity walks of an entity whose history to the window is longer than SW1
 	payloadSeeks, recordsSteps int64
 }
 
@@ -251,9 +251,6 @@ func (w *walkSplit) WindowSince(c context.Context, fps []identity.Fingerprint, d
 					w.label, fp, d, from.Format(time.RFC3339), steps[i], stamps[i], budgetRecords, budgetStamps))
 			}
 		case entityKind:
-			if steps[i] > int64(budgetRecords) {
-				s.entityOver++
-			}
 			w.entityMax = max(w.entityMax, steps[i])
 			// Assertion 4: the walk is the entity's own history, nothing more.
 			n, _ := slices.BinarySearchFunc(w.cell.entityTimes[fp], from, func(at, x time.Time) int {
@@ -264,6 +261,17 @@ func (w *walkSplit) WindowSince(c context.Context, fps []identity.Fingerprint, d
 			})
 			if steps[i] > int64(n)+1 {
 				w.problem(fmt.Sprintf("%s: an entity walk of %s from %s stepped %d records, its history to then is %d", w.label, fp, from.Format(time.RFC3339), steps[i], n))
+			}
+			// Assertion 2 for the entity: a checkpoint stands in the prefix of every
+			// entity but a host, under a boot key as without one, so its walk is held
+			// to SW1 too. A walk of an entity with more history than that is the
+			// positive control.
+			if n > budgetRecords {
+				s.entityLong++
+			}
+			if steps[i] > int64(budgetRecords) || stamps[i] > int64(budgetStamps) {
+				w.problem(fmt.Sprintf("%s: an entity walk of %s from %s stepped %d records and decoded %d stamps, over SW1 (%d, %d); its history to then is %d",
+					w.label, fp, from.Format(time.RFC3339), steps[i], stamps[i], budgetRecords, budgetStamps, n))
 			}
 		}
 	}
@@ -363,30 +371,31 @@ func composedRun(t *testing.T, name string, st *pebblestore.Store, rec *recorder
 		t.Errorf("%s: %d WindowSince calls opened %d iterators", name, spy.sinceCalls, got)
 	}
 	// The report, one line for each tool.
-	var entityOver int
+	var entityLong int
 	for _, tool := range []string{"blast_radius", "co_residents", "what_changed", "entity_history", "neighbors_at"} {
 		s := spy.stats[tool]
 		if s == nil {
 			t.Errorf("%s: %s was never asked", name, tool)
 			continue
 		}
-		entityOver += s.entityOver
-		t.Logf("composed %-14s run=%-10s calls=%d since(edge,entity)=%d,%d walks(edge,entity)=%d,%d max_edge(records=%d,stamps=%d) max_entity(records=%d,stamps=%d) entity_walks_over_budget=%d seed_payload_steps=%d records_stepped=%d",
+		entityLong += s.entityLong
+		t.Logf("composed %-14s run=%-10s calls=%d since(edge,entity)=%d,%d walks(edge,entity)=%d,%d max_edge(records=%d,stamps=%d) max_entity(records=%d,stamps=%d) entity_walks_of_long_histories=%d seed_payload_steps=%d records_stepped=%d",
 			tool, name, s.calls, s.since[edgeKind], s.since[entityKind], s.walks[edgeKind], s.walks[entityKind],
-			s.maxRecords[edgeKind], s.maxStamps[edgeKind], s.maxRecords[entityKind], s.maxStamps[entityKind], s.entityOver, s.payloadSeeks, s.recordsSteps)
+			s.maxRecords[edgeKind], s.maxStamps[edgeKind], s.maxRecords[entityKind], s.maxStamps[entityKind], s.entityLong, s.payloadSeeks, s.recordsSteps)
 	}
-	// Assertion 5: the positive control. Without an entity walk over the budget the
-	// split proves nothing.
-	if entityOver == 0 {
-		t.Errorf("%s: no entity walk stepped more than the edge budget: the hot pod's walks (longest %d) do not show the entity walks apart from the edge walks", name, spy.entityMax)
+	// Assertion 5: the positive control. Without an entity walk of an entity with
+	// more history than the budget, the entity walks held to it prove nothing.
+	if entityLong == 0 {
+		t.Errorf("%s: no entity walk was of an entity with more history than the budget: the hot pod's longest walk (%d) does not show the entity walks held to it", name, spy.entityMax)
 	}
 }
 
 // The composed queries, asked through the MCP tools at a cell shaped as serve
 // stores it, keep SW1 on every edge seed walk: at most 3 x G records and one
 // stamp, read from pebblestore. Each WindowSince is one iterator. The entity seed
-// walks, which have no checkpoints under a boot key, are counted apart, held only
-// to the entity's own history, and shown to be longer than the budget at the hot
+// walks, which have checkpoints under a boot key for every entity but a host, are
+// counted apart and held to the same budget, and to the entity's own history, and
+// shown to be of an entity whose history is longer than the budget at the hot
 // pod. Unretained, and retained at the cell's 30th minute. The cell spans 4 hours,
 // 2 under the race detector and with -short; the two runs are independent and go
 // side by side.

@@ -268,7 +268,7 @@ func TestGapsModelTheReadsOfACanonicalBuild(t *testing.T) {
 			}
 
 			// The gaps against the raw keys.
-			opened, err := openReadOnly(plan, v, dir, NewCapture(), false)
+			opened, err := openReadOnly(plan, v, dir, NewCapture(), false, false)
 			if err != nil {
 				t.Fatal(err)
 			}

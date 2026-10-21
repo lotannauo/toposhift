@@ -9,5 +9,6 @@
 // to the budget pebblestore fixes, and each WindowSince to one iterator. They
 // also count, through the MCP tools at a cell shaped as serve stores it, every
 // seed walk of the composed queries: edge walks against SW1, and entity walks,
-// which have no checkpoints under a boot key, apart.
+// counted apart and held to SW1 too, since every entity prefix but a host's has
+// checkpoints under a boot key.
 package storediff

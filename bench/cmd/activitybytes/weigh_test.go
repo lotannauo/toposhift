@@ -23,7 +23,18 @@ import (
 // store holds for these records. The fixture is written in batches of 37, as
 // testConfig writes them; the keys and values do not depend on the batch, but the
 // digest was taken with it.
-const frozenDataDigest = "ace952da5560b27d2d39b4cf73269815416b6c0bba81c5bc405c91b73f83750f"
+//
+// Re-frozen on 2026-10-21, from
+// ace952da5560b27d2d39b4cf73269815416b6c0bba81c5bc405c91b73f83750f, for one reason:
+// the store's placement of checkpoints changed on purpose, so that under the boot key
+// it places them on the prefixes of entities that are not hosts (the fixture's
+// node n1, with 80 records), as it had on edge prefixes, and still none on a host's.
+// The change is exactly one more key, a checkpoint on n1's own prefix: 992 keys and
+// 4 checkpoints (1 on an entity prefix, 3 on edge prefixes) against 991 and 3 (0 and
+// 3). The digest with the checkpoints off, 3ca9f7aa32601b95dd6d007359a8625e0d52ef3b75726a3c8a2ae3271e165c5a,
+// is the same before and after, and two runs of the new store gave the new digest
+// twice. It is regenerated only for a change of that kind.
+const frozenDataDigest = "87878745b6d1c2769982b84aefd6ec136ae55078485a5f923ed0eacc515f0e58"
 
 // testConfig is a measurement of the fixture with its own output directory.
 func testConfig(tb testing.TB, f fixture, label string) config {
@@ -100,13 +111,18 @@ func checkSettled(res *result, diag diagnostics) error {
 }
 
 // checkDefaultCheckpoints is an error unless the default policy under the boot key
-// places checkpoints on edge prefixes and none on an entity prefix.
-func checkDefaultCheckpoints(res *result) error {
+// places checkpoints on edge prefixes and on the prefixes of entities that are not
+// hosts, and none on the prefix of a host, whose existence the store folds whole
+// under a boot key.
+func checkDefaultCheckpoints(res *result, diag diagnostics) error {
 	if res.CheckpointsEdge == 0 {
 		return fmt.Errorf("no checkpoint on an edge prefix with more than 64 records: %d in all", res.Checkpoints)
 	}
-	if res.CheckpointsEntity != 0 {
-		return fmt.Errorf("%d checkpoints on entity prefixes, which the boot key keeps free of them", res.CheckpointsEntity)
+	if diag.CheckpointsHost != 0 {
+		return fmt.Errorf("%d checkpoints on the prefix of a host, which the boot key keeps free of them", diag.CheckpointsHost)
+	}
+	if res.CheckpointsEntity-diag.CheckpointsHost == 0 {
+		return fmt.Errorf("no checkpoint on the prefix of an entity that is not a host, with more than 64 records: %d on entity prefixes, %d on edge prefixes", res.CheckpointsEntity, res.CheckpointsEdge)
 	}
 	return nil
 }
@@ -190,11 +206,13 @@ func TestDataDigestIsFrozen(t *testing.T) {
 	}
 }
 
-func TestCheckpointsLandOnEdgePrefixesOnly(t *testing.T) {
+// Checkpoints land on edge prefixes and on the prefixes of entities that are not
+// hosts, and never on the prefix of a host.
+func TestCheckpointsLandOnEdgeAndNonHostEntityPrefixesNeverOnAHosts(t *testing.T) {
 	t.Parallel()
 
-	f, res, _ := baseline(t)
-	if err := checkDefaultCheckpoints(res); err != nil {
+	f, res, diag := baseline(t)
+	if err := checkDefaultCheckpoints(res, diag); err != nil {
 		t.Error(err)
 	}
 	cfg := testConfig(t, f, "T/S0")
@@ -205,6 +223,28 @@ func TestCheckpointsLandOnEdgePrefixesOnly(t *testing.T) {
 	}
 	if off.Keys != res.Keys-res.Checkpoints {
 		t.Errorf("%d keys with the policy off and %d with it on, of which %d checkpoints: the checkpoints are the only difference", off.Keys, res.Keys, res.Checkpoints)
+	}
+}
+
+// The check says what it is meant to: a checkpoint on a host's prefix, or none on a
+// non-host entity's, fails it.
+func TestTheDefaultCheckpointCheckFailsOnAHostOrWithoutANonHostEntity(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		res  result
+		diag diagnostics
+		ok   bool
+	}{
+		"edges and a non-host entity": {result{Checkpoints: 5, CheckpointsEntity: 2, CheckpointsEdge: 3}, diagnostics{}, true},
+		"a host's prefix":             {result{Checkpoints: 5, CheckpointsEntity: 2, CheckpointsEdge: 3}, diagnostics{CheckpointsHost: 1}, false},
+		"only a host's prefix":        {result{Checkpoints: 5, CheckpointsEntity: 1, CheckpointsEdge: 4}, diagnostics{CheckpointsHost: 1}, false},
+		"no entity prefix":            {result{Checkpoints: 3, CheckpointsEdge: 3}, diagnostics{}, false},
+		"no edge prefix":              {result{Checkpoints: 2, CheckpointsEntity: 2}, diagnostics{}, false},
+	} {
+		if err := checkDefaultCheckpoints(&tc.res, tc.diag); (err == nil) != tc.ok {
+			t.Errorf("%s: checkDefaultCheckpoints = %v, want ok %v", name, err, tc.ok)
+		}
 	}
 }
 

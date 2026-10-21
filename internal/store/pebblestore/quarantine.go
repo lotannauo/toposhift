@@ -34,8 +34,29 @@ func bootAssertionOf(dir byte, ref []byte, ns int64, v pebblekv.Value, key catal
 	return a
 }
 
-// aliveFolded answers Alive for a store whose policy names a boot key. Whether an
-// entity is quarantined is decided by folding everything the scope sees of it,
+// foldsWhole says whether Alive folds the whole of a data prefix. That is true of the
+// existence prefix (direction 0) of a host in a store whose policy names a boot key,
+// and of no other. Whether an entity is quarantined depends on every boot its
+// records report, so the prefix of a host is read whole.
+//
+// Only a host record carries a boot id: [store.Record.Validate] refuses it on every
+// other, and Write validates every record. So the prefix of any other entity has no
+// boot and no collision, and is read as it is in a store with no boot key, by the
+// walk back from the instant, which stops at a checkpoint. Its checkpoints are
+// placed, kept and used as there.
+func (s *Store) foldsWhole(prefix []byte) bool { return foldsWhole(s, prefix) }
+
+// foldsWholeKey is foldsWhole for a prefix held as a string, as the writer's map
+// keys it.
+func (s *Store) foldsWholeKey(prefix string) bool { return foldsWhole(s, prefix) }
+
+func foldsWhole[P ~string | ~[]byte](s *Store, prefix P) bool {
+	return s.policy.BootKey != "" && prefix[prefixLen-1] == dirEntity &&
+		s.hasHostType && prefix[1] == s.hostType[0] && prefix[2] == s.hostType[1]
+}
+
+// aliveFolded answers Alive for a store whose policy names a boot key, for a prefix
+// that foldsWhole. Whether an entity is quarantined is decided by folding everything the scope sees of it,
 // whatever the instant is, so the whole prefix is read: every record the token
 // sees, and the retention baseline, which stands for the records before the
 // horizon. Every record the baseline stands for has a Seq at most the retention's,

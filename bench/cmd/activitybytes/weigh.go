@@ -93,7 +93,8 @@ const (
 	mutRenumberSeq
 	mutWrongLayer
 	mutCheckpointsIgnored
-	mutNoBootKey
+	mutHostCheckpoint
+	mutNoEntityCheckpoints
 	mutNoBlobGuard
 	mutBlobGuardInverted
 	mutEmptyWrites
@@ -212,6 +213,9 @@ type diagnostics struct {
 	Ingests      uint64 // Canonicalize's ingest
 	Baselines    int64  // retention was never called, so none
 	RecordKeys   int64  // the keys of kind record
+	// CheckpointsHost is how many of the checkpoints on entity prefixes are on the
+	// prefix of a host. Under the boot key the store places none there.
+	CheckpointsHost int64
 }
 
 // dirByte is where a data key says what its prefix is: the byte after the layer and
@@ -288,9 +292,6 @@ func weigh(ctx context.Context, cfg config) (_ *result, _ diagnostics, err error
 	if cfg.Checkpoints == checkpointsOff && cfg.mut != mutCheckpointsIgnored {
 		opts.Checkpoints = &pebblestore.CheckpointOptions{}
 	}
-	if cfg.mut == mutNoBootKey {
-		opts.Policy = lifecycle.Policy{}
-	}
 	s, err := pebblestore.Open(dir, opts)
 	if err != nil {
 		return nil, diag, err
@@ -322,6 +323,9 @@ func weigh(ctx context.Context, cfg config) (_ *result, _ diagnostics, err error
 	res.Records = written
 
 	kv := pebblekv.Wrap(s.Instrument().KV())
+	if err := applyCheckpointMutant(ctx, cfg.mut, s, kv.DB); err != nil {
+		return nil, diag, err
+	}
 	if cfg.mut != mutSkipSettle {
 		if err := kv.CompactAll(ctx); err != nil {
 			return nil, diag, fmt.Errorf("compacting: %w", err)
@@ -353,7 +357,7 @@ func weigh(ctx context.Context, cfg config) (_ *result, _ diagnostics, err error
 	res.DataDigest = hex.EncodeToString(d.SHA256[:])
 	res.Keys, res.Checkpoints = d.Keys, d.Checkpoints
 	diag.Baselines, diag.RecordKeys = d.Baselines, d.Records
-	if res.CheckpointsEntity, res.CheckpointsEdge, err = checkpointsByPrefix(kv.DB); err != nil {
+	if res.CheckpointsEntity, res.CheckpointsEdge, diag.CheckpointsHost, err = checkpointsByPrefix(kv.DB); err != nil {
 		return nil, diag, err
 	}
 	if res.CheckpointsEntity+res.CheckpointsEdge != res.Checkpoints {
@@ -397,11 +401,17 @@ func judgeBlobs(m *pebble.Metrics, mut mutant) error {
 }
 
 // checkpointsByPrefix counts the checkpoints of the data keyspace by the kind of
-// prefix they are on: an entity's existence, or its edges.
-func checkpointsByPrefix(db *pebble.DB) (entity, edge int64, err error) {
+// prefix they are on: an entity's existence, or its edges. host is how many of the
+// entity ones are on the prefix of a host, whose existence the store folds whole
+// under a boot key.
+func checkpointsByPrefix(db *pebble.DB) (entity, edge, host int64, err error) {
+	hostID, ok := rootkv.Default.EntityID(catalog.Host)
+	if !ok {
+		return 0, 0, 0, errors.New("the catalog has no host type")
+	}
 	it, err := db.NewIter(&pebble.IterOptions{LowerBound: pebblekv.DataLo, UpperBound: pebblekv.DataHi})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	for ok := it.First(); ok; ok = it.Next() {
 		k := it.Key()
@@ -410,11 +420,14 @@ func checkpointsByPrefix(db *pebble.DB) (entity, edge int64, err error) {
 		}
 		if k[dirByte] == dirEntity {
 			entity++
+			if uint16(k[1])<<8|uint16(k[2]) == uint16(hostID) {
+				host++
+			}
 		} else {
 			edge++
 		}
 	}
-	return entity, edge, errors.Join(it.Error(), it.Close())
+	return entity, edge, host, errors.Join(it.Error(), it.Close())
 }
 
 // input is an activity file being read, with its SHA-256 as a file.
@@ -524,6 +537,41 @@ func vcs() (rev string, modified bool) {
 		}
 	}
 	return rev, modified
+}
+
+// applyCheckpointMutant makes the two faults in where checkpoints land. The fixture
+// holds no host, so the boot key's keeping a host's prefix free of checkpoints is
+// shown by a checkpoint put there by hand, and the policy's placing them on the
+// prefixes of other entities by deleting them.
+func applyCheckpointMutant(_ context.Context, m mutant, s *pebblestore.Store, db *pebble.DB) error {
+	switch m {
+	case mutHostCheckpoint:
+		id, err := identity.NewResolver(catalog.Default()).Resolve(catalog.Host, []identity.Attr{{Key: catalog.HostID, Value: "h"}})
+		if err != nil {
+			return err
+		}
+		return s.Instrument().CheckpointEntity(catalog.L1, id.Fingerprint(), time.Unix(1, 0).UTC())
+	case mutNoEntityCheckpoints:
+		it, err := db.NewIter(&pebble.IterOptions{LowerBound: pebblekv.DataLo, UpperBound: pebblekv.DataHi})
+		if err != nil {
+			return err
+		}
+		var keys [][]byte
+		for ok := it.First(); ok; ok = it.Next() {
+			if k := it.Key(); len(k) == keyLen && k[keyLen-1] == kindCheckpoint && k[dirByte] == dirEntity {
+				keys = append(keys, append([]byte(nil), k...))
+			}
+		}
+		if err := errors.Join(it.Error(), it.Close()); err != nil {
+			return err
+		}
+		for _, k := range keys {
+			if err := db.Delete(k, pebble.NoSync); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // emptyWriteRecord is the one record the mutant that writes into an empty store writes.
