@@ -117,25 +117,33 @@ func TestHeavyNamesPackagesOfThisModule(t *testing.T) {
 		t.Skip("go is not installed")
 	}
 	root, module := moduleRoot(t)
-	if err := dirsExist(root, module, Heavy); err != nil {
-		t.Error(err)
-	}
-	cmd := exec.CommandContext(t.Context(), "go", "list", "./...")
-	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GOFLAGS=")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("go list: %v", err)
-	}
-	all, err := readPackages(bytes.NewReader(out))
-	if err != nil {
-		t.Fatalf("go list's output: %v", err)
-	}
-	if _, err := split(all, Heavy, true); err != nil {
-		t.Error(err)
-	}
-	if len(Heavy) == 0 || len(Heavy) >= len(all)/2 {
-		t.Errorf("Heavy names %d of %d packages; the heavy shard is the few slowest", len(Heavy), len(all))
+	for _, m := range []struct {
+		name, dir string
+		heavy     []string
+	}{{"root", root, Heavy}, {"bench", filepath.Join(root, "bench"), BenchHeavy}} {
+		if err := dirsExist(root, module, m.heavy); err != nil {
+			t.Error(err)
+		}
+		cmd := exec.CommandContext(t.Context(), "go", "list", "./...")
+		cmd.Dir = m.dir
+		cmd.Env = append(os.Environ(), "GOFLAGS=")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: go list: %v", m.name, err)
+		}
+		all, err := readPackages(bytes.NewReader(out))
+		if err != nil {
+			t.Fatalf("%s: go list's output: %v", m.name, err)
+		}
+		if _, err := split(all, m.heavy, true); err != nil {
+			t.Errorf("%s: %v", m.name, err)
+		}
+		if len(m.heavy) == 0 || len(m.heavy) >= len(all)/2 {
+			t.Errorf("%s: the heavy list names %d of %d packages; the heavy shard is the few slowest", m.name, len(m.heavy), len(all))
+		}
+		if m.heavy[0] != Lists[m.name][0] {
+			t.Errorf("Lists[%q] is not this module's list", m.name)
+		}
 	}
 }
 

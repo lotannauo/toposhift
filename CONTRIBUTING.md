@@ -15,6 +15,6 @@ If mise cannot install a tool on your platform, install it with your package man
 ## Pull requests
 
 - Keep each pull request to one change.
-- Run `mise run ci` first. It runs the five shards of the pull-request CI. It does not run the RocksDB module's lint, vulnerability scan and tests, which need RocksDB installed and have their own workflow, or the full race run CI makes after a push to main and nightly (`mise run ci:deep`).
+- Run `mise run ci` first. It runs the six shards of the pull-request CI. It does not run the RocksDB module's lint, vulnerability scan and tests, which need RocksDB installed and have their own workflow, or the full race run CI makes after a push to main and nightly (`mise run ci:deep`).
 - Commits should be signed. Pull requests are squash-merged, and the pull request title becomes the commit message, so write it as one.
 - Read `AGENTS.md` for the rules that are easiest to break by accident.
