@@ -17,6 +17,7 @@ import (
 
 	"github.com/lotannauo/toposhift/bench/spike/candidates"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/bench/spike/pebblekv"
 	"github.com/lotannauo/toposhift/bench/spike/pebblelog"
 	"github.com/lotannauo/toposhift/internal/store/pebblestore"
 )
@@ -120,6 +121,12 @@ const (
 	// the build settled its tombstones before returning. It is the engine's own
 	// description, not one the runner adds.
 	SettleKey = "settle_tombstones"
+	// ShapeKey is the key of a manifest's Describe that says which table-shape and
+	// compaction settings the build was opened with ([BuildOptions.Shape]), in the words
+	// of [pebblekv.Tuning.ShapeString]. It is the engine's own description, written only
+	// for a database opened with one; a manifest without it is of a build with Pebble's
+	// own rule.
+	ShapeKey = pebblekv.ShapeKey
 	// MetricsFile is the name of the file in a candidate's directory that the
 	// sampling of a build appends to.
 	MetricsFile = "metrics.jsonl"
@@ -403,6 +410,16 @@ type BuildOptions struct {
 	// build starts no profile, sets no fraction, writes no file under [ProfilesDir] and
 	// records nothing of it.
 	ProfileWindows bool
+	// Shape holds the table-shape and compaction settings of the build, the fields of
+	// [pebblekv.Tuning] from LBaseTargetFileSize on (the sizing fields of it are not
+	// read: the candidate keeps the bench tuning's, and the plan's block cache). With
+	// any set, the candidate is opened with [pebblekv.BenchTuning] and these. The zero
+	// value leaves the candidate's tuning as it is. It is recorded in the manifest
+	// (Describe, key pebble_shape, beside the Pebble options it comes to). The store gate
+	// neither pools nor compares builds of different shapes, and a family is built with
+	// one. The candidates built through Pebble take
+	// it; a candidate made by [candidates.External] may refuse it.
+	Shape pebblekv.Tuning
 }
 
 // RetainFlushDelsOf is the threshold a build through the root store runs with when it
@@ -455,6 +472,11 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	if err := checkProfileWindows(v, opts); err != nil {
 		return nil, err
 	}
+	// The shape is checked as the whole tuning it makes, which is what the database is
+	// opened with; the base tuning's own fields are valid.
+	if err := pebblekv.BenchTuning().WithShapeOf(opts.Shape).Validate(); err != nil {
+		return nil, fmt.Errorf("runner: %w", err)
+	}
 	if err := CheckOutside(dir); err != nil {
 		return nil, err
 	}
@@ -488,6 +510,9 @@ func BuildWith(ctx context.Context, plan *Plan, v candidates.Variant, dir string
 	// An untimed build keeps the per-prefix tallies of layout L: it changes no stored
 	// byte, and a build whose time may be a result does not carry its cost.
 	co := candidates.Options{CacheBytes: plan.CacheBytes, Recorder: recorder, DisableReadCompactions: true, Sync: opts.Sync, SettleRetention: true, RetentionMode: opts.RetentionMode, RetainFlushDels: opts.RetainFlushDels, TallyPrefixes: g.Untimed}
+	if opts.Shape.HasShape() {
+		co.Tuning = pebblekv.BenchTuning().WithShapeOf(opts.Shape)
+	}
 	var prof *windowProfiler // nil for a build that does not profile its windows
 	if background {
 		co.RetainObserver = gateObserver{gate}

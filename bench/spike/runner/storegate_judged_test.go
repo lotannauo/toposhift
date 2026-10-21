@@ -134,6 +134,11 @@ func TestTheGatePoolsOnlyBuildsOfOneThresholdAndOneOrigin(t *testing.T) {
 			[]string{`retain_flush_dels="not recorded"`, `retain_flush_dels="32768"`},
 		},
 		{
+			"two table shapes",
+			[]*runner.StoreGateBuild{rep(1), rep(2, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ShapeKey] = "compression=zstd" })},
+			[]string{"different pebble_shape", `pebble_shape="none"`, `pebble_shape="compression=zstd"`},
+		},
+		{
 			"a re-run attempt",
 			[]*runner.StoreGateBuild{rep(1), rep(2, func(b *runner.StoreGateBuild) { b.Job.RunAttempt = "2" })},
 			[]string{`attempt "2"`, "only a first attempt is judged"},

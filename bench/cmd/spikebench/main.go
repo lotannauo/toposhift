@@ -40,6 +40,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/spike/runner"
 	"github.com/lotannauo/toposhift/bench/spike/workload"
 	"github.com/lotannauo/toposhift/internal/store"
+	"github.com/lotannauo/toposhift/internal/store/pebblekv"
 )
 
 const (
@@ -497,7 +498,43 @@ type buildFlags struct {
 	// profileWindows writes CPU and mutex profiles of each retention pass of a background
 	// build (runner.BuildOptions.ProfileWindows).
 	profileWindows bool
+	// The table-shape and compaction settings of Pebble (runner.BuildOptions.Shape), all
+	// off by default, which leaves the store's own. resolve writes the two lists in their
+	// canonical form, so a step that is passed them makes the same.
+	//
+	// lbaseTargetMB is the target size, in MiB, of the base level's tables; targetSizesMB
+	// is the target size of each level, comma-separated in Pebble's order; concurrency is
+	// "lower,upper"; l0StopWrites is the sublevel count at which level 0 stops writes;
+	// disableDeleteOnly turns the delete-only compactions off; compression is the name
+	// of a block compression (see pebblekv.ParseCompression).
+	lbaseTargetMB     int
+	targetSizesMB     string
+	concurrency       string
+	l0StopWrites      int
+	disableDeleteOnly bool
+	compression       string
+	// The three signals that raise compaction concurrency above its lower bound
+	// (pebblekv.Tuning): sublevels of level 0 per extra compaction, MiB of compaction
+	// debt per extra compaction, and the garbage share that gives the upper bound. 0 is
+	// Pebble's own.
+	l0CompactionConcurrency int
+	debtConcurrencyMB       int
+	garbageFraction         float64
 }
+
+// Bounds of the table-size flags: Pebble doubles the base level's target for each of
+// up to five levels below it, so -lbase-target-mb stays far inside its sizes; and a
+// list has one entry per level of Pebble, each no larger than the largest target its
+// own rule gives today (the bottom level's, 64 MiB doubled six times). They are the
+// bounds the diagnostic workflow's dispatch check applies to the same flags.
+const (
+	maxLBaseTargetMB = 1024
+	maxTargetSizes   = 7
+	maxTargetSizeMB  = 4096
+	// maxDebtConcurrencyMB bounds -compaction-debt-concurrency-mb at 1 TiB, far inside
+	// the bytes a uint64 holds.
+	maxDebtConcurrencyMB = 1 << 20
+)
 
 func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.BoolVar(&b.rest, "rest-after-retention", false, "wait for the database to be at rest after each retention, so that the deletions of a retention do not pile up in memory; the first batch after a retention then does not carry the compactions' catch-up, and the report does not compare that timing (default: on for an -untimed build, off otherwise)")
@@ -508,6 +545,15 @@ func (b *buildFlags) flags(fs *flag.FlagSet) {
 	fs.IntVar(&b.retainFlushDels, "retain-flush-dels", 0, "the count of unflushed range deletions at which the root store's retention flushes, for a measurement that compares thresholds: only with -retention-mode background and Lroot candidates (0, the default: the store's own); recorded in the manifest of every Lroot build, and a family is built all at one threshold")
 	fs.DurationVar(&b.metricsEvery, "metrics-every", 0, "every this long while a build runs, append the database's statistics and the Go runtime's memory to metrics.jsonl in the candidate's directory (0, the default: off; at least 1s otherwise)")
 	fs.BoolVar(&b.profileWindows, "profile-windows", false, "for a diagnostic build of an Lroot candidate with -retention-mode background: write, under profiles/ in the candidate's directory, a CPU profile of the first 2s after each pass's publication (pass<N>_first.cpu.pprof), a CPU profile from then to the end of its rewrite (pass<N>_window.cpu.pprof), the mutex profile at both ends (pass<N>_start.mutex.pprof, pass<N>_window.mutex.pprof; cumulative, read the window with pprof -base), and index.json, which says what was written for each pass and why a pass published while the window before it was open has none; the profiling takes CPU and sets the mutex profile fraction for the whole build, so it is recorded in the manifest and the build is not a measurement (default: off)")
+	fs.IntVar(&b.lbaseTargetMB, "lbase-target-mb", 0, "the target size, in MiB, of the tables of the base level (the highest level below level 0 that holds tables), doubled for each level below it, with level 0 and the canonical layout at the tuning's own target (0, the default: Pebble's own rule, in which the base level doubles the level-0 target); not with -target-sizes-mb; recorded in the manifest (pebble_shape), and a family is built all at one target")
+	fs.StringVar(&b.targetSizesMB, "target-sizes-mb", "", "the target sizes, in MiB, of the tables of each level, comma-separated in Pebble's order: level 0 (which must be the tuning's own 64, also the canonical layout's), the base level, the level below it, and so on, at most 7, each above 0; the levels after the last one given double it; not with -lbase-target-mb (default: none, Pebble's own rule); recorded in the manifest (pebble_shape), and a family is built all at one list")
+	fs.StringVar(&b.concurrency, "compaction-concurrency", "", "the lower and upper bound, as LOWER,UPPER, on the compactions Pebble runs at once, not counting delete-only ones; Pebble runs the lower and raises the number toward the upper only for level 0 sublevels, compaction debt or the share of the database that is garbage of deletions (default: Pebble's 1,1); recorded in the manifest (pebble_shape), and a family is built all at one range")
+	fs.IntVar(&b.l0StopWrites, "l0-stop-writes", 0, "the number of sublevels of level 0 at which Pebble stops writes until compactions bring them down, above 6 (the compaction threshold of 4 plus the retention flush margin of 2); a retention pass puts off its flush within two sublevels of it (0, the default: Pebble's 12); recorded in the manifest (pebble_shape), and a family is built all at one threshold")
+	fs.BoolVar(&b.disableDeleteOnly, "disable-delete-only", false, "turn off Pebble's delete-only compactions, which drop a table a range deletion covers wholly, and the list of deletion hints Pebble keeps for them; such tables are reclaimed by ordinary compactions instead, later (default: off, the compactions on); recorded in the manifest (pebble_shape), and a family is built all with or all without it")
+	fs.IntVar(&b.l0CompactionConcurrency, "l0-compaction-concurrency", 0, "how many sublevels of level 0 Pebble wants for each compaction above the lower bound of -compaction-concurrency (0, the default: Pebble's 10); recorded in the manifest (pebble_shape) unless it is Pebble's own, and a family is built all at one value")
+	fs.IntVar(&b.debtConcurrencyMB, "compaction-debt-concurrency-mb", 0, "how many MiB of compaction debt Pebble wants for each compaction above the lower bound of -compaction-concurrency (0, the default: Pebble's 1 GiB); recorded in the manifest (pebble_shape) unless it is Pebble's own, and a family is built all at one value")
+	fs.Float64Var(&b.garbageFraction, "compaction-garbage-fraction", 0, "the share of the database that is estimated garbage of deletions at which Pebble allows the upper bound of -compaction-concurrency, above 0 and at most 1 (0, the default: Pebble's 0.4); recorded in the manifest (pebble_shape) unless it is Pebble's own, and a family is built all at one value")
+	fs.StringVar(&b.compression, "compression", "", "how the blocks of every table are compressed: snappy, zstd or balanced (the fast codec on every level, with ZSTD level 1 for the value blocks of the second-lowest level and for the data and value blocks of the bottom level; the fast codec is MinLZ on amd64 and Snappy on arm64, so those bytes differ between the two); a deterministic byte count must say CGO_ENABLED=0, since Pebble's pure-Go and cgo zstd write different bytes (default: Pebble's, Snappy); recorded in the manifest (pebble_shape), and a family is built all with one")
 }
 
 // resolve gives -rest-after-retention its default once fs is parsed: on for an
@@ -536,8 +582,108 @@ func (b *buildFlags) resolve(fs *flag.FlagSet, untimed bool) error {
 		return fmt.Errorf("-retain-flush-dels %d needs -retention-mode background: a threshold is measured only on a build whose retention runs in the background", b.retainFlushDels)
 	case b.profileWindows && b.retentionMode != candidates.RetentionBackground:
 		return errors.New("-profile-windows needs -retention-mode background: only a build whose retention runs in the background has windows to profile")
+	case b.lbaseTargetMB < 0 || b.lbaseTargetMB > maxLBaseTargetMB:
+		return fmt.Errorf("-lbase-target-mb %d: give a size in MiB up to %d, or 0 for Pebble's own doubling of the level-0 target", b.lbaseTargetMB, maxLBaseTargetMB)
+	case b.targetSizesMB != "" && b.lbaseTargetMB != 0:
+		return errors.New("-target-sizes-mb and -lbase-target-mb: give one, since the list's second entry is the base level's target")
+	}
+	if b.targetSizesMB != "" {
+		sizes, err := parseTargetSizes(b.targetSizesMB)
+		if err != nil {
+			return err
+		}
+		parts := make([]string, len(sizes))
+		for i, mb := range sizes {
+			parts[i] = strconv.Itoa(mb)
+		}
+		b.targetSizesMB = strings.Join(parts, ",")
+	}
+	if b.concurrency != "" {
+		lower, upper, err := parseConcurrency(b.concurrency)
+		if err != nil {
+			return err
+		}
+		b.concurrency = fmt.Sprintf("%d,%d", lower, upper)
+	}
+	if b.l0CompactionConcurrency < 0 {
+		return fmt.Errorf("-l0-compaction-concurrency %d: give a count of sublevels, or 0 for Pebble's own", b.l0CompactionConcurrency)
+	}
+	if b.debtConcurrencyMB < 0 || b.debtConcurrencyMB > maxDebtConcurrencyMB {
+		return fmt.Errorf("-compaction-debt-concurrency-mb %d: give a size in MiB up to %d, or 0 for Pebble's own", b.debtConcurrencyMB, maxDebtConcurrencyMB)
+	}
+	if f := b.garbageFraction; f != 0 && !(f > 0 && f <= 1) {
+		return fmt.Errorf("-compaction-garbage-fraction %v: give a share above 0 and at most 1, or 0 for Pebble's own", f)
+	}
+	if b.l0StopWrites < 0 {
+		return fmt.Errorf("-l0-stop-writes %d: give a count of sublevels, or 0 for Pebble's own", b.l0StopWrites)
+	}
+	if c, err := pebblekv.ParseCompression(b.compression); err != nil {
+		return fmt.Errorf("-compression: %w", err)
+	} else if c == pebblekv.CompressionDefault {
+		b.compression = "" // the default has one spelling, so that a step is passed what the parent made
+	}
+	// Whatever the flags come to together, as the tuning a build opens with: the rules
+	// that tie the settings to one another and to the bench tuning's own are the
+	// store's.
+	if err := pebblekv.BenchTuning().WithShapeOf(b.shape()).Validate(); err != nil {
+		return err
 	}
 	return nil
+}
+
+// parseTargetSizes reads a -target-sizes-mb list: 1 to maxTargetSizes sizes in MiB,
+// each from 1 to maxTargetSizeMB.
+func parseTargetSizes(list string) ([]int, error) {
+	fields := strings.Split(list, ",")
+	if len(fields) > maxTargetSizes {
+		return nil, fmt.Errorf("-target-sizes-mb %s: %d sizes, and Pebble has %d levels", list, len(fields), maxTargetSizes)
+	}
+	sizes := make([]int, len(fields))
+	for i, f := range fields {
+		mb, err := strconv.Atoi(strings.TrimSpace(f))
+		if err != nil || mb <= 0 || mb > maxTargetSizeMB {
+			return nil, fmt.Errorf("-target-sizes-mb %s: %q is not a size in MiB from 1 to %d", list, f, maxTargetSizeMB)
+		}
+		sizes[i] = mb
+	}
+	return sizes, nil
+}
+
+// parseConcurrency reads a -compaction-concurrency value, LOWER,UPPER: two counts of
+// at least 1, the lower not above the upper.
+func parseConcurrency(s string) (lower, upper int, err error) {
+	l, u, ok := strings.Cut(s, ",")
+	lower, err1 := strconv.Atoi(strings.TrimSpace(l))
+	upper, err2 := strconv.Atoi(strings.TrimSpace(u))
+	if !ok || err1 != nil || err2 != nil || lower < 1 || upper < lower {
+		return 0, 0, fmt.Errorf("-compaction-concurrency %q: give LOWER,UPPER, two counts of at least 1 with the lower not above the upper", s)
+	}
+	return lower, upper, nil
+}
+
+// shape is the table-shape and compaction settings the flags ask for, as the fields of
+// a tuning (see runner.BuildOptions.Shape). resolve has checked them; a value it would
+// have refused is left out here.
+func (b buildFlags) shape() pebblekv.Tuning {
+	var t pebblekv.Tuning
+	t.LBaseTargetFileSize = int64(b.lbaseTargetMB) << 20
+	if b.targetSizesMB != "" {
+		if sizes, err := parseTargetSizes(b.targetSizesMB); err == nil {
+			for i, mb := range sizes {
+				t.TargetFileSizes[i] = int64(mb) << 20
+			}
+		}
+	}
+	if b.concurrency != "" {
+		t.CompactionConcurrencyLower, t.CompactionConcurrencyUpper, _ = parseConcurrency(b.concurrency)
+	}
+	t.L0StopWritesThreshold = b.l0StopWrites
+	t.L0CompactionConcurrency = b.l0CompactionConcurrency
+	t.CompactionDebtConcurrency = uint64(b.debtConcurrencyMB) << 20
+	t.CompactionGarbageFraction = b.garbageFraction
+	t.DisableDeleteOnlyCompactions = b.disableDeleteOnly
+	t.Compression, _ = pebblekv.ParseCompression(b.compression)
+	return t
 }
 
 // flushDelsCandidates refuses -retain-flush-dels for a candidate that is not built
@@ -583,11 +729,41 @@ func (b buildFlags) args() []string {
 	if b.profileWindows {
 		out = append(out, "-profile-windows")
 	}
+	if b.lbaseTargetMB != 0 {
+		out = append(out, "-lbase-target-mb="+strconv.Itoa(b.lbaseTargetMB))
+	}
+	if b.targetSizesMB != "" {
+		out = append(out, "-target-sizes-mb="+b.targetSizesMB)
+	}
+	if b.concurrency != "" {
+		out = append(out, "-compaction-concurrency="+b.concurrency)
+	}
+	if b.l0StopWrites != 0 {
+		out = append(out, "-l0-stop-writes="+strconv.Itoa(b.l0StopWrites))
+	}
+	if b.disableDeleteOnly {
+		out = append(out, "-disable-delete-only")
+	}
+	if b.l0CompactionConcurrency != 0 {
+		out = append(out, "-l0-compaction-concurrency="+strconv.Itoa(b.l0CompactionConcurrency))
+	}
+	if b.debtConcurrencyMB != 0 {
+		out = append(out, "-compaction-debt-concurrency-mb="+strconv.Itoa(b.debtConcurrencyMB))
+	}
+	if b.garbageFraction != 0 {
+		out = append(out, "-compaction-garbage-fraction="+strconv.FormatFloat(b.garbageFraction, 'g', -1, 64))
+	}
+	if b.compression != "" {
+		out = append(out, "-compression="+b.compression)
+	}
 	return out
 }
 
 func (b buildFlags) options() runner.BuildOptions {
-	return runner.BuildOptions{RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows}
+	return runner.BuildOptions{
+		RestAfterRetention: b.rest, CanonicalLayout: b.canonical, Sync: b.sync, MetricsEvery: b.metricsEvery, RetentionMode: b.retentionMode, Pace: b.pace, RetainFlushDels: b.retainFlushDels, ProfileWindows: b.profileWindows,
+		Shape: b.shape(),
+	}
 }
 
 // forward is step with b's flags added to every build it starts.
@@ -645,6 +821,11 @@ func (b buildFlags) agrees(dir string) error {
 		if have != want {
 			return fmt.Errorf("%s was built with %s %q, and this run asks for a threshold of %s range deletions (-retain-flush-dels=%d): a family is built all at one threshold (remove that build, give the flag its value, or use another -out)", dir, runner.RetainFlushDelsKey, have, want, b.retainFlushDels)
 		}
+	}
+	// The table shape and compaction settings, in the words the build recorded them in;
+	// a manifest without the key is of a build with none, Pebble's own rule.
+	if have, want := m.Describe[runner.ShapeKey], b.shape().ShapeString(); have != want {
+		return fmt.Errorf("%s was built with %s %q, and this run asks for %q (the table-shape and compaction flags): a family is built all with one shape (remove that build, give the flags their values, or use another -out)", dir, runner.ShapeKey, have, want)
 	}
 	return nil
 }

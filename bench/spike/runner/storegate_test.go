@@ -1225,6 +1225,8 @@ func TestQ5NeedsABaselineOfTheSameSettings(t *testing.T) {
 		// The candidate's builds do not record a threshold: a baseline that does is not
 		// taken for a build at the default.
 		{runner.RetainFlushDelsKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.RetainFlushDelsKey] = "32768" }},
+		// A baseline of another table shape of Pebble is not the candidate's baseline.
+		{runner.ShapeKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.ShapeKey] = "delete_only_compactions=off" }},
 		// A pacing start that differs from the rule's is a refusal of the build itself, so
 		// that the baseline cannot be used; the comparison of the start is a unit test.
 		{runner.PaceFromDayKey, func(b *runner.StoreGateBuild) { b.Manifest.Describe[runner.PaceFromDayKey] = "12" }},

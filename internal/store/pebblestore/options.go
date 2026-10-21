@@ -316,7 +316,8 @@ const DefaultStateCacheBytes = 128 << 20
 const DefaultRetainFlushDels = defaultRetainFlushDels
 
 // DefaultOptions are the options of a store that boots with no configuration:
-// the benchmark tuning, a retention that settles the database before it returns,
+// the product tuning ([pebblekv.ProductTuning], which comes to the same Pebble options
+// as the benchmark tuning), a retention that settles the database before it returns,
 // the lifecycle policy that tells the boots of a host apart, synchronous
 // retention, and the default checkpoint policy. Record commits and the commit of a
 // retention horizon are synced; the commits of checkpoints and of the rewriting
@@ -325,7 +326,7 @@ const DefaultRetainFlushDels = defaultRetainFlushDels
 func DefaultOptions() Options {
 	ckpt := DefaultCheckpoints()
 	return Options{
-		Config:      pebblekv.Config{Tuning: pebblekv.BenchTuning(), Sync: true, SettleRetention: true},
+		Config:      pebblekv.Config{Tuning: pebblekv.ProductTuning(), Sync: true, SettleRetention: true},
 		Policy:      lifecycle.Policy{BootKey: lifecycle.BootID},
 		Retention:   Synchronous,
 		Checkpoints: &ckpt,

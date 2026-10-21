@@ -2007,9 +2007,10 @@ func backgroundDetail(b *StoreGateBuild, rate int, fromDay string) string {
 // sameSettings returns why the live heaps of two builds cannot be compared: their GC
 // target, their memory limit or their metrics interval differ (the peak of a sample
 // depends on how often it is taken) or, for the target, was not recorded; or they differ
-// in the retention mode, the sync setting, the pacing rate, the day the pacing started or
-// the retention flush threshold, which change how the store ran. A key a manifest lacks
-// is read as its default, except the threshold, which is then not recorded.
+// in the retention mode, the sync setting, the pacing rate, the day the pacing started,
+// the retention flush threshold or the table shape of Pebble, which change how the store
+// ran. A key a manifest lacks is read as its default, except the threshold, which is then
+// not recorded.
 func sameSettings(a, b *Manifest) string {
 	ga, gb := a.Describe[GoGCKey], b.Describe[GoGCKey]
 	switch {
@@ -2054,6 +2055,9 @@ var storeGateSettingKeys = []struct {
 	// A manifest without the threshold was built before it was recorded: it is not read
 	// as the default, so it is neither pooled with nor compared to one that has it.
 	{RetainFlushDelsKey, func(m *Manifest) string { return describedOr(m, RetainFlushDelsKey, "not recorded") }},
+	// A manifest without the table shape was built with Pebble's own rule, the product's
+	// today: builds of different shapes are neither pooled nor compared (Q5).
+	{ShapeKey, func(m *Manifest) string { return describedOr(m, ShapeKey, "none") }},
 }
 
 // JudgeStoreGate judges the builds, each candidate on each architecture, from its
@@ -2186,9 +2190,9 @@ func (b *StoreGateBuild) retentionModeOf() string { return storeGateSettingKeys[
 
 // CheckStoreGateSettings returns an error naming the values and the builds if the
 // repetitions of one candidate on one architecture (a verdict's pool) were made under
-// different retention modes, sync settings, pacing rates, pacing starts or retention
-// flush thresholds, or did not come from one place (see poolOrigins): the gate judges a
-// pool as one set, and the worst of its repetitions is the row. A build of another
+// different retention modes, sync settings, pacing rates, pacing starts, retention
+// flush thresholds or table shapes, or did not come from one place (see poolOrigins):
+// the gate judges a pool as one set, and the worst of its repetitions is the row. A build of another
 // candidate, such as the Lroot/off baseline, is a pool of its own; one that differs from
 // the baseline in a setting gets its Q5 not judged instead.
 func CheckStoreGateSettings(builds []*StoreGateBuild) error {
