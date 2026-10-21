@@ -42,11 +42,11 @@ The ingest routes accept whatever reaches them. Restrict who can reach them with
 
 The default depends on the build:
 
-- **Releases made before background retention passes its latency check on CI hardware** ship with retention **off** by default, and v0.1.0 is the first. `go install …@v0.1.0` installs it, and once v0.1.0 is tagged `@latest` installs the newest release, which has retention off while it is one of these releases.
+- **Releases made before background retention passes its latency check on CI hardware** ship with retention **off** by default, and v0.1.0 is the first. `go install …@v0.1.0` installs it, and `@latest` installs the newest release, which has retention off while it is one of these releases.
 
   `serve` then keeps every record it is sent, so its store grows for as long as it runs, and reads of objects with a long history cost more over time.
 
-  Background retention has not yet passed that check, so these releases do not turn it on by default. A checkout of a release branch (`release-*`), once one exists, builds with retention off too.
+  Background retention has not yet passed that check, so these releases do not turn it on by default. A checkout of a release branch (`release-*`, such as `release-v0.1.0`) builds with retention off too.
 - **Builds of `main`** (`go install …@main`, or `mise run build` in a checkout of main) keep retention **on** by default.
 
 When retention is off by default and `serve` has a data directory, `serve` logs a warning at start that says how to turn it on.
