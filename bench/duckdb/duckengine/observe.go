@@ -24,8 +24,12 @@ type Read struct {
 // ObservedFile is what a statement read of one file: the row groups of which a column's
 // pages were read, and the bytes of pages, bloom filters and footer read in all.
 type ObservedFile struct {
-	Role   Role
-	Groups []int
+	Role Role
+	// Groups are the row groups read, by position in the file, or, for several files, in
+	// the list of all their row groups in order; Files and FilesRead are, for several files,
+	// how many had any read of them and how many had a column's pages read.
+	Groups           []int
+	Files, FilesRead int
 	// DataBytes are the bytes read of column pages; BloomBytes of bloom filters;
 	// OtherBytes of the footer and what else is outside a column chunk.
 	DataBytes, BloomBytes, OtherBytes int64
@@ -81,14 +85,25 @@ func (d *DB) fsReads(ctx context.Context) ([]Read, error) {
 func (m *FileMeta) Observe(role Role, reads []Read) ObservedFile {
 	o := ObservedFile{Role: role}
 	hit := make(map[int]bool)
+	touched := make(map[int]bool)
+	paths := m.paths()
+	byPath := make(map[string]int, len(paths))
+	for i, p := range paths {
+		byPath[filepath.Clean(p)] = i
+	}
 	for _, r := range reads {
-		if r.Path != filepath.Clean(m.Path) {
+		fi, ok := byPath[r.Path]
+		if !ok {
 			continue
 		}
+		touched[fi] = true
 		kind := 'o'
 		group := -1
 	search:
 		for gi, g := range m.Groups {
+			if g.file != fi {
+				continue
+			}
 			for _, c := range g.cols {
 				if c.bloom && r.Pos >= c.bloomAt && r.Pos < c.bloomAt+c.bloomLen {
 					kind, group = 'b', gi
@@ -110,9 +125,14 @@ func (m *FileMeta) Observe(role Role, reads []Read) ObservedFile {
 			o.OtherBytes += r.Bytes
 		}
 	}
+	readFiles := make(map[int]bool)
 	for g := range hit {
 		o.Groups = append(o.Groups, g)
+		readFiles[m.Groups[g].file] = true
 	}
 	sort.Ints(o.Groups)
+	if len(m.Files) > 0 {
+		o.Files, o.FilesRead = len(touched), len(readFiles)
+	}
 	return o
 }

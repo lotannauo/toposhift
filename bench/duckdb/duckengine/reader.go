@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,7 +76,7 @@ type Reader struct {
 var _ engine.Engine = (*Reader)(nil)
 
 type probeKey struct {
-	role Role
+	path string
 	col  string
 	val  string
 }
@@ -99,7 +101,7 @@ func openReader(ctx context.Context, db *DB, dir string, arm Arm, m *Manifest, h
 		return nil, fmt.Errorf("%w: made by DuckDB %s, this is %s", ErrManifest, m.DuckDB, Version)
 	case m.SettingsSHA256 != scripts.SettingsSHA256():
 		return nil, fmt.Errorf("%w: made under settings %s, these are %s", ErrManifest, m.SettingsSHA256, scripts.SettingsSHA256())
-	case !slices.Contains(Arms, arm):
+	case !slices.Contains(AllArms, arm):
 		return nil, fmt.Errorf("duckengine: no arm %q", arm)
 	}
 	if !m.Has(arm) || arm == ArmI && !hasRoles(m, armRoles[ArmA2]) {
@@ -113,6 +115,11 @@ func openReader(ctx context.Context, db *DB, dir string, arm Arm, m *Manifest, h
 	if err := VerifyFiles(dir, m, hashes); err != nil {
 		return nil, err
 	}
+	if arm == ArmH {
+		if err := checkGlobs(dir, m); err != nil {
+			return nil, err
+		}
+	}
 	if err := db.Check(ctx); err != nil {
 		return nil, err
 	}
@@ -125,7 +132,28 @@ func openReader(ctx context.Context, db *DB, dir string, arm Arm, m *Manifest, h
 			return nil, err
 		}
 	}
+	if arm == ArmH {
+		if err := r.warm(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return r, nil
+}
+
+// warm reads every file of the diagnostic arm's two views once. A scan of several files
+// that has not yet read their footers is handed an estimate of the rows it will scan,
+// where one that has is handed the rows; the profile of the first read of a view would
+// then differ from every later one's in that figure, though the read did the same work.
+// Every counted read starts from the footers read, so that a read is the same whichever
+// it was.
+func (r *Reader) warm(ctx context.Context) error {
+	for _, view := range []string{"fwd", "rev"} {
+		var n int64
+		if err := r.db.QueryRowContext(ctx, "SELECT count(*) FROM "+view).Scan(&n); err != nil {
+			return fmt.Errorf("duckengine: reading the footers of the %s files: %w", view, err)
+		}
+	}
+	return nil
 }
 
 func hasRoles(m *Manifest, roles []Role) bool {
@@ -137,11 +165,53 @@ func hasRoles(m *Manifest, roles []Role) bool {
 	return true
 }
 
+// globOf is the glob of the files of a role of the diagnostic arm.
+func globOf(dir string, role Role) string {
+	file := "fwd.parquet"
+	if role == RoleHRev {
+		file = "rev.parquet"
+	}
+	return filepath.Join(dir, "h", "*", file)
+}
+
+// checkGlobs refuses a build of the diagnostic arm that a read through a glob would not
+// read as the manifest says: a directory whose own name has a character a glob reads as a
+// pattern, and files the glob names that are not the manifest's, or the manifest's that
+// the glob does not.
+func checkGlobs(dir string, m *Manifest) error {
+	if strings.ContainsAny(dir, "*?[]") {
+		return fmt.Errorf("%w: the directory %s has a character a glob reads as a pattern", ErrManifest, dir)
+	}
+	for _, role := range []Role{RoleHFwd, RoleHRev} {
+		got, err := filepath.Glob(globOf(dir, role))
+		if err != nil {
+			return err
+		}
+		var want []string
+		for _, f := range m.FilesOf(role) {
+			want = append(want, filepath.Join(dir, filepath.FromSlash(f.Path)))
+		}
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			return fmt.Errorf("%w: the glob %s names %d files, the manifest lists %d", ErrManifest, globOf(dir, role), len(got), len(want))
+		}
+	}
+	return nil
+}
+
 // view defines the view a statement names a file by. The archive is both the forward and
-// the reverse file of the arm that has only it.
+// the reverse file of the arm that has only it, and the diagnostic arm's files are one
+// view each, read through a glob.
 func (r *Reader) view(ctx context.Context, role Role) error {
 	name := string(role)
 	path := rolePathIn(r.dir, role)
+	switch role {
+	case RoleHFwd:
+		return r.createView(ctx, "fwd", globOf(r.dir, role))
+	case RoleHRev:
+		return r.createView(ctx, "rev", globOf(r.dir, role))
+	}
 	if role == RoleArchive {
 		for _, n := range []string{"fwd", "rev"} {
 			if err := r.createView(ctx, n, path); err != nil {
@@ -164,6 +234,9 @@ func (r *Reader) createView(ctx context.Context, name, path string) error {
 func (r *Reader) fileOf(view string) Role {
 	if r.arm == ArmA1 && (view == "fwd" || view == "rev") {
 		return RoleArchive
+	}
+	if r.arm == ArmH {
+		return map[string]Role{"fwd": RoleHFwd, "rev": RoleHRev}[view]
 	}
 	return Role(view)
 }
@@ -196,8 +269,9 @@ func (r *Reader) LastSeq() uint64 { return r.lastSeq }
 func (r *Reader) Size() (int64, error) {
 	var n int64
 	for _, role := range readRoles(r.arm) {
-		f, _ := r.man.File(role)
-		n += f.Bytes
+		for _, f := range r.man.FilesOf(role) {
+			n += f.Bytes
+		}
 	}
 	return n, nil
 }
@@ -277,7 +351,7 @@ func (r *Reader) run(name, text string, args []any, scans []scanSpec, scan func(
 			return err
 		}
 		a, err := meta.Admit(ctx, s.role, s.cols, s.filters, probeFunc(func(ctx context.Context, path, col string, v Value) ([]bool, error) {
-			return r.excluded(ctx, s.role, path, col, v)
+			return r.excluded(ctx, path, col, v)
 		}))
 		if err != nil {
 			return err
@@ -301,7 +375,19 @@ func (r *Reader) fileMeta(ctx context.Context, role Role) (*FileMeta, error) {
 	if m, ok := r.meta[role]; ok {
 		return m, nil
 	}
-	m, err := LoadFileMeta(ctx, r.db, rolePathIn(r.dir, role))
+	var m *FileMeta
+	var err error
+	if isSegmentRole(role) {
+		// The files in the order of their paths, which is the order of their segments.
+		var paths []string
+		for _, f := range r.man.FilesOf(role) {
+			paths = append(paths, filepath.Join(r.dir, filepath.FromSlash(f.Path)))
+		}
+		slices.Sort(paths)
+		m, err = LoadFilesMeta(ctx, r.db, paths)
+	} else {
+		m, err = LoadFileMeta(ctx, r.db, rolePathIn(r.dir, role))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -311,8 +397,8 @@ func (r *Reader) fileMeta(ctx context.Context, role Role) (*FileMeta, error) {
 
 // excluded asks DuckDB which row groups' bloom filters exclude a value. It is a function
 // of the file and the value, so the answer is kept.
-func (r *Reader) excluded(ctx context.Context, role Role, path, col string, v Value) ([]bool, error) {
-	k := probeKey{role, col, v.String()}
+func (r *Reader) excluded(ctx context.Context, path, col string, v Value) ([]bool, error) {
+	k := probeKey{path, col, v.String()}
 	if ex, ok := r.probe[k]; ok {
 		return ex, nil
 	}

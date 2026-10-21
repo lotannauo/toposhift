@@ -48,11 +48,17 @@ var ErrWrongAnswer = errors.New("duckengine: an answer differs from the plan's")
 // reader's connection must profile. An answer that is not the plan's is an error: no
 // counter is kept of a wrong read.
 func CollectPass(ctx context.Context, r *Reader, plan *runner.Plan) ([]QueryCounters, error) {
+	return CollectQueriesPass(ctx, r, plan.Queries)
+}
+
+// CollectQueriesPass is [CollectPass] for questions that are not a plan's: a question set
+// made from a file has the same questions and answers.
+func CollectQueriesPass(ctx context.Context, r *Reader, queries []runner.Query) ([]QueryCounters, error) {
 	if !r.db.cfg.Profile {
 		return nil, errors.New("duckengine: counting needs a connection that profiles")
 	}
-	out := make([]QueryCounters, 0, len(plan.Queries))
-	for _, q := range plan.Queries {
+	out := make([]QueryCounters, 0, len(queries))
+	for _, q := range queries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -84,11 +90,16 @@ func CollectPass(ctx context.Context, r *Reader, plan *runner.Plan) ([]QueryCoun
 // answers are not the plan's and two passes that do not cost the same: the same plan, the
 // same stripped profile, the same rows and the same row groups and bytes.
 func Collect(ctx context.Context, r *Reader, plan *runner.Plan) ([]QueryCounters, error) {
-	first, err := CollectPass(ctx, r, plan)
+	return CollectQueries(ctx, r, plan.Queries)
+}
+
+// CollectQueries is [Collect] for questions that are not a plan's.
+func CollectQueries(ctx context.Context, r *Reader, queries []runner.Query) ([]QueryCounters, error) {
+	first, err := CollectQueriesPass(ctx, r, queries)
 	if err != nil {
 		return nil, err
 	}
-	second, err := CollectPass(ctx, r, plan)
+	second, err := CollectQueriesPass(ctx, r, queries)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +134,10 @@ type GroupCounters struct {
 	BytesAdmitted               int64
 	// ProfilerCardinality is the rows the profiler says the scans returned, beside them.
 	ProfilerCardinality int64
+	// FilesOpened and FilesRead are, for the diagnostic arm, summed over the group's
+	// scans: the files a read opens (all of the glob's) and those with a row group
+	// admitted. They are zero for the arms of one file each.
+	FilesOpened, FilesRead int `json:",omitempty"`
 	// The diagnostic: what counting by the footers' bounds alone would have said. It is
 	// in no slope class.
 	GroupsBoundsOnly                int
@@ -149,6 +164,8 @@ func Summarize(qs []QueryCounters) []GroupCounters {
 		for _, s := range q.Scans {
 			g.RowsScanned += s.RowsScanned
 			g.ProfilerCardinality += s.ProfilerCardinality
+			g.FilesOpened += s.Files
+			g.FilesRead += s.FilesRead
 			g.GroupsTotal += s.Total.Groups
 			g.GroupsAdmitted += s.Admitted.Groups
 			g.BytesAdmitted += s.Admitted.Bytes
@@ -166,6 +183,9 @@ const CountersFormat = 1
 
 // PlanRef names the plan a counters file is of.
 type PlanRef struct {
+	// Kind says what the SHA-256 names: "plan", a plan of the runner, or "questions", a
+	// question set made from an activity file.
+	Kind          string `json:",omitempty"`
 	SHA256        string
 	StreamDigest  string
 	QueriesDigest string

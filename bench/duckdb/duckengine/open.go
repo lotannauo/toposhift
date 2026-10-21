@@ -18,6 +18,10 @@
 // no slope class either. The profiler's own count of the rows a scan was handed is the
 // whole file's whatever row groups were skipped, and its bytes read depend on what the
 // connection has cached, so neither is a counter.
+//
+// A read through a glob, the diagnostic arm's, also reports the files it opened: every file
+// the glob names, whose footer DuckDB reads, and those among them with a row group
+// admitted, whose pages it then reads. The audit mode holds both to the file system's log.
 package duckengine
 
 import (

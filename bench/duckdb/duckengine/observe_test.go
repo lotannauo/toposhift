@@ -29,7 +29,7 @@ func TestTheCountOfRowGroupsIsWhatDuckDBRead(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "build")
 	bdb, err := Open(ctx, Config{Mode: ModeBuild, TempDir: t.TempDir()})
 	mustf(t, err, "open build")
-	man, err := Build(ctx, bdb, dir, PlanSource(plan, "small"), Arms, BuildOptions{RowGroups: RowGroupRows{2048, 2048, 2048}})
+	man, err := Build(ctx, bdb, dir, PlanSource(plan, "small"), AllArms, BuildOptions{RowGroups: RowGroupRows{2048, 2048, 2048}, Segment: 10 * time.Minute})
 	bdb.Close()
 	mustf(t, err, "build")
 	if f, _ := man.File(RoleFwd); f.RowGroups < 10 {
@@ -40,12 +40,15 @@ func TestTheCountOfRowGroupsIsWhatDuckDBRead(t *testing.T) {
 	if testing.Short() {
 		step = 11
 	}
-	for _, arm := range Arms {
+	if len(man.Segments) < 3 {
+		t.Fatalf("%d segments: too few to tell a file from the glob", len(man.Segments))
+	}
+	for _, arm := range AllArms {
 		db, err := Open(ctx, Config{Mode: ModeObserve, TempDir: t.TempDir(), Profile: true})
 		mustf(t, err, "open observe")
 		r, err := OpenReader(ctx, db, dir, arm, false)
 		mustf(t, err, "reader")
-		var pruned, bloomMatters, boundsWrong, audited int
+		var pruned, bloomMatters, boundsWrong, audited, filesSkipped int
 		for i := 0; i < len(plan.Queries); i += step {
 			q := plan.Queries[i]
 			if _, err := runner.Ask(r, q); err != nil {
@@ -58,6 +61,19 @@ func TestTheCountOfRowGroupsIsWhatDuckDBRead(t *testing.T) {
 			for j, a := range tr.Admissions {
 				o := tr.Observed[j]
 				audited++
+				if arm == ArmH {
+					// Every read of a glob opens the footer of every file; and the files whose
+					// pages it reads are those with a row group admitted (at most, for a bound).
+					if a.Files != len(man.Segments) || o.Files != a.Files {
+						t.Errorf("%s: %s: the glob names %d files, the count says %d and DuckDB opened %d", arm, tr.Statement, len(man.Segments), a.Files, o.Files)
+					}
+					if a.Bound && o.FilesRead > a.FilesRead || !a.Bound && o.FilesRead != a.FilesRead {
+						t.Errorf("%s: %s (%s): counted %d files read, DuckDB read the pages of %d", arm, tr.Statement, q.Name(), a.FilesRead, o.FilesRead)
+					}
+					if a.FilesRead < a.Files {
+						filesSkipped++
+					}
+				}
 				if a.Bound {
 					if !subset(o.Groups, a.IDs) {
 						t.Errorf("%s: %s: DuckDB read row groups %v, which the upper bound %v does not hold", arm, tr.Statement, o.Groups, a.IDs)
@@ -80,6 +96,9 @@ func TestTheCountOfRowGroupsIsWhatDuckDBRead(t *testing.T) {
 		}
 		if audited == 0 || pruned == 0 {
 			t.Errorf("%s: %d scans audited, %d pruned: the audit saw nothing skipped", arm, audited, pruned)
+		}
+		if arm == ArmH && filesSkipped == 0 {
+			t.Errorf("%s: no read skipped a whole file: the audit cannot tell files read from files opened", arm)
 		}
 		if bloomMatters == 0 || boundsWrong == 0 {
 			t.Errorf("%s: the bloom filters changed the count of %d scans, and counting by bounds alone would have been wrong for %d: the audit cannot tell the two counts apart", arm, bloomMatters, boundsWrong)

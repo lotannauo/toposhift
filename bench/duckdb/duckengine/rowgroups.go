@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -151,13 +152,50 @@ type chunk struct {
 type rowGroup struct {
 	rows int64
 	cols map[string]chunk
+	// file is the file of the row groups' list the group is in, for a [FileMeta] of
+	// several.
+	file int
 }
 
-// FileMeta is a file's footer as far as counting needs it.
+// FileMeta is a file's footer as far as counting needs it. For the footers of several
+// files (see [LoadFilesMeta]) the row groups are the files' in order, and a group is
+// named by its position in that list.
 type FileMeta struct {
 	Path   string
 	Rows   int64
 	Groups []rowGroup
+	// Files are the paths of the files, if there are several: Path is then the first.
+	Files []string
+}
+
+// paths are the files the footers are of.
+func (m *FileMeta) paths() []string {
+	if len(m.Files) > 0 {
+		return m.Files
+	}
+	return []string{m.Path}
+}
+
+// LoadFilesMeta reads the footers of several files, which a read through a glob opens,
+// as one: the row groups of the first file, then the second's, and so on. The files are
+// in the order given.
+func LoadFilesMeta(ctx context.Context, db *DB, paths []string) (*FileMeta, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("duckengine: no file to read the footers of")
+	}
+	out := &FileMeta{Path: paths[0], Files: slices.Clone(paths)}
+	for i, p := range paths {
+		m, err := LoadFileMeta(ctx, db, p)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range m.Groups {
+			g.file = i
+			out.Groups = append(out.Groups, g)
+		}
+		out.Rows += m.Rows
+	}
+	return out, nil
 }
 
 // ErrNoColumn is wrapped by the error counting returns for a filter or a column the
@@ -298,15 +336,22 @@ type Admission struct {
 	// upper bound on what the scan opened and not a count. Such a read is held to G0 and
 	// is in no slope class.
 	Bound bool
+	// Files and FilesRead are, for a read of several files through a glob, how many files
+	// the glob names, every one of which a read opens for its footer, and how many of them
+	// have a row group admitted, whose pages the read then reads. They are zero for a read
+	// of one file.
+	Files, FilesRead int `json:",omitempty"`
 	// IDs and BoundsIDs are the row groups Admitted and BoundsOnly count, by position in
-	// the file. They are not part of what is written: a counters file has the counts.
+	// the file, or, for several files, in the list of all their row groups in order. They
+	// are not part of what is written: a counters file has the counts.
 	IDs, BoundsIDs []int `json:"-"`
 }
 
 // Same reports whether two admissions have the same counts. The row groups by position
 // are not compared: they are a function of the counts' inputs.
 func (a Admission) Same(b Admission) bool {
-	return a.Role == b.Role && a.Total == b.Total && a.BoundsOnly == b.BoundsOnly && a.Admitted == b.Admitted && a.Bound == b.Bound
+	return a.Role == b.Role && a.Total == b.Total && a.BoundsOnly == b.BoundsOnly && a.Admitted == b.Admitted && a.Bound == b.Bound &&
+		a.Files == b.Files && a.FilesRead == b.FilesRead
 }
 
 // Prober says, for an equality on a column, which row groups' bloom filters exclude the
@@ -370,18 +415,16 @@ func (m *FileMeta) Admit(ctx context.Context, role Role, cols []string, filters 
 			if !anyTrue(bloom) {
 				break
 			}
-			ex, err := p.Excluded(ctx, m.Path, f.Col, f.Val)
+			ex, err := m.excluded(ctx, p, f.Col, f.Val)
 			if err != nil {
 				return Admission{}, err
-			}
-			if len(ex) != len(m.Groups) {
-				return Admission{}, fmt.Errorf("duckengine: %s: the bloom probe of %s answered for %d row groups of %d", m.Path, f.Col, len(ex), len(m.Groups))
 			}
 			for i := range bloom {
 				bloom[i] = bloom[i] && !ex[i]
 			}
 		}
 	}
+	read := make(map[int]bool)
 	for i, g := range m.Groups {
 		b, _ := bytesOf(g)
 		if bounds[i] {
@@ -391,9 +434,36 @@ func (m *FileMeta) Admit(ctx context.Context, role Role, cols []string, filters 
 		if bloom[i] {
 			a.Admitted.add(g.rows, b)
 			a.IDs = append(a.IDs, i)
+			read[g.file] = true
 		}
 	}
+	if len(m.Files) > 0 {
+		a.Files, a.FilesRead = len(m.Files), len(read)
+	}
 	return a, nil
+}
+
+// excluded asks the prober, for each file, which row groups' bloom filters exclude the
+// value, and returns the answers for every row group in order.
+func (m *FileMeta) excluded(ctx context.Context, p Prober, col string, v Value) ([]bool, error) {
+	var out []bool
+	for fi, path := range m.paths() {
+		n := 0
+		for _, g := range m.Groups {
+			if g.file == fi {
+				n++
+			}
+		}
+		ex, err := p.Excluded(ctx, path, col, v)
+		if err != nil {
+			return nil, err
+		}
+		if len(ex) != n {
+			return nil, fmt.Errorf("duckengine: %s: the bloom probe of %s answered for %d row groups of %d", path, col, len(ex), n)
+		}
+		out = append(out, ex...)
+	}
+	return out, nil
 }
 
 func (s *Share) add(rows, bytes int64) {
