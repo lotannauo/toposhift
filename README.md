@@ -24,7 +24,7 @@ Tool | Answers
 `"derived": true` marks a computed answer. `token` names the store state read; pass it as `asof` to read it again. See [docs/mcp.md](docs/mcp.md).
 
 ## Try it without a cluster
-You need git, curl and Go 1.27.2 or newer; any Go from 1.21 fetches it unless `GOTOOLCHAIN` is `local`.
+You need git, curl and Go 1.27.3 or newer; any Go from 1.21 fetches it unless `GOTOOLCHAIN` is `local`.
 ```sh
 git clone https://github.com/lotannauo/toposhift
 cd toposhift
