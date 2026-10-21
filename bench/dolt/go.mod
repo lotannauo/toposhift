@@ -3,12 +3,14 @@ module github.com/lotannauo/toposhift/bench/dolt
 go 1.27.3
 
 require (
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/lotannauo/toposhift v0.0.0-00010101000000-000000000000
 	github.com/lotannauo/toposhift/bench v0.0.0-00010101000000-000000000000
 	pgregory.net/rapid v1.3.0
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/DataDog/zstd v1.5.7 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
 	github.com/RaduBerinde/btreemap v0.0.0-20250419174037-3d62b7205d54 // indirect

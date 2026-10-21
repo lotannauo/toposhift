@@ -55,6 +55,11 @@
       "description": "The XTDB baseline's pins are registered; never bumped.",
       "matchFileNames": ["bench/xtdb/**", ".github/workflows/xtdb.yml"],
       "enabled": false
+    },
+    {
+      "description": "The Dolt baseline's pins are registered; never bumped.",
+      "matchFileNames": ["bench/dolt/**", ".github/workflows/dolt.yml"],
+      "enabled": false
     }
   ]
 }

@@ -1,14 +1,16 @@
 name: dolt
 
 # The Dolt baseline (bench/dolt) is a module of its own, and none of the four ci
-# shards runs its tasks: a baseline that will need a database server must never
-# hold up a pull request that touches nothing under bench/dolt. This workflow runs
-# the module's format check, lint, vulnerability scan, tests and race-detector
-# tests on both architectures. It is not a required check and it times nothing. The
-# steps that start a server come with the engine that needs one. A pull request
-# runs only when it changes bench/dolt or this file, so one that changes
-# internal/** or bench/spike/** is caught only after it reaches main, which is
-# acceptable for a baseline that is not a required check.
+# shards runs its tasks: a baseline that needs a database server must never hold up
+# a pull request that touches nothing under bench/dolt. The check job runs the
+# module's format check, lint, vulnerability scan, tests and race-detector tests on
+# both architectures; the server job starts the registered Dolt server, with
+# bench/dolt/scripts/dolt-server.sh (the one way the server is ever started, here and
+# on a laptop), and runs the tests that need one against it, on both architectures.
+# Neither is a required check, and neither times anything. A pull request runs only
+# when it changes bench/dolt or this file, so one that changes internal/** or
+# bench/spike/** is caught only after it reaches main, which is acceptable for a
+# baseline that is not a required check.
 
 on:
   pull_request:
@@ -95,6 +97,92 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rapid-failures-dolt-${{ matrix.os }}
+          path: "bench/dolt/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14
+
+  server:
+    name: server (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # Each commit of a batch keeps its history in the data directory, and a hosted runner
+      # has little free disk. The server is started after this, so the image it pulls is
+      # not pruned. The runner images carry gigabytes of toolchains a test never uses. Best
+      # effort: a path that is not on this image is skipped, and nothing under the home
+      # directory is touched.
+      - name: Free disk space
+        run: |
+          echo "before:"
+          df -h /
+          df -h "$RUNNER_TEMP"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          echo "after:"
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      # The image is pinned by digest in the script, and is pulled by it, not by a service
+      # container, so that a laptop and a runner start the server by one code path. The
+      # port is published on loopback only, and the container's usage reporting is off,
+      # which the script checks. The harden-runner step above runs in audit mode, and its
+      # egress log is where a connection to DoltHub, or to anything else, would show: the
+      # registrar reads it once, after the first run. The evidence of no egress so far is a
+      # local run of the image with no network but loopback.
+      - name: Start the Dolt server
+        run: |
+          export TOPOSHIFT_DOLT_DATA="$RUNNER_TEMP/doltdata"
+          bench/dolt/scripts/dolt-server.sh start
+          bench/dolt/scripts/dolt-server.sh sql --result-format csv --query 'SELECT dolt_version()'
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      - name: Test against the server
+        env:
+          TOPOSHIFT_DOLT_DSN: root@tcp(127.0.0.1:33306)/
+        run: mise run bench:dolt:test:server
+
+      - name: Show the server's log and the disk
+        if: always()
+        run: |
+          docker logs toposhift-dolt 2>&1 | tail -n 200 || true
+          du -sh "$RUNNER_TEMP/doltdata" || true
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      - name: Stop the Dolt server
+        if: always()
+        run: |
+          export TOPOSHIFT_DOLT_DATA="$RUNNER_TEMP/doltdata"
+          bench/dolt/scripts/dolt-server.sh stop
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-dolt-server-${{ matrix.os }}
           path: "bench/dolt/**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14

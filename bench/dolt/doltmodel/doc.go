@@ -71,7 +71,8 @@
 // # Unverified about Dolt
 //
 // The model decides nothing about how Dolt behaves, and these facts the design relies on
-// are not verified here (the server engine verifies them, or the design changes):
+// are not verified here. The server engine (package doltengine) checks each against Dolt 2.4.2
+// and records the results in its package documentation:
 //
 //   - [U] that a window function (ROW_NUMBER over a partition) is available and correct in
 //     the pinned version, for the log path's SQL; otherwise the same rule runs over the
