@@ -1,0 +1,135 @@
+name: postgres
+
+# The Postgres baseline (bench/postgres) is checked against a live Postgres server:
+# its engine answers the spike's conformance test and the first gate of a plan, and
+# the plans of its reads use the indexes they were written for. No shard has a
+# database server, so this workflow starts one, with bench/postgres/scripts/pg-server.sh
+# (the one way the server is ever started, here and on a laptop) and runs
+# bench:postgres:test:server against it on both architectures. It is not a required
+# check, and it times nothing: the shards run the module's tests that need no server.
+
+on:
+  pull_request:
+    paths:
+      - "bench/postgres/**"
+      - "bench/spike/**"
+      - "bench/go.mod"
+      - "bench/go.sum"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      # The tasks it runs and the pinned tools, and this file itself.
+      - "mise.toml"
+      - ".github/workflows/postgres.yml"
+  push:
+    branches: [main]
+    paths:
+      - "bench/postgres/**"
+      - "bench/spike/**"
+      - "bench/go.mod"
+      - "bench/go.sum"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
+      - "mise.toml"
+      - ".github/workflows/postgres.yml"
+  # By hand, by someone with write access, to run a branch. It has no inputs.
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # As in rocksdb.yml: a newer push to a pull request cancels its older run; runs on
+  # main are never cancelled.
+  group: postgres-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    # Explicit, so that a pipe that fails fails the step (the default shell for
+    # an unnamed bash step does not set pipefail).
+    shell: bash
+
+jobs:
+  integration:
+    name: integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned tools
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          cache: false
+
+      # The server is started after this, so the image it pulls is not pruned. The
+      # runner images carry gigabytes of toolchains a test never uses. Best effort: a
+      # path that is not on this image is skipped, and nothing under the home directory
+      # is touched.
+      - name: Free disk space
+        run: |
+          echo "before:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          echo "after:"
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+
+      # The image is pinned by digest in the script. The server listens on a Unix socket
+      # in the runner's temporary directory and on no port, with the settings of
+      # settings.conf, and trusts whoever can reach the socket.
+      - name: Start the Postgres server
+        run: |
+          export TOPOSHIFT_PG_DATA="$RUNNER_TEMP/pgdata"
+          export TOPOSHIFT_PG_SOCKET_DIR="$RUNNER_TEMP/pgsock"
+          bench/postgres/scripts/pg-server.sh start
+          bench/postgres/scripts/pg-server.sh psql --tuples-only --no-align --command 'select version()'
+
+      - name: Test against the server
+        env:
+          TOPOSHIFT_PG_DSN: host=${{ runner.temp }}/pgsock user=postgres dbname=postgres
+        run: mise run bench:postgres:test:server
+
+      - name: Show the server's log and the disk
+        if: always()
+        run: |
+          docker logs toposhift-pg 2>&1 | tail -n 200 || true
+          df -h /
+          df -h /mnt || true
+          df -h "$RUNNER_TEMP"
+
+      - name: Stop the Postgres server
+        if: always()
+        run: |
+          export TOPOSHIFT_PG_DATA="$RUNNER_TEMP/pgdata"
+          export TOPOSHIFT_PG_SOCKET_DIR="$RUNNER_TEMP/pgsock"
+          bench/postgres/scripts/pg-server.sh stop
+
+      - name: Keep the inputs that failed a property
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapid-failures-postgres-${{ matrix.os }}
+          path: "bench/postgres/**/testdata/rapid/**"
+          if-no-files-found: ignore
+          retention-days: 14

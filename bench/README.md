@@ -35,8 +35,26 @@ which the spike's conformance test checks against the reference engine.
 `postgres/pgschema` is the DDL as text, `postgres/pginput` reads an activity file as
 engine records, and `postgres/g0` asks an engine every question of a plan and compares
 the answers with the plan's (`go run ./cmd/g0model -plan plan.json`, from `postgres/`).
-No Postgres server, image or driver is needed yet. Run its tests with `cd postgres &&
-go test ./... -p 2`; they are not wired into `mise` yet.
+`postgres/pgengine` is an engine over a Postgres 17 server (pgx): the same planner's
+row changes applied with set-based SQL, the reads with range types, GiST (index set G)
+or a btree on the interval's end (set B), and the EXPLAIN counter parser and the check
+that a server has the settings of `postgres/scripts/settings.conf`. `mise run
+bench:postgres:test` runs the module's tests; the ones that need a server skip without
+`TOPOSHIFT_PG_DSN`. To run them, start the server the settings are written for (a
+container, which this script starts on a laptop and on CI alike) and stop it when done,
+from `bench/`:
+
+```sh
+postgres/scripts/pg-server.sh start     # the pinned image, 127.0.0.1:55432, no password
+TOPOSHIFT_PG_DSN='host=127.0.0.1 port=55432 user=postgres dbname=postgres sslmode=disable' \
+  mise run bench:postgres:test:server   # the engine's tests, the server's included
+postgres/scripts/pg-server.sh psql      # a psql in the container
+postgres/scripts/pg-server.sh stop
+```
+
+The data is under `~/spikebench/pg/17` unless `TOPOSHIFT_PG_DATA` says otherwise, and a
+Unix socket replaces the port when `TOPOSHIFT_PG_SOCKET_DIR` is set, as on CI
+(`.github/workflows/postgres.yml`, which is not a required check).
 
 ```sh
 mise run bench:test        # the full tests, Pebble's invariant checks on, cgo off
