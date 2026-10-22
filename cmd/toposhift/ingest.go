@@ -772,20 +772,34 @@ Backup
   closes, within 5 seconds. A cut writes only when a record or a retention was
   committed since the last one. A commit waits while a cut is made.
 
+  Before the store commits a batch, the backup writes the batch to backup/journal
+  and syncs it, and it deletes the file once a cut holds the batch. That is one
+  more synced write on the path of every request, and only with the backup on. A
+  crash, which leaves the store ahead of the last cut, does not end the backup:
+  the next start adds the journal's batches to it.
+
   A backup that fails never fails a commit or a read: it is logged, at start
   and then every hour, and GET /status answers "backup": its mode (off, on,
-  broken or refused), what set it, the reason, the interval, and, for the
-  local backup, the generation and the Seq it stands at, the time of its last
-  cut and the error of its last attempt, its files and the size of its
-  manifest, and what it retired last and the classes it does not retire.
+  degraded, broken or refused), what set it, the reason, the interval, and, for
+  the local backup, the generation and the Seq it stands at, the time of its
+  last cut and the error of its last attempt, its files and the size of its
+  manifest, the batches in its journal, and what it retired last and the classes
+  it does not retire. Degraded is a journal that lacks a batch: ingest and the
+  backup go on, and a crash before the next cut would end the backup; the log
+  says so every hour. An entry of a batch the store did not store that cannot
+  be deleted is first noted in backup/journal.untrusted, and while that file
+  exists a start with the store ahead of the backup is broken and replays
+  nothing.
 
   A backup starts with the store's first record, so --backup on must be given
-  from the first boot of a data directory: a store that already holds records
-  is refused, and so is a store that ends before its backup, and a store whose
+  from the first boot of a data directory: a store that already holds records,
+  and no journal that holds them, is refused, and so is a store that ends before its backup, and a store whose
   cluster name differs from the backup's. A store that ends after its backup
-  (a stop whose last cut failed, or a crash), or whose retention was applied
-  after the last cut, leaves the backup broken: it ends where it stood, and this
-  build does not repair it.
+  (a stop whose last cut failed, or a crash) goes on from the journal, and so
+  does a retention applied after the last cut, which the backup logs from the
+  store's horizons. If the journal lacks a batch the backup needs, or holds
+  entries that do not follow each other, the backup is broken: it ends where it
+  stood.
 
   With retention on, after each retention the backup drops the files whose
   records lie more than a day behind their layer's horizon. L0 and the hosts
