@@ -100,6 +100,20 @@ func newRec(r engine.Record) *Rec {
 	return c
 }
 
+// OffMicrosecond reports whether a record has a boundary, an event time or a finite
+// deadline, that is not a whole microsecond: the records XTDB's temporal columns cannot
+// hold, which the planner counts ([Counts].OffMicrosecond) and a server adapter refuses.
+// It is the planner's own test, made on one record, so a stream can be counted without a
+// planner. The next assertion's event time, the other boundary a segment has, is another
+// record's event time.
+func OffMicrosecond(r engine.Record) bool {
+	c := Rec{Event: r.EventTime.UnixNano(), Kind: r.Kind, TTL: r.TTL}
+	if !r.Through.IsZero() {
+		c.Through, c.HasThrough = r.Through.UnixNano(), true
+	}
+	return !wholeMicroseconds(Instant(c.Event)) || !wholeMicroseconds(c.deadline())
+}
+
 // Record is the engine record the document stands for. The payload is copied, so a
 // caller cannot change the log.
 func (c *Rec) Record() engine.Record {

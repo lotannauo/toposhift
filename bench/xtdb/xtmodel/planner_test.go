@@ -1,6 +1,7 @@
 package xtmodel
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -298,5 +299,49 @@ func TestPlanningChangesNothingUntilAccepted(t *testing.T) {
 	}
 	if _, err := r.pl.Plan(2, nil); err == nil {
 		t.Fatal("an empty batch was planned")
+	}
+}
+
+// TestOffMicrosecondIsThePlannersOwnTest: the test on one record agrees with the planner's
+// count on every record of generated streams and of the records the planner's test builds
+// for each boundary.
+func TestOffMicrosecondIsThePlannersOwnTest(t *testing.T) {
+	check := func(name string, recs []engine.Record) {
+		t.Helper()
+		var want uint64
+		for _, r := range recs {
+			if OffMicrosecond(r) {
+				want++
+			}
+		}
+		pl := newRig().write(recs...)
+		if pl.Counts.OffMicrosecond != want {
+			t.Errorf("%s: the planner counted %d, OffMicrosecond %d", name, pl.Counts.OffMicrosecond, want)
+		}
+	}
+	var odd []engine.Record
+	seq := uint64(0)
+	for _, mk := range []func(engine.Record) engine.Record{
+		func(x engine.Record) engine.Record { return x },
+		func(x engine.Record) engine.Record { x.EventTime = x.EventTime.Add(1); return x },
+		func(x engine.Record) engine.Record { x.TTL += 1; return x },
+		func(x engine.Record) engine.Record { x.Through = x.EventTime.Add(1500); return x },
+		func(x engine.Record) engine.Record { x.EventTime = x.EventTime.Add(-1); return x },
+		func(x engine.Record) engine.Record { x.EventTime = x.EventTime.Add(1000); return x },
+	} {
+		seq++
+		odd = append(odd, mk(observe(seq, lifecycle.Producer(fmt.Sprintf("p%d", seq)), 20+int64(seq), 5)))
+	}
+	odd = append(odd, observe(100, "open", 30, 0), del(101, "open", 40))
+	check("boundaries", odd)
+	for seed := uint64(1); seed <= seeds(10); seed++ {
+		for _, st := range genStream(seedDrawer(seed), 25, true) {
+			if len(st.batch) > 0 {
+				check("generated", st.batch)
+			}
+		}
+	}
+	if OffMicrosecond(observe(1, "a", 10, 5)) || !OffMicrosecond(engine.Record{EventTime: time.Unix(1, 1).UTC(), Kind: lifecycle.Observe}) {
+		t.Error("whole seconds are off a microsecond, or a nanosecond is on one")
 	}
 }

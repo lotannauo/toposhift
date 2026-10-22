@@ -6,8 +6,16 @@ name: xtdb
 # both architectures. The integration job starts a node, with
 # bench/xtdb/scripts/xt-server.sh (the one way the node is ever started, here and on a
 # laptop), and runs the module's server tests against it: the behaviours the model
-# assumes of XTDB, the engine's conformance and the first gate of a plan. Neither is a
-# required check, and neither times anything.
+# assumes of XTDB, the engine's conformance, the first gate of a plan, and the xtspike
+# commands that load a stream and read it back. Neither is a required check, and neither
+# times anything.
+#
+# The sizing job is the one exception, and it decides, it does not report: it loads the
+# full 2-day plan into a node of its own and says only whether the registered sizing rule
+# holds (the load within 75 minutes, the node's directories within 30% of the disk's free
+# space), which decides whether a 7-day dispatch is ever added. It runs on a pull request
+# that changes the code that loads or settles (bench/xtdb/cmd, xtspike or xtnode), or when
+# the pull request carries the label "sizing", and never prints a duration or a size.
 #
 # A pull request runs them when it touches the module or this file. A push to main also
 # runs them when it touches what the module links (bench/spike, internal, the module
@@ -16,6 +24,8 @@ name: xtdb
 
 on:
   pull_request:
+    # labeled: adding the label "sizing" runs the sizing job (the other jobs skip that event).
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - "bench/xtdb/**"
       - ".github/workflows/xtdb.yml"
@@ -44,6 +54,7 @@ defaults:
 jobs:
   check:
     name: check (${{ matrix.os }})
+    if: github.event.action != 'labeled'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     permissions:
@@ -95,6 +106,7 @@ jobs:
 
   integration:
     name: integration (${{ matrix.os }})
+    if: github.event.action != 'labeled'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     permissions:
@@ -150,9 +162,16 @@ jobs:
           df -h /
           df -h "$RUNNER_TEMP"
 
+      # The node's container, data directory and health port are what the xtspike tests inspect,
+      # measure and settle against, and the node here is the registered one: the tests of
+      # xtspike env assert that.
       - name: Test against the node
         env:
           TOPOSHIFT_XTDB_DSN: host=127.0.0.1 port=55433 user=xtdb dbname=xtdb
+          TOPOSHIFT_XTDB_HEALTH: http://127.0.0.1:55480
+          TOPOSHIFT_XTDB_CONTAINER: toposhift-xtdb
+          TOPOSHIFT_XTDB_DATA: ${{ runner.temp }}/xtdb
+          TOPOSHIFT_XTDB_EXPECT_REGISTERED: "true"
         run: mise run bench:xtdb:test:server
 
       # An indexer that fails stops the node's ingestion and the node answers nothing after
@@ -187,3 +206,140 @@ jobs:
           path: "bench/xtdb/**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14
+
+  # Whether the full 2-day plan can be loaded within the registered limits is decided on the
+  # runners it would be timed on, once, before a longer window is asked for. This job says
+  # pass or fail and nothing else: its duration is in the log of the run and is never quoted.
+  sizing-needed:
+    name: sizing needed
+    if: github.event_name == 'pull_request' && (github.event.action != 'labeled' || github.event.label.name == 'sizing')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # The whole history, so that the diff against the base is there to read.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide
+        id: decide
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run=false
+          case ",$LABELS," in
+            *,sizing,*) run=true ;;
+          esac
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -Eq '^bench/xtdb/(cmd|xtspike|xtnode)/'; then
+            run=true
+          fi
+          echo "sizing: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  sizing:
+    name: sizing (${{ matrix.os }})
+    needs: sizing-needed
+    if: needs.sizing-needed.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Go
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      # As in the integration job: the node's image and its data need room.
+      - name: Free disk space
+        run: |
+          echo "before:"
+          df -h /
+          df -h "$RUNNER_TEMP"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          echo "after:"
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      # The plan is the one the timed dispatches use: the commands and the flags of
+      # bench.yml's plans job for its default family at the product's block cache, for the
+      # 2-day window alone. The binaries are built outside the checkout.
+      - name: Build spikebench and xtspike
+        run: |
+          set -euo pipefail
+          (cd bench && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench)
+          (cd bench/xtdb && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/xtspike" ./cmd/xtspike)
+
+      - name: Make the 2-day plan
+        run: |
+          set -euo pipefail
+          SB="$RUNNER_TEMP/spikebench"
+          PLANS="$RUNNER_TEMP/plans"
+          "$SB" pins -out "$PLANS" -preset ci -run-max-age 30m -cache-mb 256 -window 2
+          "$SB" plan -out "$PLANS/R2" -preset ci -run-max-age 30m -cache-mb 256 -window 2 -pins "$PLANS/pins.json" -full
+
+      - name: Start the XTDB node
+        run: |
+          export TOPOSHIFT_XTDB_DATA="$RUNNER_TEMP/xtdb-sizing"
+          bench/xtdb/scripts/xt-server.sh start
+
+      - name: Size the load
+        run: |
+          set -euo pipefail
+          PLAN="$RUNNER_TEMP/plans/R2/plan.json"
+          "$RUNNER_TEMP/xtspike" sizing \
+            -script bench/xtdb/scripts/xt-server.sh -registered -container toposhift-xtdb \
+            -dsn 'host=127.0.0.1 port=55433 user=xtdb dbname=xtdb' -health http://127.0.0.1:55480 \
+            -data "$RUNNER_TEMP/xtdb-sizing" \
+            -plan "$PLAN" -expect-plan "$(sha256sum "$PLAN" | cut -d' ' -f1)"
+
+      # An indexer that fails stops the node's ingestion, and the job fails whatever the
+      # sizing found, as in the integration job.
+      - name: Show the node's log and the disk, and fail if its indexer failed
+        if: always()
+        run: |
+          docker logs toposhift-xtdb > "$RUNNER_TEMP/xtdb.log" 2>&1 || true
+          tail -n 100 "$RUNNER_TEMP/xtdb.log"
+          df -h /
+          df -h "$RUNNER_TEMP"
+          if grep -q "Ingestion stopped" "$RUNNER_TEMP/xtdb.log"; then
+            echo "the node's log shows an indexer failure" >&2
+            grep "Ingestion stopped" "$RUNNER_TEMP/xtdb.log" | head -n 5 >&2
+            exit 1
+          fi
+
+      - name: Stop the XTDB node
+        if: always()
+        run: |
+          export TOPOSHIFT_XTDB_DATA="$RUNNER_TEMP/xtdb-sizing"
+          bench/xtdb/scripts/xt-server.sh stop

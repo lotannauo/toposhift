@@ -34,6 +34,9 @@ func retainCheck(node *fakeNode, e *Engine) error {
 	if want := []string{sysLit(defaultBase, 1), sysLit(defaultBase, 2)}; !slices.Equal(times, want) {
 		return fmt.Errorf("transactions at %v, want %v", times, want)
 	}
+	if got := e.Transactions(); got != 2 {
+		return fmt.Errorf("a batch and a retention are %d transactions, not 2", got)
+	}
 	var meta []loggedStmt
 	inRetain := false
 	for _, s := range node.statements["w"] {
@@ -73,6 +76,9 @@ func retainCheck(node *fakeNode, e *Engine) error {
 	}
 	if got := beginTimes(node.statements["w"]); len(got) != 3 || got[2] != sysLit(defaultBase, 3) {
 		return fmt.Errorf("the batch after the retention was at %v", got)
+	}
+	if got := e.Transactions(); got != 3 {
+		return fmt.Errorf("two batches and a retention are %d transactions, not 3", got)
 	}
 	// A retention is the last thing the engine did; the horizon is on the node.
 	if err := e.Retain(sec(9)); err != nil {

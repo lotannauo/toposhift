@@ -12,6 +12,8 @@ package g0
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -55,6 +57,10 @@ type Report struct {
 	Groups           []Group
 	// Mismatches are the first MaxMismatches wrong answers.
 	Mismatches []Mismatch
+	// AnswersDigest covers, in the order of the questions, the digest and size of the
+	// answer the engine gave to each (or that it gave an error instead), so that two runs
+	// of one question set can be held to each other without listing the answers.
+	AnswersDigest string
 }
 
 // OK reports whether every answer matched.
@@ -81,20 +87,43 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 	if err != nil {
 		return nil, err
 	}
+	if err := CheckStream(plan, info, e.LastSeq()); err != nil {
+		return nil, err
+	}
+	rep, err := Ask(ctx, plan.Queries, e, say)
+	if err != nil {
+		return nil, err
+	}
+	rep.Stream = info
+	return rep, nil
+}
+
+// CheckStream checks that the stream a run regenerated (info) is the plan's, and that the
+// engine it was written to (at lastSeq) holds all of it: the fields that decide the stream,
+// not the instants. It returns an error wrapping [ErrStreamDiffers] if not.
+func CheckStream(plan *runner.Plan, info runner.StreamInfo, lastSeq uint64) error {
 	want := plan.Stream
 	if info.Digest != want.Digest || info.Records != want.Records || info.LastSeq != want.LastSeq || info.OldToken != want.OldToken || info.Dropped != want.Dropped || len(info.Retentions) != len(want.Retentions) {
-		return nil, fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
+		return fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
 			ErrStreamDiffers, info.Digest, info.Records, info.LastSeq, info.OldToken, want.Digest, want.Records, want.LastSeq, want.OldToken)
 	}
-	if got := e.LastSeq(); got != want.LastSeq {
-		return nil, fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, got, want.LastSeq)
+	if lastSeq != want.LastSeq {
+		return fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, lastSeq, want.LastSeq)
 	}
+	return nil
+}
 
-	tell(say, "g0: asking %d questions", len(plan.Queries))
-	rep := &Report{Stream: info, Queries: len(plan.Queries)}
+// Ask asks e every question of qs and compares each answer with the one the question
+// carries, the reference engine's. The report has no stream: the caller knows where the
+// engine's records came from. A question e cannot answer is a mismatch with its error; an
+// error is returned only if ctx ends.
+func Ask(ctx context.Context, qs []runner.Query, e engine.Engine, say runner.Progress) (*Report, error) {
+	tell(say, "g0: asking %d questions", len(qs))
+	rep := &Report{Queries: len(qs)}
 	groups := map[[2]string]*Group{}
 	var order [][2]string
-	for _, q := range plan.Queries {
+	h := sha256.New()
+	for i, q := range qs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -107,6 +136,11 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 		}
 		g.Queries++
 		got, err := runner.Ask(e, q)
+		if err != nil {
+			fmt.Fprintf(h, "%d %s error\n", i, q.Name())
+		} else {
+			fmt.Fprintf(h, "%d %s %s %d\n", i, q.Name(), got.Digest, got.Size)
+		}
 		wantAns := runner.Answer{Digest: q.Expect, Size: q.Size}
 		if err == nil && got == wantAns {
 			g.Matched++
@@ -124,5 +158,6 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 	for _, k := range order {
 		rep.Groups = append(rep.Groups, *groups[k])
 	}
+	rep.AnswersDigest = hex.EncodeToString(h.Sum(nil))
 	return rep, nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -172,6 +173,55 @@ func TestAStreamThatIsNotThePlansIsRefused(t *testing.T) {
 	p.Stream.Records++
 	if _, err := g0.Run(context.Background(), p, xtmodel.New(), nil); !errors.Is(err, g0.ErrStreamDiffers) {
 		t.Fatalf("a plan with another count: %v", err)
+	}
+}
+
+// TestAskHoldsALoadedEngineToThePlanWithoutRegeneratingTheStream: an engine that was
+// loaded earlier is asked the plan's questions by Ask, which equals what Run found, and
+// the digest of the answers is the same on every run and differs for a wrong answer.
+func TestAskHoldsALoadedEngineToThePlanWithoutRegeneratingTheStream(t *testing.T) {
+	p := plan(t, hourSpec())
+	m := xtmodel.New()
+	full, err := g0.Run(context.Background(), p, m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.AnswersDigest == "" {
+		t.Fatal("no answers digest")
+	}
+	again, err := g0.Ask(context.Background(), p.Queries, m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.OK() || again.Matched != full.Matched || !reflect.DeepEqual(again.Groups, full.Groups) || again.AnswersDigest != full.AnswersDigest {
+		t.Fatalf("Ask: %d of %d, digest %s; Run: %d of %d, digest %s", again.Matched, again.Queries, again.AnswersDigest, full.Matched, full.Queries, full.AnswersDigest)
+	}
+	bad, err := g0.Ask(context.Background(), p.Queries, wrong{m, "alive inverted"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad.OK() || bad.AnswersDigest == full.AnswersDigest {
+		t.Errorf("a wrong engine: %d of %d, digest %s", bad.Matched, bad.Queries, bad.AnswersDigest)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := g0.Ask(ctx, p.Queries, m, nil); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled context: %v", err)
+	}
+}
+
+func TestCheckStreamRefusesAStreamOrAnEngineThatIsNotThePlans(t *testing.T) {
+	p := plan(t, retainingSpec())
+	if err := g0.CheckStream(p, p.Stream, p.Stream.LastSeq); err != nil {
+		t.Fatal(err)
+	}
+	if err := g0.CheckStream(p, p.Stream, p.Stream.LastSeq-1); !errors.Is(err, g0.ErrStreamDiffers) {
+		t.Errorf("an engine behind the stream: %v", err)
+	}
+	other := p.Stream
+	other.OldToken++
+	if err := g0.CheckStream(p, other, p.Stream.LastSeq); !errors.Is(err, g0.ErrStreamDiffers) {
+		t.Errorf("another old token: %v", err)
 	}
 }
 

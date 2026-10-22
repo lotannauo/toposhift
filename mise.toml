@@ -386,7 +386,7 @@ env = { CGO_ENABLED = "0", TOPOSHIFT_RAPID_CHECKS = "8" }
 run = '''
 set -eu
 : "${TOPOSHIFT_XTDB_DSN:?TOPOSHIFT_XTDB_DSN must name the node, see bench/xtdb/scripts/xt-server.sh}"
-gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-xtdb-test-server.json"} -- -count=1 -p 1 -timeout 55m -run 'TestProbe|TestServer' ./xtengine/...
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-xtdb-test-server.json"} -- -count=1 -p 1 -timeout 55m -run 'TestProbe|TestServer' ./xtengine/... ./xtnode/... ./xtspike/...
 '''
 
 [tasks."bench:xtdb:test:race"]

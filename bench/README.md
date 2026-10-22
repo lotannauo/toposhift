@@ -169,9 +169,16 @@ starts the node it is tested against (the image pinned by digest, the configurat
 `xtdb/scripts/xtdb.yaml`) in a container, on a laptop and on CI; the engine's tests need
 it only for the tests named `TestProbe` and `TestServer`, which skip without
 `TOPOSHIFT_XTDB_DSN` and which `mise run bench:xtdb:test:server` runs against it, and
-everything else runs against a fake node. The checks are `mise run bench:xtdb:fmt:check`,
-`bench:xtdb:lint`, `bench:xtdb:vuln`, `bench:xtdb:test`, `bench:xtdb:test:race` and
-`bench:xtdb:test:server`; they run in `.github/workflows/xtdb.yml`, not in the `ci` shards.
+everything else runs against a fake node. `xtdb/cmd/xtspike` loads a plan's stream, or an
+activity file with the questions made for it, into a node, has the node finish its last
+block and waits for it to settle (no indexing lag and no compaction for a whole window), reads every question back against
+the reference engine, and records the writer's counts, the answers and the bytes of the
+node's directories, in counts and digests and never in time; it says whether the node is
+the registered one, and with `-registered` refuses one that is not. Its `sizing` command, on
+CI only, answers whether the full 2-day plan loads within the registered limits. The checks
+are `mise run bench:xtdb:fmt:check`, `bench:xtdb:lint`, `bench:xtdb:vuln`,
+`bench:xtdb:test`, `bench:xtdb:test:race` and `bench:xtdb:test:server`; they run in
+`.github/workflows/xtdb.yml`, not in the `ci` shards.
 
 The Dolt baseline, `dolt/`, is a module of its own, to keep a database server to test
 against and its driver out of this module's graph, and it is pure Go (build and test it
