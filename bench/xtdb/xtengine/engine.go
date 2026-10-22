@@ -220,6 +220,14 @@ func (e *Engine) LastSeq() uint64 {
 	return e.lastSeq
 }
 
+// Transactions returns how many transactions the engine has committed, batches and
+// retentions together: the ordinal of the last one, which the system times count.
+func (e *Engine) Transactions() uint64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.ordinal
+}
+
 // Counts returns what the planner has planned for the batches committed so far, in
 // the units of [xtmodel.Counts]. For one stream and one batching it equals the counts
 // of an [xtmodel.Model] that was given the same stream.
