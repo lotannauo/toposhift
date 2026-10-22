@@ -42,10 +42,13 @@ func (d Difference) String() string {
 // Options says how much two records may differ in the log they report.
 type Options struct {
 	// WALTolerance is the largest relative difference of a phase's log counts that is
-	// not a difference. Zero compares them exactly. The log of a load moves by a few
-	// kilobytes between two runs of one stream (a page that a background writer held
-	// when a COPY wanted it, the statistics ANALYZE draws at random, catalog pages in the
-	// state the earlier loads left them): nothing in the stream or the settings.
+	// not a difference. Zero compares them exactly, which is right for the record and
+	// full-page-image counts and for the fold's record bytes, which hold no full-page
+	// image. The record bytes and the log position of a phase that holds a full-page image
+	// move by the difference of the compressed images, which hold transaction ids and log
+	// positions that no two runs share (wal_compression is lz4): a few bytes, bounded only
+	// by the size of a block. Larger differences in the log of the other phases were not
+	// traced here.
 	WALTolerance float64
 }
 
