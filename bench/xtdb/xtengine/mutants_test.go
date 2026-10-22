@@ -228,3 +228,91 @@ func TestEveryGuardOfTheScriptIsNeeded(t *testing.T) {
 		})
 	}
 }
+
+// machineWithPsql puts a psql first on the PATH of the test process, as a runner image has
+// one in /usr/bin, and returns the directory it is in. The psql writes down that it was
+// run, in the file next to it, and succeeds.
+func machineWithPsql(t *testing.T) (dir, ran string) {
+	t.Helper()
+	dir = t.TempDir()
+	ran = filepath.Join(dir, "ran")
+	body := "#!/bin/sh\necho run >> '" + ran + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "psql"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir, ran
+}
+
+// TestAPsqlOnTheMachineIsNeverTheScripts: the script's checks pass on a machine that has a
+// psql, which they did not on a runner image (they expected the script to find none); the
+// script never ran it.
+func TestAPsqlOnTheMachineIsNeverTheScripts(t *testing.T) {
+	_, ran := machineWithPsql(t)
+	scriptChecks(t, scriptPath)
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the script ran the machine's psql")
+	}
+}
+
+// TestTheChecksNoticeAPathThatLeaks: with the machine's PATH after the stubs, which is what
+// the checks were before, the machine's psql is found and the checks fail.
+func TestTheChecksNoticeAPathThatLeaks(t *testing.T) {
+	dir, ran := machineWithPsql(t)
+	err := failures(t, func(t testing.TB) { checkScript(t, scriptPath, harness{leak: dir}) })
+	if err == nil || !strings.Contains(err.Error(), "psql with none installed") {
+		t.Errorf("the checks on a PATH that leaks: %v", err)
+	}
+	if _, err := os.Stat(ran); err != nil {
+		t.Error("the leaked psql was not the one the script ran")
+	}
+}
+
+// probe is a testing.TB that notes a skip as well as a failure, and ends the check at
+// either, so that what a check does about a missing tool can be asserted.
+type probe struct {
+	recorder
+	skipped bool
+}
+
+func (p *probe) Skip(...any)          { p.skipped = true; panic(stopCheck{}) }
+func (p *probe) Skipf(string, ...any) { p.skipped = true; panic(stopCheck{}) }
+
+// TestAMissingToolFailsOnARunnerAndSkipsElsewhere: the checks need bash and a few system
+// tools. Without one, on a runner they fail, and elsewhere they skip.
+func TestAMissingToolFailsOnARunnerAndSkipsElsewhere(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	withBashOnly := t.TempDir()
+	if err := os.Symlink(bash, filepath.Join(withBashOnly, "bash")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, path string }{
+		{"no bash", t.TempDir()},
+		{"no dirname", withBashOnly},
+	} {
+		for _, onRunner := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s on a runner %v", c.name, onRunner), func(t *testing.T) {
+				t.Setenv("PATH", c.path)
+				t.Setenv("GITHUB_ACTIONS", map[bool]string{true: "true", false: ""}[onRunner])
+				p := &probe{recorder: recorder{TB: t}}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							if _, ok := r.(stopCheck); !ok {
+								panic(r)
+							}
+						}
+					}()
+					harness{}.run(p, scriptPath, nil, false, "start")
+				}()
+				failed := len(p.msgs) > 0
+				if failed != onRunner || p.skipped == onRunner {
+					t.Errorf("failed %v, skipped %v; want failed %v, skipped %v", failed, p.skipped, onRunner, !onRunner)
+				}
+			})
+		}
+	}
+}
