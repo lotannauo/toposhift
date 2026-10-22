@@ -7,6 +7,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/decay"
 	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/graphdiff"
 	"github.com/lotannauo/toposhift/internal/query/interval"
@@ -104,6 +105,9 @@ type Vocabulary struct {
 	Rules      []Word `json:"rules"`
 	EndReasons []Word `json:"end_reasons"`
 	Classes    []Word `json:"classes"`
+	// Recency is the fields of a recency, the object service_context gives each
+	// caller and callee.
+	Recency []Word `json:"recency"`
 }
 
 // Word is a term and what it means.
@@ -123,7 +127,7 @@ func (s *Source) DescribeSchema(ctx context.Context, _ DescribeSchemaInput) (Des
 		Policy: Policy{
 			Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
 			CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
-			Find: FindVersion,
+			Find: FindVersion, Decay: decay.PolicyVersion,
 		},
 		Entities: []SchemaEntity{}, Relations: []SchemaRelation{},
 		Vocabulary: vocabulary,
@@ -237,6 +241,7 @@ var vocabulary = Vocabulary{
 	},
 	Rules: []Word{
 		{RuleExistence, "an entity's or an edge's existence, folded from its records; asserted_by lists the producers"},
+		{RuleRecency, "a dependency's recency at the window's last instant: a lower bound on how long its freshest producer has not seen the edge, from the stored records, so a silence shorter than half the producer's expiry may not show, and a window that ends after the newest records shows the time since them as silence"},
 		{RuleReach, "an entity a failing seed reaches over a chain of edges that all exist at once"},
 		{RuleSharedNode, "two pods scheduled on one node at once"},
 		{RuleSharedHost, "two pods on two nodes at once, each node placed on one host by an asserted runs_on"},
@@ -263,5 +268,11 @@ var vocabulary = Vocabulary{
 		{"disappeared", "one span that starts at the window's start and ends before its end"},
 		{"transient", "one span that starts after the window's start and ends before its end"},
 		{"flapping", "two spans or more"},
+	},
+	Recency: []Word{
+		{"producer", "the producer that saw the edge most recently"},
+		{"last_seen", "the last instant the stored records say that producer saw the edge, not after the window's last instant"},
+		{"silent_at_least", "a lower bound on how long that producer has not seen the edge at the window's last instant: never more than the truth, and short of it by at most half the producer's expiry"},
+		{"confidence", "2 to the power of minus silent_at_least over an eighth of the producer's expiry, rounded to four decimals: 1 for no silence, halved for each eighth of the expiry more; it is no probability and decides no member, order or cut"},
 	},
 }

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/decay"
 	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -63,6 +65,37 @@ type HopService struct {
 	Duration   string   `json:"duration"`
 	// Instances counts the instance_of elements read for the service.
 	Instances int `json:"instances"`
+	// Recency is how long the producer that saw the edge most recently is known
+	// not to have seen it, at the window's last instant; null when no span of the
+	// edge reaches that instant, and when a producer of it has no TTL.
+	Recency *Recency `json:"recency"`
+}
+
+// Recency is the derived recency of a dependency at the last instant of the
+// answer's window (to less one nanosecond): the freshest of the producers whose
+// reference to the edge is live there, the last instant the stored records say it
+// saw the edge, a lower bound on how long it has not seen it since, and a
+// confidence that halves with that silence. It is labelled derived here and
+// nowhere inside it, it is not a stored fact, and it decides no member, order or
+// cut. The bound subtracts the extension interval the coalescer may have absorbed
+// refreshes over, so a silence shorter than that does not show, and it is
+// measured to the window's last instant, so a window that ends after the newest
+// records shows the time since them as silence.
+type Recency struct {
+	Basis   string `json:"basis"`
+	Subject string `json:"subject"`
+	Rule    string `json:"rule"`
+	// Producer is the producer seen most recently.
+	Producer string `json:"producer"`
+	// LastSeen is the last instant the records say Producer saw the edge, not after
+	// the window's last instant.
+	LastSeen string `json:"last_seen"`
+	// SilentAtLeast is a duration: a lower bound on how long Producer has not seen
+	// the edge, never more than the truth.
+	SilentAtLeast string `json:"silent_at_least"`
+	// Confidence is 2 to the power of minus the bound over the half-life, rounded to
+	// four decimals: 1 for a bound of zero, and one half for each half-life more.
+	Confidence float64 `json:"confidence"`
 }
 
 // ServicePair is a member of the hop and another service that shared a place by
@@ -199,8 +232,9 @@ const (
 
 // ServiceContext shows the services a service calls and is called by, and the
 // services that shared a place with them, over a window. It runs one
-// extraction under the package's default policy and reads nothing else but the
-// names.
+// extraction under the package's default policy, reads the service's depends_on
+// edges once more in each direction the hop has a member in, for the recency of
+// each caller and callee, and reads nothing else but the names.
 func (s *Source) ServiceContext(ctx context.Context, in ServiceContextInput) (ServiceContextOutput, error) {
 	req := s.newRequest()
 	req.nameText(in.Service)
@@ -237,7 +271,7 @@ func (s *Source) ServiceContext(ctx context.Context, in ServiceContextInput) (Se
 			Token: tokenString(token), Derived: true,
 			Policy: Policy{
 				Interval: interval.PolicyVersion, CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion,
-				Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion,
+				Rank: s.rankDigest, Names: NameTableVersion, Withhold: WithholdVersion, Decay: decay.PolicyVersion,
 			},
 			Service: ref(seed), Window: windowOf(from, to), NodeOnly: in.NodeOnly,
 			Callers: []HopService{}, Callees: []HopService{}, Pairs: []ServicePair{}, Suppressed: []ServicePair{},
@@ -254,13 +288,18 @@ func (s *Source) ServiceContext(ctx context.Context, in ServiceContextInput) (Se
 		for _, m := range res.Members {
 			roles[m.Service] = m.Role.String()
 		}
+		last, err := s.hopEvidence(ctx, seed, interval.Window{From: from, To: to, AsOf: res.Token}, res.Members[1:])
+		if err != nil {
+			return zero, err
+		}
+		at := to.Add(-time.Nanosecond)
 		for _, m := range res.Members[1:] {
 			for _, el := range m.Dependency {
 				switch {
 				case el.Subject.B == seed:
-					out.Callers = append(out.Callers, hopService(m, el, to))
+					out.Callers = append(out.Callers, hopService(m, el, to, recencyOf(last[el.Subject], at)))
 				case el.Subject.A == seed:
-					out.Callees = append(out.Callees, hopService(m, el, to))
+					out.Callees = append(out.Callees, hopService(m, el, to, recencyOf(last[el.Subject], at)))
 				}
 			}
 		}
@@ -356,12 +395,60 @@ func (s *Source) ServiceContext(ctx context.Context, in ServiceContextInput) (Se
 }
 
 // hopService writes the depends_on element between a member and the seed.
-func hopService(m extract.Member, el interval.Element, to time.Time) HopService {
+func hopService(m extract.Member, el interval.Element, to time.Time, recency *Recency) HopService {
 	return HopService{
 		Service: ref(m.Service), Edge: edgeRef(el.Subject), Subject: subjectOfElement(el.Subject),
 		Basis: BasisDerived, Rule: RuleExistence, AssertedBy: piecesProducers(el.Pieces),
 		Spans: pieceSpans(el.Pieces, to), Duration: interval.Duration(interval.Spans(el)).String(),
-		Instances: len(m.Instances),
+		Instances: len(m.Instances), Recency: recency,
+	}
+}
+
+// hopEvidence reads the seed's depends_on edges again with the evidence option,
+// at the token and window the extraction read them at, and returns, for each
+// edge with a span at the window's last instant, the evidence there. It makes one
+// interval read in each direction the hop has a member in, reverse for the
+// callers and forward for the callees, and none for an answer with no member.
+// The extraction, its policy and what it returns are untouched, and the option
+// adds no store read to a read that has it off.
+func (s *Source) hopEvidence(ctx context.Context, seed identity.Fingerprint, w interval.Window, members []extract.Member) (map[store.Subject][]interval.Evidence, error) {
+	var dirs []store.Direction
+	if slices.ContainsFunc(members, func(m extract.Member) bool { return m.Role&extract.RoleCaller != 0 }) {
+		dirs = append(dirs, store.Reverse)
+	}
+	if slices.ContainsFunc(members, func(m extract.Member) bool { return m.Role&extract.RoleCallee != 0 }) {
+		dirs = append(dirs, store.Forward)
+	}
+	out := map[store.Subject][]interval.Evidence{}
+	rd := interval.NewReader(s.st, interval.Options{Evidence: true})
+	for _, d := range dirs {
+		res, err := rd.Edges(ctx, seed, d, w)
+		if err != nil {
+			return nil, err
+		}
+		for _, el := range res.Elements {
+			if el.Subject.Relation == catalog.DependsOn && el.Last != nil {
+				out[el.Subject] = el.Last
+			}
+		}
+	}
+	return out, nil
+}
+
+// recencyOf is the recency of an edge from its evidence at the instant it was read
+// at, or nil when the log proves no silence: no span at that instant, or a
+// producer with no TTL.
+func recencyOf(last []interval.Evidence, at time.Time) *Recency {
+	r, ok := decay.Of(last, at, decay.DefaultPolicy())
+	if !ok {
+		return nil
+	}
+	return &Recency{
+		Basis: BasisDerived, Subject: SubjectDerived, Rule: RuleRecency,
+		Producer: string(r.Producer), LastSeen: fmtTime(r.LastSeen), SilentAtLeast: r.SilentAtLeast.String(),
+		// Rounded so that the same bytes come out on every platform: the last bit of
+		// a float power can differ between architectures.
+		Confidence: math.Round(r.Confidence*1e4) / 1e4,
 	}
 }
 

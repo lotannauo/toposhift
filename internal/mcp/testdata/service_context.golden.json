@@ -7,7 +7,8 @@
     "extract": 1,
     "rank": "253c746577b09aba",
     "names": 2,
-    "withhold": 1
+    "withhold": 1,
+    "decay": 1
   },
   "service": {
     "id": "service:c6c9a383b08abae7a059475f4195f9e6",
@@ -66,7 +67,16 @@
         }
       ],
       "duration": "30m0s",
-      "instances": 1
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:29:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
     },
     {
       "service": {
@@ -112,7 +122,16 @@
         }
       ],
       "duration": "30m0s",
-      "instances": 1
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:29:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
     },
     {
       "service": {
@@ -158,7 +177,8 @@
         }
       ],
       "duration": "15m0s",
-      "instances": 1
+      "instances": 1,
+      "recency": null
     }
   ],
   "callees": [
@@ -206,7 +226,16 @@
         }
       ],
       "duration": "30m0s",
-      "instances": 1
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:29:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
     },
     {
       "service": {
@@ -252,7 +281,16 @@
         }
       ],
       "duration": "30m0s",
-      "instances": 2
+      "instances": 2,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:29:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
     }
   ],
   "pairs": [

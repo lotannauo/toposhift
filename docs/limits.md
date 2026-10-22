@@ -18,3 +18,4 @@ What the evidence does not show is a separate list, in the findings report: [Wha
 - Translator resets can still raise read work in watch-only mode.
 - Native sidecars are not read.
 - The memory the shipped writer needs at scale is not measured on CI.
+- The recency `service_context` gives a caller or callee cannot show a silence shorter than half the expiry (3 hours at the default expiry of 6 hours), and it shows only for dependencies; entities and placements have none.

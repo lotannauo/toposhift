@@ -2,11 +2,13 @@ package mcp
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/query/blastradius"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/decay"
 	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/graphdiff"
 	"github.com/lotannauo/toposhift/internal/query/interval"
@@ -35,7 +37,7 @@ func TestDescribeSchema(t *testing.T) {
 	wantPolicy := Policy{
 		Interval: interval.PolicyVersion, BlastRadius: blastradius.PolicyVersion, GraphDiff: graphdiff.PolicyVersion,
 		CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Names: NameTableVersion, Payload: PayloadTableVersion, Withhold: WithholdVersion,
-		Find: FindVersion,
+		Find: FindVersion, Decay: decay.PolicyVersion,
 	}
 	if out.Policy != wantPolicy || out.Names.Version != NameTableVersion || out.Payload.Version != PayloadTableVersion {
 		t.Errorf("policy %+v", out.Policy)
@@ -107,6 +109,23 @@ func TestDescribeSchema(t *testing.T) {
 	for _, reason := range endVocabulary {
 		if !slices.Contains(vocab(out.Vocabulary.EndReasons), reason) {
 			t.Errorf("end reason %q is not in the vocabulary", reason)
+		}
+	}
+	// The recency a service_context hop carries is spelled out: its rule, and each
+	// field, with the warning that the bound is measured to the window's last instant.
+	if !slices.Equal(vocab(out.Vocabulary.Recency), []string{"producer", "last_seen", "silent_at_least", "confidence"}) {
+		t.Errorf("recency words %v", vocab(out.Vocabulary.Recency))
+	}
+	if !slices.Contains(vocab(out.Vocabulary.Rules), RuleRecency) {
+		t.Errorf("the rule %q is not in the vocabulary", RuleRecency)
+	}
+	for _, r := range out.Vocabulary.Rules {
+		if r.Term == RuleRecency {
+			for _, phrase := range []string{"a lower bound on how long", "a silence shorter than half the producer's expiry may not show", "a window that ends after the newest records shows the time since them as silence"} {
+				if !strings.Contains(r.Meaning, phrase) {
+					t.Errorf("the meaning of %s lacks %q: %s", RuleRecency, phrase, r.Meaning)
+				}
+			}
 		}
 	}
 	if !slices.Equal(vocab(out.Vocabulary.Basis), []string{"fact", "derived"}) || !slices.Equal(vocab(out.Vocabulary.Subject), []string{"asserted", "derived"}) {

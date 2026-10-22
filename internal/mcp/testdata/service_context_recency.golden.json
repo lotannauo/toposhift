@@ -1,0 +1,285 @@
+{
+  "window": {
+    "from": "2026-01-01T10:00:00Z",
+    "to": "2026-01-01T10:14:00Z"
+  },
+  "callers": [
+    {
+      "service": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:7e5b175fa11abc658a334642ae44fb41",
+          "type": "service",
+          "name": "cart",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:14:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "14m0s",
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:13:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
+    },
+    {
+      "service": {
+        "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+        "type": "service",
+        "name": "legacy-pay",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:a73857f3ba4ff668c6922a786c73eed4",
+          "type": "service",
+          "name": "legacy-pay",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:14:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "14m0s",
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:10:00Z",
+        "silent_at_least": "1m29.999999999s",
+        "confidence": 0.1895
+      }
+    },
+    {
+      "service": {
+        "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+        "type": "service",
+        "name": "frontend",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:d23bf94fc592f5b01d5fda58ab50bea9",
+          "type": "service",
+          "name": "frontend",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:14:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "14m0s",
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:13:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
+    }
+  ],
+  "callees": [
+    {
+      "service": {
+        "id": "service:7e5b175fa11abc658a334642ae44fb41",
+        "type": "service",
+        "name": "cart",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:7e5b175fa11abc658a334642ae44fb41",
+          "type": "service",
+          "name": "cart",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:14:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "14m0s",
+      "instances": 1,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:13:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
+    },
+    {
+      "service": {
+        "id": "service:e3e854a6560233885f53f341fdf39a6e",
+        "type": "service",
+        "name": "payments",
+        "namespace": "shop",
+        "name_from": "spancount/c1"
+      },
+      "edge": {
+        "from": {
+          "id": "service:c6c9a383b08abae7a059475f4195f9e6",
+          "type": "service",
+          "name": "checkout",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "to": {
+          "id": "service:e3e854a6560233885f53f341fdf39a6e",
+          "type": "service",
+          "name": "payments",
+          "namespace": "shop",
+          "name_from": "spancount/c1"
+        },
+        "relation": "depends_on"
+      },
+      "subject": "asserted",
+      "basis": "derived",
+      "rule": "existence",
+      "asserted_by": [
+        "svcgraph/c1"
+      ],
+      "spans": [
+        {
+          "start": "2026-01-01T10:00:00Z",
+          "end": "2026-01-01T10:14:00Z",
+          "end_reason": null,
+          "end_sentence": "still present at the window's end",
+          "began_before_window": true,
+          "asserted_by": [
+            "svcgraph/c1"
+          ]
+        }
+      ],
+      "duration": "14m0s",
+      "instances": 2,
+      "recency": {
+        "basis": "derived",
+        "subject": "derived",
+        "rule": "decay.recency",
+        "producer": "svcgraph/c1",
+        "last_seen": "2026-01-01T10:13:00Z",
+        "silent_at_least": "0s",
+        "confidence": 1
+      }
+    }
+  ]
+}

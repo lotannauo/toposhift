@@ -227,7 +227,7 @@ func TestRulesAreInTheVocabulary(t *testing.T) {
 	}
 	for _, want := range []string{
 		"existence", "blast_radius.reach", "co_residency.shared_node", "co_residency.shared_host", "unattributed.no_host", "unattributed.quarantined_host", "diff.created", "diff.deleted", "diff.changed", "diff.transient", "diff.event",
-		"pair.shared_pod", "pair.shared_node", "pair.shared_host", "unmapped", "unattributed.several_pods",
+		"pair.shared_pod", "pair.shared_node", "pair.shared_host", "unmapped", "unattributed.several_pods", "decay.recency",
 	} {
 		if !used[want] && want != "unattributed.no_host" {
 			t.Errorf("no answer of the fixture uses the rule %q", want)

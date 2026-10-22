@@ -23,6 +23,7 @@ type spyStore struct {
 	retains    int
 	closes     int
 	lists      int
+	lastSeqs   int
 	afterFirst func()
 	fired      bool
 }
@@ -65,6 +66,15 @@ func (s *spyStore) Close() error {
 	s.closes++
 	s.mu.Unlock()
 	return s.Store.Close()
+}
+
+// LastSeq counts the calls: every interval read begins with one, and so a count of
+// them is a count of the interval reads made through the spy, when nothing else asks.
+func (s *spyStore) LastSeq() uint64 {
+	s.mu.Lock()
+	s.lastSeqs++
+	s.mu.Unlock()
+	return s.Store.LastSeq()
 }
 
 func (s *spyStore) Neighbors(ctx context.Context, fp identity.Fingerprint, d store.Direction, t time.Time, sc store.Scope) ([]store.Neighbor, error) {

@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -99,6 +100,13 @@ func svcDescription(name string) string {
 // newSvcWorld writes the world to st, which must be empty and opened with the
 // policy of the test.
 func newSvcWorld(tb testing.TB, st store.Store) *svcWorld {
+	tb.Helper()
+	return newSvcWorldKeeping(tb, st, nil)
+}
+
+// newSvcWorldKeeping is newSvcWorld writing only the records keep says to write; a
+// nil keep writes them all.
+func newSvcWorldKeeping(tb testing.TB, st store.Store, keep func(store.Record) bool) *svcWorld {
 	tb.Helper()
 	w := &svcWorld{
 		st: st, feed: newFeed(tb, st),
@@ -217,6 +225,9 @@ func newSvcWorld(tb testing.TB, st store.Store) *svcWorld {
 		)
 	}
 
+	if keep != nil {
+		w.recs = slices.DeleteFunc(w.recs, func(r store.Record) bool { return !keep(r) })
+	}
 	w.flush()
 	return w
 }

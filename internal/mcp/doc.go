@@ -65,18 +65,32 @@
 // it) and callees (a depends_on from it), one hop, and every other service that
 // shared a pod, a node or a host with a pod of that hop. It takes an id and
 // never a name, and a window and never an instant. It runs one extraction under
-// the package's default policy and reads nothing else but the names, so every
-// pair is the union over instances of the intersection of every leg, as the
-// package derives it. A mapping that cannot be told is listed as unattributed,
-// and a pod with no instance mapped singly to a service as unmapped, never
-// guessed. The pairs carry the rules the wire uses (pair.shared_pod,
-// pair.shared_node, pair.shared_host), and the policy carries the extraction's
-// version. A service that shares a node with the seed pods on most of the
+// the package's default policy and reads nothing else but the names and the
+// recency of the hop (below), so every pair is the union over instances of the
+// intersection of every leg, as the package derives it. A mapping that cannot
+// be told is listed as unattributed, and a pod with no instance mapped singly to
+// a service as unmapped, never guessed. The pairs carry the rules the wire uses
+// (pair.shared_pod, pair.shared_node, pair.shared_host), and the policy carries
+// the extraction's version and decay's. A service that shares a node with the seed pods on most of the
 // frontier is suppressed as ubiquitous and listed apart, with its coverage. The
 // caps of the extraction mark the answer incomplete, each with a sentence; the
 // display limit and the hard cap give exact counts, and the hard cap drops the
 // callers and callees last. The service is the only entity the request names:
 // no endpoint id is printed.
+//
+// Each caller and callee also carries a recency (package decay): how long the
+// stored records prove its dependency has gone unseen, and a confidence that
+// halves with that silence, derived at the window's last instant and labelled
+// derived. It is read from the service's depends_on edges read again with the
+// evidence option, at the answer's token and window, in each direction the hop has
+// a member in (two interval reads at most, on top of the extraction's), and matched
+// to the hop by edge. It is null when no span of the edge reaches the window's
+// last instant and when a producer of the edge has no TTL. It is a lower bound,
+// and a window that ends after the newest records shows the time since them as
+// silence. It adds, removes and orders nothing: the extraction, its caps and its
+// policy are untouched, and the temporal subgraphs and every other tool carry no
+// recency. Only dependency edges have one; the evidence of an entity or a
+// placement does not bound its silence (see package decay).
 //
 // # Temporal subgraphs
 //

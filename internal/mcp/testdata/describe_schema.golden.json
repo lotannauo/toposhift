@@ -9,7 +9,8 @@
     "names": 2,
     "payload": 2,
     "withhold": 1,
-    "find": 1
+    "find": 1,
+    "decay": 1
   },
   "entities": [
     {
@@ -509,6 +510,10 @@
         "meaning": "an entity's or an edge's existence, folded from its records; asserted_by lists the producers"
       },
       {
+        "term": "decay.recency",
+        "meaning": "a dependency's recency at the window's last instant: a lower bound on how long its freshest producer has not seen the edge, from the stored records, so a silence shorter than half the producer's expiry may not show, and a window that ends after the newest records shows the time since them as silence"
+      },
+      {
         "term": "blast_radius.reach",
         "meaning": "an entity a failing seed reaches over a chain of edges that all exist at once"
       },
@@ -599,6 +604,24 @@
       {
         "term": "flapping",
         "meaning": "two spans or more"
+      }
+    ],
+    "recency": [
+      {
+        "term": "producer",
+        "meaning": "the producer that saw the edge most recently"
+      },
+      {
+        "term": "last_seen",
+        "meaning": "the last instant the stored records say that producer saw the edge, not after the window's last instant"
+      },
+      {
+        "term": "silent_at_least",
+        "meaning": "a lower bound on how long that producer has not seen the edge at the window's last instant: never more than the truth, and short of it by at most half the producer's expiry"
+      },
+      {
+        "term": "confidence",
+        "meaning": "2 to the power of minus silent_at_least over an eighth of the producer's expiry, rounded to four decimals: 1 for no silence, halved for each eighth of the expiry more; it is no probability and decides no member, order or cut"
       }
     ]
   },

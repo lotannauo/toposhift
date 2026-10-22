@@ -17,6 +17,8 @@ Each route takes `POST` with a JSON body, and answers 200 with a JSON object.
 
 Every body may also hold `asof`, a token as a decimal string. The questions, the fields and their sentences are those of the MCP tools `what_changed` (for `scope`), `co_residents`, `service_context` and `blast_radius`, described in [The MCP tools](mcp.md#tools), with these differences: there is no `limit` and no `at`, because a subgraph is never cut and is always a window `[from, to)`; and `service_context` is always the exploratory one, as the tool is.
 
+The subgraph answers carry no `recency`; only the `service_context` tool does.
+
 A request must be:
 
 - `Content-Type: application/json`, which any other value is answered 415 for. No `Accept` is needed.
