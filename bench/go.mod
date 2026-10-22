@@ -5,7 +5,9 @@ go 1.27.3
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/lotannauo/toposhift v0.0.0-00010101000000-000000000000
+	go.opentelemetry.io/proto/otlp v1.11.0
 	go.yaml.in/yaml/v3 v3.0.5
+	google.golang.org/protobuf v1.36.12
 	pgregory.net/rapid v1.3.0
 )
 
@@ -53,7 +55,7 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 	golang.org/x/vuln v1.8.0 // indirect
-	google.golang.org/protobuf v1.36.12 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a // indirect
 )
 
 // The root module is developed alongside this one. This replace is why bench

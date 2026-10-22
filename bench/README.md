@@ -263,6 +263,49 @@ into its package, and so reruns it and everything that imports it.
   exports' coverage with its sha256. All its output is written outside the repository;
   everything but the results file names entities of the dataset.
 
+## decaycheck
+
+`cmd/decaycheck` replays a capture of the service graph connector's metrics (OTLP JSON
+lines, as the collector's file exporter writes them) through the product's receiver,
+sequencer and coalescer, and counts where the derived silence of a dependency
+(`internal/query/decay`) shows, and whether it is ever more than the log proves. Each line
+is converted to protobuf (`protojson`, then `proto.Marshal`) and posted in process to
+`otlphttp.MetricsHandler`, whose sink gives it to a real sequencer over a memory store and,
+once the sequencer has taken it, to a second service graph translator built as the
+sequencer builds its own. That translator's output is kept whole, before the coalescer
+thins it: the sightings, the instants a producer saw an edge, which are the truth the bound
+is checked against. The sequencer's clock and flush tick are the capture's own, in event
+time, as `internal/demo` drives them, so nothing reads the wall clock and the same capture
+and flags give the same counts on any machine. One pass drives one pipeline for each expiry
+(`-expiries`, default `6h,1h,20m`: both the service graph and the span count TTL).
+
+```sh
+cd bench && go run ./cmd/decaycheck -capture DIR -capture-sha256 HEX \
+  -from 2026-01-01T00:00:00Z -to 2026-01-03T00:00:00Z -out OUTDIR
+```
+
+From `-from`, every `-step` (one minute) below `-to`, every edge the translator wrote is read
+with the interval reader's `Evidence` option, at the store's last sequence number when the
+replay's clock reached the instant and at the one when it ended, and each edge that exists
+gets its recency from `decay.Of`. The bound must not exceed the true silence (the time since
+the latest sighting at or before the instant that the token knows of) and must fall short of
+it by at most the extension interval; either failing exits with status 1. The report counts,
+for each edge, how often it existed (`members`), how often a bound above zero was derived
+(`shown`) and how often the true silence was above the extension interval (`true>X`, the
+silences that can show), with the largest bound and true silence, and how the bounds are
+spread over half-lives. It decides nothing about a half-life: the policy is the product's.
+
+The capture's SHA-256 (the parts, the `.jsonl` files of `-capture` in name order, joined)
+is required and checked before anything is replayed, as are the window and an `-out` that is
+not inside a git work tree or the capture and holds no report; otherwise the command exits
+with status 2 without replaying a line or writing anything. The report is `result.json`
+and `report.txt` in `-out`. Its counts are local and deterministic and are not published;
+the command prints no timing. `cmd/decaycheck/testdata/fixture.ndjson.txt` is a hand-made
+capture of twenty lines (not named `*.jsonl`, which is kept out of `bench/`; the tests write it
+to a temporary directory as `fixture.jsonl`) whose table, `fixture.runs.json`, the tests pin.
+The module's two new direct requirements, `go.opentelemetry.io/proto/otlp` and `google.golang.org/protobuf`, are the
+versions the root module already selects.
+
 ## spike
 
 - `spike/engine`: the narrow interface a storage candidate implements, and the
