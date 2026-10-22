@@ -239,7 +239,7 @@ func runDiff(args []string, stdout, stderr io.Writer) error {
 	var kind string
 	var tol float64
 	fs.StringVar(&kind, "kind", "", "load, stream, read or sizes")
-	fs.Float64Var(&tol, "wal-tolerance", 0, "the relative difference of a phase's log counts that is not a difference (default 0: exact)")
+	fs.Float64Var(&tol, "wal-tolerance", 0, "the relative difference of a phase's log counts that is not a difference (default 0: exact; the record bytes of a phase with full-page images are not a function of the stream, because the images are compressed, so name a tolerance for them)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -478,6 +478,37 @@ func TestTheLoaderRefusesWhatItCannotLoad(t *testing.T) {
 	_ = l3.Close()
 }
 
+// TestTheFoldOfALoadWritesNoFullPageImageSoItsRecordBytesAreAFunctionOfTheStream: a
+// full-page image is compressed (wal_compression is lz4), and its size depends on the
+// bytes of the page, which hold transaction ids and a log position that no two loads
+// share. The fold is the phase two loads are held to exactly, so it must hold none: the
+// write of the last sequence number to the meta page used to be its first change since the
+// checkpoint, and gave the fold one image of 149 bytes in a load and 146 in the next, a
+// difference of a few record bytes (1 to 3) between two loads of one stream, in about one
+// load pair in five on a laptop (4 of 20 runs).
+func TestTheFoldOfALoadWritesNoFullPageImageSoItsRecordBytesAreAFunctionOfTheStream(t *testing.T) {
+	p := retainingPlan(t)
+	fold := func(b bulkLoad) pgengine.Phase {
+		for _, ph := range b.stats.Phases {
+			if ph.Name == pgengine.PhaseFold {
+				return ph
+			}
+		}
+		t.Fatal("no fold phase")
+		return pgengine.Phase{}
+	}
+	first := fold(loadBulk(t, pgschema.Bulk, p, nil))
+	second := fold(loadBulk(t, pgschema.Bulk, p, nil))
+	for i, ph := range []pgengine.Phase{first, second} {
+		if ph.FPIs != 0 || ph.CheckpointsInside != 0 || ph.Records <= 0 {
+			t.Errorf("load %d: the fold holds %d full-page images and %d checkpoints in %d records", i+1, ph.FPIs, ph.CheckpointsInside, ph.Records)
+		}
+	}
+	if first.Records != second.Records || first.RecordBytes != second.RecordBytes {
+		t.Errorf("two loads of one stream: the fold wrote %d records of %d bytes, then %d of %d", first.Records, first.RecordBytes, second.Records, second.RecordBytes)
+	}
+}
+
 // TestTheLogOfALoadIsCountedByPhase: the stream is one span whose parts are the COPYs,
 // the retentions and the vacuums they called for; the other phases follow it.
 func TestTheLogOfALoadIsCountedByPhase(t *testing.T) {

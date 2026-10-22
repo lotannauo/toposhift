@@ -126,7 +126,10 @@ func TestTheCommandsLoadReadAndHoldTwoLoadsToEachOther(t *testing.T) {
 	// Two loads with index set G hold the same rows and the same tables, but a GiST index
 	// is built with random choices among equally good pages, so its size, and the log of
 	// building it, are not the same from one build to the next: those are the only
-	// differences.
+	// differences. The phases that hold full-page images are listed with them, because an
+	// image is compressed and its size depends on the transaction ids and the log position
+	// in the page: the fold is the phase left to hold the loads to exact record bytes, and
+	// holds none (TestTheFoldOfALoadWritesNoFullPageImageSoItsRecordBytesAreAFunctionOfTheStream).
 	var a2 pgreport.Load
 	if err := pgreport.ReadFile(filepath.Join(loads["a2"], "load.json"), &a2); err != nil {
 		t.Fatal(err)

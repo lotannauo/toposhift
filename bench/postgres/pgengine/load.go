@@ -67,9 +67,13 @@ func VacuumDue(dead, live int64) bool {
 //
 // The records are the server's own count of what it wrote for the phase (pg_stat_wal):
 // the number of log records, how many were full-page images, and their bytes. They are
-// not exactly the same on two runs of one phase: which page a COPY or a vacuum found
-// free when a background process held another, the catalog pages the earlier loads left,
-// and what ANALYZE draws at random move them a little. The log position is the
+// not exactly the same on two runs of one phase. A full-page image is compressed
+// (wal_compression is lz4, registered): its size depends on the bytes of the page, which
+// hold transaction ids and the log position of the load, so two loads of one stream differ
+// in the record bytes of a phase that holds an image, by a few bytes for a page of a few
+// tuples (a measured case: 149 and 146 bytes for the image of the meta page). In the fold,
+// which is kept free of them (see [Loader.Finish]), the record bytes were the same in
+// forty loads of the test plan. The log position is the
 // advance of pg_current_wal_insert_lsn over a phase that ran as one span
 // (Contiguous): the record bytes, plus the headers and the padding of log pages, so it
 // moves by a page header (at most [LogSlack] bytes) with where the span began in its page.
@@ -703,6 +707,18 @@ func (l *Loader) Finish() (*LoadStats, error) {
 	}
 	l.add(PhaseStream, true, l.streamFrom, streamTo)
 
+	// The last sequence number is written here, in no phase, like the creation of the
+	// schema and the checkpoints between phases. In the fold it would be the first change
+	// to the meta page since a checkpoint, and put a full-page image of the page in the
+	// fold's log. An image is compressed (wal_compression is lz4, registered) and its size
+	// depends on the bytes of the page, which hold transaction ids and a log position that
+	// no two loads share: the fold's record bytes, otherwise a function of the stream,
+	// would differ by a few bytes from one load to the next (see [Phase]). In the stream
+	// it would break the stream being its parts: the COPYs, retentions and vacuums.
+	if _, err := l.conn.Exec(ctx, "UPDATE meta SET last_seq = $1", seqToDB(l.last)); err != nil {
+		return nil, fmt.Errorf("pgengine: %w", err)
+	}
+
 	// The rows are counted before any is held: a load that would need more memory than
 	// it may use stops here, with the interval tables empty.
 	_, _, _, rows, err := l.fold(ctx, true)
@@ -726,14 +742,7 @@ func (l *Loader) Finish() (*LoadStats, error) {
 			return err
 		}
 		used = u
-		if err := l.copyIntervals(ctx, edges, entities); err != nil {
-			return err
-		}
-		_, err = l.conn.Exec(ctx, "UPDATE meta SET last_seq = $1", seqToDB(l.last))
-		if err != nil {
-			return fmt.Errorf("pgengine: %w", err)
-		}
-		return nil
+		return l.copyIntervals(ctx, edges, entities)
 	})
 	if err != nil {
 		return nil, err
