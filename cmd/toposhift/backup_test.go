@@ -972,15 +972,17 @@ func TestBackupBreaksWhenARetentionCannotBeLogged(t *testing.T) {
 
 // A crash between a Retain and the next cut leaves the store and the manifest at
 // one Seq (a retention does not change it) with the store's horizons ahead of the
-// manifest's last logged retention: the backup is broken at the next start, not
-// resumed. A retention that was cut resumes.
-func TestBackupDetectsARetentionThatWasNotLogged(t *testing.T) {
+// manifest's last logged retention: the next start logs the retention from the
+// store's horizons and resumes, and so does one that finds the retention cut. A
+// store whose horizon is ahead in a layer other than L2 alone is not repaired: the
+// backup is broken.
+func TestBackupLogsARetentionThatWasNotLoggedAtStart(t *testing.T) {
 	horizon := storetest.Tiny().Start.Add(10 * time.Minute)
 	for _, tt := range []struct {
 		name     string
 		cutAfter bool
-		mode     string
-	}{{"crashed before the cut", false, backupBroken}, {"cut after the retention", true, backupOn}} {
+		logged   int
+	}{{"crashed before the cut", false, 1}, {"cut after the retention", true, 1}} {
 		t.Run(tt.name, func(t *testing.T) {
 			st := rigMemstore(t, rigMeta)
 			r := newRig(t, "", st, rigMeta, false)
@@ -994,23 +996,43 @@ func TestBackupDetectsARetentionThatWasNotLogged(t *testing.T) {
 			}
 			// The process is gone: nothing is stopped or closed.
 			r2 := newRig(t, r.dir, st, rigMeta, false)
-			s := r2.run.status()
-			if s.Mode != tt.mode {
-				t.Fatalf("status %+v, want %s", s, tt.mode)
-			}
-			if tt.mode == backupBroken {
-				if !strings.Contains(s.Reason, "a retention the store applied after the last cut is not in the backup") || r2.run.tee {
-					t.Errorf("status %+v tee %v", s, r2.run.tee)
-				}
-				if s.Local == nil || s.Local.Seq != st.LastSeq() {
-					t.Errorf("local status %+v, want the manifest at the store's last seq", s.Local)
-				}
-			} else if !r2.run.tee {
-				t.Error("the backup does not take commits")
+			if s := r2.run.status(); s.Mode != backupOn || !r2.run.tee {
+				t.Fatalf("status %+v tee %v, want on with the tee", s, r2.run.tee)
 			}
 			r2.run.stop()
+			m, _ := stoppedBackup(t, r.dir)
+			if len(m.Retentions) != tt.logged || m.Seq != st.LastSeq() {
+				t.Errorf("the manifest at seq %d holds %d retentions, want %d at seq %d", m.Seq, len(m.Retentions), tt.logged, st.LastSeq())
+			}
 		})
 	}
+	t.Run("a horizon ahead in another layer alone", func(t *testing.T) {
+		st := rigMemstore(t, rigMeta)
+		r := newRig(t, "", st, rigMeta, false)
+		feed(t, r.writer(), newGen(t), 3)
+		r.run.cut(t.Context())
+		if err := st.Retain(t.Context(), horizon); err != nil {
+			t.Fatal(err)
+		}
+		// The store reports an L2 horizon no later than the one logged, as a store with
+		// another offset for the layer would.
+		r2 := newRig(t, r.dir, otherLayerAhead{st}, rigMeta, false)
+		s := r2.run.status()
+		if s.Mode != backupBroken || !strings.Contains(s.Reason, "a retention the store applied after the last cut is not in the backup") || r2.run.tee {
+			t.Errorf("status %+v tee %v, want broken", s, r2.run.tee)
+		}
+	})
+}
+
+// otherLayerAhead is a store whose horizons are the store's, except that L2's is
+// zero.
+type otherLayerAhead struct{ *memstore.Store }
+
+func (o otherLayerAhead) LayerHorizon(l catalog.Layer) store.Horizon {
+	if l == catalog.L2 {
+		return store.Horizon{}
+	}
+	return o.Store.LayerHorizon(l)
 }
 
 // errAfterRetain retains the store and then fails.
