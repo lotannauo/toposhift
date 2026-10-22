@@ -52,7 +52,7 @@ func TestEveryQuestionOfAPlanIsAnsweredAsTheReferenceEngineDid(t *testing.T) {
 		{"a retention", retainingSpec()},
 	} {
 		p := makePlan(t, c.spec)
-		for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+		for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 			t.Run(c.name+" "+string(arm), func(t *testing.T) {
 				// Each arm has an engine, and a schema, of its own.
 				t.Parallel()

@@ -253,7 +253,7 @@ func TestAnEngineRefusesASchemaThatIsNotItsOwn(t *testing.T) {
 	if err := e.Write([]engine.Record{observe(1, "a", 10, 5)}); err != nil {
 		t.Fatal(err)
 	}
-	for _, arm := range []pgschema.Arm{pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+	for _, arm := range []pgschema.Arm{pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 		if o, err := pgengine.Open(context.Background(), cfg(arm)); !errors.Is(err, pgengine.ErrSchema) {
 			if o != nil {
 				_ = o.Close()
@@ -388,7 +388,7 @@ func TestDayPartitionsAreMadeAheadOfTheWrites(t *testing.T) {
 	last := observe(4, "a", 0, 0)
 	last.EventTime = engine.MaxEventTime
 	records = append(records, last)
-	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition} {
+	for _, arm := range streamArms {
 		e := openEngine(t, arm)
 		if err := e.Write(records); err != nil {
 			t.Fatalf("%s: %v", arm, err)
@@ -413,7 +413,7 @@ WHERE p.relname = 'log' AND n.nspname = $1 ORDER BY 1`, e.Schema())
 		}
 		rows.Close()
 		want := []string{"log_p19700103", "log_p19700104", "log_p19700108", "log_p22620411"}
-		if arm != pgschema.Stream {
+		if !arm.Partitioned() {
 			want = nil
 		}
 		if !slices.Equal(names, want) {
@@ -427,10 +427,10 @@ WHERE p.relname = 'log' AND n.nspname = $1 ORDER BY 1`, e.Schema())
 
 // TestProvisionalRowsAreReadAtTheirDeadline: a streaming writer may keep a row
 // provisional, its range unbounded and its end in deadline_ns, which no index covers.
-// A read must stop at the deadline whatever the range says. The planner of this engine
-// writes no such row, so they are made by hand.
+// A read must stop at the deadline whatever the range says. The rows here are made by
+// hand; the rows the writer makes are held to the same rule by the tests of its streams.
 func TestProvisionalRowsAreReadAtTheirDeadline(t *testing.T) {
-	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition} {
+	for _, arm := range streamArms {
 		t.Run(string(arm), func(t *testing.T) {
 			e := openEngine(t, arm)
 			conn := sqlConn(t, e)
@@ -490,7 +490,7 @@ func TestSizeIsWhatTheSchemaHolds(t *testing.T) {
 // records and an edge's are both baselined, and a record at or after the horizon is
 // not.
 func TestRetentionKeepsOneBaselinePerSubjectAndProducer(t *testing.T) {
-	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 		t.Run(string(arm), func(t *testing.T) {
 			e := openEngine(t, arm)
 			pod := engine.EntitySubject(pod1)

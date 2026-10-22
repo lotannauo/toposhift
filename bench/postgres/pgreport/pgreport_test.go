@@ -412,3 +412,90 @@ func TestACountersSumAddsEveryField(t *testing.T) {
 		t.Errorf("%+v, want %+v", got, want)
 	}
 }
+
+func stream() pgreport.Stream {
+	l := load()
+	return pgreport.Stream{
+		Version: pgreport.Version, Env: l.Env, Arm: "pg-stream", Schema: "s_a", Input: l.Input,
+		Retentions: l.Retentions, HorizonNS: l.HorizonNS, Queries: 40, Matched: 40,
+		Writer: pgreport.WriterCounts{
+			Records: 1000, FastSubjects: 700, Refolds: 120, RecordsFolded: 480, RowsInserted: 300, RowsUpdated: 650, RowsHeapOnly: 500,
+			RowsFinalized: 80, RowsDeleted: 100, Vacuums: 5, Analyzes: 7, PartitionsDropped: 1,
+			VacuumRuns: map[string]int{"edges": 3, "log_p19700101": 2}, AnalyzeRuns: map[string]int{"edges": 4, "log_p19700101": 3},
+		},
+		Rows: l.Rows, TablesDigest: l.TablesDigest, TablesRows: l.TablesRows, Phases: l.Phases, Sizes: l.Sizes,
+	}
+}
+
+func TestTwoStreamsOfOneStreamAreEqualAndTheirWritersCountsAreCompared(t *testing.T) {
+	a, b := stream(), stream()
+	b.Schema = "s_b"
+	r, err := pgreport.DiffStreams(a, b, pgreport.Options{})
+	if err != nil || !r.Equal() {
+		t.Fatalf("identical streams: %v %+v", err, r.Differences)
+	}
+	for name, change := range map[string]func(s *pgreport.Stream){
+		"fast subjects":    func(s *pgreport.Stream) { s.Writer.FastSubjects++ },
+		"refolds":          func(s *pgreport.Stream) { s.Writer.Refolds++ },
+		"records folded":   func(s *pgreport.Stream) { s.Writer.RecordsFolded++ },
+		"inserted":         func(s *pgreport.Stream) { s.Writer.RowsInserted++ },
+		"updated":          func(s *pgreport.Stream) { s.Writer.RowsUpdated++ },
+		"heap-only":        func(s *pgreport.Stream) { s.Writer.RowsHeapOnly++ },
+		"finalized":        func(s *pgreport.Stream) { s.Writer.RowsFinalized++ },
+		"deleted":          func(s *pgreport.Stream) { s.Writer.RowsDeleted++ },
+		"vacuums":          func(s *pgreport.Stream) { s.Writer.Vacuums++ },
+		"partitions":       func(s *pgreport.Stream) { s.Writer.PartitionsDropped++ },
+		"vacuums of edge":  func(s *pgreport.Stream) { s.Writer.VacuumRuns["edges"]++ },
+		"analyzes":         func(s *pgreport.Stream) { s.Writer.Analyzes++ },
+		"analyzes of edge": func(s *pgreport.Stream) { s.Writer.AnalyzeRuns["edges"]++ },
+		"a table analyzed": func(s *pgreport.Stream) {
+			s.Writer.AnalyzeRuns = map[string]int{"edges": 4, "log_p19700101": 3, "entities": 1}
+		},
+		"a table vacuumed": func(s *pgreport.Stream) {
+			s.Writer.VacuumRuns = map[string]int{"edges": 3, "log_p19700101": 2, "entities": 1}
+		},
+		"answers matched": func(s *pgreport.Stream) { s.Matched-- },
+		"autovacuum":      func(s *pgreport.Stream) { s.Autovacuum = true },
+		"tables digest":   func(s *pgreport.Stream) { s.TablesDigest = "other" },
+	} {
+		b := stream()
+		change(&b)
+		if r, err := pgreport.DiffStreams(a, b, pgreport.Options{}); err != nil || r.Equal() {
+			t.Errorf("a difference in %s was not found (%v)", name, err)
+		}
+	}
+	// A stream of another arm, or on another server, is not comparable.
+	other := stream()
+	other.Arm = "pg-stream-naive"
+	if _, err := pgreport.DiffStreams(a, other, pgreport.Options{}); !errors.Is(err, pgreport.ErrNotComparable) {
+		t.Errorf("two arms: %v", err)
+	}
+	other = stream()
+	other.Env.SettingsSHA256 = "s2"
+	if _, err := pgreport.DiffStreams(a, other, pgreport.Options{}); !errors.Is(err, pgreport.ErrNotComparable) {
+		t.Errorf("two settings: %v", err)
+	}
+}
+
+func TestAStreamRecordRoundTripsAndRefusesUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	s := stream()
+	if err := pgreport.Write(dir, "stream.json", &s); err != nil {
+		t.Fatal(err)
+	}
+	var back pgreport.Stream
+	if err := pgreport.ReadFile(filepath.Join(dir, "stream.json"), &back); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := pgreport.DiffStreams(s, back, pgreport.Options{}); err != nil || !r.Equal() {
+		t.Fatalf("a record read back differs: %v %+v", err, r.Differences)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, "stream.json"))
+	bad := strings.Replace(string(raw), `"Autovacuum"`, `"Elapsed": 3, "Autovacuum"`, 1)
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgreport.ReadFile(filepath.Join(dir, "bad.json"), &back); !errors.Is(err, pgreport.ErrFormat) {
+		t.Errorf("a record with a field this build does not know: %v", err)
+	}
+}

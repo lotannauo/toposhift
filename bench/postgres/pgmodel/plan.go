@@ -32,6 +32,11 @@ func LogRowOf(r engine.Record) LogRow {
 	return l
 }
 
+// logRow is the log row of a kept record.
+func (c rec) logRow() LogRow {
+	return LogRow{Producer: c.producer, Seq: c.seq, Event: c.event, Through: c.through, HasThrough: c.hasThrough, TTL: c.ttl, Kind: c.kind}
+}
+
 func (l LogRow) rec() rec {
 	return rec{
 		producer: l.Producer, seq: l.Seq, event: l.Event, through: l.Through,

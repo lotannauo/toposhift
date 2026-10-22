@@ -3,6 +3,7 @@ package pgreport
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -221,7 +222,7 @@ func DiffLoads(a, b Load, o Options) (Comparison, error) {
 			{"full-page images", x.FPIs, y.FPIs, 0},
 			{"record bytes", x.RecordBytes, y.RecordBytes, 0},
 			// A page header or two, which where the phase began in its page decides.
-			{"log position", x.LogBytes, y.LogBytes, 64},
+			{"log position", x.LogBytes, y.LogBytes, 64 * int64(max(x.Spans, y.Spans, 1))},
 		} {
 			if !within(f.a, f.b, o.WALTolerance, f.slack) {
 				r.add(CatWAL, "phase "+n+" "+f.name, f.a, f.b)
@@ -229,6 +230,69 @@ func DiffLoads(a, b Load, o Options) (Comparison, error) {
 		}
 	}
 	return r, nil
+}
+
+// DiffStreams compares two streams written by one arm. The tables must be the same by
+// digest, the rows, the bytes and the log as for two loads, and the writer must have done
+// the same: the counts, and the vacuums of each table, are functions of the stream, so any
+// difference in them is a difference between the runs.
+func DiffStreams(a, b Stream, o Options) (Comparison, error) {
+	r, err := DiffLoads(a.asLoad(), b.asLoad(), o)
+	if err != nil {
+		return r, err
+	}
+	r.cmp(CatAnswer, "questions", a.Queries, b.Queries)
+	r.cmp(CatAnswer, "answers matched", a.Matched, b.Matched)
+	r.cmp(CatCounter, "autovacuum left to the server", a.Autovacuum, b.Autovacuum)
+	for _, f := range []struct {
+		name string
+		a, b uint64
+	}{
+		{"records", a.Writer.Records, b.Writer.Records},
+		{"subjects written without a read", a.Writer.FastSubjects, b.Writer.FastSubjects},
+		{"subjects re-folded", a.Writer.Refolds, b.Writer.Refolds},
+		{"records folded", a.Writer.RecordsFolded, b.Writer.RecordsFolded},
+		{"interval rows inserted", a.Writer.RowsInserted, b.Writer.RowsInserted},
+		{"interval rows updated", a.Writer.RowsUpdated, b.Writer.RowsUpdated},
+		{"interval rows updated heap-only", a.Writer.RowsHeapOnly, b.Writer.RowsHeapOnly},
+		{"interval rows finalized", a.Writer.RowsFinalized, b.Writer.RowsFinalized},
+		{"interval rows deleted", a.Writer.RowsDeleted, b.Writer.RowsDeleted},
+		{"vacuums", a.Writer.Vacuums, b.Writer.Vacuums},
+		{"analyzes", a.Writer.Analyzes, b.Writer.Analyzes},
+		{"partitions dropped", a.Writer.PartitionsDropped, b.Writer.PartitionsDropped},
+	} {
+		r.cmp(CatCounter, "writer "+f.name, f.a, f.b)
+	}
+	tables := map[string]bool{}
+	for t := range a.Writer.VacuumRuns {
+		tables[t] = true
+	}
+	for t := range b.Writer.VacuumRuns {
+		tables[t] = true
+	}
+	for _, t := range slices.Sorted(maps.Keys(tables)) {
+		r.cmp(CatCounter, "vacuums of "+t, a.Writer.VacuumRuns[t], b.Writer.VacuumRuns[t])
+	}
+	tables = map[string]bool{}
+	for t := range a.Writer.AnalyzeRuns {
+		tables[t] = true
+	}
+	for t := range b.Writer.AnalyzeRuns {
+		tables[t] = true
+	}
+	for _, t := range slices.Sorted(maps.Keys(tables)) {
+		r.cmp(CatCounter, "analyzes of "+t, a.Writer.AnalyzeRuns[t], b.Writer.AnalyzeRuns[t])
+	}
+	return r, nil
+}
+
+// asLoad is the part of a stream that a load records too, for the comparison they share.
+func (s Stream) asLoad() Load {
+	return Load{
+		Version: s.Version, Env: s.Env, Arm: s.Arm, Schema: s.Schema, Input: s.Input,
+		Retentions: s.Retentions, HorizonNS: s.HorizonNS, PastEnd: s.PastEnd,
+		Rows: s.Rows, TablesDigest: s.TablesDigest, TablesRows: s.TablesRows, Phases: s.Phases, Sizes: s.Sizes,
+	}
 }
 
 func diffSizes(a, b Sizes, prefix string, r *Comparison) {

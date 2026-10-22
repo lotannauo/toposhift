@@ -238,13 +238,13 @@ func runDiff(args []string, stdout, stderr io.Writer) error {
 	fs := newFlags("diff", stderr)
 	var kind string
 	var tol float64
-	fs.StringVar(&kind, "kind", "", "load, read or sizes")
+	fs.StringVar(&kind, "kind", "", "load, stream, read or sizes")
 	fs.Float64Var(&tol, "wal-tolerance", 0, "the relative difference of a phase's log counts that is not a difference (default 0: exact)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 || kind == "" {
-		return errors.New("usage: pgspike diff -kind load|read|sizes [-wal-tolerance f] a.json b.json")
+		return errors.New("usage: pgspike diff -kind load|stream|read|sizes [-wal-tolerance f] a.json b.json")
 	}
 	a, b := fs.Arg(0), fs.Arg(1)
 	var res pgreport.Comparison
@@ -254,6 +254,11 @@ func runDiff(args []string, stdout, stderr io.Writer) error {
 		var x, y pgreport.Load
 		if err = errors.Join(pgreport.ReadFile(a, &x), pgreport.ReadFile(b, &y)); err == nil {
 			res, err = pgreport.DiffLoads(x, y, pgreport.Options{WALTolerance: tol})
+		}
+	case "stream":
+		var x, y pgreport.Stream
+		if err = errors.Join(pgreport.ReadFile(a, &x), pgreport.ReadFile(b, &y)); err == nil {
+			res, err = pgreport.DiffStreams(x, y, pgreport.Options{WALTolerance: tol})
 		}
 	case "read":
 		var x, y pgreport.Read
@@ -266,7 +271,7 @@ func runDiff(args []string, stdout, stderr io.Writer) error {
 			res, err = pgreport.DiffSizes(x, y)
 		}
 	default:
-		return fmt.Errorf("pgspike: -kind must be load, read or sizes, not %q", kind)
+		return fmt.Errorf("pgspike: -kind must be load, stream, read or sizes, not %q", kind)
 	}
 	if err != nil {
 		return err

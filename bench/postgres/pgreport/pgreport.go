@@ -76,6 +76,10 @@ type Phase struct {
 	FPIs              int64
 	RecordBytes       int64
 	CheckpointsInside int64
+	// Spans, if above zero, says the phase is the sum of that many spans, each measured on
+	// its own: LogBytes is exact to the slack of each, and the server's counts are not
+	// kept for it.
+	Spans int `json:",omitempty"`
 }
 
 // Rows are the rows of each table a load left.
@@ -165,6 +169,51 @@ type Load struct {
 	TablesRows   int64
 	Phases       []Phase
 	// Sizes are the bytes the load left, as left: before any compaction.
+	Sizes Sizes
+}
+
+// WriterCounts are what a streaming writer did, in the units of pgmodel.Counts: a
+// function of the stream and the planner, the same on every run.
+type WriterCounts struct {
+	Records, FastSubjects, Refolds, RecordsFolded uint64
+	RowsInserted, RowsUpdated, RowsDeleted        uint64
+	RowsHeapOnly, RowsFinalized                   uint64
+	Vacuums, Analyzes, PartitionsDropped          uint64
+	// VacuumRuns and AnalyzeRuns are how many times each table was vacuumed and analyzed by
+	// the writer's schedule.
+	VacuumRuns, AnalyzeRuns map[string]int
+}
+
+// Stream is the record of one stream written by a streaming arm's writer: the same
+// things a load records (what it left and the log it wrote), what the writer did to get
+// there, and the G0 gate the engine passed before any of it was kept.
+type Stream struct {
+	Version int
+	Env     Env
+	Arm     string
+	// Schema is not compared.
+	Schema string
+	Input  Input
+	// Retentions is how many times the horizon moved, and HorizonNS (Unix nanoseconds,
+	// 0 if it never moved) where it ended.
+	Retentions int
+	HorizonNS  int64
+	PastEnd    bool
+	// Queries is how many questions the plan has and Matched how many the store answered as
+	// the reference did; a stream with fewer matched has no other figure kept.
+	Queries, Matched int
+	Mismatches       []Mismatch `json:",omitempty"`
+	// Autovacuum says whether the writer left vacuuming to the server: otherwise it ran
+	// its own schedule (the deterministic regime).
+	Autovacuum bool
+	Writer     WriterCounts
+	Rows       Rows
+	// TablesDigest is the digest of the interval tables clipped at the horizon, and
+	// TablesRows the rows it covers.
+	TablesDigest string
+	TablesRows   int64
+	Phases       []Phase
+	// Sizes are the bytes the stream left, as left: before any compaction.
 	Sizes Sizes
 }
 
@@ -304,6 +353,8 @@ func ReadFile(path string, v any) error {
 	case *Read:
 		version = r.Version
 	case *SizesReport:
+		version = r.Version
+	case *Stream:
 		version = r.Version
 	default:
 		return fmt.Errorf("pgreport: cannot read a %T", v)

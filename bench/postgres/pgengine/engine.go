@@ -8,24 +8,46 @@
 // Every record goes to the log, so that Window and a read as of an old snapshot token
 // have what they read. The intervals derived from the log, one row per maximal
 // interval of existence of each edge and each entity, are what a read at an instant
-// finds, and are written by [pgmodel.Refold]: for each subject a batch touches, the
-// engine reads the stored rows from the start of the interval the batch lands in and
-// the log from there, folds them, and applies the rows that differ. The SQL and the
-// in-memory [pgmodel.Model] therefore make the same row changes, and a test holds the
-// two to each other after every batch.
-//
-// A read as of the latest token is answered from the interval tables. A read as of an
-// earlier token has no interval table to use, because the intervals carry no ingest
-// time, so the log of each subject is read and folded by the reader.
+// finds. A read as of the latest token is answered from the interval tables. A read as
+// of an earlier token has no interval table to use, because the intervals carry no
+// ingest time, so the log of each subject is read and folded by the reader.
 //
 // # Arms
 //
-// The engine runs the arms of package pgschema that a read can be asked of. The
-// streaming arms ([pgschema.Stream], [pgschema.StreamNoPartition]) re-fold from the
-// interval a batch lands in. The bulk arms ([pgschema.Bulk], [pgschema.BulkB]) have no
-// primary key and are rebuilt: each subject a batch touches is folded whole. They
-// differ in the index set their reads use, G (GiST on the interval) or B (a btree on
-// its end). The id-dictionary arm is for sizes only and is refused.
+// The engine runs the arms of package pgschema that a read can be asked of. Which
+// writer keeps the intervals depends on the arm.
+//
+// The streaming arms ([pgschema.Stream], [pgschema.StreamNoPartition],
+// [pgschema.StreamNaive]) are written by the streaming writer, which is [pgmodel.Writer]
+// over SQL (stream.go): a record that can only lengthen the last interval of its subject
+// is planned from what the writer remembers and costs one insert or one update of a
+// deadline that no index covers; any other record has the stored rows from the interval
+// it lands in and the log from there read, folded, and the rows that differ replaced; a
+// finalizer closes the provisional rows the stream has passed. The log is stored with
+// COPY. A retention is one transaction that inserts the baselines, sets the horizon and
+// deletes the interval rows that have ended; the partitions of the log that are wholly
+// before the horizon are then detached concurrently and dropped, outside it, and reads of
+// the log filter at the horizon meanwhile. The naive arm rewrites the range of every
+// extension, and the unpartitioned arm deletes from the log and vacuums: they are
+// diagnostics, never comparators. A writer keeps the schedule of the deterministic regime
+// (autovacuum off): a table is vacuumed when the writer's own count of the rows it has
+// changed passes autovacuum's formula, by dead rows and by inserted rows both, and
+// analyzes it by autovacuum's formula for changed rows, so that the planner has statistics
+// as it would under autovacuum.
+//
+// Every statement that updates or deletes interval rows finds the rows by ctid, and
+// returns their keys, which the writer checks against the rows it meant to change. Planned
+// by key, such a statement can be a nested loop over an index scan of the GiST index it
+// inserts into, and on the server this baseline is written for that loses entries of the
+// index. A ctid is read in the transaction that asked for the rows (a re-fold) or that
+// wrote the row last (the writer remembers it from RETURNING), and one writer changes the
+// tables at a time, so it stays the row's place; a database another writer has changed is
+// refused ([ErrConcurrentWriter]).
+//
+// The bulk arms ([pgschema.Bulk], [pgschema.BulkB]) have no primary key and are
+// rebuilt by the correctness writer: each subject a batch touches is folded whole. They
+// differ in the index set their reads use, G (GiST on the interval) or B (a btree on its
+// end). The id-dictionary arm is for sizes only and is refused.
 //
 // # Bulk loads and the cold-read protocol
 //
@@ -94,6 +116,11 @@ type Config struct {
 	// Tracer, if set, is told of every statement the engine's connections run, which
 	// lets a harness see the statements a read runs and explain exactly those.
 	Tracer pgx.QueryTracer
+	// NoVacuum leaves vacuuming to the server's autovacuum, which is on in the regime
+	// time is measured in. Otherwise a streaming arm's writer vacuums a table when its
+	// own count of the rows it has changed passes autovacuum's formula, because
+	// autovacuum is off in the regime counters are taken in.
+	NoVacuum bool
 }
 
 // layout is what differs between the arms the engine runs.
@@ -108,14 +135,21 @@ type layout struct {
 	// provisional says rows may carry a deadline, which a read must honour: the
 	// bulk arms never write one and omit the term.
 	provisional bool
+	// stream says the arm is kept current by the streaming writer (see [pgmodel.Writer]):
+	// a fast path, provisional rows and a finalizer, and a retention in one transaction.
+	stream bool
+	// naive says the streaming writer rewrites the range of every extension.
+	naive bool
 }
 
 func newLayout(a pgschema.Arm) (layout, error) {
 	switch a {
 	case pgschema.Stream:
-		return layout{arm: a, partitioned: true, provisional: true}, nil
+		return layout{arm: a, partitioned: true, provisional: true, stream: true}, nil
+	case pgschema.StreamNaive:
+		return layout{arm: a, partitioned: true, provisional: true, stream: true, naive: true}, nil
 	case pgschema.StreamNoPartition:
-		return layout{arm: a, provisional: true}, nil
+		return layout{arm: a, provisional: true, stream: true}, nil
 	case pgschema.Bulk, pgschema.BulkB:
 		return layout{arm: a, whole: true}, nil
 	case pgschema.BulkID:
@@ -133,11 +167,21 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// wmu serializes Write and Retain, and guards counts and parts.
+	// wmu serializes Write and Retain, and guards counts, parts and the writer's state.
 	wmu    sync.Mutex
 	counts pgmodel.Counts
 	// parts are the day partitions of the log this engine has seen committed.
 	parts map[string]bool
+
+	// What a streaming arm's writer keeps between batches (see stream.go): the planner and
+	// what it remembers, the vacuum schedule, and the token, the horizon and whether it is
+	// past the end as this engine last left them in the database, which another writer's
+	// work would change.
+	w        *pgmodel.Writer
+	vac      *pgmodel.VacuumSchedule
+	noVacuum bool
+	seq      uint64
+	pastEnd  bool
 }
 
 var _ engine.Engine = (*Engine)(nil)
@@ -172,12 +216,19 @@ func Open(ctx context.Context, cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pgengine: %w", err)
 	}
-	e := &Engine{pool: pool, schema: cfg.Schema, lay: lay, parts: make(map[string]bool)}
+	e := &Engine{pool: pool, schema: cfg.Schema, lay: lay, parts: make(map[string]bool), noVacuum: cfg.NoVacuum}
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	if err := e.setup(ctx); err != nil {
 		pool.Close()
 		e.cancel()
 		return nil, err
+	}
+	if lay.stream {
+		if err := e.restore(ctx); err != nil {
+			pool.Close()
+			e.cancel()
+			return nil, err
+		}
 	}
 	return e, nil
 }
@@ -278,9 +329,10 @@ func (e *Engine) Close() error {
 func (e *Engine) Schema() string { return e.schema }
 
 // Counts returns what the engine has written, in the units of [pgmodel.Counts]: rows
-// inserted, updated and deleted in the interval tables, the subjects re-folded and the
-// records those folds read. For a streaming arm they equal the counts of a
-// [pgmodel.Model] that was given the same stream.
+// inserted, updated and deleted in the interval tables, the subjects written without a
+// read and the ones re-folded, the records those folds read, the vacuums and the
+// partitions dropped. For a streaming arm they equal the counts of a [pgmodel.Model] of
+// the same writer that was given the same stream.
 func (e *Engine) Counts() pgmodel.Counts {
 	e.wmu.Lock()
 	defer e.wmu.Unlock()

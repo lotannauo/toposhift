@@ -231,11 +231,44 @@ func TestUnchangedRowsAndRowsBeforeTheHorizonAreNotWritten(t *testing.T) {
 	if err := m.Retain(at(14)); err != nil {
 		t.Fatal(err)
 	}
-	// The re-fold sees the baselines of a (13) and b (11): b's [11, 12) ended before
-	// the horizon and is not written, and the straddling row restarts at a's baseline.
+	// A record that only lengthens the last interval is written without a re-fold, and
+	// leaves the row that spans the horizon with its old start.
 	write(observe(4, "c", 25, 0))
-	rows([2]int64{13, 23}, [2]int64{25, 0}) // an open row has end 0
-	counts(3, 1, 1)
+	rows([2]int64{10, 23}, [2]int64{25, 0}) // an open row has end 0
+	counts(2, 2, 0)
+}
+
+// TestAReFoldAfterARetentionRestartsARowThatSpansTheHorizon: a re-fold sees only the
+// baselines, so it restarts the row that spans the horizon at the earliest baseline in
+// it, and does not write a row that ended before the horizon.
+func TestAReFoldAfterARetentionRestartsARowThatSpansTheHorizon(t *testing.T) {
+	m := pgmodel.New()
+	write := func(r engine.Record) {
+		t.Helper()
+		if err := m.Write([]engine.Record{r}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(observe(1, "a", 10, 10))
+	write(observe(2, "b", 11, 1))
+	write(observe(3, "a", 13, 10))
+	if err := m.Retain(at(14)); err != nil {
+		t.Fatal(err)
+	}
+	// The re-fold of a delete sees the baselines of a (13) and b (11): b's [11, 12) ended
+	// before the horizon and is not written, and the straddling row restarts at a's
+	// baseline: a delete and an insert, where an extension would be one update.
+	write(del(4, "c", 25))
+	var got [][2]int64
+	for _, r := range edgeRows(t, m) {
+		got = append(got, span(r))
+	}
+	if want := [][2]int64{{13, 23}}; !slices.Equal(got, want) {
+		t.Fatalf("rows %v, want %v", got, want)
+	}
+	if c := m.Counts(); c.RowsInserted != 2 || c.RowsUpdated != 1 || c.RowsDeleted != 1 || c.Refolds != 1 {
+		t.Fatalf("%+v", c)
+	}
 }
 
 // TestRetainingPastTheEndRefusesEveryRecord: a horizon after the last representable

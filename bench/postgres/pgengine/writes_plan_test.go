@@ -58,7 +58,7 @@ func assertEveryIndexFindsEveryRow(t *testing.T, conn *pgx.Conn, when string) {
 // And the indexes must find every row they hold.
 func TestWritesAreNeverPlannedThroughAGiSTIndex(t *testing.T) {
 	conn := func(e *pgengine.Engine) *pgx.Conn { return sqlConn(t, e) }
-	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 		t.Run(string(arm), func(t *testing.T) {
 			e := openEngine(t, arm)
 			var seen []string
@@ -117,7 +117,7 @@ func TestEveryIndexFindsEveryRowAfterAStreamWithRetentions(t *testing.T) {
 		config int
 		retain []float64
 	}{{1, []float64{0.5}}, {3, []float64{0.3, 0.7}}, {6, nil}} {
-		for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.Bulk} {
+		for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNaive, pgschema.Bulk} {
 			t.Run(fmt.Sprintf("%s config %d retain %v", arm, c.config, c.retain), func(t *testing.T) {
 				e := openEngine(t, arm)
 				conn := sqlConn(t, e)

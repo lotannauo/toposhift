@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lotannauo/toposhift/bench/postgres/pgschema"
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
@@ -20,13 +21,54 @@ import (
 type Counts struct {
 	// Records are the records written to the log.
 	Records uint64
-	// Refolds are the subjects re-folded, one per subject per batch, and
-	// RecordsFolded the records those folds read.
-	Refolds, RecordsFolded uint64
+	// FastSubjects are the subjects of a batch planned without a read, from what the
+	// writer remembers; Refolds the subjects re-folded from the stored interval the batch
+	// lands in, one per subject per batch, and RecordsFolded the records those folds read.
+	FastSubjects, Refolds, RecordsFolded uint64
 	// RowsInserted, RowsUpdated and RowsDeleted are the changes to the interval
 	// tables. A row whose start changes is a delete and an insert, because the start
 	// is part of the key.
 	RowsInserted, RowsUpdated, RowsDeleted uint64
+	// RowsHeapOnly are the updates that leave the range of the row as it was, so that no
+	// index entry changes: the ones a server can make heap-only. RowsFinalized are the
+	// updates that close a provisional row whose deadline has passed.
+	RowsHeapOnly, RowsFinalized uint64
+	// Vacuums and Analyzes are the vacuums and the analyzes the schedule of the
+	// deterministic regime called for (a table that is due both gets one command and
+	// counts in both), and PartitionsDropped the day partitions of the log a retention
+	// dropped.
+	Vacuums, Analyzes, PartitionsDropped uint64
+}
+
+func (c *Counts) add(o Counts) {
+	c.Records += o.Records
+	c.FastSubjects += o.FastSubjects
+	c.Refolds += o.Refolds
+	c.RecordsFolded += o.RecordsFolded
+	c.RowsInserted += o.RowsInserted
+	c.RowsUpdated += o.RowsUpdated
+	c.RowsDeleted += o.RowsDeleted
+	c.RowsHeapOnly += o.RowsHeapOnly
+	c.RowsFinalized += o.RowsFinalized
+	c.Vacuums += o.Vacuums
+	c.Analyzes += o.Analyzes
+	c.PartitionsDropped += o.PartitionsDropped
+}
+
+// ModelConfig says which writer a Model models.
+type ModelConfig struct {
+	WriterConfig
+	// Partitioned says the log is partitioned by day, as the streaming arm's is: a
+	// retention drops the partitions that are wholly before the horizon, and the vacuum
+	// schedule counts each partition as a table. Otherwise the log is one table and a
+	// retention deletes from it.
+	Partitioned bool
+}
+
+// partition is a day partition of the log, as the writer creates them.
+type partition struct {
+	lo, hi    int64
+	unbounded bool
 }
 
 // Model is an in-memory engine with the schema and the read semantics of the
@@ -36,6 +78,7 @@ type Counts struct {
 // effect.
 type Model struct {
 	mu      sync.RWMutex
+	cfg     ModelConfig
 	lastSeq uint64
 	horizon int64 // Unix nanoseconds; records before it are refused
 	// pastEnd says the horizon was moved after the last representable instant, so
@@ -44,6 +87,9 @@ type Model struct {
 	pastEnd  bool
 	subjects map[engine.Subject]*subject
 	incident [3]map[identity.Fingerprint][]*subject // by direction: entity -> its edges
+	w        *Writer
+	vac      *VacuumSchedule
+	parts    map[string]partition
 	counts   Counts
 }
 
@@ -59,14 +105,20 @@ type subject struct {
 	// base are the baselines retention left: for each producer, its last record
 	// before the horizon, ascending by producer.
 	base []rec
-	// rows are the interval rows, ascending by start. The rows of a subject are
-	// maximal, so they neither overlap nor touch, and their ends ascend too.
+	// rows are the interval rows as stored, ascending by start. The rows of a subject
+	// are maximal, so they neither overlap nor touch, and their ends ascend too.
 	rows []Row
 }
 
-// New returns an empty model.
-func New() *Model {
-	m := &Model{subjects: make(map[engine.Subject]*subject)}
+// New returns an empty model of the streaming arm.
+func New() *Model { return NewWith(ModelConfig{Partitioned: true}) }
+
+// NewWith returns an empty model of the writer cfg describes.
+func NewWith(cfg ModelConfig) *Model {
+	m := &Model{
+		cfg: cfg, subjects: make(map[engine.Subject]*subject), w: NewWriter(cfg.WriterConfig),
+		vac: NewVacuumSchedule(), parts: make(map[string]partition),
+	}
 	m.incident[engine.Forward] = make(map[identity.Fingerprint][]*subject)
 	m.incident[engine.Reverse] = make(map[identity.Fingerprint][]*subject)
 	return m
@@ -94,13 +146,42 @@ func (m *Model) Counts() Counts {
 	return m.counts
 }
 
+// VacuumRuns is how many times the schedule of the deterministic regime has called for
+// each table to be vacuumed.
+func (m *Model) VacuumRuns() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.vac.Runs()
+}
+
+// AnalyzeRuns is how many times the schedule has called for each table to be analyzed.
+func (m *Model) AnalyzeRuns() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.vac.AnalyzeRuns()
+}
+
+// logTable is the table the log row of an event time is in, for the vacuum schedule.
+func (m *Model) logTable(ns int64) (string, error) {
+	if !m.cfg.Partitioned {
+		return "log", nil
+	}
+	name, lo, hi, unbounded, err := pgschema.DayBounds(ns)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := m.parts[name]; !ok {
+		m.parts[name] = partition{lo: lo, hi: hi, unbounded: unbounded}
+	}
+	return name, nil
+}
+
 // Write implements [engine.Engine]. The batch is validated whole before any of it is
 // applied, so a refused batch changes nothing.
 func (m *Model) Write(batch []engine.Record) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seq := m.lastSeq
-	inBatch := make(map[engine.Subject]catalog.Layer)
 	for _, r := range batch {
 		if err := r.Validate(); err != nil {
 			return err
@@ -112,22 +193,30 @@ func (m *Model) Write(batch []engine.Record) error {
 			return fmt.Errorf("record seq %d is not above the last written seq %d: %w", r.Seq, seq, engine.ErrInvalid)
 		}
 		seq = r.Seq
-		known, ok := inBatch[r.Subject]
-		if !ok {
-			if st := m.subjects[r.Subject]; st != nil {
-				known, ok = st.layer, true
-			}
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+	plan, err := m.w.Plan(batch)
+	if err != nil {
+		return err
+	}
+	for _, id := range plan.Slow() {
+		old, input := m.slowInputs(m.subjects[id], plan.Earliest(id))
+		if err := plan.Resolve(id, old, input); err != nil {
+			plan.Abort()
+			// The batch was validated, so a fold that fails is a bug in the model, and
+			// the model is no longer consistent.
+			return fmt.Errorf("pgmodel: applying a batch: %w", err)
 		}
-		if ok && known != r.Layer {
-			return fmt.Errorf("record seq %d: subject is stored in layer %s, not %s: %w", r.Seq, known, r.Layer, engine.ErrInvalid)
-		}
-		inBatch[r.Subject] = r.Layer
+	}
+	changes, err := plan.Finish()
+	if err != nil {
+		return fmt.Errorf("pgmodel: applying a batch: %w", err)
 	}
 
-	// Group the records by subject, in the order the subjects first appear. A
-	// subject's records stay in Seq order.
-	var order []*subject
-	fresh := make(map[*subject][]rec)
+	// Store the records, in the order the subjects first appear, then the rows.
+	logged := make(map[string]int64)
 	for _, r := range batch {
 		st := m.subjects[r.Subject]
 		if st == nil {
@@ -138,73 +227,109 @@ func (m *Model) Write(batch []engine.Record) error {
 				m.incident[engine.Reverse][r.Subject.B] = append(m.incident[engine.Reverse][r.Subject.B], st)
 			}
 		}
-		if _, seen := fresh[st]; !seen {
-			order = append(order, st)
+		c := keep(r)
+		i := sort.Search(len(st.recs), func(i int) bool { return st.recs[i].cmp(c) > 0 })
+		st.recs = slices.Insert(st.recs, i, c)
+		table, err := m.logTable(c.event)
+		if err != nil {
+			plan.Abort()
+			return err
 		}
-		fresh[st] = append(fresh[st], keep(r))
+		logged[table]++
 	}
-	for _, st := range order {
-		if err := m.apply(st, fresh[st]); err != nil {
-			// The batch was validated, so a fold that fails is a bug in the model,
-			// and the model is no longer consistent.
-			return fmt.Errorf("pgmodel: applying a batch: %w", err)
+	var edgeRows, entityRows [3]int64 // inserted, updated, deleted
+	for _, sc := range changes {
+		st := m.subjects[sc.Subject]
+		st.rows = applyRows(st.rows, sc.Rows)
+		tally := &edgeRows
+		if sc.Subject.Kind == engine.SubjectEntity {
+			tally = &entityRows
+		}
+		for _, c := range sc.Rows {
+			tally[c.Kind-Insert]++
 		}
 	}
-	m.lastSeq = seq
+	for table, n := range logged {
+		m.vac.Add(table, n, 0, 0)
+	}
+	m.vac.Add("edges", edgeRows[0], edgeRows[1], edgeRows[2])
+	m.vac.Add("entities", entityRows[0], entityRows[1], entityRows[2])
+	m.counts.add(plan.Counts())
 	m.counts.Records += uint64(len(batch))
+	m.lastSeq = seq
+	plan.Commit()
+	m.vacuum()
 	return nil
 }
 
-// apply stores the records of one batch for one subject and brings its rows up to
-// date: it re-folds the subject from the start of the last row that begins at or
-// before the earliest of the new records, and replaces the rows from there on.
-func (m *Model) apply(st *subject, recs []rec) error {
-	earliest := recs[0].event
-	for _, c := range recs[1:] {
-		earliest = min(earliest, c.event)
+// vacuum counts the vacuums and the analyzes the schedule calls for.
+func (m *Model) vacuum() {
+	for _, a := range m.vac.Due() {
+		if a.Vacuum {
+			m.counts.Vacuums++
+		}
+		if a.Analyze {
+			m.counts.Analyzes++
+		}
 	}
-	for _, c := range recs {
-		i := sort.Search(len(st.recs), func(i int) bool { return st.recs[i].cmp(c) > 0 })
-		st.recs = slices.Insert(st.recs, i, c)
-	}
+}
 
-	// S is the start of the last row that begins at or before the earliest new
-	// event; from is its index. With no such row nothing before the new records can
-	// be affected, and the whole subject is folded.
+// slowInputs are what a re-fold of a subject reads: its stored rows from the last that
+// starts at or before earliest, and every record of its log, baselines included, from
+// where that row starts.
+func (m *Model) slowInputs(st *subject, earliest int64) ([]Stored, []LogRow) {
+	if st == nil {
+		return nil, nil
+	}
 	from := sort.Search(len(st.rows), func(i int) bool { return st.rows[i].Start > earliest }) - 1
-	var input []rec
 	start := int64(math.MinInt64)
 	if from >= 0 {
 		start = st.rows[from].Start
 	} else {
 		from = 0
 	}
-	// The input is every record of the subject, baselines included, at or after S.
-	// A record before S cannot matter: the segment it starts or ends is before S,
-	// because S begins a maximal interval and so nothing before it overlaps or touches
-	// S. Including the baselines that are before S would be wrong, not just wasteful:
-	// without the later record of their producer that ended them, they run on.
+	old := make([]Stored, 0, len(st.rows)-from)
+	for _, r := range st.rows[from:] {
+		old = append(old, Stored{Row: r})
+	}
+	// A record before start cannot matter: the segment it starts or ends is before it,
+	// because start begins a maximal interval and so nothing before it overlaps or
+	// touches it. A baseline before start must be left out, not just because it is not
+	// needed: without the later record of its producer that ended it, it would run on.
+	var input []LogRow
 	for _, c := range st.base {
 		if c.event >= start {
-			input = append(input, c)
+			input = append(input, c.logRow())
 		}
 	}
 	lo := sort.Search(len(st.recs), func(i int) bool { return st.recs[i].event >= start })
-	input = append(input, st.recs[lo:]...)
-
-	fresh, ch, err := refold(st.rows[from:], input, start, m.horizon)
-	if err != nil {
-		return err
+	for _, c := range st.recs[lo:] {
+		input = append(input, c.logRow())
 	}
-	rows := make([]Row, 0, from+len(fresh))
-	rows = append(rows, st.rows[:from]...)
-	st.rows = append(rows, fresh...)
-	m.counts.Refolds++
-	m.counts.RecordsFolded += uint64(len(input))
-	m.counts.RowsInserted += uint64(len(ch.Inserted))
-	m.counts.RowsUpdated += uint64(len(ch.Updated))
-	m.counts.RowsDeleted += uint64(len(ch.Deleted))
-	return nil
+	return old, input
+}
+
+// applyRows applies the changes of a subject to its rows, ascending by start.
+func applyRows(rows []Row, changes []RowChange) []Row {
+	rows = slices.Clone(rows)
+	at := func(start int64) int {
+		return sort.Search(len(rows), func(i int) bool { return rows[i].Start >= start })
+	}
+	for _, c := range changes {
+		if c.Kind == Delete {
+			i := at(c.Old.Start)
+			rows = slices.Delete(rows, i, i+1)
+		}
+	}
+	for _, c := range changes {
+		switch c.Kind {
+		case Update:
+			rows[at(c.Old.Start)] = c.New
+		case Insert:
+			rows = slices.Insert(rows, at(c.New.Start), c.New)
+		}
+	}
+	return rows
 }
 
 // LastSeq implements [engine.Engine].
@@ -374,6 +499,9 @@ func (m *Model) Retain(horizon time.Time) error {
 	if !changed {
 		return nil
 	}
+	var baselines, trimmed int64
+	var edgesGone, entitiesGone int64
+	removed := make(map[string]int64) // log rows before the horizon, by table
 	for _, st := range m.subjects {
 		cut := sort.Search(len(st.recs), func(i int) bool { return st.recs[i].event >= h })
 		if m.pastEnd {
@@ -383,16 +511,33 @@ func (m *Model) Retain(horizon time.Time) error {
 			// The baseline of a producer is the last of its records before the
 			// horizon, among the baseline an earlier retention left and the log.
 			last := make(map[lifecycle.Producer]rec)
+			fresh := make(map[lifecycle.Producer]bool)
+			for _, c := range st.recs[:cut] {
+				fresh[c.producer] = true
+			}
 			for _, c := range slices.Concat(st.base, st.recs[:cut]) {
 				if prev, ok := last[c.producer]; !ok || prev.cmp(c) < 0 {
 					last[c.producer] = c
 				}
 			}
+			for _, b := range st.base {
+				if fresh[b.producer] {
+					trimmed++
+				}
+			}
+			baselines += int64(len(fresh))
 			st.base = st.base[:0:0]
 			for _, c := range last {
 				st.base = append(st.base, c)
 			}
 			slices.SortFunc(st.base, func(a, b rec) int { return cmpProducers(a.producer, b.producer) })
+			for _, c := range st.recs[:cut] {
+				table, err := m.logTable(c.event)
+				if err != nil {
+					return err
+				}
+				removed[table]++
+			}
 			st.recs = slices.Clone(st.recs[cut:])
 		}
 		// The rows that have ended at or before the horizon are a prefix: the rows
@@ -400,9 +545,32 @@ func (m *Model) Retain(horizon time.Time) error {
 		gone := sort.Search(len(st.rows), func(i int) bool { return !st.rows[i].EndsAtOrBefore(h) })
 		if gone > 0 {
 			m.counts.RowsDeleted += uint64(gone)
+			if st.id.Kind == engine.SubjectEdge {
+				edgesGone += int64(gone)
+			} else {
+				entitiesGone += int64(gone)
+			}
 			st.rows = slices.Clone(st.rows[gone:])
 		}
 	}
+	m.w.CommitRetain(h)
+	m.vac.Add("edges", 0, 0, edgesGone)
+	m.vac.Add("entities", 0, 0, entitiesGone)
+	m.vac.Add("log_base", baselines, 0, trimmed)
+	// A partition wholly before the horizon is dropped, with its rows; the one the
+	// horizon falls in has its earlier rows deleted. An unpartitioned log is deleted from.
+	for name, p := range m.parts {
+		if m.pastEnd || !p.unbounded && p.hi <= h {
+			delete(m.parts, name)
+			m.vac.Drop(name)
+			m.counts.PartitionsDropped++
+			delete(removed, name)
+		}
+	}
+	for table, n := range removed {
+		m.vac.Add(table, 0, 0, n)
+	}
+	m.vacuum()
 	return nil
 }
 

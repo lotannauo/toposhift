@@ -120,8 +120,13 @@ type subjectBatch struct {
 }
 
 // Write implements [engine.Engine]. The batch is validated whole before anything is
-// stored, and stored in one transaction, so a refused batch changes nothing.
+// stored, and stored in one transaction, so a refused batch changes nothing. This is the
+// correctness writer, for the bulk arms, which fold each subject whole; the streaming arms
+// are written by writeStream.
 func (e *Engine) Write(batch []engine.Record) error {
+	if e.lay.stream {
+		return e.writeStream(batch)
+	}
 	if len(batch) == 0 {
 		return nil
 	}

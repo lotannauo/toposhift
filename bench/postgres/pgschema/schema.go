@@ -36,6 +36,10 @@ const (
 	// StreamNoPartition is Stream with an unpartitioned log: the "delete and
 	// vacuum" retention, kept as a diagnostic.
 	StreamNoPartition Arm = "pg-stream-nopart"
+	// StreamNaive is Stream written by a naive writer, which rewrites the range of an
+	// interval each time it is extended, where Stream moves a deadline that no index
+	// covers. The tables are Stream's; it is a diagnostic, never a comparator.
+	StreamNaive Arm = "pg-stream-naive"
 	// Bulk is the arm a bulk load builds: nothing is updated, so no primary key,
 	// no fill factor and no index on the end; GiST indexes on the interval, built
 	// after the load.
@@ -49,7 +53,7 @@ const (
 )
 
 // Arms lists every arm.
-func Arms() []Arm { return []Arm{Stream, StreamNoPartition, Bulk, BulkB, BulkID} }
+func Arms() []Arm { return []Arm{Stream, StreamNoPartition, StreamNaive, Bulk, BulkB, BulkID} }
 
 func (a Arm) known() bool {
 	for _, b := range Arms() {
@@ -62,10 +66,16 @@ func (a Arm) known() bool {
 
 // Streaming reports whether the arm is kept current by a writer, as opposed to
 // loaded in bulk.
-func (a Arm) Streaming() bool { return a == Stream || a == StreamNoPartition }
+func (a Arm) Streaming() bool { return a == Stream || a == StreamNoPartition || a == StreamNaive }
 
 // partitioned reports whether the arm's log is partitioned by day.
-func (a Arm) partitioned() bool { return a == Stream }
+func (a Arm) partitioned() bool { return a == Stream || a == StreamNaive }
+
+// Partitioned reports whether the arm's log is partitioned by day.
+func (a Arm) Partitioned() bool { return a.partitioned() }
+
+// Naive reports whether the arm is written by the naive writer.
+func (a Arm) Naive() bool { return a == StreamNaive }
 
 // keyType is the type of the column that holds an entity.
 func (a Arm) keyType() string {
@@ -234,11 +244,11 @@ func Indexes(a Arm) ([]string, error) {
 	}
 	out = append(out, "CREATE INDEX log_base_subject ON log_base (src, dst, rel, producer)")
 	switch a {
-	case Stream, StreamNoPartition:
+	case Stream, StreamNoPartition, StreamNaive:
 		// The *_end indexes find the rows retention deletes: those whose range has
-		// ended. A provisional row has an unbounded range, so it is not in them; the
-		// predicate of the retention delete is RetentionPredicate, whose second term is
-		// answered by a scan unless the finalizer has closed the rows first.
+		// ended, the writer reads their places through them. A provisional row has an
+		// unbounded range, so it is not in them; the streaming writer knows where those
+		// are, and the correctness writer's delete (RetentionPredicate) scans for them.
 		out = append(out,
 			"CREATE INDEX edges_src_g ON edges USING gist (src, layer, during) INCLUDE (dst, rel)",
 			"CREATE INDEX edges_dst_g ON edges USING gist (dst, layer, during) INCLUDE (src, rel)",
@@ -292,21 +302,33 @@ func Setup(a Arm) ([]string, error) {
 	return out, nil
 }
 
-// DayPartition returns the name of the partition of log that holds the UTC day of
-// the instant, and the statement that creates it if it is not there. The partition's range is the day in
-// Unix nanoseconds, from midnight to the next midnight; the last day an engine stores
-// has no next midnight in a bigint, so it runs to MAXVALUE. An instant before the epoch
-// is an error.
-func DayPartition(ns int64) (name, stmt string, err error) {
+// DayBounds returns the name of the partition of log that holds the UTC day of the
+// instant, and its range in Unix nanoseconds: from midnight, to the next midnight, or to
+// MAXVALUE (unbounded) for the last day an engine stores, which has no next midnight in
+// a bigint. An instant before the epoch is an error.
+func DayBounds(ns int64) (name string, lo, hi int64, unbounded bool, err error) {
 	if ns < 0 {
-		return "", "", fmt.Errorf("pgschema: %d is before the epoch", ns)
+		return "", 0, 0, false, fmt.Errorf("pgschema: %d is before the epoch", ns)
 	}
 	const day = int64(24 * time.Hour)
-	lo := ns - ns%day
+	lo = ns - ns%day
 	name = "log_p" + time.Unix(0, lo).UTC().Format("20060102")
-	hi := "MAXVALUE"
 	if lo <= math.MaxInt64-day {
-		hi = fmt.Sprint(lo + day)
+		return name, lo, lo + day, false, nil
 	}
-	return name, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s PARTITION OF log FOR VALUES FROM (%d) TO (%s)", name, lo, hi), nil
+	return name, lo, 0, true, nil
+}
+
+// DayPartition returns the name of the partition of log that holds the UTC day of
+// the instant, and the statement that creates it if it is not there (see [DayBounds]).
+func DayPartition(ns int64) (name, stmt string, err error) {
+	name, lo, hi, unbounded, err := DayBounds(ns)
+	if err != nil {
+		return "", "", err
+	}
+	to := "MAXVALUE"
+	if !unbounded {
+		to = fmt.Sprint(hi)
+	}
+	return name, fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s PARTITION OF log FOR VALUES FROM (%d) TO (%s)", name, lo, to), nil
 }

@@ -28,17 +28,24 @@ The Postgres baseline, `postgres/`, is a module of its own as well, to keep a da
 driver and a server to test against out of this module's graph. It is pure Go (build
 and test it with `CGO_ENABLED=0`). It asks whether a Postgres 17 table of interval
 ranges with GiST indexes answers the spike's reads as the reference engine does.
-`postgres/pgmodel` needs no server: the planner that turns records into interval rows
-(a re-fold of a subject from the start of the interval a late record lands in, with
-retention baselines) and a `Model`, an in-memory engine with the SQL's read semantics,
-which the spike's conformance test checks against the reference engine.
+`postgres/pgmodel` needs no server: the planner that turns records into interval rows (a
+fast path for a record that only lengthens the last interval of its subject, which keeps
+the interval as a provisional row whose deadline no index covers; a re-fold of a subject
+from the start of the interval a late record lands in, with retention baselines; and a
+finalizer that closes the provisional rows the stream has passed), and a `Model`, an
+in-memory engine with the SQL's read semantics, which the spike's conformance test checks
+against the reference engine.
 `postgres/pgschema` is the DDL as text, `postgres/pginput` reads an activity file as
 engine records, and `postgres/g0` asks an engine every question of a plan and compares
 the answers with the plan's (`go run ./cmd/g0model -plan plan.json`, from `postgres/`).
 `postgres/pgengine` is an engine over a Postgres 17 server (pgx): the same planner's
-row changes applied with set-based SQL, the reads with range types, GiST (index set G)
-or a btree on the interval's end (set B), and the EXPLAIN counter parser and the check
-that a server has the settings of `postgres/scripts/settings.conf`. `mise run
+row changes applied with set-based SQL that finds each row by its ctid, the log stored with
+COPY, a retention that is one transaction followed by dropping the log's old day
+partitions, the vacuum schedule of the deterministic regime (a vacuum when the writer's own
+count of changed rows passes autovacuum's formula, by dead rows and by inserted rows), the
+reads with range types, GiST (index set G) or a btree on the interval's end (set B), and the
+EXPLAIN counter parser and the check that a server has the settings of
+`postgres/scripts/settings.conf`. `mise run
 bench:postgres:test` runs the module's tests; the ones that need a server skip without
 `TOPOSHIFT_PG_DSN`. To run them, start the server the settings are written for (a
 container, which this script starts on a laptop and on CI alike) and stop it when done,
@@ -63,8 +70,13 @@ intervals (refusing, before it holds any, a load whose interval rows would need 
 a digest of the interval tables and the bytes of every relation; `read` asks every question
 of the load, refuses the run if any answer differs from the plan's, and then explains each
 question's statements with the buffers of the schema emptied, as often as asked, requiring
-equal counters; `sizes` records the bytes as left and compacted; `diff` holds two records
-of one stream to each other. Every command refuses a server whose settings differ from
+equal counters; `stream` writes a plan's stream batch by batch, with its retentions, to
+the streaming arm `pg-stream` (or the diagnostics `pg-stream-nopart`, an unpartitioned log
+deleted from and vacuumed, and `pg-stream-naive`, which rewrites the range of every
+extension), asks every question of the plan, and records what the writer did (subjects
+written without a read, re-folds, rows inserted, updated, heap-only, finalized and
+deleted, vacuums) and the log it wrote; `sizes` records the bytes as left and compacted;
+`diff` holds two records of one stream to each other. Every command refuses a server whose settings differ from
 `settings.conf`, a plan that is not named by its SHA-256 and an output directory inside a
 git work tree, and nothing it writes holds a time. `questions` chooses and answers the
 questions of an activity file before any load.

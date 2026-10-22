@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lotannauo/toposhift/bench/postgres/pgengine"
 	"github.com/lotannauo/toposhift/bench/postgres/pgmodel"
 	"github.com/lotannauo/toposhift/bench/postgres/pgschema"
 	"github.com/lotannauo/toposhift/bench/spike/conformance"
@@ -73,17 +74,18 @@ func nanos(horizon time.Time) int64 {
 
 // TestTablesAreTheModelsAfterEveryBatch holds the SQL engine to the in-memory model:
 // fed the same stream, with late events, deletes, outages and retentions, the two
-// make the same rows, and count the same row changes, after every batch. The rows are
-// compared as they are stored, not clipped, because both are made by one planner.
+// make the same rows, and count the same row changes and vacuums, after every batch.
+// The rows are compared as they are stored, provisional rows included and not clipped,
+// because both are made by one planner.
 func TestTablesAreTheModelsAfterEveryBatch(t *testing.T) {
 	configs := conformance.Configs()
 	for _, c := range []struct {
 		config int
 		retain []float64
 	}{{1, nil}, {3, []float64{0.5}}, {5, []float64{0.3, 0.7}}, {6, []float64{0.4}}} {
-		for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition} {
+		for _, arm := range streamArms {
 			t.Run(fmt.Sprintf("%s config %d retain %v", arm, c.config, c.retain), func(t *testing.T) {
-				sql, model := openEngine(t, arm), pgmodel.New()
+				sql, model := openEngine(t, arm), pgmodel.NewWith(pgengine.ModelFor(arm))
 				batches := 0
 				stream(t, configs[c.config], 40, c.retain, []engine.Engine{sql, model}, func(written []engine.Record, horizon time.Time) {
 					batches++
@@ -94,11 +96,29 @@ func TestTablesAreTheModelsAfterEveryBatch(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if want := model.Tables(); !got.Equal(want) {
+					// The rows are the model's in the same form: a row is provisional in
+					// one if it is in the other.
+					if want := model.Tables(); !got.Identical(want) {
 						t.Fatalf("after %d records: the SQL rows differ from the model's: %s", len(written), got.FirstDifference(want))
 					}
 					if got, want := sql.Counts(), model.Counts(); got != want {
 						t.Fatalf("after %d records: the SQL engine counts %+v, the model %+v", len(written), got, want)
+					}
+					if got, want := sql.VacuumRuns(), model.VacuumRuns(); !equalRuns(got, want) {
+						t.Fatalf("after %d records: the SQL engine vacuumed %v, the model's schedule %v", len(written), got, want)
+					}
+					if got, want := sql.AnalyzeRuns(), model.AnalyzeRuns(); !equalRuns(got, want) {
+						t.Fatalf("after %d records: the SQL engine analyzed %v, the model's schedule %v", len(written), got, want)
+					}
+					// And, clipped to the horizon, they are the rows of a bulk load of
+					// everything written: a stream's rows are a load's, whatever the batches.
+					bulk, err := pgmodel.Bulk(written)
+					if err != nil {
+						t.Fatal(err)
+					}
+					h := nanos(horizon)
+					if g, w := got.Clipped(h), bulk.Clipped(h); !g.Equal(w) {
+						t.Fatalf("after %d records, horizon %s: the stream's rows are not a bulk load's: %s", len(written), horizon.Format(time.RFC3339), g.FirstDifference(w))
 					}
 				})
 			})
@@ -146,7 +166,7 @@ func TestRebuiltTablesAreABulkLoadsAfterEveryBatch(t *testing.T) {
 // changes: the fixed workloads with a retention, and the scripted checks. The primary
 // arm has the whole of it in TestConformance.
 func TestTheOtherArmsConform(t *testing.T) {
-	for _, arm := range []pgschema.Arm{pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+	for _, arm := range []pgschema.Arm{pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 		t.Run(string(arm), func(t *testing.T) {
 			conformance.RunPartial(t, factory(t, arm))
 		})

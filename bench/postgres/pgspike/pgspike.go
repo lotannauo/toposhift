@@ -5,6 +5,8 @@
 //	env        check the server against settings.conf and record what it is
 //	questions  choose and answer the questions of an activity file, before any load
 //	load       load a plan's stream or an activity file into the tables of a bulk arm
+//	stream     write a plan's stream to a streaming arm, batch by batch with its retentions,
+//	           and record what the writer did and what it cost in log
 //	read       ask every question of the load, check each answer, and explain each cold
 //	explain    print the cold plan of the statements of one question
 //	sizes      record the bytes of the tables, as left and compacted
@@ -37,7 +39,7 @@ import (
 	"github.com/lotannauo/toposhift/bench/postgres/pgreport"
 )
 
-const usage = `usage: pgspike env|questions|load|read|explain|sizes|diff [flags]
+const usage = `usage: pgspike env|questions|load|stream|read|explain|sizes|diff [flags]
 run a subcommand with -h for its flags`
 
 // Run runs the command line args (without the program name), writing what it found to
@@ -54,6 +56,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runQuestions(ctx, rest, stdout, stderr)
 	case "load":
 		return runLoad(ctx, rest, stdout, stderr)
+	case "stream":
+		return runStream(ctx, rest, stdout, stderr)
 	case "read":
 		return runRead(ctx, rest, stdout, stderr)
 	case "explain":
@@ -76,7 +80,7 @@ func (c *common) register(fs *flag.FlagSet, needSchema bool) {
 	fs.StringVar(&c.settings, "settings", "", "the settings.conf the server was started with (required): the run is refused if the server differs")
 	fs.StringVar(&c.out, "out", "", "the directory the record is written to; never inside a git work tree")
 	if needSchema {
-		fs.StringVar(&c.arm, "arm", "", "the arm: pg-bulk, pg-bulk-b or pg-bulk-id")
+		fs.StringVar(&c.arm, "arm", "", "the arm: pg-bulk, pg-bulk-b, pg-bulk-id, pg-stream, pg-stream-nopart or pg-stream-naive")
 		fs.StringVar(&c.schema, "schema", "", "the schema the arm's tables are in")
 	}
 }

@@ -68,8 +68,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "G0 total: %d of %d answers equal the plan's\n", rep.Matched, rep.Queries)
 	fmt.Fprintf(stdout, "model interval rows at the end: %d edge, %d entity\n", len(tb.Edges), len(tb.Entities))
-	fmt.Fprintf(stdout, "model writer counts (rows of the model, not Postgres): refolds %d, records folded %d, inserted %d, updated %d, deleted %d\n",
-		c.Refolds, c.RecordsFolded, c.RowsInserted, c.RowsUpdated, c.RowsDeleted)
+	fmt.Fprintf(stdout, "model writer counts (rows of the model, not Postgres): fast subjects %d, refolds %d, records folded %d, inserted %d, updated %d (%d heap-only, %d finalized), deleted %d\n",
+		c.FastSubjects, c.Refolds, c.RecordsFolded, c.RowsInserted, c.RowsUpdated, c.RowsHeapOnly, c.RowsFinalized, c.RowsDeleted)
 	for _, mm := range rep.Mismatches {
 		fmt.Fprintf(stdout, "MISMATCH %s: got %+v, plan %+v %s\n", mm.Query, mm.Got, mm.Want, mm.AskError)
 	}
