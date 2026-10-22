@@ -62,7 +62,8 @@
 // a plan's reads in the arm with commits. Windows always read the log. [Model.Paths] counts,
 // for each kind of read, the keys settled each way and the reads that the state as of a commit
 // answered alone. The rule and the log path agree for every token and every instant from the
-// horizon on, which the per-key-equals-log property tests.
+// horizon on, which the per-key-equals-log property tests. [Model.Work] counts, beside the
+// keys, the rows of the key ranges the reads hold, derived from the stored rows.
 //
 // [CommitTime] is the diagnostic arm: the state as the newest commit whose frontier is at
 // or before the instant left it, the shortcut of reading a commit's place in history as an

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // RegisteredVersion is the version of Dolt the baseline is registered against, as
@@ -144,6 +146,29 @@ func (s Setting) WantFromConfig(cfg map[string]string) (string, error) {
 	}
 	if b, err := boolVar(v); err == nil {
 		return b, nil
+	}
+	return v, nil
+}
+
+// ServerVersion connects to the server, refuses one that is not the registered one
+// ([CheckServer]: the version and every observable setting) and returns the version it says.
+func ServerVersion(ctx context.Context, dsn string) (string, error) {
+	dc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return "", fmt.Errorf("doltengine: DSN: %w", err)
+	}
+	dc.InterpolateParams = InterpolateParams
+	db, err := connect(dc, "")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = db.Close() }()
+	if err := CheckServer(ctx, db); err != nil {
+		return "", err
+	}
+	var v string
+	if err := db.QueryRowContext(ctx, "SELECT dolt_version()").Scan(&v); err != nil {
+		return "", fmt.Errorf("doltengine: asking the server its version: %w", err)
 	}
 	return v, nil
 }

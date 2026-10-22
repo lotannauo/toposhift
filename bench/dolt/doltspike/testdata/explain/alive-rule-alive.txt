@@ -1,0 +1,59 @@
+Project
+ ├─ columns: [count(1) as keys_n, coalesce(sum(u.settled),0) as keys_state, coalesce(max(u.holds),0) as holds]
+ └─ GroupBy
+     ├─ select: COUNT(1), MAX(u.holds), SUM(u.settled)
+     ├─ group: 
+     └─ SubqueryAlias
+         ├─ name: u
+         ├─ outerVisibility: false
+         ├─ isLateral: false
+         ├─ cacheable: true
+         ├─ colSet: (37,38)
+         ├─ tableId: 7
+         └─ Union all
+             ├─ Project
+             │   ├─ columns: [1 as settled, if(((s.kind = 'o') AND (s.deadline_ns IS NULL OR (s.deadline_ns > 1767229200000000000))),1,0) as holds]
+             │   └─ Filter
+             │       ├─ ((s.layer = 3) AND (s.event_ns <= 1767229200000000000))
+             │       └─ TableAlias(s)
+             │           └─ IndexedTableAccess(ent_state)
+             │               ├─ index: [ent_state.fp,ent_state.producer]
+             │               ├─ filters: [{[[107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158], [107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158]], [NULL, ∞)}]
+             │               └─ columns: [fp layer event_ns kind deadline_ns]
+             └─ Project
+                 ├─ columns: [0 as settled, if(((x.kind = 'o') AND ((x.ttl_ns = 0) OR ((CASE  WHEN ((NOT(x.through_ns IS NULL)) AND (x.through_ns > x.event_ns)) THEN x.through_ns ELSE x.event_ns END + x.ttl_ns) > 1767229200000000000))),1,0) as holds]
+                 └─ SubqueryAlias
+                     ├─ name: x
+                     ├─ outerVisibility: false
+                     ├─ isLateral: false
+                     ├─ cacheable: true
+                     ├─ colSet: (30-34)
+                     ├─ tableId: 5
+                     └─ Filter
+                         ├─ (rn = 1)
+                         └─ Project
+                             ├─ columns: [l.kind, l.ttl_ns, l.through_ns, l.event_ns, row_number() over ( partition by k.producer order by l.event_ns desc, l.seq desc) as rn]
+                             └─ Window(row_number() over ( partition by k.producer order by l.event_ns DESC, l.seq DESC), l.kind, l.ttl_ns, l.through_ns, l.event_ns)
+                                 └─ LeftOuterLookupJoin
+                                     ├─ ((l.event_ns <= 1767229200000000000) AND (l.seq <= 9223372036854775807))
+                                     ├─ SubqueryAlias
+                                     │   ├─ name: k
+                                     │   ├─ outerVisibility: false
+                                     │   ├─ isLateral: false
+                                     │   ├─ cacheable: true
+                                     │   ├─ colSet: (18)
+                                     │   ├─ tableId: 3
+                                     │   └─ Project
+                                     │       ├─ columns: [s.producer as producer]
+                                     │       └─ Filter
+                                     │           ├─ ((s.layer = 3) AND (s.event_ns > 1767229200000000000))
+                                     │           └─ TableAlias(s)
+                                     │               └─ IndexedTableAccess(ent_state)
+                                     │                   ├─ index: [ent_state.fp,ent_state.producer]
+                                     │                   ├─ filters: [{[[107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158], [107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158]], [NULL, ∞)}]
+                                     │                   └─ columns: [fp producer layer event_ns]
+                                     └─ TableAlias(l)
+                                         └─ IndexedTableAccess(ent_log)
+                                             ├─ index: [ent_log.fp,ent_log.producer,ent_log.event_ns,ent_log.seq]
+                                             ├─ columns: [fp producer event_ns seq kind ttl_ns through_ns]
+                                             └─ keys: 0x6B38732E6E6F646500032FE5289B6CB9334A958BE573ABB39E, k.producer

@@ -364,3 +364,45 @@ func DropDatabase(ctx context.Context, dsn, database string) error {
 	}
 	return nil
 }
+
+// DatabaseExists reports whether the server has a database of the name.
+func DatabaseExists(ctx context.Context, dsn, database string) (bool, error) {
+	if !dbName.MatchString(database) {
+		return false, fmt.Errorf("doltengine: %q is not a usable database name: %w", database, engine.ErrInvalid)
+	}
+	dc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return false, fmt.Errorf("doltengine: DSN: %w", err)
+	}
+	dc.InterpolateParams = InterpolateParams
+	db, err := connect(dc, "")
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = db.Close() }()
+	var n int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?", database).Scan(&n); err != nil {
+		return false, fmt.Errorf("doltengine: looking for database %s: %w", database, err)
+	}
+	return n > 0, nil
+}
+
+// Held returns the rows the two logs hold: the edge log (a row for each record and
+// direction) and the entity log. They are what the database keeps of the stream, after any
+// retention, so the records held are half the first plus the second.
+func (e *Engine) Held(ctx context.Context) (edgeRows, entityRows int64, err error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	tx, err := e.rdb.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return 0, 0, fmt.Errorf("doltengine: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM log").Scan(&edgeRows); err != nil {
+		return 0, 0, fmt.Errorf("doltengine: counting the log: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ent_log").Scan(&entityRows); err != nil {
+		return 0, 0, fmt.Errorf("doltengine: counting the entity log: %w", err)
+	}
+	return edgeRows, entityRows, nil
+}

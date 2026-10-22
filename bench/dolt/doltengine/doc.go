@@ -105,9 +105,16 @@
 //     whatever the session's zone is when it is written with its zone:
 //     TestFactACommitIsMadeAtTheGivenAuthorAndDate, TestFactTheDateIsNotTheServersZone. In
 //     dolt_log the author is the "committer" column;
-//   - [V] the window read uses the index on event time with no hint. EXPLAIN FORMAT=TREE shows
-//     it by its columns; a plain EXPLAIN returns no rows in this version, and takes no
-//     arguments in a prepared statement: TestFactTheWindowReadUsesTheEventTimeIndex;
+//   - [V, with a correction] the window read uses the index on event time with no hint when the
+//     table is empty. EXPLAIN FORMAT=TREE shows it by its columns; a plain EXPLAIN returns no
+//     rows in this version, and takes no arguments in a prepared statement:
+//     TestFactTheWindowReadUsesTheEventTimeIndex. On a loaded table the planner chose the primary
+//     key for some windows of a plan and the index for the others, and kept the primary key
+//     when the statement named the index with FORCE INDEX or USE INDEX (both are accepted and
+//     do not bind). The primary key's range for such a window is the subject's rows, with no
+//     bound on the event time that a seek can use. The statement is left as it is, and
+//     [Engine.ReadStatements] and [Engine.Explain] give the plan of each window as loaded, which
+//     the loader's explain command records;
 //   - [V] a reader sees none of an open transaction's rows, and a read-only transaction keeps
 //     its snapshot while another connection commits:
 //     TestFactReadersDoNotSeeAnOpenTransactionAndKeepTheirSnapshot;
@@ -163,10 +170,21 @@
 // Still unchecked, and not this package's: that garbage collection frees nothing an earlier
 // commit references, and that the bytes of a data directory are equal across loads.
 //
-// # What is not here
+// # The diagnostic, statements, plans and garbage collection
 //
 // The frontier of each commit (the largest event time among the records at or below its
-// token) is not kept: the rule never reads it, and the diagnostic arm that does is not built
-// here. Garbage collection, the bytes of the data directory, timings, and the counters and
-// digests of the registered plans are the loader's and the timed jobs'.
+// token) is not kept in the database: the rule never reads it. The loader computes it from the
+// stream it writes, and [CommitTime] reads the commit arm's database by it, as if a commit's
+// place in history were an event time, which is the diagnostic arm; it is held to the model's
+// ([doltmodel.CommitTime]) answer for answer. [Engine.ReadStatements] gives the statements a
+// question sends (built by the functions the reads call) and [Engine.Explain] the server's
+// plan for one, EXPLAIN taking no arguments, so they are written into it ([Literal]).
+// [GC] runs garbage collection on a database, which the server documents as breaking every
+// open connection of it, and so refuses ([ErrBusy]) a database that has any other connection
+// open, as the processlist says.
+//
+// # What is not here
+//
+// Timings, the bytes of the data directory (the loader's command measures them), and the
+// counters and digests of the registered plans are the loader's and the timed jobs'.
 package doltengine

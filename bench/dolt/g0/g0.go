@@ -37,6 +37,12 @@ type PathReporter interface {
 	Paths() map[string]uint64
 }
 
+// WorkReporter is implemented by a model that counts the rows the key ranges of its reads
+// hold (see doltmodel's Work), derived from the rows it stores; a server does not.
+type WorkReporter interface {
+	Work() map[string]uint64
+}
+
 // Mismatch is a question the engine answered differently from the reference engine.
 type Mismatch struct {
 	Query    string
@@ -44,6 +50,22 @@ type Mismatch struct {
 	Got      runner.Answer
 	Want     runner.Answer
 	AskError string `json:",omitempty"`
+}
+
+// Result is one question's outcome: whether its answer equalled the reference's and, for
+// an engine that reports its paths, how many reads each path answered for it (a
+// question is one read, a batched one counts once, so the counts of a question are
+// the keys it settled each way and the one outcome it had).
+type Result struct {
+	Group string
+	Rank  int
+	Age   string
+	Op    runner.Op
+	Match bool
+	Paths map[string]uint64 `json:",omitempty"`
+	// Work is the rows of the key ranges the question's read holds, from an engine that
+	// derives them.
+	Work map[string]uint64 `json:",omitempty"`
 }
 
 // Group is the questions of one group at one age.
@@ -66,6 +88,8 @@ type Report struct {
 	// reference engine's, in digest and size.
 	Queries, Matched int
 	Groups           []Group
+	// Results is one entry per question, in the plan's order.
+	Results []Result
 	// Mismatches are the first MaxMismatches wrong answers.
 	Mismatches []Mismatch
 }
@@ -94,18 +118,36 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 	if err != nil {
 		return nil, err
 	}
-	want := plan.Stream
+	if err := CheckStream(info, plan.Stream, e); err != nil {
+		return nil, err
+	}
+	return Check(ctx, plan, e, say, info)
+}
+
+// CheckStream says whether the stream a run regenerated is the plan's, and whether e has
+// been written all of it: the fields that decide the stream are equal, and e is at the last
+// sequence number.
+func CheckStream(info, want runner.StreamInfo, e interface{ LastSeq() uint64 }) error {
 	if info.Digest != want.Digest || info.Records != want.Records || info.LastSeq != want.LastSeq || info.OldToken != want.OldToken || info.Dropped != want.Dropped || len(info.Retentions) != len(want.Retentions) {
-		return nil, fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
+		return fmt.Errorf("%w: digest %s, %d records, last seq %d, old token %d; the plan's: %s, %d, %d, %d",
 			ErrStreamDiffers, info.Digest, info.Records, info.LastSeq, info.OldToken, want.Digest, want.Records, want.LastSeq, want.OldToken)
 	}
 	if got := e.LastSeq(); got != want.LastSeq {
-		return nil, fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, got, want.LastSeq)
+		return fmt.Errorf("%w: the engine is at seq %d, the stream ended at %d", ErrStreamDiffers, got, want.LastSeq)
 	}
+	return nil
+}
 
+// Check asks e every question of the plan and compares each answer with the reference
+// engine's, writing nothing: e holds the plan's stream already (written by [Run], or
+// loaded earlier and opened again). stream is what the stream is said to be, and is
+// returned in the report as it is; Check does not look at it. A question e cannot
+// answer is a mismatch with its error.
+func Check(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Progress, stream runner.StreamInfo) (*Report, error) {
 	tell(say, "g0: asking %d questions", len(plan.Queries))
 	reporter, _ := e.(PathReporter)
-	rep := &Report{Stream: info, Queries: len(plan.Queries)}
+	worker, _ := e.(WorkReporter)
+	rep := &Report{Stream: stream, Queries: len(plan.Queries)}
 	groups := map[[2]string]*Group{}
 	var order [][2]string
 	for _, q := range plan.Queries {
@@ -120,16 +162,32 @@ func Run(ctx context.Context, plan *runner.Plan, e engine.Engine, say runner.Pro
 			order = append(order, k)
 		}
 		g.Queries++
-		var before map[string]uint64
+		var before, workBefore map[string]uint64
 		if reporter != nil {
 			before = reporter.Paths()
 		}
+		if worker != nil {
+			workBefore = worker.Work()
+		}
 		got, err := runner.Ask(e, q)
+		var delta map[string]uint64
 		if reporter != nil {
-			g.Paths = addPaths(g.Paths, before, reporter.Paths())
+			delta = addPaths(nil, before, reporter.Paths())
+			for k, v := range delta {
+				if g.Paths == nil {
+					g.Paths = make(map[string]uint64)
+				}
+				g.Paths[k] += v
+			}
+		}
+		var work map[string]uint64
+		if worker != nil {
+			work = addPaths(nil, workBefore, worker.Work())
 		}
 		wantAns := runner.Answer{Digest: q.Expect, Size: q.Size}
-		if err == nil && got == wantAns {
+		match := err == nil && got == wantAns
+		rep.Results = append(rep.Results, Result{Group: q.Group, Rank: q.Rank, Age: q.Age, Op: q.Op, Match: match, Paths: delta, Work: work})
+		if match {
 			g.Matched++
 			rep.Matched++
 			continue

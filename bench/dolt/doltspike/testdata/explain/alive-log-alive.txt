@@ -1,0 +1,24 @@
+Project
+ ├─ columns: [count(1) as keys_n, coalesce(max(if((((x.hit = 1) and (x.kind = 'o')) and ((x.ttl_ns = 0) or ((case  when ((not(x.through_ns is null)) and (x.through_ns > x.event_ns)) then x.through_ns else x.event_ns end + x.ttl_ns) > 1767227519999999999))),1,0)),0) as holds]
+ └─ GroupBy
+     ├─ select: COUNT(1), MAX(if((((x.hit = 1) AND (x.kind = 'o')) AND ((x.ttl_ns = 0) OR ((CASE  WHEN ((NOT(x.through_ns IS NULL)) AND (x.through_ns > x.event_ns)) THEN x.through_ns ELSE x.event_ns END + x.ttl_ns) > 1767227519999999999))),1,0))
+     ├─ group: 
+     └─ SubqueryAlias
+         ├─ name: x
+         ├─ outerVisibility: false
+         ├─ isLateral: false
+         ├─ cacheable: true
+         ├─ colSet: (13-18)
+         ├─ tableId: 2
+         └─ Filter
+             ├─ (rn = 1)
+             └─ Project
+                 ├─ columns: [l.kind, l.ttl_ns, l.through_ns, l.event_ns, ((l.event_ns <= 1767227519999999999) AND (l.seq <= -9223372036854700408)) as hit, row_number() over ( partition by l.producer order by ((l.event_ns <= 1767227519999999999) and (l.seq <= -9223372036854700408)) desc, l.event_ns desc, l.seq desc) as rn]
+                 └─ Window(row_number() over ( partition by l.producer order by ((l.event_ns <= 1767227519999999999) AND (l.seq <= -9223372036854700408)) DESC, l.event_ns DESC, l.seq DESC), l.kind, l.ttl_ns, l.through_ns, l.event_ns, l.seq)
+                     └─ Filter
+                         ├─ (l.layer = 3)
+                         └─ TableAlias(l)
+                             └─ IndexedTableAccess(ent_log)
+                                 ├─ index: [ent_log.fp,ent_log.producer,ent_log.event_ns,ent_log.seq]
+                                 ├─ filters: [{[[107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158], [107 56 115 46 110 111 100 101 0 3 47 229 40 155 108 185 51 74 149 139 229 115 171 179 158]], [NULL, ∞), [NULL, ∞), [NULL, ∞)}]
+                                 └─ columns: [fp producer layer event_ns seq kind ttl_ns through_ns]

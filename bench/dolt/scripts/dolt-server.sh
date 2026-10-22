@@ -3,12 +3,13 @@
 # container, with the settings of server.yaml. It is the one way the server is started, on a
 # laptop and on CI, so that one code path is tested.
 #
-# usage: dolt-server.sh start | stop | sql [dolt sql arguments...]
+# usage: dolt-server.sh start | stop | sql [dolt sql arguments...] | image
 #
 #   start  pull the image if it is not there, start the container, and wait until the
 #          server answers with the registered version
 #   stop   stop the container (a clean shutdown) and remove it; the data stays
 #   sql    run `dolt sql` in the container, against the running server
+#   image  print the image reference (tag and digest) the server is started from
 #
 # The server has no password: the port is published on loopback only, and whoever can reach
 # it is trusted. The container sends nothing out: usage reporting is switched off in its
@@ -126,5 +127,6 @@ case "${1:-}" in
   start) [ $# -eq 1 ] || die "start takes no arguments"; start ;;
   stop) [ $# -eq 1 ] || die "stop takes no arguments"; stop ;;
   sql) shift; run_sql "$@" ;;
-  *) die "usage: dolt-server.sh start | stop | sql [dolt sql arguments...]" ;;
+  image) [ $# -eq 1 ] || die "image takes no arguments"; echo "$image" ;;
+  *) die "usage: dolt-server.sh start | stop | sql [dolt sql arguments...] | image" ;;
 esac

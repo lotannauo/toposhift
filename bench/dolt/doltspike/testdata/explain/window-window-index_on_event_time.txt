@@ -1,0 +1,6 @@
+Project
+ ├─ columns: [log.peer, log.rel, log.producer, log.event_ns, log.seq, log.kind, log.ttl_ns, log.through_ns, log.payload]
+ └─ IndexedTableAccess(log)
+     ├─ index: [log.layer,log.dir,log.a,log.event_ns,log.seq]
+     ├─ filters: [{[3, 3], [2, 2], [[107 56 115 46 110 111 100 101 0 177 115 107 97 90 199 244 33 224 156 41 164 165 44 242 19], [107 56 115 46 110 111 100 101 0 177 115 107 97 90 199 244 33 224 156 41 164 165 44 242 19]], [1767225600000000000, 1767229200000000000), (NULL, 9223372036854775807]}]
+     └─ columns: [layer dir a peer rel producer event_ns seq kind ttl_ns through_ns payload]
