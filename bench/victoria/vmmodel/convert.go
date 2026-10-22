@@ -110,6 +110,9 @@ type Counts struct {
 	CollapsedObserves, CollapsedDeletes uint64
 	// Series are the series seen, EntitySeries and EdgeSeries by metric.
 	Series, EntitySeries, EdgeSeries int
+	// FirstMs and LastMs are the earliest and the latest timestamp written, in Unix
+	// milliseconds (zero if nothing was).
+	FirstMs, LastMs int64
 	// Churn is the series created in each hour, by the time of the earliest sample of the
 	// series, in ascending hours, leaving out the hours in which none was.
 	Churn []HourCount
@@ -434,6 +437,12 @@ func (c *Converter) write(idx uint32, ms int64, stale bool) {
 		c.counts.Samples++
 	}
 	c.digest.Write(c.buf[:])
+	if c.counts.Samples+c.counts.Markers == 1 || ms < c.counts.FirstMs {
+		c.counts.FirstMs = ms
+	}
+	if c.counts.Samples+c.counts.Markers == 1 || ms > c.counts.LastMs {
+		c.counts.LastMs = ms
+	}
 	if c.emit != nil {
 		c.out = append(c.out, Sample{Series: idx, TimestampMs: ms, Stale: stale})
 	}

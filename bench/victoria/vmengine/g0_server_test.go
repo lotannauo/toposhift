@@ -3,23 +3,30 @@ package vmengine_test
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
-	"time"
 
 	"github.com/lotannauo/toposhift/bench/spike/runner"
 	"github.com/lotannauo/toposhift/bench/victoria/internal/fixture"
 	"github.com/lotannauo/toposhift/bench/victoria/vmengine"
-	"github.com/lotannauo/toposhift/bench/victoria/vmgate"
 	"github.com/lotannauo/toposhift/bench/victoria/vmmodel"
 	"github.com/lotannauo/toposhift/bench/victoria/vmquery"
-	"github.com/lotannauo/toposhift/internal/identity"
+	"github.com/lotannauo/toposhift/bench/victoria/vmrun"
 )
 
-// TestServerG0OnAPlan is the first gate on a live server: the every-sample stream of a
-// plan (the producers in watch mode re-exported at their scrape interval) is converted,
-// written to the server and made readable, the server's counters are checked against the
-// converter's, and every question of the plan that a store can be asked is put to the
-// server over HTTP.
+// serverEnv is what the run is checked against: flags.conf, the registered image and, if
+// TOPOSHIFT_VM_CONTAINER names the server's container, that it was started from it.
+func serverEnv() vmrun.EnvOptions {
+	return vmrun.EnvOptions{FlagsPath: "../scripts/flags.conf", ScriptPath: "../scripts/vm-server.sh", Container: os.Getenv("TOPOSHIFT_VM_CONTAINER")}
+}
+
+// TestServerG0OnAPlan is the first gate on a live server, made through the run the
+// commands of vmspike make: the every-sample stream of a plan (the producers in watch
+// mode re-exported at their scrape interval) is converted and written to a server that
+// holds none of the baseline's series, after the server's flags, version and (when its
+// container is named) image are checked; the server's counters are checked against the
+// converter's; the data is merged; and every question of the plan that a store can be
+// asked is put to the server over HTTP.
 //
 //   - the server's answer must equal the model's for every question (both are the last
 //     sample of each series in a window, over the same samples), which checks the
@@ -33,101 +40,70 @@ import (
 func TestServerG0OnAPlan(t *testing.T) {
 	c := serverClient(t)
 	ctx := context.Background()
-	if err := c.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if has, err := c.HasSeries(ctx, `{__name__=~"topo_.*"}`); err != nil || has {
-		t.Fatalf("the server already holds the baseline's series (%v): start one on an empty data directory", err)
-	}
-	flags, _, err := vmengine.LoadFlags("../scripts/flags.conf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vmengine.CheckFlags(ctx, c, flags); err != nil {
-		t.Fatal(err)
-	}
-
 	spec := fixture.Spec()
-	reg, err := vmmodel.RegistryFor(spec.Workload)
-	if err != nil {
-		t.Fatal(err)
-	}
 	plan, err := runner.MakePlan(ctx, spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[identity.Fingerprint]bool{}
-	var fps []identity.Fingerprint
-	for _, q := range plan.Queries {
-		for _, fp := range q.Fps {
-			if !seen[fp] {
-				seen[fp] = true
-				fps = append(fps, fp)
-			}
-		}
-	}
-	ref := vmmodel.NewWorld(fps...)
-	if _, err := runner.Drive(ctx, spec, ref); err != nil {
+	in, err := vmrun.PlanInput(plan, "test")
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	every, pinned := vmmodel.EverySampleSpec(spec)
-	held := vmmodel.NewWorld(fps...)
+	load, err := vmrun.Load(ctx, in, c, vmrun.LoadOptions{Env: serverEnv()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := load.Counts
+	t.Logf("written: %d samples (%d scraped), %d markers, %d series, %d requests", counts.Samples, counts.Scraped, counts.Markers, counts.Series, load.Requests)
+	if !load.Env.FlagsChecked || load.Env.Version == "" || load.Env.ImageChecked != (os.Getenv("TOPOSHIFT_VM_CONTAINER") != "") {
+		t.Errorf("the server was not checked: %+v", load.Env)
+	}
+	rows := counts.Samples + counts.Markers
+	if load.Server.Received != rows || load.Server.Added != rows || load.Server.Ignored != 0 || load.Server.NewSeries != uint64(counts.Series) {
+		t.Errorf("server counters %+v for %d rows in %d series", load.Server, rows, counts.Series)
+	}
+
+	// Merged, as it is when measured, every row is stored.
+	merge, err := vmrun.Merge(ctx, c, load, vmrun.MergeOptions{Env: serverEnv()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merge.Stored != rows || merge.After.PendingRows != 0 || merge.After.InMemoryParts != 0 || merge.After.Merging != 0 {
+		t.Errorf("merge %+v", merge)
+	}
+	// The size of the data directory is read only where the test can see it.
+	if data := os.Getenv("TOPOSHIFT_VM_DATA"); data != "" {
+		sizes, err := vmrun.Sizes(ctx, c, load, merge, data, vmrun.MergeOptions{Env: serverEnv()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sizes.Dir.Total == 0 || sizes.DataBytes == 0 || sizes.Dir.ByEntry["data"] == 0 {
+			t.Errorf("sizes %+v", sizes)
+		}
+	}
+
+	// The model of the store, written the same samples.
 	model := vmmodel.NewStore()
-	var ld *vmengine.Loader
 	var conv *vmmodel.Converter
 	conv, err = vmmodel.NewConverter(vmmodel.Options{
-		Registry: reg, Until: spec.Workload.Start.Add(spec.Workload.Duration),
-		Emit: func(ss []vmmodel.Sample) error {
-			if err := model.Sink(conv)(ss); err != nil {
-				return err
-			}
-			return ld.Emit(ss)
-		},
+		Registry: in.Registry, Until: in.Until,
+		Emit: func(ss []vmmodel.Sample) error { return model.Sink(conv)(ss) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Flush(ctx); err != nil {
-		t.Fatal(err)
-	}
-	start, err := c.Settle(ctx, 500*time.Millisecond, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ld, err = vmengine.NewLoader(ctx, c, conv, 0); err != nil {
-		t.Fatal(err)
-	}
-	info, err := runner.Drive(ctx, every, vmmodel.Projection(pinned, conv, held))
-	if err != nil {
+	if _, err := in.Every(ctx, conv); err != nil {
 		t.Fatal(err)
 	}
 	if err := conv.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := ld.Flush(); err != nil {
-		t.Fatal(err)
-	}
 	if err := model.Seal(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ld.Verify(ctx); err != nil {
-		t.Fatal(err)
-	}
-	counts := conv.Counts()
-	t.Logf("written: %d samples (%d scraped), %d markers, %d series, %d requests", counts.Samples, counts.Scraped, counts.Markers, counts.Series, ld.Requests)
-
-	// Merged, as it is when measured, every row is stored.
-	done, err := c.Compact(ctx, time.Second, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d := done.Stored - start.Stored; d != counts.Samples+counts.Markers {
-		t.Errorf("stored %d rows, wrote %d", d, counts.Samples+counts.Markers)
-	}
-
-	srv := vmengine.New(c, reg, info.LastSeq)
-	mdl := vmquery.NewModelEngine(reg, model, vmmodel.Semantics{}, info.LastSeq)
+	srv := vmengine.New(c, in.Registry, in.LastSeq())
+	mdl := vmquery.NewModelEngine(in.Registry, model, vmmodel.Semantics{}, in.LastSeq())
 
 	// The server answers as the model does, question by question.
 	for _, q := range plan.Queries {
@@ -149,29 +125,61 @@ func TestServerG0OnAPlan(t *testing.T) {
 		t.FailNow()
 	}
 
-	rep, err := (&vmgate.Gate{Reg: reg, Ref: ref, Store: held, Sem: vmmodel.Semantics{}}).Run(plan.Queries, srv)
+	rep, err := vmrun.Read(ctx, in, srv, load.Env)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%v\n%s\nfirst: %+v", err, rep.Gate, rep.Gate.Mismatches[:min(5, len(rep.Gate.Mismatches))])
 	}
-	t.Logf("\n%s", rep)
-	if rep.Wrong > 0 {
-		t.Fatalf("%d non-boundary answers differ from the plan's, first: %+v", rep.Wrong, rep.Mismatches[:min(5, len(rep.Mismatches))])
-	}
-	if err := rep.Accounting(); err != nil {
+	t.Logf("\n%s", rep.Gate)
+	if err := rep.Gate.Accounting(); err != nil {
 		t.Error(err)
 	}
-	if tot := rep.Total(); tot.Asked != len(plan.Queries) || tot.Compared < 300 {
+	if tot := rep.Gate.Total(); tot.Asked != len(plan.Queries) || tot.Compared < 300 {
 		t.Errorf("%+v for %d questions", tot, len(plan.Queries))
 	}
 	for _, fam := range []string{"host<-", "node->L1", "service<-L3", "node exists", "pod->", "node<-", "service<-"} {
-		if got := rep.ByFamily[fam]; got == nil || got.Compared == 0 {
+		if got := rep.Gate.ByFamily[fam]; got == nil || got.Compared == 0 {
 			t.Errorf("family %s: nothing was compared (%+v)", fam, got)
 		}
 	}
-	if bad := rep.NotCompared(); len(bad) > 0 {
-		t.Errorf("not compared at sample resolution: %v", bad)
+	if len(rep.NotCompared) > 0 {
+		t.Errorf("not compared at sample resolution: %v", rep.NotCompared)
 	}
-	if rep.Rows[vmmodel.CapWindow] == 0 || rep.Rows[vmmodel.CapAsKnownAt] == 0 || len(rep.Rows) != 2 {
-		t.Errorf("capability rows %v", rep.Rows)
+	if rep.Gate.Rows[vmmodel.CapWindow] == 0 || rep.Gate.Rows[vmmodel.CapAsKnownAt] == 0 || len(rep.Gate.Rows) != 2 {
+		t.Errorf("capability rows %v", rep.Gate.Rows)
+	}
+}
+
+// TestServerLoadRefusesAServerThatHoldsSeries runs after the load above on the same
+// server: a second load is refused, and writes nothing.
+func TestServerLoadRefusesAServerThatHoldsSeries(t *testing.T) {
+	c := serverClient(t)
+	ctx := context.Background()
+	if err := c.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := c.HasSeries(ctx, `{__name__=~"topo_.*"}`); err != nil || !has {
+		t.Skipf("the server holds none of the baseline's series (%v): this test follows TestServerG0OnAPlan", err)
+	}
+	before, err := c.Counters(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := runner.MakePlan(ctx, fixture.Spec(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := vmrun.PlanInput(plan, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vmrun.Load(ctx, in, c, vmrun.LoadOptions{Env: serverEnv()}); !errors.Is(err, vmrun.ErrServerNotEmpty) {
+		t.Fatalf("a load onto a server that holds series: %v", err)
+	}
+	after, err := c.Counters(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Received != before.Received || after.Added != before.Added || after.NewSeries != before.NewSeries {
+		t.Errorf("a refused load wrote: %+v then %+v", before, after)
 	}
 }
