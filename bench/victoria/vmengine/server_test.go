@@ -2,6 +2,7 @@ package vmengine_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -340,5 +341,81 @@ func TestServerCountersAndCompaction(t *testing.T) {
 	}
 	if again.Stored != done.Stored || again.SmallParts+again.BigParts != done.SmallParts+done.BigParts {
 		t.Errorf("a second merge changed the data: %+v then %+v", done, again)
+	}
+}
+
+// seriesCount is the server's own count of series, /api/v1/series/count.
+func seriesCount(t *testing.T, c *vmengine.Client) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, c.URL()+"/api/v1/series/count", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var out struct {
+		Status string `json:"status"`
+		Data   []int  `json:"data"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil || resp.StatusCode != http.StatusOK || out.Status != "success" || len(out.Data) != 1 {
+		t.Fatalf("/api/v1/series/count: status %d: %s (%v)", resp.StatusCode, b, err)
+	}
+	return out.Data[0]
+}
+
+// TestServerSeriesAcrossAMonth is the reason a load is refused when its samples fall in
+// more than one UTC month: the server's own count of series (/api/v1/series/count) counts
+// a series once for each monthly partition it has samples in, while the counter of the
+// series it created (vm_new_timeseries_created_total, which a load is checked against) counts
+// each once. Series with samples in one month are counted once by both; series with samples
+// in two months are counted twice by the first.
+func TestServerSeriesAcrossAMonth(t *testing.T) {
+	c := serverClient(t)
+	ctx := context.Background()
+	const n = 3
+	write := func(name string, times ...time.Time) (created, counted int) {
+		metric := fmt.Sprintf("vm_semantics_%s_%d", name, time.Now().UnixNano())
+		if err := c.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		before, err := c.Settle(ctx, 500*time.Millisecond, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count0 := seriesCount(t, c)
+		var ts []vmwrite.TimeSeries
+		for i := 0; i < n; i++ {
+			x := vmwrite.TimeSeries{Labels: []vmmodel.Label{{Name: "__name__", Value: metric}, {Name: "id", Value: fmt.Sprint(i)}}}
+			for _, at := range times {
+				x.Samples = append(x.Samples, vmwrite.One(at.UnixMilli()))
+			}
+			ts = append(ts, x)
+		}
+		if err := c.Write(ctx, vmwrite.Request{Body: vmwrite.Compress(vmwrite.Marshal(ts))}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+		after, err := c.Settle(ctx, 500*time.Millisecond, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int(after.NewSeries - before.NewSeries), seriesCount(t, c) - count0
+	}
+	jan := time.Date(2026, 1, 31, 23, 0, 0, 0, time.UTC)
+	feb := time.Date(2026, 2, 1, 1, 0, 0, 0, time.UTC)
+	oneCreated, oneCounted := write("onemonth", jan, jan.Add(time.Minute))
+	twoCreated, twoCounted := write("twomonths", jan, feb)
+	t.Logf("%d series in one month: created %d, counted %d; in two months: created %d, counted %d", n, oneCreated, oneCounted, twoCreated, twoCounted)
+	if oneCreated != n || twoCreated != n {
+		t.Errorf("the counter of created series moved by %d and %d for %d series", oneCreated, twoCreated, n)
+	}
+	if oneCounted != n || twoCounted != 2*n {
+		t.Errorf("the server's count of series moved by %d for series in one month and by %d for series in two, not %d and %d", oneCounted, twoCounted, n, 2*n)
 	}
 }

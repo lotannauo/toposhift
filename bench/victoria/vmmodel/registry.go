@@ -244,6 +244,22 @@ func (r *Registry) RefreshWindow(s engine.Subject) time.Duration {
 	return w
 }
 
+// Band is the longest a read can find a subject present after the last sample written for
+// it: the largest window among the producers that hold it, and the millisecond a
+// timestamp is truncated by ([Slack]). It is zero for a subject the registry does not
+// hold. A coalesced stream that ends an interval a whole band earlier than the
+// every-sample stream is not an extension's slack.
+func (r *Registry) Band(s engine.Subject) time.Duration {
+	var w time.Duration
+	for _, h := range r.holders(s) {
+		w = max(w, h.Window)
+	}
+	if w == 0 {
+		return 0
+	}
+	return w + Slack
+}
+
 // holds reports whether the producer is registered as a holder of the subject.
 func (r *Registry) holds(s engine.Subject, p lifecycle.Producer) (Holder, bool) {
 	for _, h := range r.holders(s) {

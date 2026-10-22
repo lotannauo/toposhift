@@ -35,6 +35,13 @@ type Loader struct {
 // [DefaultRequestSamples]) for the series of conv, remembering the server's counters as
 // they are now: what is checked afterwards is what changed.
 func NewLoader(ctx context.Context, c *Client, conv *vmmodel.Converter, size int) (*Loader, error) {
+	return NewLoaderSettling(ctx, c, conv, size, settleInterval, 3)
+}
+
+// NewLoaderSettling is [NewLoader] with the interval between the reads of the counters
+// while the server settles before the load, and the number of equal reads in a row that
+// say it has.
+func NewLoaderSettling(ctx context.Context, c *Client, conv *vmmodel.Converter, size int, interval time.Duration, stable int) (*Loader, error) {
 	if size == 0 {
 		size = DefaultRequestSamples
 	}
@@ -42,7 +49,7 @@ func NewLoader(ctx context.Context, c *Client, conv *vmmodel.Converter, size int
 		return nil, err
 	}
 	// Whatever was written before is counted by the time the server is idle.
-	before, err := c.Settle(ctx, settleInterval, 3)
+	before, err := c.Settle(ctx, interval, stable)
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +60,10 @@ func NewLoader(ctx context.Context, c *Client, conv *vmmodel.Converter, size int
 	}
 	return l, nil
 }
+
+// Before is the server's counters as they were when the loader was made: what a later
+// reading is a change from.
+func (l *Loader) Before() Counters { return l.before }
 
 func (l *Loader) send(r vmwrite.Request) error {
 	if err := l.client.Write(l.ctx, r); err != nil {

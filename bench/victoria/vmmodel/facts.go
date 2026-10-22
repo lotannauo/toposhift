@@ -9,12 +9,19 @@ import (
 
 	"github.com/lotannauo/toposhift/bench/spike/engine"
 	"github.com/lotannauo/toposhift/bench/spike/runner"
+	"github.com/lotannauo/toposhift/bench/spike/workload"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/lifecycle"
 )
 
 // ErrFactsDiffer marks two streams that do not describe the same existence.
 var ErrFactsDiffer = errors.New("vmmodel: the two streams do not describe the same existence")
+
+// ErrExtension marks a coalescer whose extension interval is longer than the window of a
+// producer whose runs it extends: a run could then be re-asserted less often than the
+// window a read gives it, and the coalesced stream would end it where the store's samples
+// still hold it for longer than the check can bound.
+var ErrExtension = errors.New("vmmodel: the coalescer's extension interval exceeds a producer's window")
 
 // EverySampleSpec is the spec of the every-sample stream of a spec: the same workload,
 // seed, start, batch size and retentions, with the ingest-side coalescer off (and the
@@ -111,15 +118,40 @@ type FactsReport struct {
 	Subjects, Identical, EndsEarlier int
 	// MaxEarly is the largest amount any interval ends earlier in the coalesced stream.
 	MaxEarly time.Duration
+	// SmallestBand is the smallest [Registry.Band] of the subjects compared. The check is
+	// per subject (an interval must end earlier by less than its own subject's band), so
+	// MaxEarly above SmallestBand is not a failure: it is the amount of a subject with a
+	// wide band, reported beside it.
+	SmallestBand time.Duration
 }
 
-// factSink collects the records of a stream, per subject, without their payloads.
-type factSink struct {
+// SmallestBand returns the smallest band of the registry's subjects among those the map
+// holds records of (zero if none is held by the registry).
+func SmallestBand(reg *Registry, by map[engine.Subject][]engine.Record) time.Duration {
+	var out time.Duration
+	for s := range by {
+		if b := reg.Band(s); b > 0 && (out == 0 || b < out) {
+			out = b
+		}
+	}
+	return out
+}
+
+// FactSink collects the records of a stream, per subject, without their payloads: what
+// [CompareFacts] folds. It is a runner.Sink.
+type FactSink struct {
 	keep map[identity.Fingerprint]struct{}
 	by   map[engine.Subject][]engine.Record
 }
 
-func (s *factSink) Write(batch []engine.Record) error {
+// NewFactSink returns a sink that keeps the records touching the entities of keep (see
+// [Touches]), or every record if keep is nil.
+func NewFactSink(keep map[identity.Fingerprint]struct{}) *FactSink {
+	return &FactSink{keep: keep, by: map[engine.Subject][]engine.Record{}}
+}
+
+// Write implements runner.Sink.
+func (s *FactSink) Write(batch []engine.Record) error {
 	for _, r := range batch {
 		if s.keep != nil && !Touches(s.keep, r) {
 			continue
@@ -129,7 +161,12 @@ func (s *factSink) Write(batch []engine.Record) error {
 	}
 	return nil
 }
-func (*factSink) Retain(time.Time) error { return nil }
+
+// Retain implements runner.Sink and does nothing.
+func (*FactSink) Retain(time.Time) error { return nil }
+
+// Records returns the records kept, by subject.
+func (s *FactSink) Records() map[engine.Subject][]engine.Record { return s.by }
 
 // CheckSameFacts generates the stream of the spec twice, with the coalescer on and in its
 // every-sample form ([EverySampleSpec]), and checks that the two describe the same
@@ -142,7 +179,12 @@ func (*factSink) Retain(time.Time) error { return nil }
 // The plans' expected answers come from the coalesced stream and the store is written the
 // every-sample one, so every comparison of the two rests on this. The check is made on
 // the registry's windows: the bound of a subject is the fraction of the longest window
-// among its refreshing holders (a producer in watch mode has no run to extend).
+// among its refreshing holders (a producer in watch mode has no run to extend), or the
+// fixed interval, and never a whole band of the subject ([Registry.Band]); a fixed
+// interval longer than the window of a refreshing producer is refused first
+// ([CheckExtension]). The spec's pins, if it has any, are the projection the store side
+// is written through ([EverySampleSpec]), and its retentions are carried into the
+// every-sample spec.
 //
 // The generator's ingest-side coalescer (bench/spike/workload/coalesce.go) takes no
 // random numbers, so both streams share their events. CheckSameFacts fails if that is
@@ -150,30 +192,66 @@ func (*factSink) Retain(time.Time) error { return nil }
 // the specification's coalescing of assertions, not this one.)
 func CheckSameFacts(ctx context.Context, spec runner.Spec, reg *Registry) (FactsReport, error) {
 	every, pinned := EverySampleSpec(spec)
-	a := &factSink{by: map[engine.Subject][]engine.Record{}}
+	if err := CheckExtension(spec.Workload, reg); err != nil {
+		return FactsReport{}, err
+	}
+	a := NewFactSink(nil)
 	if _, err := runner.Drive(ctx, spec, a); err != nil {
 		return FactsReport{}, fmt.Errorf("vmmodel: the coalesced stream: %w", err)
 	}
-	b := &factSink{keep: pinned, by: map[engine.Subject][]engine.Record{}}
+	b := NewFactSink(pinned)
 	if _, err := runner.Drive(ctx, every, b); err != nil {
 		return FactsReport{}, fmt.Errorf("vmmodel: the every-sample stream: %w", err)
 	}
-	return CompareFacts(a.by, b.by, func(s engine.Subject) time.Duration { return extensionBound(spec, reg, s) })
+	rep, err := CompareFacts(a.Records(), b.Records(), func(s engine.Subject) time.Duration { return extensionBound(spec, reg, s) })
+	rep.SmallestBand = SmallestBand(reg, b.Records())
+	return rep, err
+}
+
+// CheckExtension refuses a coalescer whose fixed extension interval (ExtendEvery) is
+// longer than the window of any producer whose runs it extends (the refreshing producers
+// of the registry; one in watch mode has no run). The fraction of a run's own TTL
+// (ExtendTTLFraction) cannot exceed a window, since it is at most one.
+func CheckExtension(w workload.Config, reg *Registry) error {
+	if !w.CoalesceRuns || w.ExtendEvery <= 0 {
+		return nil
+	}
+	for _, h := range reg.Producers() {
+		if !h.Watch() && w.ExtendEvery > h.Window {
+			return fmt.Errorf("%w: ExtendEvery is %s and the window of producer %q is %s", ErrExtension, w.ExtendEvery, h.Producer, h.Window)
+		}
+	}
+	return nil
 }
 
 // extensionBound is how much earlier than the every-sample stream an interval of the
-// subject may end in the coalesced one: strictly less than this.
+// subject may end in the coalesced one: strictly less than this, and never as much as the
+// subject's own band ([Registry.Band]).
 func extensionBound(spec runner.Spec, reg *Registry, s engine.Subject) time.Duration {
 	w := spec.Workload
-	if w.CoalesceRuns {
-		if w.ExtendEvery > 0 {
-			return w.ExtendEvery
-		}
-		if w.ExtendTTLFraction > 0 {
-			return time.Duration(w.ExtendTTLFraction * float64(reg.RefreshWindow(s)))
+	return ExtensionBound(w.CoalesceRuns, w.ExtendEvery, w.ExtendTTLFraction, reg, s)
+}
+
+// ExtensionBound is [CheckSameFacts]'s bound for a subject, from the coalescer's settings:
+// the fixed interval or the fraction of the longest window of the subject's refreshing
+// holders, capped at the subject's band. It is zero without a coalescer, so that every end
+// must be equal.
+func ExtensionBound(coalesce bool, every time.Duration, fraction float64, reg *Registry, s engine.Subject) time.Duration {
+	var b time.Duration
+	if coalesce {
+		switch {
+		case every > 0:
+			b = every
+		case fraction > 0:
+			b = time.Duration(fraction * float64(reg.RefreshWindow(s)))
 		}
 	}
-	return 0
+	if b > 0 {
+		if band := reg.Band(s); band > 0 {
+			b = min(b, band)
+		}
+	}
+	return b
 }
 
 // CompareFacts folds the records of each subject of both streams and compares the

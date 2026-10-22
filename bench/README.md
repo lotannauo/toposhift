@@ -111,6 +111,20 @@ server; with `TOPOSHIFT_VM_URL=http://127.0.0.1:8428` set against a server that 
 of the baseline's series, `mise run bench:victoria:test:server` runs them. `mise run
 bench:victoria:test`, `bench:victoria:test:race`, `bench:victoria:lint`,
 `bench:victoria:vuln` and `bench:victoria:purego` are its tasks, in the CI shards.
+`victoria/vminput` reads an activity file (the Alibaba placement stream is one) as engine
+records, holds the registry of its one producer, and chooses its questions with the
+spike's own selector, answered by the reference engine fed the same file. `victoria/vmrun`
+is what the commands do and `victoria/cmd/vmspike` is the driver: `convert` counts what
+the every-sample stream comes to as samples (labelled deterministic only after two equal
+runs), `facts` checks on a full input that the coalesced and the every-sample stream
+describe the same existence, `questions` makes the question set of an activity file, `load`
+writes the samples into a server that holds none of the baseline's series and checks the
+server's own counters against the converter's (it refuses a stream that crosses a UTC
+month, because the server counts a series once per monthly partition), `merge` forces the
+merged state, `sizes` reads the bytes, `read` is the first gate on the server, and `env`
+records where the run is made and refuses a server whose flags, version or container image
+are not the registered ones. Every output goes outside any git work tree, and none carries a
+time. The bytes of a merged data directory are a figure only from CI hardware.
 
 The DuckDB baseline, `duckdb/`, is a module of its own too, because its driver links
 DuckDB's native library: it builds and tests with cgo (the model and the first gate,

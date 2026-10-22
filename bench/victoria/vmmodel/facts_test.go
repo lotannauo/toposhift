@@ -175,3 +175,122 @@ func TestCompareFactsCatchesADifferentExistence(t *testing.T) {
 		t.Errorf("no bound: err = %v", err)
 	}
 }
+
+// ---- the extension rule, the bound and the band ----
+
+// The coalescer's extension interval may not exceed the window of a producer whose runs it
+// extends: with the fixed interval it is refused, with the fraction (at most one of the
+// window) it never can be, and a producer in watch mode has no run.
+func TestCheckExtension(t *testing.T) {
+	reg := registry(t) // node 240 s, traces 1,200 s, pods 3,600 s, kubelet 300 s; watch mode 240 s
+	w := fixture.Registered(time.Hour)
+	w.CoalesceRuns = true
+	w.ExtendEvery = 240 * time.Second
+	if err := vmmodel.CheckExtension(w, reg); err != nil {
+		t.Errorf("an interval equal to the smallest window: %v", err)
+	}
+	w.ExtendEvery = 241 * time.Second
+	if err := vmmodel.CheckExtension(w, reg); !errors.Is(err, vmmodel.ErrExtension) {
+		t.Errorf("an interval longer than the node collector's window: %v", err)
+	}
+	w.ExtendEvery = 3 * time.Hour
+	if err := vmmodel.CheckExtension(w, reg); !errors.Is(err, vmmodel.ErrExtension) {
+		t.Errorf("a three-hour interval: %v", err)
+	}
+	w.ExtendEvery, w.ExtendTTLFraction = 0, 0.5
+	if err := vmmodel.CheckExtension(w, reg); err != nil {
+		t.Errorf("a fraction of the TTL: %v", err)
+	}
+	w.CoalesceRuns, w.ExtendEvery, w.ExtendTTLFraction = false, 3*time.Hour, 0
+	if err := vmmodel.CheckExtension(w, reg); err != nil {
+		t.Errorf("no coalescer: %v", err)
+	}
+	// A registry with only watch-mode producers has no run to extend.
+	watch, err := vmmodel.NewRegistry(nil, map[catalog.EntityType][]vmmodel.Holder{catalog.Rack: {{Producer: "fabric", Window: time.Minute, Scrape: time.Minute}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.CoalesceRuns, w.ExtendEvery = true, time.Hour
+	if err := vmmodel.CheckExtension(w, watch); err != nil {
+		t.Errorf("a watch-mode registry: %v", err)
+	}
+}
+
+// The bound of a subject: the fixed interval or the fraction of the longest window of its
+// refreshing holders, capped at the subject's band (the longest window of any holder and a
+// millisecond), and nothing without a coalescer.
+func TestExtensionBoundAndBand(t *testing.T) {
+	reg := registry(t)
+	node := engine.EntitySubject(fixture.FP(catalog.K8sNode, 1))
+	podEdge := engine.EdgeSubject(fixture.FP(catalog.K8sPod, 1), fixture.FP(catalog.K8sNode, 2), catalog.ScheduledOn)
+	unknown := engine.EntitySubject(fixture.FP(catalog.Process, 1))
+
+	if got := reg.Band(node); got != 240*time.Second+vmmodel.Slack {
+		t.Errorf("band of a node %s", got)
+	}
+	// scheduled_on is held by the watch (240 s), the pod collector (3,600 s) and the
+	// kubelet (300 s): the band is the longest.
+	if got := reg.Band(podEdge); got != 3600*time.Second+vmmodel.Slack {
+		t.Errorf("band of a placement %s", got)
+	}
+	if got := reg.Band(engine.EntitySubject(fixture.FP(catalog.Host, 1))); got != 240*time.Second+vmmodel.Slack {
+		t.Errorf("band of a host %s", got)
+	}
+	if reg.Band(unknown) != 0 {
+		t.Error("a band for a subject the registry does not hold")
+	}
+	bound := func(co bool, every time.Duration, frac float64, s engine.Subject) time.Duration {
+		return vmmodel.ExtensionBound(co, every, frac, reg, s)
+	}
+	if got := bound(true, 0, 0.5, node); got != 120*time.Second {
+		t.Errorf("half of a node's window %s", got)
+	}
+	if got := bound(true, 0, 0.5, podEdge); got != 1800*time.Second {
+		t.Errorf("half of the pod collector's window %s", got)
+	}
+	if got := bound(true, 90*time.Second, 0, node); got != 90*time.Second {
+		t.Errorf("a fixed interval %s", got)
+	}
+	// A fixed interval past the band is capped at it: an end a whole band early is not slack.
+	if got := bound(true, 3*time.Hour, 0, node); got != 240*time.Second+vmmodel.Slack {
+		t.Errorf("a three-hour interval on a node %s", got)
+	}
+	if got := bound(false, time.Hour, 0.5, node); got != 0 {
+		t.Errorf("no coalescer %s", got)
+	}
+	// A subject with no refreshing holder has no run to extend.
+	if got := bound(true, 0, 0.5, unknown); got != 0 {
+		t.Errorf("a subject nothing holds %s", got)
+	}
+	by := map[engine.Subject][]engine.Record{node: nil, podEdge: nil}
+	if got := vmmodel.SmallestBand(reg, by); got != 240*time.Second+vmmodel.Slack {
+		t.Errorf("smallest band %s", got)
+	}
+	if got := vmmodel.SmallestBand(reg, nil); got != 0 {
+		t.Errorf("smallest band of nothing %s", got)
+	}
+}
+
+// CheckSameFacts refuses a coalescer whose fixed interval is longer than a window before it
+// generates anything, and a spec's report carries the smallest band.
+func TestCheckSameFactsRefusesALongExtensionIntervalAndReportsTheBand(t *testing.T) {
+	spec := fixture.Spec()
+	spec.Workload.ExtendTTLFraction = 0
+	spec.Workload.ExtendEvery = time.Hour
+	reg, err := vmmodel.RegistryFor(spec.Workload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vmmodel.CheckSameFacts(context.Background(), spec, reg); !errors.Is(err, vmmodel.ErrExtension) {
+		t.Errorf("an hour against a four-minute window: %v", err)
+	}
+	spec = fixture.Spec()
+	reg, _ = vmmodel.RegistryFor(spec.Workload)
+	rep, err := vmmodel.CheckSameFacts(context.Background(), spec, reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.SmallestBand != 240*time.Second+vmmodel.Slack {
+		t.Errorf("smallest band %s", rep.SmallestBand)
+	}
+}

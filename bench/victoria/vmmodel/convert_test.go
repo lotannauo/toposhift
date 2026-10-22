@@ -189,6 +189,11 @@ func TestConversionGolden(t *testing.T) {
 	if c.Scraped != 31 || c.Reasserted != 0 {
 		t.Errorf("scraped %d, reasserted %d", c.Scraped, c.Reasserted)
 	}
+	// The first and the last timestamp written: the node's first sample at 0, and the
+	// scrapes of pod 3 through the end of the period.
+	if c.FirstMs != ms(0) || c.LastMs != ms(1000*time.Second) {
+		t.Errorf("first %d and last %d ms, want %d and %d", c.FirstMs, c.LastMs, ms(0), ms(1000*time.Second))
+	}
 	if c.Samples != 38 || c.Markers != 2 || c.CollapsedObserves != 1 || c.CollapsedDeletes != 1 || c.Collapses() != 2 {
 		t.Errorf("wrote %d samples and %d markers, collapsed %d observes and %d deletes", c.Samples, c.Markers, c.CollapsedObserves, c.CollapsedDeletes)
 	}
