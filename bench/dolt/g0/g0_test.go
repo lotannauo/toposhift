@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,5 +293,134 @@ func TestPlansOnDisk(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// sinkOf writes a stream to an engine, as a loader does.
+type sinkOf struct{ e engine.Engine }
+
+func (s sinkOf) Write(b []engine.Record) error { return s.e.Write(b) }
+func (s sinkOf) Retain(h time.Time) error      { return s.e.Retain(h) }
+
+// TestCheckAsksAnEngineThatWasLoadedElsewhere: a gate that does not write is the gate that
+// does: an engine written the stream by another route, and then asked, gives the report that
+// Run gave, question for question.
+func TestCheckAsksAnEngineThatWasLoadedElsewhere(t *testing.T) {
+	p := plan(t, "a retention", retainingSpec())
+	byRun, err := g0.Run(context.Background(), p, doltmodel.New(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := doltmodel.New()
+	info, err := runner.Drive(context.Background(), p.Spec, sinkOf{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g0.CheckStream(info, p.Stream, m); err != nil {
+		t.Fatal(err)
+	}
+	byCheck, err := g0.Check(context.Background(), p, m, nil, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byCheck.OK() || byCheck.Matched != byRun.Matched || byCheck.Stream.Digest != byRun.Stream.Digest || len(byCheck.Groups) != len(byRun.Groups) {
+		t.Fatalf("by Check %d of %d, by Run %d of %d", byCheck.Matched, byCheck.Queries, byRun.Matched, byRun.Queries)
+	}
+	for i, g := range byCheck.Groups {
+		if want := byRun.Groups[i]; g.Group != want.Group || g.Age != want.Age || !maps.Equal(g.Paths, want.Paths) {
+			t.Errorf("%s at %s: %v, by Run %v", g.Group, g.Age, g.Paths, want.Paths)
+		}
+	}
+	// Check writes nothing: an engine that cannot be written to is asked all the same.
+	if m.LastSeq() != p.Stream.LastSeq {
+		t.Fatalf("seq %d", m.LastSeq())
+	}
+}
+
+// TestEveryQuestionHasItsOwnResult: one result for each question, in the plan's order, with
+// the paths and the work of that question alone, which sum to the groups' and the engine's.
+func TestEveryQuestionHasItsOwnResult(t *testing.T) {
+	p := plan(t, "no retention", hourSpec())
+	m := doltmodel.New()
+	rep, err := g0.Run(context.Background(), p, m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != len(p.Queries) {
+		t.Fatalf("%d results for %d questions", len(rep.Results), len(p.Queries))
+	}
+	sumPaths, sumWork := map[string]uint64{}, map[string]uint64{}
+	for i, r := range rep.Results {
+		q := p.Queries[i]
+		if r.Group != q.Group || r.Rank != q.Rank || r.Age != q.Age || r.Op != q.Op || !r.Match {
+			t.Fatalf("result %d: %+v for question %s #%d at %s (%s)", i, r, q.Group, q.Rank, q.Age, q.Op)
+		}
+		var outcomes uint64
+		for k, v := range r.Paths {
+			sumPaths[k] += v
+			if strings.HasSuffix(k, "/as-of-alone") || strings.HasSuffix(k, "/needed-log") || strings.HasSuffix(k, "/no-commit") || k == "window/log" {
+				outcomes += v
+			}
+		}
+		if outcomes != 1 {
+			t.Fatalf("question %d was counted %d times: %v", i, outcomes, r.Paths)
+		}
+		for k, v := range r.Work {
+			sumWork[k] += v
+		}
+	}
+	if !maps.Equal(sumPaths, rep.TotalPaths()) || !maps.Equal(sumPaths, m.Paths()) {
+		t.Errorf("the questions' paths %v, the groups' %v, the model's %v", sumPaths, rep.TotalPaths(), m.Paths())
+	}
+	if !maps.Equal(sumWork, m.Work()) || len(sumWork) == 0 {
+		t.Errorf("the questions' work %v, the model's %v", sumWork, m.Work())
+	}
+	// A wrong answer is the result of its question and no other.
+	bad, err := g0.Run(context.Background(), p, wrong{doltmodel.New(), "alive inverted"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var falses int
+	for i, r := range bad.Results {
+		if !r.Match {
+			falses++
+			if p.Queries[i].Op != runner.OpAlive {
+				t.Errorf("a %s was wrong when only existence reads are", p.Queries[i].Op)
+			}
+		}
+	}
+	if falses != bad.Queries-bad.Matched || falses == 0 {
+		t.Errorf("%d wrong results, %d wrong answers", falses, bad.Queries-bad.Matched)
+	}
+}
+
+// TestCheckStreamSaysWhatDiffers: each field that decides the stream, and an engine that has
+// not been written all of it.
+func TestCheckStreamSaysWhatDiffers(t *testing.T) {
+	p := plan(t, "a retention", retainingSpec())
+	m := doltmodel.New()
+	info, err := runner.Drive(context.Background(), p.Spec, sinkOf{m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g0.CheckStream(info, p.Stream, m); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*runner.StreamInfo){
+		"the digest":     func(s *runner.StreamInfo) { s.Digest = "0" },
+		"the records":    func(s *runner.StreamInfo) { s.Records++ },
+		"the last seq":   func(s *runner.StreamInfo) { s.LastSeq++ },
+		"the old token":  func(s *runner.StreamInfo) { s.OldToken++ },
+		"the dropped":    func(s *runner.StreamInfo) { s.Dropped++ },
+		"the retentions": func(s *runner.StreamInfo) { s.Retentions = nil },
+	} {
+		want := p.Stream
+		mutate(&want)
+		if err := g0.CheckStream(info, want, m); !errors.Is(err, g0.ErrStreamDiffers) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := g0.CheckStream(info, p.Stream, doltmodel.New()); !errors.Is(err, g0.ErrStreamDiffers) {
+		t.Errorf("an engine that was not written the stream: %v", err)
 	}
 }

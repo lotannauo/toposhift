@@ -169,7 +169,15 @@ start` runs the digest-pinned server image with `dolt/scripts/server.yaml` (the 
 of its settings), and `TOPOSHIFT_DOLT_DSN='root@tcp(127.0.0.1:33306)/' mise run
 bench:dolt:test:server` runs the tests that need it; without the variable they skip. The
 facts about Dolt the design relies on are listed, each with the test that checks it, in
-the `doltengine` package documentation. The module's other tasks (`mise run bench:dolt:test`,
+the `doltengine` package documentation. `dolt/cmd/doltspike` loads a plan's stream (or an
+activity file's, with the questions made for it first) into a database of either arm and
+records, in counts and bytes and never in time: the writer's counts and the head commit of
+the load, how every question was answered (the keys settled by a state row and the keys
+sent to the log, and the questions the state as of a commit answered alone), the same
+counted for the diagnostic arm, the server's plan for every statement of the reads, and the
+bytes of the database's directory as left and after garbage collection. Every command
+refuses a server that is not the registered one, a plan not named by its SHA-256 and an
+output inside a git work tree. The module's other tasks (`mise run bench:dolt:test`,
 `bench:dolt:test:race`, `bench:dolt:lint`, `bench:dolt:fmt:check`, `bench:dolt:vuln`) and
 the server tests run in `.github/workflows/dolt.yml`, not in the `ci` shards, so that a
 baseline that needs a database server never holds up a pull request that touches nothing

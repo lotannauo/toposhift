@@ -400,7 +400,9 @@ run = 'gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_RE
 # baseline that needs a server never holds up a pull request that touches nothing under
 # bench/dolt. Its tests that need a Dolt server skip without TOPOSHIFT_DOLT_DSN;
 # bench:dolt:test:server runs them against a server, and only dolt.yml, which starts one
-# with bench/dolt/scripts/dolt-server.sh, does.
+# with bench/dolt/scripts/dolt-server.sh, does. The tests of the commands that measure the
+# server's data directory (doltspike sizes) also need TOPOSHIFT_DOLT_DATA, the directory the
+# server's container mounts, and skip without it.
 [tasks."bench:dolt:fmt:check"]
 description = "Fail if any Go file in the Dolt module is not formatted"
 dir = "bench/dolt"
@@ -440,7 +442,7 @@ if [ -n "${RUNNER_TEMP:-}" ]; then
     exit 1
   fi
 fi
-gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-dolt-test-server.json"} -- -count=1 -p 1 -parallel 2 -timeout 80m ./doltengine/...
+gotestsum --format standard-quiet ${TEST_REPORT_DIR:+--jsonfile "$TEST_REPORT_DIR/bench-dolt-test-server.json"} -- -count=1 -p 1 -parallel 2 -timeout 80m ./doltengine/... ./doltspike/...
 '''
 
 [tasks."bench:dolt:test:race"]

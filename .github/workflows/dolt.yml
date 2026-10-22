@@ -7,10 +7,12 @@ name: dolt
 # both architectures; the server job starts the registered Dolt server, with
 # bench/dolt/scripts/dolt-server.sh (the one way the server is ever started, here and
 # on a laptop), and runs the tests that need one against it, on both architectures.
-# Neither is a required check, and neither times anything. A pull request runs only
-# when it changes bench/dolt or this file, so one that changes internal/** or
-# bench/spike/** is caught only after it reaches main, which is acceptable for a
-# baseline that is not a required check.
+# The sizing job loads the full two-day plan into the server and says only whether it fits
+# the runner (pass or fail), on a pull request that changes the loader or is labelled
+# "sizing". None is a required check, and none of them prints or keeps a time. A pull
+# request runs only when it changes bench/dolt or this file, so one that changes
+# internal/** or bench/spike/** is caught only after it reaches main, which is acceptable
+# for a baseline that is not a required check.
 
 on:
   pull_request:
@@ -159,9 +161,12 @@ jobs:
           df -h /
           df -h "$RUNNER_TEMP"
 
+      # The data directory is the one the server's container mounts, so that the tests of the
+      # command that measures it (doltspike sizes) can read it.
       - name: Test against the server
         env:
           TOPOSHIFT_DOLT_DSN: root@tcp(127.0.0.1:33306)/
+          TOPOSHIFT_DOLT_DATA: ${{ runner.temp }}/doltdata
         run: mise run bench:dolt:test:server
 
       - name: Show the server's log and the disk
@@ -186,3 +191,124 @@ jobs:
           path: "bench/dolt/**/testdata/rapid/**"
           if-no-files-found: ignore
           retention-days: 14
+
+  # The registered load must fit the runner: the two-day plan loaded with a commit per batch
+  # must finish within the time budget, and the data directory it leaves must fit a share of
+  # the free disk. It decides pass or fail and prints nothing else (no time and no byte
+  # count): a duration is visible in the run's log, which is disclosed as seen and never
+  # quoted. It runs on a pull request that changes the loader (bench/dolt/cmd or
+  # bench/dolt/doltspike) or that carries the "sizing" label, and on both architectures. The
+  # plan is made here by the program the benchmarks use, with the flags of the scenario
+  # family rmae, the first of the families the benchmark workflow takes; the pins first, as
+  # the benchmark workflow makes them.
+  sizing:
+    name: sizing (${{ matrix.os }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      # Two commits: the merge commit a pull request is checked out as, and the base it
+      # merges into, so that the files the pull request changes can be listed.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether sizing runs
+        id: gate
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          set -euo pipefail
+          run=false
+          case ",$LABELS," in
+            *,sizing,*) run=true ;;
+          esac
+          if [ -n "$(git diff --name-only HEAD^1 HEAD -- bench/dolt/cmd bench/dolt/doltspike)" ]; then
+            run=true
+          fi
+          echo "run=$run" >>"$GITHUB_OUTPUT"
+          echo "sizing runs: $run"
+
+      - name: Install pinned Go
+        if: steps.gate.outputs.run == 'true'
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install: true
+          install_args: go
+          cache: false
+
+      # As in the server job: the history of every commit stays in the data directory.
+      - name: Free disk space
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          df -h /
+          df -h "$RUNNER_TEMP"
+
+      - name: Build the programs
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          (cd bench && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/spikebench" ./cmd/spikebench)
+          (cd bench/dolt && CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/doltspike" ./cmd/doltspike)
+
+      - name: Make the pins and the two-day plan
+        if: steps.gate.outputs.run == 'true'
+        env:
+          # The flags of the family rmae, as bench/scripts/gate-dispatch-check.sh maps it. It
+          # is split into words on purpose.
+          FAMILY_FLAGS: -run-max-age 30m
+        run: |
+          set -euo pipefail
+          SB="$RUNNER_TEMP/spikebench"
+          PLANS="$RUNNER_TEMP/plans"
+          read -ra flags <<<"$FAMILY_FLAGS"
+          "$SB" pins -out "$PLANS" -preset ci "${flags[@]}" -window 2
+          "$SB" plan -out "$PLANS/R2" -preset ci "${flags[@]}" -window 2 -pins "$PLANS/pins.json" -full
+          sha256sum "$PLANS/R2/plan.json"
+
+      - name: Start the Dolt server
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          export TOPOSHIFT_DOLT_DATA="$RUNNER_TEMP/doltdata"
+          bench/dolt/scripts/dolt-server.sh start
+          df -h "$RUNNER_TEMP"
+
+      - name: Load the plan and say whether it fits
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          PLAN="$RUNNER_TEMP/plans/R2/plan.json"
+          "$RUNNER_TEMP/doltspike" sizing \
+            -dsn 'root@tcp(127.0.0.1:33306)/' \
+            -image "$(bench/dolt/scripts/dolt-server.sh image)" \
+            -db sizing_commit \
+            -data "$RUNNER_TEMP/doltdata" \
+            -arm commit \
+            -plan "$PLAN" -expect-plan "$(sha256sum "$PLAN" | cut -d' ' -f1)"
+
+      - name: Show the server's log and the disk
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          docker logs toposhift-dolt 2>&1 | tail -n 100 || true
+          df -h "$RUNNER_TEMP"
+
+      - name: Stop the Dolt server
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          export TOPOSHIFT_DOLT_DATA="$RUNNER_TEMP/doltdata"
+          bench/dolt/scripts/dolt-server.sh stop

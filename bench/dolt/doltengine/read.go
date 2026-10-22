@@ -62,28 +62,9 @@ func (e *Engine) neighborLists(fps []identity.Fingerprint, batch bool, dir engin
 		return out, ty, nil
 	}
 	err := e.read(sc, func(ctx context.Context, tx *sql.Tx, hash string, have bool) error {
-		c := readCtx{hash: hash, layer: int(sc.Layer), dir: int(dir), at: at, token: doltmodel.EncodeSeq(sc.AsOf), batch: batch, f: &e.f}
-		if batch {
-			hexes := make([]string, len(fps))
-			for i, fp := range fps {
-				hexes[i] = hex.EncodeToString(doltmodel.EncodeFingerprint(fp))
-			}
-			j, err := json.Marshal(hexes)
-			if err != nil {
-				return fmt.Errorf("doltengine: %w", err)
-			}
-			c.subjects = string(j)
-		} else {
-			c.subject = doltmodel.EncodeFingerprint(fps[0])
-		}
-		var s stmt
-		if have {
-			var err error
-			if s, err = neighborsRule(c); err != nil {
-				return err
-			}
-		} else {
-			s = neighborsLog(c)
+		s, err := e.neighborStatement(fps, batch, dir, at, sc, hash, have)
+		if err != nil {
+			return err
 		}
 		rows, err := tx.QueryContext(ctx, s.text, s.args...)
 		if err != nil {
@@ -131,6 +112,40 @@ func (e *Engine) neighborLists(fps []identity.Fingerprint, batch bool, dir engin
 		engine.SortNeighbors(l)
 	}
 	return out, ty, nil
+}
+
+// neighborStatement is the statement a neighbors read sends for fps (one statement for the
+// whole batch if batch is set, else for the one fingerprint), given the commit the token's
+// view names: the rule's if there is state to read, the log's if there is none.
+func (e *Engine) neighborStatement(fps []identity.Fingerprint, batch bool, dir engine.Direction, at int64, sc engine.Scope, hash string, have bool) (stmt, error) {
+	c := readCtx{hash: hash, layer: int(sc.Layer), dir: int(dir), at: at, token: doltmodel.EncodeSeq(sc.AsOf), batch: batch, f: &e.f}
+	if batch {
+		hexes := make([]string, len(fps))
+		for i, fp := range fps {
+			hexes[i] = hex.EncodeToString(doltmodel.EncodeFingerprint(fp))
+		}
+		j, err := json.Marshal(hexes)
+		if err != nil {
+			return stmt{}, fmt.Errorf("doltengine: %w", err)
+		}
+		c.subjects = string(j)
+	} else {
+		c.subject = doltmodel.EncodeFingerprint(fps[0])
+	}
+	if have {
+		return neighborsRule(c)
+	}
+	return neighborsLog(c), nil
+}
+
+// aliveStatement is the statement an existence read sends, given the commit the token's
+// view names.
+func (e *Engine) aliveStatement(fp identity.Fingerprint, at int64, sc engine.Scope, hash string, have bool) (stmt, error) {
+	c := readCtx{hash: hash, layer: int(sc.Layer), at: at, token: doltmodel.EncodeSeq(sc.AsOf), subject: doltmodel.EncodeFingerprint(fp), f: &e.f}
+	if have {
+		return aliveRule(c)
+	}
+	return aliveLog(c), nil
 }
 
 // Neighbors implements [engine.Engine].
@@ -189,19 +204,17 @@ func (e *Engine) Alive(fp identity.Fingerprint, t time.Time, sc engine.Scope) (b
 	var alive bool
 	var ty tally
 	err := e.read(sc, func(ctx context.Context, tx *sql.Tx, hash string, have bool) error {
-		c := readCtx{hash: hash, layer: int(sc.Layer), at: at, token: doltmodel.EncodeSeq(sc.AsOf), subject: doltmodel.EncodeFingerprint(fp), f: &e.f}
+		s, err := e.aliveStatement(fp, at, sc, hash, have)
+		if err != nil {
+			return err
+		}
 		var keys, state, holds int64
 		if have {
-			s, err := aliveRule(c)
-			if err != nil {
-				return err
-			}
 			if err := tx.QueryRowContext(ctx, s.text, s.args...).Scan(&keys, &state, &holds); err != nil {
 				return fmt.Errorf("doltengine: alive: %w", err)
 			}
 			ty.state, ty.log = uint64(state), uint64(keys-state)
 		} else {
-			s := aliveLog(c)
 			if err := tx.QueryRowContext(ctx, s.text, s.args...).Scan(&keys, &holds); err != nil {
 				return fmt.Errorf("doltengine: alive: %w", err)
 			}

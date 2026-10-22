@@ -1,0 +1,63 @@
+Project
+ ├─ columns: [u.ord, u.peer, u.rel, sum(u.settled) as keys_state, (count(1) - sum(u.settled)) as keys_log, max(u.holds) as holds]
+ └─ GroupBy
+     ├─ select: COUNT(1), MAX(u.holds), SUM(u.settled), u.ord, u.peer, u.rel
+     ├─ group: u.ord, u.peer, u.rel
+     └─ SubqueryAlias
+         ├─ name: u
+         ├─ outerVisibility: false
+         ├─ isLateral: false
+         ├─ cacheable: true
+         ├─ colSet: (64-68)
+         ├─ tableId: 9
+         └─ Union all
+             ├─ Project
+             │   ├─ columns: [k.ord as ord, s.peer as peer, s.rel as rel, 1 as settled, if(((s.kind = 'o') AND (s.deadline_ns IS NULL OR (s.deadline_ns > 1767229200000000000))),1,0) as holds]
+             │   └─ LookupJoin
+             │       ├─ k
+             │       └─ Filter
+             │           ├─ (((s.layer = 3) AND (s.dir = 2)) AND (s.event_ns <= 1767229200000000000))
+             │           └─ TableAlias(s)
+             │               └─ IndexedTableAccess(state)
+             │                   ├─ index: [state.layer,state.dir,state.a,state.peer,state.rel,state.producer]
+             │                   ├─ columns: [layer dir a peer rel event_ns kind deadline_ns]
+             │                   └─ keys: 3, 2, unhex(k.a_hex)
+             └─ Project
+                 ├─ columns: [x.ord, x.peer, x.rel, 0 as settled, if(((x.kind = 'o') AND ((x.ttl_ns = 0) OR ((CASE  WHEN ((NOT(x.through_ns IS NULL)) AND (x.through_ns > x.event_ns)) THEN x.through_ns ELSE x.event_ns END + x.ttl_ns) > 1767229200000000000))),1,0) as holds]
+                 └─ SubqueryAlias
+                     ├─ name: x
+                     ├─ outerVisibility: false
+                     ├─ isLateral: false
+                     ├─ cacheable: true
+                     ├─ colSet: (54-61)
+                     ├─ tableId: 7
+                     └─ Filter
+                         ├─ (rn = 1)
+                         └─ Project
+                             ├─ columns: [k.ord, k.peer, k.rel, l.kind, l.ttl_ns, l.through_ns, l.event_ns, row_number() over ( partition by k.ord, k.peer, k.rel, k.producer order by l.event_ns desc, l.seq desc) as rn]
+                             └─ Window(row_number() over ( partition by k.ord, k.peer, k.rel, k.producer order by l.event_ns DESC, l.seq DESC), k.ord, k.peer, k.rel, l.kind, l.ttl_ns, l.through_ns, l.event_ns)
+                                 └─ LeftOuterLookupJoin
+                                     ├─ ((l.event_ns <= 1767229200000000000) AND (l.seq <= 9223372036854775807))
+                                     ├─ SubqueryAlias
+                                     │   ├─ name: k
+                                     │   ├─ outerVisibility: false
+                                     │   ├─ isLateral: false
+                                     │   ├─ cacheable: true
+                                     │   ├─ colSet: (35-39)
+                                     │   ├─ tableId: 5
+                                     │   └─ Project
+                                     │       ├─ columns: [k.ord as ord, s.a as a, s.peer as peer, s.rel as rel, s.producer as producer]
+                                     │       └─ LookupJoin
+                                     │           ├─ k
+                                     │           └─ Filter
+                                     │               ├─ (((s.layer = 3) AND (s.dir = 2)) AND (s.event_ns > 1767229200000000000))
+                                     │               └─ TableAlias(s)
+                                     │                   └─ IndexedTableAccess(state)
+                                     │                       ├─ index: [state.layer,state.dir,state.a,state.peer,state.rel,state.producer]
+                                     │                       ├─ columns: [layer dir a peer rel producer event_ns]
+                                     │                       └─ keys: 3, 2, unhex(k.a_hex)
+                                     └─ TableAlias(l)
+                                         └─ IndexedTableAccess(log)
+                                             ├─ index: [log.layer,log.dir,log.a,log.peer,log.rel,log.producer,log.event_ns,log.seq]
+                                             ├─ columns: [layer dir a peer rel producer event_ns seq kind ttl_ns through_ns]
+                                             └─ keys: 3, 2, k.a, k.peer, k.rel, k.producer
