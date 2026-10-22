@@ -38,11 +38,16 @@ type modelNode struct {
 	finishedAfterWrites bool
 	// onWrite, if set, is called after each batch is written.
 	onWrite func()
+	// writeErr, if set, is what every write returns instead of writing.
+	writeErr error
 }
 
 func newModelNode() *modelNode { return &modelNode{Model: xtmodel.New()} }
 
 func (m *modelNode) Write(b []engine.Record) error {
+	if m.writeErr != nil {
+		return m.writeErr
+	}
 	if err := m.Model.Write(b); err != nil {
 		return err
 	}

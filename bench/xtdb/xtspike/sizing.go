@@ -30,9 +30,11 @@ func SizingRule(maxLoad time.Duration, maxPct int) string {
 }
 
 // sizing is what a sizing run measured, and its verdict: nothing in it is printed but the
-// verdict and the rule it was held to.
+// verdict and the rule it was held to. A load that was stopped at its limit never finished,
+// so nothing is known of the node after it.
 type sizing struct {
 	load     time.Duration
+	stopped  bool
 	storage  uint64
 	free     uint64
 	finished bool
@@ -43,6 +45,9 @@ type sizing struct {
 // verdict applies the rule: nil reasons is a pass. The reasons name the limit that was
 // exceeded and never the figure.
 func (z sizing) verdict(maxLoad time.Duration, maxPct int) []string {
+	if z.stopped {
+		return []string{"the load did not finish within the time limit"}
+	}
 	var why []string
 	if z.load > maxLoad {
 		why = append(why, "the load exceeded the time limit")
@@ -123,24 +128,36 @@ func (a *App) runSizing(ctx context.Context, args []string) error {
 	var z sizing
 	z.free = free
 	start := a.Now()
-	if err := a.loadPlan(ctx, n, s); err != nil {
+	// The load is stopped at its limit, so that a load that cannot be done in time ends the
+	// run with a verdict and does not run to the end of the job. The engine's own writes are
+	// not cut short: the stream stops before the first batch that would begin after the
+	// limit, and a batch in flight is written first.
+	lctx, cancel := context.WithTimeout(ctx, maxLoad)
+	defer cancel()
+	switch err := a.loadPlan(lctx, n, s); {
+	case err == nil:
+	case errors.Is(err, context.DeadlineExceeded) && lctx.Err() != nil && ctx.Err() == nil:
+		z.stopped = true
+	default:
 		return err
 	}
 	z.load = a.Now().Sub(start)
-	if n.Transactions() == 0 {
-		return errors.New("xtspike: the load wrote nothing")
-	}
-	res, err := a.finishAndSettle(ctx, &c)
-	if err != nil {
-		return err
-	}
-	z.finished, z.settled, z.settleBy = res.BlockFinished, res.Settled, res.Reason
-	for _, name := range dataDirs {
-		d, err := xtnode.MeasureDir(filepath.Join(data, name))
+	if !z.stopped {
+		if n.Transactions() == 0 {
+			return errors.New("xtspike: the load wrote nothing")
+		}
+		res, err := a.finishAndSettle(ctx, &c)
 		if err != nil {
 			return err
 		}
-		z.storage += uint64(d.Bytes)
+		z.finished, z.settled, z.settleBy = res.BlockFinished, res.Settled, res.Reason
+		for _, name := range dataDirs {
+			d, err := xtnode.MeasureDir(filepath.Join(data, name))
+			if err != nil {
+				return err
+			}
+			z.storage += uint64(d.Bytes)
+		}
 	}
 	why := z.verdict(maxLoad, maxPct)
 	if len(why) > 0 {

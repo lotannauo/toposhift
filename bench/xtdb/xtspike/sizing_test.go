@@ -1,6 +1,9 @@
 package xtspike
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,6 +108,63 @@ func TestSizingFailsByTheLimitItBrokeAndNamesNoFigure(t *testing.T) {
 	}
 }
 
+func TestSizingStopsALoadAtItsLimitAndSaysSo(t *testing.T) {
+	r, args, _ := sized(t)
+	summary := filepath.Join(t.TempDir(), "summary.md")
+	r.env["GITHUB_STEP_SUMMARY"] = summary
+	// A whole run first, to know how many batches the stream has.
+	full, fargs, _ := sized(t)
+	if err := full.run(fargs...); err != nil {
+		t.Fatal(err)
+	}
+	if full.node.writes < 2 {
+		t.Fatalf("the stream has %d batches, too few to be stopped before the last", full.node.writes)
+	}
+	// Each batch takes longer than the limit, so the load is stopped before the second. The
+	// limit is held by real time, as the fake clock of the rig does not move while a stream is
+	// written.
+	r.node.onWrite = func() { time.Sleep(300 * time.Millisecond) }
+	if err := r.run(append(args, "-max-load", "100ms")...); err != nil {
+		t.Fatalf("a load stopped at its limit is a verdict, not an error: %v\n%s", err, r.out)
+	}
+	got := r.out.String()
+	if !strings.HasPrefix(got, SizingRule(100*time.Millisecond, RegisteredMaxDiskPct)+"\n") || !strings.HasSuffix(got, "\nsizing: fail (the load did not finish within the time limit)\n") {
+		t.Errorf("output:\n%s", got)
+	}
+	if strings.Contains(got, "sizing: pass") {
+		t.Errorf("a load that did not finish passed:\n%s", got)
+	}
+	noDuration(t, "sizing", got+r.errOut.String())
+	if r.node.writes != 1 {
+		t.Errorf("%d batches were written after the limit, want the one in flight", r.node.writes)
+	}
+	// Nothing is asked of a node that is not done: it is not finished, settled or measured.
+	if r.finishes != 0 || len(r.events) != 0 {
+		t.Errorf("the node was asked %v after a stopped load (%d finishes)", r.events, r.finishes)
+	}
+	b, err := os.ReadFile(summary)
+	if err != nil || !strings.Contains(string(b), "sizing: fail (the load did not finish within the time limit)") {
+		t.Errorf("summary %q, %v", b, err)
+	}
+}
+
+func TestSizingDoesNotTakeAFailedWriteForALoadStoppedAtItsLimit(t *testing.T) {
+	// A write that fails by a deadline of its own, as the engine's does when a commit hangs,
+	// is an error: the limit of the load has not passed.
+	r, args, _ := sized(t)
+	r.node.writeErr = fmt.Errorf("a commit: %w", context.DeadlineExceeded)
+	if err := r.run(args...); !errors.Is(err, context.DeadlineExceeded) || strings.Contains(r.out.String(), "sizing: fail") || strings.Contains(r.out.String(), "sizing: pass") {
+		t.Fatalf("a failed write: %v\n%s", err, r.out)
+	}
+	// The limit of the job is not the limit of the load: a run that is cancelled is an error.
+	r, args, _ = sized(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := r.app.Run(ctx, args); !errors.Is(err, context.Canceled) || strings.Contains(r.out.String(), "sizing: fail") {
+		t.Fatalf("a cancelled run: %v\n%s", err, r.out)
+	}
+}
+
 func TestSizingVerdictAtTheLimits(t *testing.T) {
 	ok := sizing{load: 75 * time.Minute, storage: 300, free: 1000, finished: true, settled: true}
 	if why := ok.verdict(75*time.Minute, 30); len(why) != 0 {
@@ -120,6 +180,10 @@ func TestSizingVerdictAtTheLimits(t *testing.T) {
 		if why := z.verdict(75*time.Minute, 30); len(why) != 1 {
 			t.Errorf("%s: %v", name, why)
 		}
+	}
+	// A load stopped at its limit is one reason, whatever else is not known of the node.
+	if why := (sizing{stopped: true, load: time.Minute}).verdict(75*time.Minute, 30); len(why) != 1 || !strings.Contains(why[0], "did not finish within the time limit") {
+		t.Errorf("%v", why)
 	}
 	// Several limits broken are all named.
 	if why := (sizing{load: 2 * time.Hour, storage: 900, free: 1000, finished: true}).verdict(75*time.Minute, 30); len(why) != 3 {
