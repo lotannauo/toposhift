@@ -37,6 +37,7 @@ func Tools() []Tool {
 		{
 			Name: "service_context",
 			Description: "Shows a service's callers and callees over a time window, one depends_on hop, and every service that shared a pod, a node or a host with a pod of the service or of those neighbours, each pair checked by interval intersection over instances. " +
+				"Each caller and callee also carries a derived recency: how long the log proves the dependency unseen at the window's last instant, or null. " +
 				"A mapping that cannot be told and a pod with no mapped service are listed, never guessed. Give a service id; find_entities finds one by name. " +
 				"A long window on a large service may exceed the call's deadline; a shorter window or node_only answers sooner. The answer is derived and read at one token.",
 			Range: true,

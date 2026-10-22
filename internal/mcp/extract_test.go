@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/lotannauo/toposhift/internal/catalog"
 	"github.com/lotannauo/toposhift/internal/identity"
 	"github.com/lotannauo/toposhift/internal/query/coresidency"
+	"github.com/lotannauo/toposhift/internal/query/decay"
 	"github.com/lotannauo/toposhift/internal/query/extract"
 	"github.com/lotannauo/toposhift/internal/query/interval"
 	"github.com/lotannauo/toposhift/internal/store"
@@ -65,7 +67,7 @@ func TestServiceContextFacts(t *testing.T) {
 	if out.Service.FP != svc["checkout"] || str(out.Service.Name) != "checkout" || !out.Derived || out.Token != tokenString(w.st.LastSeq()) {
 		t.Errorf("service %+v, derived %t, token %s", out.Service, out.Derived, out.Token)
 	}
-	if want := (Policy{Interval: interval.PolicyVersion, CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Rank: out.Policy.Rank, Names: NameTableVersion, Withhold: WithholdVersion}); out.Policy != want {
+	if want := (Policy{Interval: interval.PolicyVersion, CoResidency: coresidency.PolicyVersion, Extract: extract.PolicyVersion, Rank: out.Policy.Rank, Names: NameTableVersion, Withhold: WithholdVersion, Decay: decay.PolicyVersion}); out.Policy != want {
 		t.Errorf("policy %+v", out.Policy)
 	}
 
@@ -108,6 +110,28 @@ func TestServiceContextFacts(t *testing.T) {
 	}
 	if f := callers[svc["frontend"]]; len(f.Spans) != 1 || spanTimes(f.Spans[0]) != "10:00-10:30" || f.Spans[0].EndReason != nil || !f.Spans[0].BeganBeforeWindow {
 		t.Errorf("frontend: %+v", f)
+	}
+
+	// Every sighting is a record a minute, the last at 10:29, with a TTL of five
+	// minutes, so at the window's last instant, 10:29:59.999999999, a series seen
+	// to the end has been silent for less than the extension interval, 2m30s, and
+	// shows no silence. legacy-pay's edge ended at 10:15, before that instant, so it
+	// has no recency.
+	for _, h := range append(append([]HopService(nil), out.Callers...), out.Callees...) {
+		name := str(h.Service.Name)
+		if name == "legacy-pay" {
+			if h.Recency != nil {
+				t.Errorf("legacy-pay has the recency %+v, and its edge ended at 10:15", *h.Recency)
+			}
+			continue
+		}
+		want := Recency{
+			Basis: BasisDerived, Subject: SubjectDerived, Rule: RuleRecency, Producer: string(graphProducer),
+			LastSeen: "2026-01-01T10:29:00Z", SilentAtLeast: "0s", Confidence: 1,
+		}
+		if h.Recency == nil || *h.Recency != want {
+			t.Errorf("%s: recency %+v, want %+v", name, h.Recency, want)
+		}
 	}
 
 	// Pairs: envoy shares checkout-0's pod, redis a node for 10:05 to 10:25, search a
@@ -411,6 +435,7 @@ func TestServiceContextIsTheExtraction(t *testing.T) {
 	w := newSvcWorld(t, newSvcMem(t))
 	names := []string{"checkout", "frontend", "legacy-pay", "payments", "cart", "envoy", "redis", "search", "node-exporter", weirdName}
 	windows := []struct{ from, to time.Time }{{hm(10, 0), hm(10, 30)}, {hm(10, 10), hm(10, 11)}, {hm(9, 0), hm(11, 0)}}
+	answers, extraReads := 0, 0
 	for _, name := range names {
 		for _, win := range windows {
 			for _, nodeOnly := range []bool{false, true} {
@@ -512,9 +537,73 @@ func TestServiceContextIsTheExtraction(t *testing.T) {
 				if _, _, err := interval.NewReader(named, interval.Options{Describe: true, Rank: rankObjs}).Entities(ctx, fps, window); err != nil {
 					t.Fatal(err)
 				}
-				if tool.reads != direct.reads+named.reads {
-					t.Errorf("%s: the tool made %d reads; the extraction %d and the names %d", label, tool.reads, direct.reads, named.reads)
+				// The recency of the hop: the same edges read again with the evidence, one
+				// interval read for each side the hop has, at the token of the answer.
+				evidence := &spyStore{Store: w.st}
+				evReader := interval.NewReader(evidence, interval.Options{Evidence: true})
+				byEdge := map[store.Subject]interval.Element{}
+				for _, side := range []struct {
+					dir  store.Direction
+					list []HopService
+				}{{store.Reverse, out.Callers}, {store.Forward, out.Callees}} {
+					if len(side.list) == 0 {
+						continue
+					}
+					res, err := evReader.Edges(ctx, seed, side.dir, window)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, el := range res.Elements {
+						byEdge[el.Subject] = el
+					}
 				}
+				for _, h := range append(append([]HopService(nil), out.Callers...), out.Callees...) {
+					sub := store.Subject{Kind: store.SubjectEdge, A: h.Edge.From.FP, B: h.Edge.To.FP, Relation: catalog.DependsOn}
+					el, ok := byEdge[sub]
+					if !ok {
+						t.Errorf("%s: the edge of %s is not in the read with the evidence", label, h.Service.ID)
+						continue
+					}
+					// The edges are the extraction's, subject and pieces.
+					if got, want := h.Spans, pieceSpans(el.Pieces, win.to); !slices.EqualFunc(got, want, func(a, b Span) bool {
+						return a.Start == b.Start && a.End == b.End && str(a.EndReason) == str(b.EndReason) && slices.Equal(a.AssertedBy, b.AssertedBy)
+					}) {
+						t.Errorf("%s: the spans of %s are %v, the read with the evidence has %v", label, h.Service.ID, got, want)
+					}
+					// The recency is the derivation of the evidence at the window's last instant.
+					var want *Recency
+					if r, ok := decay.Of(el.Last, win.to.Add(-time.Nanosecond), decay.DefaultPolicy()); ok {
+						want = &Recency{
+							Basis: BasisDerived, Subject: SubjectDerived, Rule: RuleRecency, Producer: string(r.Producer),
+							LastSeen: fmtTime(r.LastSeen), SilentAtLeast: r.SilentAtLeast.String(), Confidence: math.Round(r.Confidence*1e4) / 1e4,
+						}
+					}
+					if (h.Recency == nil) != (want == nil) || (want != nil && *h.Recency != *want) {
+						t.Errorf("%s: the recency of %s is %+v, want %+v", label, h.Service.ID, h.Recency, want)
+					}
+				}
+				// The reads are the extraction's, the names', and the evidence's, and no other.
+				if tool.reads != direct.reads+named.reads+evidence.reads {
+					t.Errorf("%s: the tool made %d reads; the extraction %d, the names %d and the evidence %d", label, tool.reads, direct.reads, named.reads, evidence.reads)
+				}
+				if (len(out.Callers) > 0 || len(out.Callees) > 0) != (evidence.reads > 0) {
+					t.Errorf("%s: %d callers and %d callees, and the evidence made %d reads", label, len(out.Callers), len(out.Callees), evidence.reads)
+				}
+				// Every interval read begins with a call of LastSeq, and the tool asks for it
+				// once more to pin the token: so the tool made the extraction's interval reads,
+				// the names', and one for each side of the hop, no more.
+				sides := 0
+				for _, list := range [][]HopService{out.Callers, out.Callees} {
+					if len(list) > 0 {
+						sides++
+					}
+				}
+				if evidence.lastSeqs != sides || tool.lastSeqs != direct.lastSeqs+named.lastSeqs+evidence.lastSeqs+1 {
+					t.Errorf("%s: LastSeq called %d times by the tool, %d by the extraction, %d by the names and %d by the evidence; the hop has %d sides",
+						label, tool.lastSeqs, direct.lastSeqs, named.lastSeqs, evidence.lastSeqs, sides)
+				}
+				extraReads += evidence.reads
+				answers++
 
 				// (c) Every read is at the token of the answer.
 				for i, got := range tool.asOf {
@@ -525,6 +614,7 @@ func TestServiceContextIsTheExtraction(t *testing.T) {
 			}
 		}
 	}
+	t.Logf("%d answers; the recency of their hops made %d store reads in all", answers, extraReads)
 }
 
 // numberedWorld writes small services with numbered ids, so that the caps of the

@@ -291,6 +291,9 @@ func TestServiceContextTwin(t *testing.T) {
 					{"checkout from 09:00", func(w *svcWorld) ServiceContextInput {
 						return ServiceContextInput{Service: w.id("checkout"), From: "2026-01-01T09:00:00Z", To: w1030}
 					}},
+					{"checkout, a window that ends before legacy-pay's edge expires", func(w *svcWorld) ServiceContextInput {
+						return ServiceContextInput{Service: w.id("checkout"), From: w10, To: "2026-01-01T10:14:00Z"}
+					}},
 					{"an unknown service", func(*svcWorld) ServiceContextInput {
 						return ServiceContextInput{Service: unknownService().String(), From: w10, To: w1030}
 					}},

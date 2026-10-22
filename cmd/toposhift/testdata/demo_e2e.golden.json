@@ -49,6 +49,7 @@
     },
     "policy": {
       "coresidency": 1,
+      "decay": 1,
       "extract": 1,
       "interval": 1,
       "names": 2,

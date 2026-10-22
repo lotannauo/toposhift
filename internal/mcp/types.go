@@ -41,6 +41,7 @@ const (
 // completed with it: unattributed.<reason> and diff.<bucket>.
 const (
 	RuleExistence       = "existence"
+	RuleRecency         = "decay.recency"
 	RuleReach           = "blast_radius.reach"
 	RuleSharedNode      = "co_residency.shared_node"
 	RuleSharedHost      = "co_residency.shared_host"
@@ -68,6 +69,7 @@ type Policy struct {
 	Payload     int    `json:"payload,omitempty"`
 	Withhold    int    `json:"withhold,omitempty"`
 	Find        int    `json:"find,omitempty"`
+	Decay       int    `json:"decay,omitempty"`
 }
 
 // Ref is an entity id next to its name. The name is derived from a description
