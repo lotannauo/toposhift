@@ -104,6 +104,22 @@ func (l layout) aliveSQL(t int64) string {
 // window and a token, overwritten ones included. The upper bound is left out for a
 // window that reaches past the last instant.
 func windowSQL(dir engine.Direction, unbounded bool) string {
+	return windowSQLFiltered(dir, unbounded, "")
+}
+
+// windowFilter is what a read of the log of a partitioned arm adds: a retention commits
+// before the partitions it empties are dropped, so a record before the horizon may still
+// be in the log, and is not read.
+const windowFilter = " AND event_ns >= (SELECT coalesce(horizon_ns, 0) FROM meta) AND NOT (SELECT past_end FROM meta)"
+
+func (l layout) windowSQL(dir engine.Direction, unbounded bool) string {
+	if l.partitioned {
+		return windowSQLFiltered(dir, unbounded, windowFilter)
+	}
+	return windowSQL(dir, unbounded)
+}
+
+func windowSQLFiltered(dir engine.Direction, unbounded bool, filter string) string {
 	key, _ := columns(dir)
 	hi, seq := " AND event_ns < $4::bigint", "$5::bigint"
 	if unbounded {
@@ -111,33 +127,58 @@ func windowSQL(dir engine.Direction, unbounded bool) string {
 	}
 	return "SELECT seq, event_ns, layer, src, dst, rel, producer, kind::int4, ttl_ns, through_ns, payload FROM log WHERE " +
 		key + " = $1 AND subject_kind = 'g' AND layer = $2::smallint AND event_ns >= $3::bigint" + hi +
-		" AND seq <= " + seq + " ORDER BY event_ns, seq"
+		" AND seq <= " + seq + filter + " ORDER BY event_ns, seq"
+}
+
+// readHorizon is the horizon of the snapshot a read runs in, for the reads of the log of a
+// partitioned arm (see [windowFilter]).
+type readHorizon struct {
+	ns   int64
+	past bool
+}
+
+// logFilter is the condition on the log that a partitioned arm's reads add, with the
+// parameters it takes, which follow the statement's own.
+func (l layout) logFilter() string {
+	if l.partitioned {
+		return " AND event_ns >= $4::bigint AND NOT $5::bool"
+	}
+	return ""
+}
+
+func (l layout) logArgs(hz readHorizon) []any {
+	if l.partitioned {
+		return []any{hz.ns, hz.past}
+	}
+	return nil
 }
 
 // The log of the edges touching an entity, and of an entity itself, as of a token,
 // for the reads whose token is not the latest. Baselines stand for the records a
 // retention dropped, so they are read with the log.
-func foldNeighborsSQL(dir engine.Direction) string {
+func (l layout) foldNeighborsSQL(dir engine.Direction) string {
 	key, peer := columns(dir)
 	cols := peer + ", rel, seq, event_ns, producer, kind::int4, ttl_ns, through_ns"
 	where := " WHERE subject_kind = 'g' AND " + key + " = $1 AND layer = $2::smallint AND seq <= $3::bigint"
-	return "SELECT " + cols + " FROM log" + where + " UNION ALL SELECT " + cols + " FROM log_base" + where + " ORDER BY 1, 2"
+	return "SELECT " + cols + " FROM log" + where + l.logFilter() + " UNION ALL SELECT " + cols + " FROM log_base" + where + " ORDER BY 1, 2"
 }
 
-const foldEntitySQL = `SELECT seq, event_ns, producer, kind::int4, ttl_ns, through_ns FROM log
-  WHERE subject_kind = 'e' AND src = $1 AND layer = $2::smallint AND seq <= $3::bigint
+func (l layout) foldEntitySQL() string {
+	return `SELECT seq, event_ns, producer, kind::int4, ttl_ns, through_ns FROM log
+  WHERE subject_kind = 'e' AND src = $1 AND layer = $2::smallint AND seq <= $3::bigint` + l.logFilter() + `
 UNION ALL
 SELECT seq, event_ns, producer, kind::int4, ttl_ns, through_ns FROM log_base
   WHERE subject_kind = 'e' AND src = $1 AND layer = $2::smallint AND seq <= $3::bigint`
+}
 
 // read runs f with the statements of one snapshot. current says the interval tables
 // are as current as the token asks: the token is at or above the last committed
 // sequence number. A read at the latest token is one statement and needs no more. Any
 // other token has to be compared with the last sequence number of the snapshot the
 // statements read, so it runs in one repeatable-read transaction that reads that first.
-func (e *Engine) read(asOf uint64, f func(q querier, current bool) error) error {
+func (e *Engine) read(asOf uint64, f func(q querier, current bool, hz readHorizon) error) error {
 	if asOf == engine.Latest {
-		return f(e.pool, true)
+		return f(e.pool, true, readHorizon{})
 	}
 	tx, err := e.pool.BeginTx(e.ctx, readOnlyRepeatable)
 	if err != nil {
@@ -145,10 +186,11 @@ func (e *Engine) read(asOf uint64, f func(q querier, current bool) error) error 
 	}
 	defer func() { _ = tx.Rollback(e.ctx) }()
 	var last int64
-	if err := tx.QueryRow(e.ctx, "SELECT last_seq FROM meta").Scan(&last); err != nil {
+	var hz readHorizon
+	if err := tx.QueryRow(e.ctx, "SELECT last_seq, coalesce(horizon_ns, 0), past_end FROM meta").Scan(&last, &hz.ns, &hz.past); err != nil {
 		return fmt.Errorf("pgengine: reading the token: %w", err)
 	}
-	return f(tx, asOf >= seqFromDB(last))
+	return f(tx, asOf >= seqFromDB(last), hz)
 }
 
 func encode(fp identity.Fingerprint) []byte { return pgmodel.EncodeFingerprint(fp) }
@@ -163,16 +205,16 @@ func (e *Engine) Neighbors(fp identity.Fingerprint, dir engine.Direction, t time
 		return nil, nil
 	}
 	var out []engine.Neighbor
-	err := e.read(sc.AsOf, func(q querier, current bool) (err error) {
-		out, err = e.neighbors(q, current, fp, dir, ns, sc)
+	err := e.read(sc.AsOf, func(q querier, current bool, hz readHorizon) (err error) {
+		out, err = e.neighbors(q, current, hz, fp, dir, ns, sc)
 		return err
 	})
 	return out, err
 }
 
-func (e *Engine) neighbors(q querier, current bool, fp identity.Fingerprint, dir engine.Direction, t int64, sc engine.Scope) ([]engine.Neighbor, error) {
+func (e *Engine) neighbors(q querier, current bool, hz readHorizon, fp identity.Fingerprint, dir engine.Direction, t int64, sc engine.Scope) ([]engine.Neighbor, error) {
 	if !current {
-		return e.foldNeighbors(q, fp, dir, t, sc)
+		return e.foldNeighbors(q, hz, fp, dir, t, sc)
 	}
 	rows, err := q.Query(e.ctx, e.lay.neighborsSQL(dir, t), encode(fp), int16(sc.Layer), t)
 	if err != nil {
@@ -209,8 +251,8 @@ func neighbor(peer []byte, rel string) (engine.Neighbor, error) {
 // foldNeighbors answers a read as of an earlier token: the intervals carry no ingest
 // time, so the log of every edge that touches the entity is read as the token saw it,
 // and each edge is folded by the reader.
-func (e *Engine) foldNeighbors(q querier, fp identity.Fingerprint, dir engine.Direction, t int64, sc engine.Scope) ([]engine.Neighbor, error) {
-	rows, err := q.Query(e.ctx, foldNeighborsSQL(dir), encode(fp), int16(sc.Layer), seqToDB(sc.AsOf))
+func (e *Engine) foldNeighbors(q querier, hz readHorizon, fp identity.Fingerprint, dir engine.Direction, t int64, sc engine.Scope) ([]engine.Neighbor, error) {
+	rows, err := q.Query(e.ctx, e.lay.foldNeighborsSQL(dir), append([]any{encode(fp), int16(sc.Layer), seqToDB(sc.AsOf)}, e.lay.logArgs(hz)...)...)
 	if err != nil {
 		return nil, fmt.Errorf("pgengine: neighbors as of seq %d: %w", sc.AsOf, err)
 	}
@@ -279,11 +321,11 @@ func (e *Engine) NeighborsBatch(fps []identity.Fingerprint, dir engine.Direction
 	if !ok || len(fps) == 0 {
 		return out, nil
 	}
-	err := e.read(sc.AsOf, func(q querier, current bool) error {
+	err := e.read(sc.AsOf, func(q querier, current bool, hz readHorizon) error {
 		if !current {
 			for i, fp := range fps {
 				var err error
-				if out[i], err = e.foldNeighbors(q, fp, dir, ns, sc); err != nil {
+				if out[i], err = e.foldNeighbors(q, hz, fp, dir, ns, sc); err != nil {
 					return err
 				}
 			}
@@ -339,7 +381,7 @@ func (e *Engine) Alive(fp identity.Fingerprint, t time.Time, sc engine.Scope) (b
 		return false, nil
 	}
 	var alive bool
-	err := e.read(sc.AsOf, func(q querier, current bool) error {
+	err := e.read(sc.AsOf, func(q querier, current bool, hz readHorizon) error {
 		if current {
 			if err := q.QueryRow(e.ctx, e.lay.aliveSQL(ns), encode(fp), int16(sc.Layer), ns).Scan(&alive); err != nil {
 				return fmt.Errorf("pgengine: alive: %w", err)
@@ -348,7 +390,7 @@ func (e *Engine) Alive(fp identity.Fingerprint, t time.Time, sc engine.Scope) (b
 		}
 		// An entity's own records, as the token saw them, and not the records of the
 		// edges that touch it.
-		rows, err := q.Query(e.ctx, foldEntitySQL, encode(fp), int16(sc.Layer), seqToDB(sc.AsOf))
+		rows, err := q.Query(e.ctx, e.lay.foldEntitySQL(), append([]any{encode(fp), int16(sc.Layer), seqToDB(sc.AsOf)}, e.lay.logArgs(hz)...)...)
 		if err != nil {
 			return fmt.Errorf("pgengine: alive as of seq %d: %w", sc.AsOf, err)
 		}
@@ -394,7 +436,7 @@ func (e *Engine) Window(fp identity.Fingerprint, dir engine.Direction, from, to 
 		args = append(args, b.Hi)
 	}
 	args = append(args, seqToDB(sc.AsOf))
-	rows, err := e.pool.Query(e.ctx, windowSQL(dir, b.Unbounded), args...)
+	rows, err := e.pool.Query(e.ctx, e.lay.windowSQL(dir, b.Unbounded), args...)
 	if err != nil {
 		return nil, fmt.Errorf("pgengine: window: %w", err)
 	}

@@ -91,7 +91,7 @@ func TestArmsThatHaveNoEngineAreRefused(t *testing.T) {
 			t.Errorf("arm %q: %v", arm, err)
 		}
 	}
-	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.Bulk, pgschema.BulkB} {
+	for _, arm := range []pgschema.Arm{pgschema.Stream, pgschema.StreamNoPartition, pgschema.StreamNaive, pgschema.Bulk, pgschema.BulkB} {
 		if _, err := newLayout(arm); err != nil {
 			t.Errorf("arm %q: %v", arm, err)
 		}

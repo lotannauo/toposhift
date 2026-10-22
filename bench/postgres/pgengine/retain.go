@@ -47,11 +47,15 @@ ORDER BY subject_kind, src, dst, rel, producer, event_ns DESC, seq DESC`
 //
 // The log before the horizon is replaced by baselines, one per subject and producer,
 // and the interval rows that have ended are deleted, in one transaction, so a reader
-// sees the tables as they were or as they are. The log rows are deleted, in every arm:
-// a day partition of the streaming arm that has emptied stays. Dropping whole
-// partitions is a different transaction, and one that takes a lock readers would wait
-// on, so it belongs to a writer that is not read from while it retains.
+// sees the tables as they were or as they are. The log rows are deleted in the same
+// transaction: this is the correctness writer's retention, for the bulk arms, and the
+// retention a bulk load applies (retainTx). The streaming arms retain with
+// retainStream, which leaves the log's old day partitions to be detached and dropped
+// after the transaction, and is the retention that is measured.
 func (e *Engine) Retain(horizon time.Time) error {
+	if e.lay.stream {
+		return e.retainStream(horizon)
+	}
 	e.wmu.Lock()
 	defer e.wmu.Unlock()
 	ctx := e.ctx

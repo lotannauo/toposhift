@@ -2,9 +2,14 @@ package pgengine
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/lotannauo/toposhift/bench/postgres/pgmodel"
+	"github.com/lotannauo/toposhift/bench/spike/engine"
+	"github.com/lotannauo/toposhift/internal/catalog"
 )
 
 // The writer's statements, for the tests that explain them.
@@ -46,4 +51,43 @@ func FoldMemory(ctx context.Context, l *Loader) (rows int, bytes int64, err erro
 	runtime.KeepAlive(entities)
 	runtime.KeepAlive(used)
 	return rows, int64(after.HeapAlloc) - int64(before.HeapAlloc), nil
+}
+
+// CheckPlaces says whether the place the writer remembers for the last row of each subject
+// is where that row is, and the row there is the one it remembers.
+func (e *Engine) CheckPlaces(ctx context.Context) error {
+	e.wmu.Lock()
+	defer e.wmu.Unlock()
+	var bad error
+	e.w.EachLast(func(s engine.Subject, _ catalog.Layer, last pgmodel.Stored) {
+		if bad != nil {
+			return
+		}
+		var start int64
+		var end, deadline *int64
+		var inf bool
+		var source int16
+		var err error
+		if s.Kind == engine.SubjectEdge {
+			err = e.pool.QueryRow(ctx, `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source FROM edges
+WHERE ctid = $1 AND src = $2 AND dst = $3 AND rel = $4`, tidOf(last.Loc), pgmodel.EncodeFingerprint(s.A), pgmodel.EncodeFingerprint(s.B), string(s.Relation)).
+				Scan(&start, &end, &inf, &deadline, &source)
+		} else {
+			err = e.pool.QueryRow(ctx, `SELECT start_ns, upper(during), upper_inf(during), deadline_ns, end_source FROM entities
+WHERE ctid = $1 AND fp = $2`, tidOf(last.Loc), pgmodel.EncodeFingerprint(s.A)).Scan(&start, &end, &inf, &deadline, &source)
+		}
+		if err != nil {
+			bad = fmt.Errorf("the writer remembers the last row of %s at %v, and no row of it is there: %w", s.A, last.Loc, err)
+			return
+		}
+		row, err := dumpRow(start, end, inf, deadline, source)
+		if err != nil {
+			bad = err
+			return
+		}
+		if row != last.Row {
+			bad = fmt.Errorf("the writer remembers %+v at %v for %s; the row there is %+v", last.Row, last.Loc, s.A, row)
+		}
+	})
+	return bad
 }

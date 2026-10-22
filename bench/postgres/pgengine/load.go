@@ -86,6 +86,10 @@ type Phase struct {
 	// Records, FPIs and RecordBytes are pg_stat_wal's counts for the phase.
 	Records, FPIs, RecordBytes int64
 	CheckpointsInside          int64
+	// Spans, if above zero, says the phase is the sum of that many spans, each measured on
+	// its own (the batches of a stream): LogBytes is the sum of their advances, exact to
+	// the slack of [LogSlack] for each, and the server's own counts are not kept for it.
+	Spans int
 }
 
 // LogSlack is how far two runs of one contiguous phase can differ in log position
@@ -290,12 +294,14 @@ type mark struct{ lsn, checkpoints, records, fpis, bytes int64 }
 
 // mark reads the position. The server's counts are flushed first (they are kept by the
 // backend that wrote the log until it is told to report them).
-func (l *Loader) mark() (mark, error) {
+func (l *Loader) mark() (mark, error) { return readMark(l.ctx, l.conn) }
+
+func readMark(ctx context.Context, conn *pgx.Conn) (mark, error) {
 	var m mark
-	if _, err := l.conn.Exec(l.ctx, "SELECT pg_stat_force_next_flush()"); err != nil {
+	if _, err := conn.Exec(ctx, "SELECT pg_stat_force_next_flush()"); err != nil {
 		return m, fmt.Errorf("pgengine: flushing the server's counts: %w", err)
 	}
-	err := l.conn.QueryRow(l.ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '0/0')::bigint,
+	err := conn.QueryRow(ctx, `SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), '0/0')::bigint,
   (SELECT num_timed + num_requested FROM pg_stat_checkpointer)::bigint,
   w.wal_records, w.wal_fpi, w.wal_bytes::bigint
 FROM pg_stat_wal w`).Scan(&m.lsn, &m.checkpoints, &m.records, &m.fpis, &m.bytes)
@@ -316,7 +322,11 @@ func (l *Loader) phase(name string) *Phase {
 
 // add counts the log written between two marks in a phase.
 func (l *Loader) add(name string, contiguous bool, before, after mark) {
-	p := l.phase(name)
+	l.phase(name).accumulate(contiguous, before, after)
+}
+
+// accumulate adds the log written between two marks to a phase.
+func (p *Phase) accumulate(contiguous bool, before, after mark) {
 	p.Records += after.records - before.records
 	p.FPIs += after.fpis - before.fpis
 	p.RecordBytes += after.bytes - before.bytes

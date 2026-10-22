@@ -103,6 +103,21 @@ func Bulk(records []engine.Record) (Tables, error) {
 	return t, nil
 }
 
+// AsStored returns the tables as a streaming writer stores them once the newest event
+// time it has written is newest: each interval that ends by a deadline after it is a
+// provisional row, and every other row is final or open. The tables a bulk fold makes
+// have no provisional row; a naive writer (naive) stores none either.
+func (t Tables) AsStored(newest int64, naive bool) Tables {
+	out := Tables{Edges: slices.Clone(t.Edges), Entities: slices.Clone(t.Entities)}
+	for i := range out.Edges {
+		out.Edges[i].Row = canonical(logical(out.Edges[i].Row), newest, naive)
+	}
+	for i := range out.Entities {
+		out.Entities[i].Row = canonical(logical(out.Entities[i].Row), newest, naive)
+	}
+	return out
+}
+
 // Clipped returns the tables as a reader at or after the horizon sees them: each
 // row starts no earlier than the horizon, and a row that ends at or before it is
 // gone. Retention keeps a row that spans the horizon as it was, with its old start,
@@ -228,6 +243,12 @@ func (w *DigestWriter) Rows() int64 { return w.rows }
 
 // Sum is the digest, as hex.
 func (w *DigestWriter) Sum() string { return hex.EncodeToString(w.h.Sum(nil)) }
+
+// Identical reports whether two tables hold the same rows in the same form: a
+// provisional row is not a final one with the same end.
+func (t Tables) Identical(o Tables) bool {
+	return slices.Equal(t.Edges, o.Edges) && slices.Equal(t.Entities, o.Entities)
+}
 
 // Equal reports whether two tables hold the same rows, ignoring how a provisional
 // row spells its end.
