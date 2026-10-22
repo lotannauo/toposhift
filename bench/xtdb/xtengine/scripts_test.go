@@ -109,7 +109,8 @@ func TestTheScriptPinsTheImageAndTheJVMOptions(t *testing.T) {
 
 // stubs are the commands the script runs, replaced by scripts that write down how they
 // were called and answer as the environment says, so that no test starts a container: the
-// script is run with a PATH of the stubs and the system's tools and nothing else.
+// script is run with a PATH of one directory, which holds the stubs and links to the few
+// system tools the script runs, and nothing else.
 const stubDocker = `#!/bin/sh
 echo "docker $*" >> "$STUB_LOG"
 case "$1 $2" in
@@ -132,6 +133,18 @@ const stubPsql = `#!/bin/sh
 echo "psql $*" >> "$STUB_LOG"
 `
 
+// systemTools are the commands the script and the stubs run that are not stubbed. The directory the
+// script is run with holds links to these and to nothing else, so that a tool the script
+// looks for and the test means to be absent (psql) is absent whatever the machine has
+// installed: a runner image has a psql, a laptop may not. git is optional: the script
+// only asks about a work tree when it finds one.
+var systemTools = []string{"dirname", "mkdir", "chmod", "sleep", "touch", "git"}
+
+// harness is how the script is run. The zero value is the hermetic one. leak is a
+// directory put on the PATH after the tools, which is what a PATH that was not built would
+// do: it exists so that a test can show that the checks notice the leak.
+type harness struct{ leak string }
+
 // scriptRun is what one run of the script did.
 type scriptRun struct {
 	stderr string
@@ -149,14 +162,37 @@ func (r scriptRun) called(prefix string) []string {
 	return out
 }
 
-// runScript runs the script at path, with the stubs, in an environment, and returns what
-// it did. withPsql puts a stub psql on the path.
-func runScript(t testing.TB, path string, env []string, withPsql bool, args ...string) scriptRun {
+// missingTool is what a test does when a tool it needs is not on the machine: on a runner it
+// fails, because a skip reads as a pass and the runner is where the tests are meant to
+// run; elsewhere it skips.
+func missingTool(t testing.TB, tool string) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Fatalf("no %s on the runner", tool)
+	}
+	t.Skipf("no %s", tool)
+}
+
+// run runs the script at path, with the stubs, in an environment, and returns what it did.
+// withPsql puts a stub psql on the path.
+func (h harness) run(t testing.TB, path string, env []string, withPsql bool, args ...string) scriptRun {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
-		t.Skip("no bash")
+		missingTool(t, "bash")
 	}
 	dir := t.TempDir()
+	for _, tool := range systemTools {
+		target, err := exec.LookPath(tool)
+		if err != nil {
+			if tool == "git" {
+				continue
+			}
+			missingTool(t, tool)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	log := filepath.Join(dir, "calls")
 	for name, body := range map[string]string{"docker": stubDocker, "curl": stubCurl} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
@@ -169,8 +205,12 @@ func runScript(t testing.TB, path string, env []string, withPsql bool, args ...s
 		}
 	}
 	cmd := exec.CommandContext(t.Context(), "bash", append([]string{path}, args...)...)
-	// The stubs, then the system's tools: the real docker, curl and psql are never found.
-	cmd.Env = append([]string{"PATH=" + dir + ":/usr/bin:/bin", "HOME=" + dir, "STUB_LOG=" + log}, env...)
+	// The one directory: the real docker, curl and psql are never found.
+	scriptPATH := dir
+	if h.leak != "" {
+		scriptPATH += string(os.PathListSeparator) + h.leak
+	}
+	cmd.Env = append([]string{"PATH=" + scriptPATH, "HOME=" + dir, "STUB_LOG=" + log}, env...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()
@@ -193,6 +233,11 @@ func runScript(t testing.TB, path string, env []string, withPsql bool, args ...s
 // that it can be shown to fail on a script with one of its guards taken out.
 func scriptChecks(t testing.TB, path string) {
 	t.Helper()
+	checkScript(t, path, harness{})
+}
+
+func checkScript(t testing.TB, path string, h harness) {
+	t.Helper()
 	data := t.TempDir() + "/node"
 	env := []string{"TOPOSHIFT_XTDB_DATA=" + data, "TOPOSHIFT_XTDB_PORT=55999", "TOPOSHIFT_XTDB_HEALTH_PORT=55998", "TOPOSHIFT_XTDB_NAME=n"}
 
@@ -212,7 +257,7 @@ func scriptChecks(t testing.TB, path string) {
 		{"a container that is already there", []string{"start"}, []string{"STUB_EXISTS=1"}, "already exists"},
 		{"a node that exits while starting", []string{"start"}, []string{"STUB_CURL_FAILS=1", "STUB_RUNNING=false"}, "exited while starting"},
 	} {
-		run := runScript(t, path, append(append([]string{}, env...), c.env...), false, c.args...)
+		run := h.run(t, path, append(append([]string{}, env...), c.env...), false, c.args...)
 		if run.code == 0 || !strings.Contains(run.stderr, c.want) {
 			t.Errorf("%s: exit %d, %q; want a failure saying %q", c.name, run.code, run.stderr, c.want)
 		}
@@ -225,7 +270,7 @@ func scriptChecks(t testing.TB, path string) {
 	// A start: the image is there, the container is run with the pinned image, the
 	// configuration and the JVM options, published on loopback, over the data directory,
 	// and the script waits for the node to say it started.
-	run := runScript(t, path, env, false, "start")
+	run := h.run(t, path, env, false, "start")
 	if run.code != 0 {
 		t.Fatalf("a start failed: %d %q", run.code, run.stderr)
 	}
@@ -257,7 +302,7 @@ func scriptChecks(t testing.TB, path string) {
 	if err := os.WriteFile(other, []byte("log: !Local\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	run = runScript(t, path, append([]string{"TOPOSHIFT_XTDB_JAVA_OPTS=-Xmx2g -XX:MaxDirectMemorySize=2g", "TOPOSHIFT_XTDB_CONFIG=" + other}, env...), false, "start")
+	run = h.run(t, path, append([]string{"TOPOSHIFT_XTDB_JAVA_OPTS=-Xmx2g -XX:MaxDirectMemorySize=2g", "TOPOSHIFT_XTDB_CONFIG=" + other}, env...), false, "start")
 	if got := run.called("docker run"); run.code != 0 || len(got) != 1 ||
 		!strings.Contains(got[0], "-e JDK_JAVA_OPTIONS=-Xmx2g -XX:MaxDirectMemorySize=2g") || !strings.Contains(got[0], "-v "+other+":/config/xtdb.yaml:ro") {
 		t.Errorf("a start with other options and configuration: exit %d, %v", run.code, run.calls)
@@ -265,32 +310,32 @@ func scriptChecks(t testing.TB, path string) {
 	if !strings.Contains(run.stderr, "NOT the registered configuration") {
 		t.Errorf("a start with other options did not say so: %q", run.stderr)
 	}
-	if strings.Contains(runScript(t, path, env, false, "start").stderr, "NOT the registered") {
+	if strings.Contains(h.run(t, path, env, false, "start").stderr, "NOT the registered") {
 		t.Error("a start with the registered configuration said it was not")
 	}
 	// An image that is not there is pulled, by its digest.
-	run = runScript(t, path, append([]string{"STUB_NO_IMAGE=1"}, env...), false, "start")
+	run = h.run(t, path, append([]string{"STUB_NO_IMAGE=1"}, env...), false, "start")
 	if pulls := run.called("docker pull"); len(pulls) != 1 || !strings.HasSuffix(pulls[0], "@sha256:15b6aa9d37d1e1a4e21748788db9275a57b87c339e5eb66d86376cf1e6899816") {
 		t.Errorf("pulls: %v", pulls)
 	}
 
 	// A stop: the container is stopped, with time to finish a block, and removed; with no
 	// container there is nothing to do.
-	run = runScript(t, path, append([]string{"STUB_EXISTS=1"}, env...), false, "stop")
+	run = h.run(t, path, append([]string{"STUB_EXISTS=1"}, env...), false, "stop")
 	if run.code != 0 || !slices.Contains(run.calls, "docker stop --time 120 n") || !slices.Contains(run.calls, "docker rm n") {
 		t.Errorf("a stop: exit %d, %v", run.code, run.calls)
 	}
-	run = runScript(t, path, env, false, "stop")
+	run = h.run(t, path, env, false, "stop")
 	if run.code != 0 || len(run.called("docker stop")) != 0 || len(run.called("docker rm")) != 0 {
 		t.Errorf("a stop with no container: exit %d, %v", run.code, run.calls)
 	}
 
 	// psql is the host's, against the node on loopback, and stops at the first error.
-	run = runScript(t, path, env, true, "psql", "-c", "select 1")
+	run = h.run(t, path, env, true, "psql", "-c", "select 1")
 	if got := run.called("psql"); run.code != 0 || len(got) != 1 || got[0] != "psql --set ON_ERROR_STOP=1 host=127.0.0.1 port=55999 user=xtdb dbname=xtdb -c select 1" {
 		t.Errorf("psql: exit %d, %v", run.code, run.calls)
 	}
-	run = runScript(t, path, env, false, "psql")
+	run = h.run(t, path, env, false, "psql")
 	if run.code == 0 || !strings.Contains(run.stderr, "psql is not installed") {
 		t.Errorf("psql with none installed: exit %d, %q", run.code, run.stderr)
 	}
