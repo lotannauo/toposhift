@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -446,8 +447,54 @@ func (w *Writer) Close() error {
 			return w.fail("writing the footer metadata", err)
 		}
 	}
+	if err := w.sortEncodingStats(); err != nil {
+		return w.fail("ordering the footer", err)
+	}
 	if err := w.fw.Close(); err != nil {
 		return w.fail("writing the footer", err)
+	}
+	return nil
+}
+
+// sortEncodingStats puts the encoding_stats of every column chunk in the
+// footer in one order: dictionary pages before data pages, then by encoding.
+//
+// The Parquet library builds that list from two Go maps, one for the
+// dictionary pages and one for the data pages, so a chunk with data pages of two
+// encodings (a dictionary column that outgrew its dictionary page and fell back
+// to plain encoding, which a large enough row group does) got its entries in an
+// order that changed from one write to the next, and two files of the same
+// records differed in the footer. The order here is the one the library gives a
+// chunk whose pages use one encoding each, so no such file changes. Only the
+// footer is touched: no page, offset or size moves, because the list holds the
+// same entries and thrift encodes each in the same number of bytes.
+//
+// The metadata the library returns holds its builder's own row groups
+// (FileMetaDataBuilder.Snapshot sets RowGroups to them), and Close writes the
+// footer from those same row groups, so sorting them here sorts what Close
+// writes. A test reads the footer back to hold the library to that.
+func (w *Writer) sortEncodingStats() error {
+	md, err := w.fw.FileMetadata()
+	if err != nil {
+		return err
+	}
+	for _, rg := range md.RowGroups {
+		for _, cc := range rg.Columns {
+			if cc.MetaData == nil {
+				continue
+			}
+			stats := cc.MetaData.EncodingStats
+			sort.SliceStable(stats, func(i, j int) bool {
+				a, b := stats[i], stats[j]
+				if da, db := a.PageType == file.PageTypeDictionaryPage, b.PageType == file.PageTypeDictionaryPage; da != db {
+					return da
+				}
+				if a.PageType != b.PageType {
+					return a.PageType < b.PageType
+				}
+				return a.Encoding < b.Encoding
+			})
+		}
 	}
 	return nil
 }
