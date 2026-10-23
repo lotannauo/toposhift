@@ -34,6 +34,12 @@ type QueryCounters struct {
 	PlanShape     string
 	ProfileDigest string
 	Scans         []ScanCounters
+	// PlannedNoScan says DuckDB planned the statement with no table scan, having proved
+	// its result empty, and that the footers and bloom filters of every file the tool
+	// counted admit no row group either. It read nothing. Each file the tool counted is
+	// listed with no row group admitted and a profiler cardinality of 0, so that its totals
+	// and its bounds-only count stay in the group's table. It is set for no other question.
+	PlannedNoScan bool `json:",omitempty"`
 }
 
 // ErrNotRepeatable is wrapped by the error [Collect] returns when two passes over the
@@ -74,16 +80,45 @@ func CollectQueriesPass(ctx context.Context, r *Reader, queries []runner.Query) 
 			Name: q.Name(), Group: q.Group, Age: q.Age, Op: q.Op, Statement: tr.Statement, Answer: ans,
 			PlanShape: tr.Profile.Shape(), ProfileDigest: tr.Profile.Digest(),
 		}
-		scans := tr.Profile.Scans()
-		if len(scans) != len(tr.Admissions) {
-			return nil, fmt.Errorf("duckengine: %s: the plan has %d table scans and the statement was counted for %d files", q.Name(), len(scans), len(tr.Admissions))
-		}
-		for i, s := range scans {
-			qc.Scans = append(qc.Scans, ScanCounters{Role: tr.Admissions[i].Role, RowsScanned: tr.Admissions[i].Admitted.Rows, ProfilerCardinality: s.Cardinality, Admission: tr.Admissions[i]})
+		if qc.Scans, qc.PlannedNoScan, err = countScans(q.Name(), tr.Profile.Scans(), tr.Admissions); err != nil {
+			return nil, err
 		}
 		out = append(out, qc)
 	}
 	return out, nil
+}
+
+// countScans pairs the table scans of a plan with what the tool counted for the files the
+// statement names. A plan with none is accepted only if the tool counted no row group
+// admitted in any file: DuckDB proved the result empty without opening a file, and the
+// footers say the same. Each file counted is then listed with nothing scanned, so that
+// the totals stay in the sums. If a footer admits a row group the plan did not scan, or
+// the scans are not the files counted, the counters would hide a disagreement, and it is
+// an error.
+func countScans(name string, scans []Node, adm []Admission) (_ []ScanCounters, plannedNoScan bool, _ error) {
+	if len(scans) == 0 {
+		for _, a := range adm {
+			if a.Admitted.Groups > 0 {
+				return nil, false, fmt.Errorf("duckengine: %s: the plan has no table scan but the footers admit %d row groups of %s", name, a.Admitted.Groups, a.Role)
+			}
+		}
+		if len(adm) == 0 {
+			return nil, false, nil
+		}
+		out := make([]ScanCounters, len(adm))
+		for i, a := range adm {
+			out[i] = ScanCounters{Role: a.Role, RowsScanned: a.Admitted.Rows, Admission: a}
+		}
+		return out, true, nil
+	}
+	if len(scans) != len(adm) {
+		return nil, false, fmt.Errorf("duckengine: %s: the plan has %d table scans and the statement was counted for %d files", name, len(scans), len(adm))
+	}
+	out := make([]ScanCounters, len(scans))
+	for i, s := range scans {
+		out[i] = ScanCounters{Role: adm[i].Role, RowsScanned: adm[i].Admitted.Rows, ProfilerCardinality: s.Cardinality, Admission: adm[i]}
+	}
+	return out, false, nil
 }
 
 // Collect asks every question twice and returns what each cost, refusing a pass whose
@@ -116,7 +151,7 @@ func CollectQueries(ctx context.Context, r *Reader, queries []runner.Query) ([]Q
 
 func equalCounters(a, b QueryCounters) bool {
 	return a.Name == b.Name && a.Statement == b.Statement && a.Answer == b.Answer && a.PlanShape == b.PlanShape &&
-		a.ProfileDigest == b.ProfileDigest && slices.EqualFunc(a.Scans, b.Scans, func(x, y ScanCounters) bool {
+		a.ProfileDigest == b.ProfileDigest && a.PlannedNoScan == b.PlannedNoScan && slices.EqualFunc(a.Scans, b.Scans, func(x, y ScanCounters) bool {
 		return x.Role == y.Role && x.RowsScanned == y.RowsScanned && x.ProfilerCardinality == y.ProfilerCardinality && x.Same(y.Admission)
 	})
 }

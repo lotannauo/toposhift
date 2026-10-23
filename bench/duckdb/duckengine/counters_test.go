@@ -115,6 +115,7 @@ func TestTwoPassesThatCostDifferentlyAreRefused(t *testing.T) {
 		"bytes":                func(q *QueryCounters) { q.Scans[0].Admitted.Bytes++ },
 		"a file":               func(q *QueryCounters) { q.Scans[0].Role = "x" },
 		"a scan less":          func(q *QueryCounters) { q.Scans = nil },
+		"a plan with no scan":  func(q *QueryCounters) { q.PlannedNoScan = true },
 	} {
 		q := base[0]
 		q.Scans = slices.Clone(q.Scans)
