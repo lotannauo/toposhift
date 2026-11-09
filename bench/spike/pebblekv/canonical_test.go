@@ -339,7 +339,10 @@ var _ engine.Recorder = (*sums)(nil)
 
 // The same data, written slowly in small flushes with the compactions keeping up or
 // quickly in large batches with none until the end, is left by CompactAll in tables
-// cut in different places; canonicalized, in the same tables to the byte.
+// cut in different places; canonicalized, in the same tables to the byte, of the same
+// bytes. The size of the directory is only logged: it also counts the write-ahead
+// logs Pebble keeps to reuse, which hold what was written as it was written, so two
+// builds of the same data are compared on their tables and never on it.
 func TestCanonicalTablesDoNotDependOnHowTheDataWasWritten(t *testing.T) {
 	t.Parallel()
 	for name, l := range canonLayouts {
@@ -381,6 +384,19 @@ func TestCanonicalTablesDoNotDependOnHowTheDataWasWritten(t *testing.T) {
 			if len(a) < 2 {
 				t.Errorf("%d tables: the comparison shows little", len(a))
 			}
+			slowSize, err := slow.Size()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fastSize, err := fast.Size()
+			if err != nil {
+				t.Fatal(err)
+			}
+			slowTables, fastTables := slow.Snapshot().LiveTableBytes, fast.Snapshot().LiveTableBytes
+			if slowTables != fastTables || slowTables == 0 {
+				t.Errorf("canonical table bytes %d and %d", slowTables, fastTables)
+			}
+			t.Logf("the directory is %d bytes written slowly and %d quickly, its tables %d bytes either way", slowSize, fastSize, slowTables)
 		})
 	}
 }

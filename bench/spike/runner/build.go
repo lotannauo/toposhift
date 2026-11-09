@@ -45,7 +45,11 @@ type Manifest struct {
 	StatsBuilt, StatsCompacted map[string]int64
 	// Breakdown is the logical bytes of every part, by "layer/part", and
 	// SizeByLayer Pebble's estimate of the table bytes of each layer, both after
-	// the compaction. Size is the bytes of the directory as the engine counts it.
+	// the compaction. Size is the bytes of the directory as the engine counts it. For
+	// a Pebble store that includes the write-ahead logs Pebble keeps to reuse, whose
+	// lengths depend on when each flush finished against the writer, so it is not a
+	// function of the data even in the canonical layout and two builds are not
+	// compared on it; the bytes of the tables are StatsCompacted's live_table_bytes.
 	Breakdown, SizeByLayer map[string]int64
 	Size                   int64
 	// Timing is how long the writes took; see [Timing].
