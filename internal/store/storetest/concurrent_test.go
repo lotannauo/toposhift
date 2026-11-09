@@ -17,13 +17,21 @@ func TestCheckConcurrentReads(t *testing.T) {
 	if err := storetest.CheckConcurrentReads(newSlow(t, func(s *slow) { s.backward = true })); err == nil {
 		t.Error("a store whose LastSeq goes backward was not noticed")
 	}
+	// A handshake, not the scheduling, puts a batch between the two halves of a torn
+	// read, and every batch of the check's second phase can be put there, so one run
+	// must show the tear.
+	t.Run("answers half a read from before a batch and half from after it", func(t *testing.T) {
+		t.Parallel()
+		if err := storetest.CheckConcurrentReads(newSlow(t, func(s *slow) { s.tear = true })); !errors.Is(err, storetest.ErrTorn) {
+			t.Errorf("err = %v, want ErrTorn", err)
+		}
+	})
 	for name, mod := range map[string]func(*slow){
-		"answers half a read from before a batch and half from after it": func(s *slow) { s.tear = true },
-		"answers a batched read from a snapshot per entry":               func(s *slow) { s.tearBatchEnd = true },
-		"loses what is before the horizon while it retains":              func(s *slow) { s.retainMode = retainEmpty },
-		"publishes the horizon after discarding":                         func(s *slow) { s.retainMode = retainDiscardFirst },
-		"raises LastSeq before the batch is visible":                     func(s *slow) { s.ahead = true },
-		"puts the answers of a large batched read in the wrong place":    func(s *slow) { s.misindex = true },
+		"answers a batched read from a snapshot per entry":            func(s *slow) { s.tearBatchEnd = true },
+		"loses what is before the horizon while it retains":           func(s *slow) { s.retainMode = retainEmpty },
+		"publishes the horizon after discarding":                      func(s *slow) { s.retainMode = retainDiscardFirst },
+		"raises LastSeq before the batch is visible":                  func(s *slow) { s.ahead = true },
+		"puts the answers of a large batched read in the wrong place": func(s *slow) { s.misindex = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
