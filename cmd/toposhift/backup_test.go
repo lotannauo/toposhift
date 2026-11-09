@@ -97,8 +97,8 @@ func TestBackupOffLeavesServeAsItWas(t *testing.T) {
 				t.Errorf(`"backup" = %s, want {"mode":"off"}`, got)
 			}
 			stopOK(t, s)
-			if got := logMessages(s.stderr.String()); !slices.Equal(got, golden) {
-				t.Errorf("the log's messages are\n%q\nwant\n%q", got, golden)
+			if got := logMessages(s.stderr.String()); !sameServeLog(got, golden) {
+				t.Errorf("the log's messages are\n%q\nwant\n%q, with \"listening\" anywhere between \"data directory\" and \"stopped\"", got, golden)
 			}
 			entries, err := os.ReadDir(dir)
 			if err != nil {
@@ -112,6 +112,50 @@ func TestBackupOffLeavesServeAsItWas(t *testing.T) {
 				t.Errorf("the data directory holds %v, want %v", names, want)
 			}
 		})
+	}
+}
+
+// sameServeLog says got is want but for where "listening" is. The server logs it on
+// its own goroutine, which serve starts after "data directory" and before it opens
+// the store, and which logs "stopped" after it: it may come anywhere between those
+// two, among the messages of the store's opening. Every other message keeps its
+// place, and "listening" is logged once.
+func sameServeLog(got, want []string) bool {
+	const listening = "listening"
+	l := slices.Index(got, listening)
+	if l < 0 || slices.Contains(got[l+1:], listening) ||
+		l < slices.Index(got, "data directory") || slices.Index(got, "stopped") < l {
+		return false
+	}
+	others := func(msgs []string) []string {
+		return slices.DeleteFunc(slices.Clone(msgs), func(m string) bool { return m == listening })
+	}
+	return slices.Equal(others(got), others(want))
+}
+
+// The orders of serve's messages that sameServeLog accepts: the golden one, and the
+// one a run logged when the store opened before the server's goroutine logged
+// "listening"; and those it refuses.
+func TestSameServeLog(t *testing.T) {
+	t.Parallel()
+	want := []string{"data directory", "listening", "store opened", "ingest is on", "stopped", "server stopped", "store closed"}
+	for _, tt := range []struct {
+		name string
+		got  []string
+		ok   bool
+	}{
+		{"the golden order", want, true},
+		{"listening after the store opened", []string{"data directory", "store opened", "ingest is on", "listening", "stopped", "server stopped", "store closed"}, true},
+		{"listening missing", []string{"data directory", "store opened", "ingest is on", "stopped", "server stopped", "store closed"}, false},
+		{"listening twice", []string{"data directory", "listening", "store opened", "listening", "ingest is on", "stopped", "server stopped", "store closed"}, false},
+		{"listening before the data directory", []string{"listening", "data directory", "store opened", "ingest is on", "stopped", "server stopped", "store closed"}, false},
+		{"listening after stopped", []string{"data directory", "store opened", "ingest is on", "stopped", "listening", "server stopped", "store closed"}, false},
+		{"another message moved", []string{"data directory", "listening", "ingest is on", "store opened", "stopped", "server stopped", "store closed"}, false},
+		{"another message added", []string{"data directory", "listening", "store opened", "ingest is on", "backup is on", "stopped", "server stopped", "store closed"}, false},
+	} {
+		if got := sameServeLog(tt.got, want); got != tt.ok {
+			t.Errorf("%s: sameServeLog(%q) = %v, want %v", tt.name, tt.got, got, tt.ok)
+		}
 	}
 }
 
