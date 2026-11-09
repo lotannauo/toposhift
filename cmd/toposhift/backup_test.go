@@ -323,6 +323,15 @@ func (f *fakeTicks) fire(t testing.TB, d time.Duration) {
 	}
 }
 
+// settle returns once the backup's loop has finished what the ticks fired before it
+// started. The loop takes one tick at a time, so once it takes the nag's tick, the
+// cut of every cadence tick taken before it has ended. The nag says nothing while
+// the backup works.
+func (f *fakeTicks) settle(t testing.TB) {
+	t.Helper()
+	f.fire(t, fakeNag)
+}
+
 // recordingWriter keeps the records the store committed, whatever the write
 // returned, as the sequencer reads it.
 type recordingWriter struct {
@@ -863,11 +872,13 @@ func TestBackupCutsOnTheCadenceAndNotPerBatch(t *testing.T) {
 	r := newRig(t, "", st, rigMeta, true)
 	w, gn := r.writer(), newGen(t)
 	generation := func() uint64 { return r.run.status().Local.Generation }
-	// A tick is taken once the cut of the tick before it has ended, so two ticks in a
-	// row settle the first.
+	// One interval is one tick of the cadence, and the loop settled after it: the cut
+	// the tick started has ended before the test looks or writes again. A second
+	// cadence tick would not settle the first: it is another interval, and its own
+	// cut, still running when fire returns, could take the batches written next.
 	interval := func() {
 		ticks.fire(t, 15*time.Minute)
-		ticks.fire(t, 15*time.Minute)
+		ticks.settle(t)
 	}
 	// An interval with nothing added writes no manifest, not even a first one.
 	interval()
