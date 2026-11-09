@@ -34,23 +34,46 @@ func ObserveStatements(f func(ctx context.Context, tx pgx.Tx, sql string, args [
 }
 
 // FoldMemory folds the log of a loader that has been given a stream, as Finish does, and
-// returns the interval rows it holds and the heap that holds them, measured after a
-// collection with the rows still live.
+// returns the interval rows it holds and the heap that only what the fold returns keeps
+// alive (see [heldBytes]): the rows, the strings they point to and the ids it marks used.
 func FoldMemory(ctx context.Context, l *Loader) (rows int, bytes int64, err error) {
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	edges, entities, used, _, err := l.fold(ctx, false)
+	type folded struct {
+		edges, entities []outRow
+		used            map[int64]bool
+	}
+	bytes, err = heldBytes(func() (*folded, error) {
+		edges, entities, used, _, err := l.fold(ctx, false)
+		rows = len(edges) + len(entities)
+		return &folded{edges, entities, used}, err
+	})
 	if err != nil {
 		return 0, 0, err
 	}
+	return rows, bytes, nil
+}
+
+// heldBytes is the heap that only what hold returns keeps alive: the heap in use with it,
+// less the heap in use once it is dead and collected. It is not the heap in use after hold
+// less the heap in use before it, because garbage that was still reachable before hold and
+// is freed during it would come off that: the buffers pgx puts back in its sync.Pools
+// after a COPY or a query are such garbage, which one collection moves to the pools'
+// victim caches and the next frees. Two collections empty the pools before the heap is
+// read with what hold returns, so that between the two reads nothing is freed but that,
+// give or take the few KiB the runtime itself allocates and frees.
+func heldBytes[T any](hold func() (*T, error)) (int64, error) {
+	held, err := hold()
+	if err != nil {
+		return 0, err
+	}
+	var with, without runtime.MemStats
 	runtime.GC()
-	runtime.ReadMemStats(&after)
-	rows = len(edges) + len(entities)
-	runtime.KeepAlive(edges)
-	runtime.KeepAlive(entities)
-	runtime.KeepAlive(used)
-	return rows, int64(after.HeapAlloc) - int64(before.HeapAlloc), nil
+	runtime.GC()
+	runtime.ReadMemStats(&with)
+	// The last use of held: the collection after it frees what only held kept.
+	runtime.KeepAlive(held)
+	runtime.GC()
+	runtime.ReadMemStats(&without)
+	return int64(with.HeapAlloc) - int64(without.HeapAlloc), nil
 }
 
 // CheckPlaces says whether the place the writer remembers for the last row of each subject

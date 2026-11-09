@@ -1,9 +1,12 @@
 package pgengine
 
 import (
+	"runtime"
 	"slices"
+	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/lotannauo/toposhift/bench/postgres/pgmodel"
 	"github.com/lotannauo/toposhift/bench/postgres/pgschema"
@@ -100,4 +103,38 @@ func TestTheIdsOfTheDictionaryAreGivenInTheOrderEntitiesFirstAppear(t *testing.T
 	if len(l.dictOrder) != 3 || l.dictOrder[0] != pod || l.dictOrder[2] != pod2 {
 		t.Errorf("dictionary order %v", l.dictOrder)
 	}
+}
+
+// TestTheMemoryOfAFoldIsWhatItsRowsKeepAliveAndNothingElse: the measure the estimate of
+// an interval row is checked against counts what the rows a fold returns keep alive. Garbage a sync.Pool still held when the fold began (the buffers pgx puts back
+// after the COPYs of a load) does not come off it, and garbage the fold makes does not go
+// on it.
+func TestTheMemoryOfAFoldIsWhatItsRowsKeepAliveAndNothingElse(t *testing.T) {
+	var pool sync.Pool
+	for range 4 {
+		b := make([]byte, 64<<10)
+		pool.Put(&b)
+	}
+	// 1024 rows are 96 KiB, twelve pages: the heap gives them no more than that.
+	const n = 1024
+	got, err := heldBytes(func() (*[n]outRow, error) {
+		scratch := make([]outRow, 2*n)
+		for i := range scratch {
+			scratch[i].start = int64(i)
+		}
+		rows := new([n]outRow)
+		copy(rows[:], scratch)
+		return rows, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The heap in use moves by a few KiB, in either direction, between two reads with
+	// nothing held or released: the runtime's own allocations. A measure that counted the
+	// pool's garbage would be 256 KiB off.
+	const runtimeSlack = 16 << 10
+	if want := int64(n * unsafe.Sizeof(outRow{})); got < want-runtimeSlack || got > want+runtimeSlack {
+		t.Errorf("the rows hold %d bytes, measured as %d", want, got)
+	}
+	runtime.KeepAlive(&pool)
 }
