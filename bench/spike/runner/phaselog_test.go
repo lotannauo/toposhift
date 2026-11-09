@@ -18,8 +18,10 @@ import (
 // A build with the phase log stores what a build without it stores, and a build
 // without it makes no file and says nothing of it. Both are built with a synchronous
 // retention (a function of the stream) and the canonical layout (a function of the
-// data), so their sizes, breakdowns and the store's deterministic counts can be
-// compared exactly. The log has a line for each batch, its wall times add up to the
+// data), so their table bytes, breakdowns and the store's deterministic counts can be
+// compared exactly. The size of the directory cannot be: it counts the write-ahead
+// logs Pebble keeps to reuse, whose lengths depend on when each flush finished
+// against the writer. The log has a line for each batch, its wall times add up to the
 // build's time in Write, and the store's phase samples it kept add up to what the
 // build's recorder summed.
 func TestThePhaseLogChangesNothingTheStoreStores(t *testing.T) {
@@ -54,10 +56,11 @@ func TestThePhaseLogChangesNothingTheStoreStores(t *testing.T) {
 	if !maps.Equal(describe, off.Describe) {
 		t.Errorf("described differently: %v against %v", describe, off.Describe)
 	}
-	if off.Stream.Digest != on.Stream.Digest || off.Size != on.Size ||
+	offTables, onTables := off.StatsCompacted["live_table_bytes"], on.StatsCompacted["live_table_bytes"]
+	if off.Stream.Digest != on.Stream.Digest || offTables != onTables || offTables == 0 ||
 		!reflect.DeepEqual(off.Breakdown, on.Breakdown) || !reflect.DeepEqual(off.SizeByLayer, on.SizeByLayer) {
-		t.Errorf("stored differently: stream %s/%s, size %d/%d, breakdown %v/%v, layers %v/%v",
-			off.Stream.Digest, on.Stream.Digest, off.Size, on.Size, off.Breakdown, on.Breakdown, off.SizeByLayer, on.SizeByLayer)
+		t.Errorf("stored differently: stream %s/%s, table bytes %d/%d, breakdown %v/%v, layers %v/%v",
+			off.Stream.Digest, on.Stream.Digest, offTables, onTables, off.Breakdown, on.Breakdown, off.SizeByLayer, on.SizeByLayer)
 	}
 	for _, name := range []string{"write.records", "checkpoint.written", "checkpoint.bytes_written", "checkpoint.invalidated", "checkpoint.build_records_walked", "checkpoint.loads", "checkpoint.loads_cold"} {
 		if off.Counters[name] != on.Counters[name] {
