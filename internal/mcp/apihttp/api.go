@@ -159,10 +159,16 @@ func isJSON(header string) bool {
 
 // readBody reads the body, at most [MaxBodyBytes]. A non-zero status says it
 // could not: 413 for a body over the cap, anything else for a read that failed.
+//
+// A body over the cap is read up to the cap even when its Content-Length already
+// says it is over. The reader that stops it tells the server the request was too
+// large, and the server then answers, half-closes the connection and waits a
+// moment before it closes it, so a client that finishes writing the body in that
+// time reads the 413. Refused from the header with nothing read, the request of a
+// client that asked to close the connection is followed by an immediate close,
+// which resets the client's last writes, and the client can get that error
+// instead of the answer.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, int) {
-	if r.ContentLength > MaxBodyBytes {
-		return nil, http.StatusRequestEntityTooLarge
-	}
 	b, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxBodyBytes))
 	var tooBig *http.MaxBytesError
 	switch {

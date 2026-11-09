@@ -3,11 +3,14 @@ package apihttp
 import (
 	"bytes"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/lotannauo/toposhift/internal/catalog"
@@ -272,6 +275,67 @@ func TestEveryResponseCarriesTheHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A body over the cap is refused once the cap's worth of it is read, though its
+// Content-Length says from the start that it is over, so that the server closes the
+// connection only after a wait that lets the client finish writing and read the
+// 413. Answered before the body is read, a client that asked to close the
+// connection, as send does, can have its last writes reset before it reads the
+// answer.
+func TestABodyOverTheCapIsReadToTheCapBeforeItIsRefused(t *testing.T) {
+	w := newWorld(t)
+	api, _ := apiOn(t, w.st, mcp.Config{})
+	mux := http.NewServeMux()
+	mux.Handle(PathScope, api.Handler())
+	ts := httptest.NewUnstartedServer(mux)
+	ln := &firstWriteListener{Listener: ts.Listener}
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	got := send(t, ts.URL, PathScope, strings.Repeat(" ", MaxBodyBytes+1), nil)
+	if got.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, want 413: %s", got.status, got.body)
+	}
+	if n := ln.readBeforeWrite.Load(); n <= MaxBodyBytes {
+		t.Errorf("the server had read %d bytes of the request when it wrote its answer, want more than the cap of %d", n, MaxBodyBytes)
+	}
+}
+
+// firstWriteListener records, for the connection it accepts, how many bytes the
+// server had read from it when it wrote its first byte to it.
+type firstWriteListener struct {
+	net.Listener
+	readBeforeWrite atomic.Int64
+}
+
+func (l *firstWriteListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &firstWriteConn{Conn: c, l: l}, nil
+}
+
+type firstWriteConn struct {
+	net.Conn
+	l     *firstWriteListener
+	read  atomic.Int64
+	wrote atomic.Bool
+}
+
+func (c *firstWriteConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.read.Add(int64(n))
+	return n, err
+}
+
+func (c *firstWriteConn) Write(p []byte) (int, error) {
+	if !c.wrote.Swap(true) {
+		c.l.readBeforeWrite.Store(c.read.Load())
+	}
+	return c.Conn.Write(p)
 }
 
 // What a request must be to be read at all, and what the routes refuse before
