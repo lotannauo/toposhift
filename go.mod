@@ -5,7 +5,7 @@ go 1.27.3
 tool golang.org/x/vuln/cmd/govulncheck
 
 require (
-	github.com/andybalholm/brotli v1.2.3
+	github.com/andybalholm/brotli v1.2.7
 	github.com/apache/arrow-go/v18 v18.8.0
 	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/modelcontextprotocol/go-sdk v1.8.0
@@ -36,7 +36,7 @@ require (
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
