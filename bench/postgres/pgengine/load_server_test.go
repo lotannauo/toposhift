@@ -663,7 +663,9 @@ func TestAnIntervalRowCostsWhatTheEstimateSays(t *testing.T) {
 			if rows < 1000 {
 				t.Fatalf("%s %s: only %d rows to measure", name, arm, rows)
 			}
-			if per := float64(bytes) / float64(rows); per > pgengine.IntervalRowBytes || per < pgengine.IntervalRowBytes/4 {
+			per := float64(bytes) / float64(rows)
+			t.Logf("%s %s: %d rows, %.1f bytes a row", name, arm, rows, per)
+			if per > pgengine.IntervalRowBytes || per < pgengine.IntervalRowBytes/4 {
 				t.Errorf("%s %s: a fold holds %.1f bytes a row, the estimate is %d", name, arm, per, pgengine.IntervalRowBytes)
 			}
 		}

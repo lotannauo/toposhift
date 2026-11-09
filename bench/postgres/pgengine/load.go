@@ -130,9 +130,9 @@ type LoadStats struct {
 // IntervalRowBytes is the memory a load holds for each interval row it folds, in bytes,
 // until the rows are written: the row itself (two keys, the relation, the layer and the
 // source, the bounds), the key strings it points to, and the unused room an append leaves
-// in the slice it grows. A fold of the fixtures holds 66 to 124 bytes a row (the least with
-// few rows to a subject, when the keys are shared, the most with many subjects of one
-// row); 192 leaves a margin for subjects whose keys are not shared. A test
+// in the slice it grows. The row itself is 96 bytes on a 64-bit machine, and its keys'
+// strings are shared by the rows of a subject; 192 leaves a margin for the room an append
+// leaves and for subjects of one row, whose keys are not shared. A test
 // (TestAnIntervalRowCostsWhatTheEstimateSays) measures the folds of the fixtures and fails
 // if one holds more than this per row, or less than a quarter of it.
 const IntervalRowBytes = 192
