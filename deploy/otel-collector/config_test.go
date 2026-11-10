@@ -1,7 +1,6 @@
 // Package otelcollector holds no code. Its test checks the collector
 // configurations shipped beside it, toposhift.yaml with its two opt-in forms and
-// the optional nodeagent.yaml and tracemetrics.yaml, and the README that explains
-// them.
+// the optional nodeagent.yaml and tracemetrics.yaml, and their setup guides.
 //
 // The repository has no YAML module, so the test reads the file with the
 // standard library. It understands only the small subset of YAML this file uses
@@ -9,7 +8,7 @@
 // anything else. It catches a scalar path that appears twice, but not a mapping
 // key repeated with different children (two "extensions:" blocks, say). That is
 // weaker than parsing the file: it does not know that the collector accepts it. The collector's own validate
-// command is the check for that, and it is run by hand, not here.
+// command is the check for that, run separately by check:collector in CI.
 package otelcollector
 
 import (
@@ -459,29 +458,34 @@ func TestNodeAgentOptIn(t *testing.T) {
 		}
 	}
 
-	// The README carries the same lines, and says plainly what enabling them opens.
-	readme := read(t, "README.md")
+	// The node-agent guide carries the lines and explains the opened receiver.
+	readme := read(t, "node-agents.md")
 	for _, line := range []string{
 		strings.Join(want[:4], "\n"),
 		strings.TrimLeft(want[4], " "),
 	} {
 		if !strings.Contains(readme, line) {
-			t.Errorf("README.md does not show the opt-in line(s) %q", line)
+			t.Errorf("node-agents.md does not show the opt-in line(s) %q", line)
 		}
 	}
 	for _, must := range []string{optInPrefix, "unauthenticated", "network policy", "off by default"} {
 		if !strings.Contains(readme, must) {
-			t.Errorf("README.md does not mention %q in the opt-in step", must)
+			t.Errorf("node-agents.md does not mention %q in the opt-in step", must)
 		}
 	}
 }
 
 // TestReadmeNamesEveryPlaceholder fails when a configuration holds a
-// placeholder the README does not explain, as when one is renamed in one file
+// placeholder its setup guide does not explain, as when one is renamed in one file
 // and not the other.
 func TestReadmeNamesEveryPlaceholder(t *testing.T) {
 	readme := read(t, "README.md")
-	for _, name := range []string{"toposhift.yaml", "nodeagent.yaml", "tracemetrics.yaml"} {
+	for name, guide := range map[string]string{
+		"toposhift.yaml":    "README.md",
+		"nodeagent.yaml":    "node-agents.md",
+		"tracemetrics.yaml": "service-traces.md",
+	} {
+		documentation := read(t, guide)
 		cfg := read(t, name)
 		found := regexp.MustCompile(`<[A-Z][A-Z_]*>`).FindAllString(cfg, -1)
 		if len(found) == 0 {
@@ -493,14 +497,14 @@ func TestReadmeNamesEveryPlaceholder(t *testing.T) {
 				continue
 			}
 			seen[p] = true
-			if !strings.Contains(readme, p) {
-				t.Errorf("README.md does not mention %s, which %s asks to edit", p, name)
+			if !strings.Contains(documentation, p) {
+				t.Errorf("%s does not mention %s, which %s asks to edit", guide, p, name)
 			}
 		}
 	}
-	// The feature gate is in every file, and the README says how to reach toposhift.
+	// Each configuration with entity events and its guide name the feature gate.
 	const gate = "pkg.experimentalmetricmetadata.useEntityEventsSpecification"
-	for name, text := range map[string]string{"toposhift.yaml": read(t, "toposhift.yaml"), "nodeagent.yaml": read(t, "nodeagent.yaml"), "README.md": readme} {
+	for name, text := range map[string]string{"toposhift.yaml": read(t, "toposhift.yaml"), "nodeagent.yaml": read(t, "nodeagent.yaml"), "README.md": readme, "node-agents.md": read(t, "node-agents.md")} {
 		if !strings.Contains(text, gate) {
 			t.Errorf("%s does not mention %s", name, gate)
 		}
@@ -680,22 +684,22 @@ func TestNodeAgentConfig(t *testing.T) {
 	eq("processors.resource_detection.system.hostname_sources[0]", "os")
 }
 
-// TestReadmeDescribesTheNodeAgents fails when the README leaves out what an
+// TestReadmeDescribesTheNodeAgents fails when the guide leaves out what an
 // operator of the optional agents has to know.
 func TestReadmeDescribesTheNodeAgents(t *testing.T) {
-	readme := read(t, "README.md")
+	readme := read(t, "node-agents.md")
 	for _, must := range []string{
 		"nodeagent.yaml", "otlp", "--node-interval", "TOPOSHIFT_NODE_INTERVAL", "/etc/machine-id", "hostNetwork",
 		"Development", "k8s.node.uid", "legacy", "machine id", "confidential", "never to toposhift", "host.id",
 		"ec2", "oraclecloud", "K8S_NODE_NAME", "host.arch", "nodeagent/<cluster", "/status",
 	} {
 		if !strings.Contains(readme, must) {
-			t.Errorf("README.md does not mention %q", must)
+			t.Errorf("node-agents.md does not mention %q", must)
 		}
 	}
-	// The constants the README states are the code's.
+	// The constants the node-agent guide states are the code's.
 	if nodeagent.DefaultTTLMultiple != 3 || sequencer.DefaultNodeInterval != 300*time.Second {
-		t.Errorf("the README says three times 300 seconds; the code has %d times %s", nodeagent.DefaultTTLMultiple, sequencer.DefaultNodeInterval)
+		t.Errorf("the node-agent guide says three times 300 seconds; the code has %d times %s", nodeagent.DefaultTTLMultiple, sequencer.DefaultNodeInterval)
 	}
 }
 
@@ -1123,22 +1127,22 @@ func TestTraceMetricsOptIn(t *testing.T) {
 		}
 	}
 
-	// The README carries the step, and says plainly what enabling it opens.
-	readme := read(t, "README.md")
+	// The trace guide carries the step and explains the opened receiver.
+	readme := read(t, "service-traces.md")
 	for _, must := range []string{
 		"sed 's/^" + traceMetricsPrefix + "//' toposhift.yaml", traceMetricsPrefix, "4319",
 		"unauthenticated", "network policy", "off by default", "otlp/tracemetrics", "otlphttp/toposhift_metrics",
 	} {
 		if !strings.Contains(readme, must) {
-			t.Errorf("README.md does not mention %q in the trace metrics opt-in step", must)
+			t.Errorf("service-traces.md does not mention %q in the trace metrics opt-in step", must)
 		}
 	}
 }
 
-// TestReadmeDescribesTheTraceCollector fails when the README leaves out what an
+// TestReadmeDescribesTheTraceCollector fails when the guide leaves out what an
 // operator of the optional trace collector has to know, or says what it must not.
 func TestReadmeDescribesTheTraceCollector(t *testing.T) {
-	readme := read(t, "README.md")
+	readme := read(t, "service-traces.md")
 	for _, must := range []string{
 		"tracemetrics.yaml", "one replica", "<GATEWAY_HOST>", "POD_UID", "k8s.pod.uid", "service.instance.id",
 		"k8sattributes", "--dependency-expiry", "--instance-ttl", "liveness_expiry",
@@ -1154,13 +1158,13 @@ func TestReadmeDescribesTheTraceCollector(t *testing.T) {
 		"empty list", "no other switch", "no expired edge", "svcgraph.skipped_connection_virtual_node", "peer attributes were set",
 	} {
 		if !strings.Contains(readme, must) {
-			t.Errorf("README.md does not mention %q", must)
+			t.Errorf("service-traces.md does not mention %q", must)
 		}
 	}
 	// POD_UID must come first in the list, since Kubernetes expands $(VAR) only for a
 	// variable defined earlier.
 	if !regexp.MustCompile("`POD_UID` from `fieldRef: metadata.uid`, defined \\*\\*before\\*\\* `OTEL_RESOURCE_ATTRIBUTES`").MatchString(readme) {
-		t.Error("README.md does not say that POD_UID is defined before OTEL_RESOURCE_ATTRIBUTES")
+		t.Error("service-traces.md does not say that POD_UID is defined before OTEL_RESOURCE_ATTRIBUTES")
 	}
 	// This version has no other switch, but the empty list converts no expired edge,
 	// so the README names neither a node the collector does not make nor a count in
@@ -1170,29 +1174,29 @@ func TestReadmeDescribesTheTraceCollector(t *testing.T) {
 		"virtual nodes are off", "cannot be switched off", "means a misconfiguration", "is not a misconfiguration",
 	} {
 		if strings.Contains(readme, bad) {
-			t.Errorf("README.md says %q: the empty peer-attribute list makes the collector convert no expired edge into a virtual node", bad)
+			t.Errorf("service-traces.md says %q: the empty peer-attribute list makes the collector convert no expired edge into a virtual node", bad)
 		}
 	}
-	// The README is published: it gives reasons and settings, no measurement and no
+	// The guide is published: it gives reasons and settings, no measurement and no
 	// reference to the notes that are not.
 	if m := regexp.MustCompile(`\bS0\b|\bADR[- ]?\d`).FindString(readme); m != "" {
-		t.Errorf("README.md cites %q", m)
+		t.Errorf("service-traces.md cites %q", m)
 	}
 }
 
-// section returns the README text under the heading "## name", up to the next
+// section returns the document text under the heading "## name", up to the next
 // "## " heading.
 func section(t *testing.T, readme, name string) string {
 	t.Helper()
 	_, rest, ok := strings.Cut(readme, "\n## "+name+"\n")
 	if !ok {
-		t.Fatalf("README.md has no section %q", name)
+		t.Fatalf("document has no section %q", name)
 	}
 	body, _, _ := strings.Cut(rest, "\n## ")
 	return body
 }
 
-// readOnly is the verb set of every rule in the README's ClusterRole: the
+// readOnly is the verb set of every rule in the RBAC guide's ClusterRole: the
 // collector reads and never writes.
 var readOnly = []string{"get", "list", "watch"}
 
@@ -1252,13 +1256,13 @@ func clusterRoleGrants(t *testing.T, d doc) []string {
 	return grants
 }
 
-// TestReadmeClusterRole pins the read access the README says the cluster
-// collector needs. The README's example is parsed, and its ClusterRole must grant
+// TestReadmeClusterRole pins the read access the RBAC guide says the cluster
+// collector needs. The RBAC guide's example is parsed, and its ClusterRole must grant
 // get, list and watch on exactly the resources above and nothing else, so the
 // list cannot drift from what the receivers ask for, and the binding must tie the
 // role to the service account in the namespace the placeholder names.
 func TestReadmeClusterRole(t *testing.T) {
-	readme := read(t, "README.md")
+	readme := read(t, "rbac.md")
 	sec := section(t, readme, "Read access the collector needs")
 	_, block, ok := strings.Cut(sec, "```yaml\n")
 	if !ok {

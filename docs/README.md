@@ -1,6 +1,12 @@
 # Documentation
 
-This is the index of the published documentation, for anyone who has read the [README](../README.md) and wants more. Each page stands alone. The project's design records are kept outside the repository and are not published.
+Start with the [README](../README.md) for the pitch and a demo. Then choose a path below. The public guides stand alone; the project's private design records are not needed to follow them.
+
+- **Try and query:** connect a client with [MCP](mcp.md), or ask the four fixed questions through the [JSON API](api.md). Read [how answers are derived](how-it-works.md) to interpret them.
+- **Operate and collect:** start with [running toposhift](operate.md), then [set up the collectors](../deploy/otel-collector/README.md). Check the [current limits](limits.md) before deployment.
+- **Understand and contribute:** read [how it works](how-it-works.md), then the [findings report](../bench/findings/REPORT.md) for the measured evidence and its limits. Contributor instructions are below.
+
+## Reference map
 
 | Page | Read it to learn |
 |---|---|

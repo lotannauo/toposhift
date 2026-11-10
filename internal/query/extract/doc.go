@@ -88,7 +88,8 @@
 // own pods, so its coverage would refer back to itself. The rule is judged
 // only for an exploratory seed with a frontier of at least UbiquityMinNodes
 // nodes; otherwise [Ubiquity].Judged is false and nothing is suppressed for
-// it. A global frequency is not computed: the store has no listing read.
+// it. A global frequency is not computed: extraction uses the scoped reads of
+// [store.Store], whose contract has no listing method.
 //
 // # One token, quarantine and errors
 //

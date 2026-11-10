@@ -56,7 +56,7 @@ A few details that change how you call them:
 A reply is a JSON-RPC response. `result.structuredContent` is the answer and `result.content[0].text` is the same answer as text. `result.isError` is true when the call was refused, and the text says why.
 
 - `"derived": true` marks an answer computed from the records rather than read from them. A blast radius, a co-resident and a service context are derived.
-- `token` names the state of the store the answer was read at. Pass it back as `asof` to read the same state again, for example to continue a long answer or to compare two questions at one moment.
+- `token` names the sequence the answer was read through. Pass it back as `asof` to continue an answer or compare questions against the same history. This requires the same store history and query policies, with the needed records still retained. A reset or restore can reuse token numbers; the token alone does not identify that change.
 
 ## Limits that shape calls
 

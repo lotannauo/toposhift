@@ -9,11 +9,11 @@
 //
 // # The scope and the window
 //
-// A store cannot list its subjects, so a diff is of a scope the caller names:
-// a set of entities, each read in its catalog layer, and every edge with an
-// endpoint among them, read forward and reverse, one hop out. An edge between
-// two scope entities is one element. The peers at the far end of an edge are
-// read only for the cascade and are not diffed themselves.
+// The [store.Store] contract has no listing method, so the caller names the
+// diff's scope: a set of entities, each read in its catalog layer, and every
+// edge with an endpoint among them, read forward and reverse, one hop out. An
+// edge between two scope entities is one element. The peers at the far end of
+// an edge are read only for the cascade and are not diffed themselves.
 //
 // The instants t1 < t2 are read as the window W = [t1, t2+1ns), so the state
 // at t2 includes the records at t2. An element is present at t1 when its first

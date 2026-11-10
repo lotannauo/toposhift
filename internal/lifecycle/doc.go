@@ -31,11 +31,15 @@
 //   - [Observe] says the subject exists and gives the producer's complete
 //     current description of it. It carries a TTL, the time within which the
 //     producer promises to say so again. A TTL of zero makes no such promise
-//     (watch mode): only a Delete ends the reference.
+//     (watch mode): the reference does not expire, but a later assertion by
+//     that producer can replace or release it.
 //   - [Delete] says the producer no longer sees the subject.
 //
-// An Observe may stand for a whole run of refreshes: its Through is the last
-// of them, and its deadline is Through plus TTL.
+// An Observe may stand for a whole run of refreshes, or the source may attest
+// that the subject existed continuously from EventTime through a later instant.
+// In either case, Through names that last attested instant. With no Through,
+// the last attested instant is EventTime. A positive TTL sets the deadline at
+// the last attested instant plus TTL; watch mode has no expiry deadline.
 //
 // EventTime is when the statement was true. Seq is the ingest sequence number,
 // unique within a fold; it orders assertions that share an event time, and it
@@ -53,10 +57,11 @@
 // Each producer holds at most one reference to the subject. At an instant x
 // the reference is live if and only if that producer's latest assertion at or
 // before x is an Observe and either its TTL is zero or x is before its
-// deadline, EventTime plus TTL. A later Observe replaces the deadline; it does
-// not extend the old one. A Delete releases only its own producer's
-// reference, and a Delete when that producer holds none changes nothing. The
-// subject exists at x if any producer's reference is live.
+// deadline: Through plus TTL when Through is set, otherwise EventTime plus TTL.
+// A later Observe replaces the reference and its deadline; it does not extend
+// the old one. A Delete releases only its own producer's reference, and a
+// Delete when that producer holds none changes nothing. The subject exists
+// at x if any producer's reference is live.
 //
 // Expiry is therefore not an event. It is what the definition says about an
 // instant after a deadline with no later assertion: silence treated as
@@ -147,9 +152,9 @@
 //
 // # Clocks
 //
-// A deadline is the observation's own EventTime plus its TTL, never a receipt
-// time, so replaying an observation cannot revive a subject. That makes the
-// choice of event time the ingest layer's responsibility: a producer whose
-// clock runs behind by more than its TTL would otherwise look permanently
+// A positive TTL's deadline is the observation's last attested instant plus
+// TTL, never the clock at which the assertion is folded or replayed, so replay
+// cannot revive a subject. The ingest layer chooses EventTime and Through: a
+// producer whose clock runs behind by more than its TTL would look permanently
 // expired, so a pure refresh should carry the time it was received.
 package lifecycle
