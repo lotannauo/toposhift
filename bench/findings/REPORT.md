@@ -2,6 +2,8 @@
 
 This report sets out what was measured and compared while building toposhift's store, and what was not. It is not an official benchmark publication, and it makes no claim that toposhift is ready for release.
 
+**Correction, 2026-11-10:** the original §10 incorrectly said native sidecars were not read. The Kubernetes objects translator already supported init containers with `restartPolicy: Always`, including in v0.1.0. The incorrect limitation has been removed from §10; no measurement or numerical result was changed.
+
 ## How to read this report
 
 Every measured figure carries one of two labels, as `bench/findings/README.md` requires:
@@ -434,7 +436,7 @@ The repository README lists what the product does not do yet. This list is what 
     - These bytes per record are not comparable with CI's G4 (§3).
 13. **The synthetic workload may write fewer records per pod than a cluster-shaped stream.** On a kwok capture, both producers re-assert every pod, container and edge at each pull, which the synthetic stream does not; no labelled count compares the two. Record volume at production scale was not measured; only a model exists, and it is not quoted.
 14. **Read work was measured with retention on,** at 30 days of retained history and its projected doubling. Range answers that reach a host on a long-lived store cost more as the host's history grows, because a host's history is folded from the start of retention; on main since 2026-10-21 (v0.1.0 does not have it) the store places checkpoints on the other entities' own prefixes, so their seed walks are bounded (except across the checkpoint holes of 15), and this report's figures were not measured again after that; with retention off, which v0.1.0 has by default, that start does not move.
-15. **Some read-cost gaps remain:** checkpoint holes left by late records are not repaired; translator resets can still raise read work in watch-only mode; native sidecars are not read.
+15. **Some read-cost gaps remain:** checkpoint holes left by late records are not repaired; translator resets can still raise read work in watch-only mode.
 16. **The memory the shipped writer needs at scale is not measured on CI.** The spike's checkpointing writer at the shipped lag had a median peak RSS of 9206 MiB (aarch64) and 9292 MiB (x86_64) at 30 days, against 3356 MiB and 3412 MiB without checkpoints, and 11255 MiB in its largest build (`CI run 38908320193`). The shipped store's writer is built differently (a compact state instead of the spike's per-prefix map), and no memory figure of it is quoted.
 17. **The live cluster is one observed run, not a benchmark** (§9). In the demo as configured, only ad, cart and quote set an instance id.
 18. **A stranger cannot re-run everything from the repository today.** The registration log, the local run scripts, the evaluation's probe file, the kwok capture and its counting tool, the counters runs that give G0, and the judges' printed outputs are not in it. CI artifacts are kept for 90 days after each run.

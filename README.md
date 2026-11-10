@@ -91,7 +91,7 @@ Or, in a checkout, `mise install && mise run build` writes `bin/toposhift` ([bui
 ## Known shortcomings
 - No authentication; ingest routes accept whatever reaches them.
 - One `serve` takes remote ingest or serves the tools, not both.
-- No UI or HTTP query API besides MCP.
+- No UI; HTTP queries use MCP or the four fixed [subgraph routes](docs/api.md) (main only).
 - A call stops after 30 seconds, with no partial answer.
 - Range answers that reach a host cost more as the host's history grows (in v0.1.0, any entity's).
 

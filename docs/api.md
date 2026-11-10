@@ -1,5 +1,7 @@
 # The temporal subgraph API
 
+**Availability:** these routes are on main after v0.1.0; they are not in that release.
+
 This page is for anyone who reads toposhift from a program that runs on the same machine, such as a browser page that toposhift serves, and wants the whole history of a few entities in one answer rather than one instant at a time. The [MCP tools](mcp.md) answer a question with a list; the routes on this page answer it with a temporal subgraph: the entities and relations the question reaches, when each existed over a window, and what changed when.
 
 The routes are served on the loopback listener of `toposhift serve` and `toposhift demo`, beside `POST /mcp`, and nowhere else. Every answer is derived and is read at one token.
@@ -56,6 +58,8 @@ curl -s http://127.0.0.1:7070/api/v1/subgraph/blast_radius \
 - `names[i]` names `document.entities[i]`, in the same order, as the tools name the same entity: `name` is read from the description of the highest-ranked producer at the last instant of the window, or the first if the entity is not there at the last, and is `null` for a host, an endpoint or a service instance, which are unnamed, or when the entity was not described, or when the name is not printed (more than 253 bytes, or a control or format character). `name_from` is the producer, and `name_note` says why a name is missing when it is for a fixed reason. `policy.rank` is a digest of the producers' authority order, which decides which description wins; `names` and `withhold` are the versions of the rules that read names and withhold addresses.
 - `incomplete` is true when a cap of the question's query cut what it read, for example the nodes a co-residency search was allowed to read. Each cut is told in `notes`. The subgraph itself is never cut, and an answer is never partial.
 - `counts.withheld` counts what was taken out of the subgraph because it is, or names, an endpoint the request did not name (below).
+
+A token identifies a sequence within one store history, not a globally unique snapshot. Reuse it with the same history and query policies, while the required records remain retained. A reset or restore can reuse token numbers; rejecting future tokens does not detect every such change. Keep answers from different store histories separate.
 
 ## The document
 
