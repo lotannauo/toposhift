@@ -4,14 +4,7 @@ This page is for a reader who wants to know what toposhift stores, what it compu
 
 ## The path of a record
 
-```mermaid
-flowchart LR
-  C[OpenTelemetry collectors] -->|POST /v1/logs| S[Ingest and sequencer]
-  C -->|POST /v1/metrics| S
-  S --> F[(Fact log)]
-  F --> Q[Read-only tools]
-  Q -->|"POST /mcp (serve, demo), stdio (demo, mcp)"| M[MCP client]
-```
+The [architecture overview](architecture.md) shows the collectors, store and read interfaces together.
 
 Collectors read a cluster and send what they see to `toposhift serve`. Logs carry pods, nodes, containers and hosts. Metrics carry services and the calls between them. Ingest turns each request into records, gives each an ingest sequence number, and writes them to the store. The tools only read it.
 
@@ -27,7 +20,7 @@ A derived answer says `"derived": true`: it was computed from records at a token
 
 ## Two time axes
 
-Every record carries two times: the event time, when the thing happened according to its producer, and the ingest time, when toposhift learned of it. A question about "the world at 03:00" uses event time. A `token` names a state of the store by ingest order, so an answer read at that token does not change when later records arrive.
+Every record carries an event time, when the statement was true according to its producer, and an ingest sequence number, its position in write order. A question about "the world at 03:00" uses event time. A `token` pins the ingest order visible to a query; it is not an ingest wall-clock timestamp. Reusing it requires the same store history and query policies, with the needed records still retained. See [reading an answer](mcp.md#reading-an-answer).
 
 ## Entities, relations and layers
 
@@ -69,6 +62,27 @@ They are checked by interval intersection, never by walking a union graph of eve
 ## Checkpoints
 
 A checkpoint saves the folded state of an entity's history so that a read need not fold it from the start. A checkpoint is derived: it carries the version of the fold logic and the ingest sequence number it was built through, and it is never a fact.
+
+## Answering a window query
+
+```mermaid
+flowchart TB
+    I["Translated assertions<br/>producer + event time"] --> W["Assign ingest sequence<br/>write record batch atomically"]
+    W --> F[("Stored records<br/>edges indexed forward + reverse")]
+    F -. "derive when due" .-> C[("Prefix checkpoints<br/>derived, rebuildable")]
+    W -. "late write invalidates affected later checkpoints" .-> C
+    Q["Question + event-time window"] --> P["Pin one sequence token"]
+    P --> R["WindowSince<br/>per-reference seeds + window records"]
+    F --> R
+    C -. "only when valid for this token and fold version" .-> R
+    R --> L["Lifecycle fold<br/>then endpoint interval intersection"]
+    L --> G["Graph diff · co-residency<br/>service context · blast radius"]
+    G --> O["Derived answer<br/>token + policy + limits"]
+```
+
+A range query folds the records visible at one token. Seeds carry the references live just before the window, or at the retention horizon when the window starts there; window records provide subsequent changes. The interval layer checks endpoint existence, then composed queries join paths by [interval overlap](#paths-and-co-residency). Forward and reverse indexes represent the same asserted edge; they do not change its failure direction.
+
+Checkpoints shorten seed reads without becoming facts. A late record invalidates affected later checkpoints in the same record commit; new due checkpoints are written separately, so invalidated gaps may remain. See [backlogs and checkpoint gaps](../deploy/otel-collector/buffering-and-recovery.md#what-a-backlog-does-to-toposhift) and [retention limits](limits.md). The answer carries its token and policies; query results are never written back as assertions.
 
 ## Identity
 

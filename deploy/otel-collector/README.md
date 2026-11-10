@@ -11,11 +11,25 @@ Use [toposhift.yaml](toposhift.yaml) with OpenTelemetry Collector Contrib **0.16
 | Services, calls and instances | `tracemetrics.yaml` → cluster collector on 4319 | [Service traces](service-traces.md) |
 | Durable queues, outage limits and recovery | Cluster collector | [Buffering and recovery](buffering-and-recovery.md) |
 
-These are collector configurations, not complete Kubernetes Deployment manifests. Run the cluster collector in a pod with service-account credentials and a writable persistent queue volume.
+## Collection flow
 
-Install the **Contrib** distribution at version **0.162.0** using the [Collector installation guide](https://opentelemetry.io/docs/collector/install/). For a container, use `otel/opentelemetry-collector-contrib:0.162.0`; the upstream instructions otherwise default to the latest version. The command below assumes that distribution is installed as `otelcol-contrib`.
+```mermaid
+flowchart TB
+    K["Kubernetes API"] --> KR["k8s_objects + k8s_cluster"]
+    KR --> LP["Cluster collector: logs pipeline"]
+    N["Optional node agents"] -->|"OTLP logs · 4318 opt-in"| LP
+    A["Application spans"] --> T["Optional trace collector<br/>pair and count spans"]
+    T --> TQ[("Trace collector<br/>in-memory queue")]
+    TQ -->|"Two metrics · 4319 opt-in"| MP["Cluster collector: metrics pipeline"]
+    LP --> LQ[("Logs disk queue<br/>one consumer")]
+    MP --> MQ[("Metrics disk queue<br/>one consumer")]
+    LQ -->|"POST /v1/logs"| S["toposhift serve<br/>translators + sequencer"]
+    MQ -->|"POST /v1/metrics"| S
+```
 
-The optional collectors send through the cluster collector, never directly to toposhift. The cluster collector has one ordered disk queue for logs and, when enabled, a separate ordered disk queue for trace metrics. Both optional receivers are off by default and unauthenticated; read their setup guides before opening them.
+Node-agent logs join the Kubernetes logs pipeline; trace metrics use a separate pipeline and disk queue. Each queue preserves its own export order; the collectors do not impose a combined order on logs and metrics. The sequencer assigns their ingest sequence when it commits records. Both queues share a storage volume; the trace collector's own queue is in memory. See [buffering and recovery](buffering-and-recovery.md).
+
+Both optional receivers are off by default and unauthenticated: follow [node-agent setup](node-agents.md) or [service-trace setup](service-traces.md) before opening them. These are collector configurations, not complete Deployment manifests; the cluster collector needs service-account credentials and a writable persistent queue volume. For the wider system and listener modes, see the [architecture overview](../../docs/architecture.md).
 
 ## What to edit
 
@@ -50,6 +64,8 @@ On a non-loopback listener, `serve` disables both `/mcp` and the JSON subgraph r
 Apply the [service account, ClusterRole and binding](rbac.md#read-access-the-collector-needs), replacing `<COLLECTOR_NAMESPACE>`. Run the cluster collector under that service account. It reads the cluster and writes nothing to it.
 
 ## Start the collector with the feature gate
+
+Install the **Contrib** distribution at version **0.162.0** using the [Collector installation guide](https://opentelemetry.io/docs/collector/install/). For a container, use `otel/opentelemetry-collector-contrib:0.162.0`; the upstream instructions otherwise default to the latest version. The command below assumes that distribution is installed as `otelcol-contrib`.
 
 Run the collector with your edited configuration and this gate:
 
