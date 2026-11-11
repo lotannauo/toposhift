@@ -1,5 +1,7 @@
 # toposhift: what was measured, and what was not
 
+**Scope note, added 2026-11-11:** this is the earlier measurement report. Statements below that read timings, background-retention CI or native baselines were not measured describe the evidence included here. Later studies are summarized in the [November update](2026-11-update.md). Each original section retains its measured commits and scope; subsequent findings do not become claims about v0.1.0.
+
 This report sets out what was measured and compared while building toposhift's store, and what was not. It is not an official benchmark publication, and it makes no claim that toposhift is ready for release.
 
 **Correction, 2026-11-10:** the original §10 incorrectly said native sidecars were not read. The Kubernetes objects translator already supported init containers with `restartPolicy: Always`, including in v0.1.0. The incorrect limitation has been removed from §10; no measurement or numerical result was changed.
