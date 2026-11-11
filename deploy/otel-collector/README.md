@@ -19,15 +19,22 @@ flowchart TB
     KR --> LP["Cluster collector: logs pipeline"]
     N["Optional node agents"] -->|"OTLP logs · 4318 opt-in"| LP
     A["Application spans"] --> T["Optional trace collector<br/>pair and count spans"]
-    T --> TQ[("Trace collector<br/>in-memory queue")]
-    TQ -->|"Two metrics · 4319 opt-in"| MP["Cluster collector: metrics pipeline"]
-    LP --> LQ[("Logs disk queue<br/>one consumer")]
-    MP --> MQ[("Metrics disk queue<br/>one consumer")]
+    T --> TQ[("Trace export queue<br/>(in memory)")]
+    TQ -->|"OTLP metrics · 4319 opt-in"| MP["Cluster collector: metrics pipeline"]
+    LP --> LQ[("Logs disk queue")]
+    MP --> MQ[("Metrics disk queue")]
     LQ -->|"POST /v1/logs"| S["toposhift serve<br/>translators + sequencer"]
     MQ -->|"POST /v1/metrics"| S
+
+    classDef owned fill:#e8f1ff,stroke:#2f6fb0,color:#12324a;
+    classDef upstream fill:#f1f3f5,stroke:#7c8793,color:#263238;
+    class S owned;
+    class K,KR,N,A,T,TQ,LP,MP,LQ,MQ upstream;
 ```
 
-Node-agent logs join the Kubernetes logs pipeline; trace metrics use a separate pipeline and disk queue. Each queue preserves its own export order; the collectors do not impose a combined order on logs and metrics. The sequencer assigns their ingest sequence when it commits records. Both queues share a storage volume; the trace collector's own queue is in memory. See [buffering and recovery](buffering-and-recovery.md).
+Node-agent logs join the Kubernetes logs pipeline; trace metrics use a separate pipeline and disk queue. Each queue sends requests serially and preserves its own export order; the collectors do not impose a combined order on logs and metrics. The sequencer assigns their ingest sequence when it commits records. Both queues share a storage volume; the trace collector's own queue is in memory. See [buffering and recovery](buffering-and-recovery.md).
+
+Blue indicates toposhift components; gray indicates upstream components and external inputs.
 
 Both optional receivers are off by default and unauthenticated: follow [node-agent setup](node-agents.md) or [service-trace setup](service-traces.md) before opening them. These are collector configurations, not complete Deployment manifests; the cluster collector needs service-account credentials and a writable persistent queue volume. For the wider system and listener modes, see the [architecture overview](../../docs/architecture.md).
 

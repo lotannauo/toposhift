@@ -5,21 +5,30 @@ toposhift records what infrastructure observers asserted, then reconstructs how 
 ```mermaid
 flowchart TB
     subgraph Collection["Collection"]
-        K["Kubernetes API"] --> G["Cluster collector<br/>separate logs and metrics disk queues"]
+        K["Kubernetes API"] --> G["Cluster collector<br/>(separate logs and metrics disk queues)"]
         N["Optional node agents"] -->|"Host events"| G
         A["Application spans"] --> T["Optional trace collector<br/>pair and count spans"]
-        T -->|"Two metrics"| G
+        T -->|"OTLP metrics"| G
     end
     subgraph Server["toposhift serve"]
         R["OTLP/HTTP receivers"] --> W["Sequencer<br/>translate, validate, coalesce"]
-        W -->|"Synced record commit"| P[("Pebble<br/>records and derived checkpoints")]
+        W -->|"Synced record commit"| P["Pebble storage engine<br/>records and derived checkpoints"]
         P --> Q["Read and derive<br/>history, diff, co-residency, possible impact"]
         Q --> H["Loopback read surfaces<br/>MCP and JSON subgraphs"]
-        W -. "Optional backup" .-> B[("Local journal and segments<br/>same data volume")]
+        W -. "Optional backup" .-> B[("Local journal and segments<br/>(same data volume)")]
     end
     G -->|"POST /v1/logs or /v1/metrics"| R
     H --> C["Local MCP or HTTP client"]
+
+    classDef owned fill:#e8f1ff,stroke:#2f6fb0,color:#12324a;
+    classDef upstream fill:#f1f3f5,stroke:#7c8793,color:#263238;
+    classDef client fill:#fff,stroke:#5d6b78,color:#263238;
+    class R,W,Q,H,B owned;
+    class K,N,A,T,G,P upstream;
+    class C client;
 ```
+
+Blue indicates toposhift components and storage formats; gray indicates upstream software and external inputs; white indicates the client. We maintain the collector configurations and own the record/checkpoint layout. OpenTelemetry and Pebble remain upstream software.
 
 Arrows show data flow. The backup branch is optional and off by default. These boxes describe supported configurations and code, not an already deployed cluster. The JSON subgraph routes are [newer than v0.1.0](api.md). The collector configurations need deployment credentials, volumes and network restrictions.
 
