@@ -1,6 +1,6 @@
 module github.com/lotannauo/toposhift/bench/victoria
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/golang/snappy v0.0.5-0.20231225225746-43d5d4cd4e0e

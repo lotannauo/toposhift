@@ -1,6 +1,6 @@
 module github.com/lotannauo/toposhift/bench/duckdb
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10506.0
