@@ -58,6 +58,25 @@ A reply is a JSON-RPC response. `result.structuredContent` is the answer and `re
 - `"derived": true` marks an answer computed from the records rather than read from them. A blast radius, a co-resident and a service context are derived.
 - `token` names the sequence the answer was read through. Pass it back as `asof` to continue an answer or compare questions against the same history. This requires the same store history and query policies, with the needed records still retained. A reset or restore can reuse token numbers; the token alone does not identify that change.
 
+### Keeping an investigation reproducible
+
+Save the question and its answer together. For the README's node-2 blast-radius example, keep this receipt:
+
+| Part | Record |
+|---|---|
+| Question | What could node-2's failure have reached during the requested half hour? |
+| Exact request | The `blast_radius` tool name and every argument, including the seed ID, event-time window, depth, limit and `asof` when supplied |
+| Build and data | The output of `toposhift version`, the data source and whether it was the synthetic demo; record the commit when the build version cannot identify it |
+| Knowledge and rules | The answer's returned `token` and `policy` |
+| Evidence | The complete response, including members, their `via` edges and reach intervals, `unattributed`, `quarantined`, `truncation`, `counts` and `notes` |
+| Interpretation | What the answer supports, any missing evidence and what would need a separate observation |
+
+Add `> response.json` to the curl command to save the entire JSON-RPC reply. In that file, `result.structuredContent` contains the answer described above. Retain the request separately; a response token alone does not identify the question.
+
+To ask it again against the same stored knowledge, copy the returned `token` into the request's `asof` argument and keep the other arguments unchanged. The store history, policies and required retained records must still be available. A token is an ingest sequence, not a wall-clock time or a portable snapshot of a store.
+
+In the bundled example, the node's derived reach contains pods, containers and service instances. An instance is not followed to its service. That is a statement about recorded relations and propagation rules; actual application failure needs separate evidence.
+
 ## Limits that shape calls
 
 - A call is stopped after 30 seconds, with no partial answer. A long window on a large service can reach it; a shorter window, or `node_only`, reads less.
