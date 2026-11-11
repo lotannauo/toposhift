@@ -47,4 +47,10 @@ Render existing evidence with Python and Matplotlib 3.10.7:
 python bench/findings/figures/plot_primary_warm_reads.py --input /path/to/readtiming.json --out-dir /tmp/toposhift-warm-read-figure
 ```
 
+The README uses a display variant with the same checked input, cells and job values, separate service/node panels, and larger labels. To reproduce that presentation:
+
+```sh
+python bench/findings/figures/plot_readme_warm_reads.py --input /path/to/readtiming.json --out-dir /tmp/toposhift-readme-warm-reads
+```
+
 The historical CI run is public. Its original downloaded artifacts and the retained judge output are not bundled with this figure, so the script is a rendering recipe for a holder of that exact output, not a claim of complete public reproduction. The rendering script copies no raw JSON and can export PNG, SVG and PDF with source-identity metadata. Only the SVG is included here.
