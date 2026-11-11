@@ -4,7 +4,7 @@ Start with the [README](../README.md) for the pitch and a demo. Then choose a pa
 
 - **Try and query:** connect a client with [MCP](mcp.md), or ask the four fixed questions through the [JSON API](api.md). Read [how answers are derived](how-it-works.md) to interpret them.
 - **Operate and collect:** start with [running toposhift](operate.md), then [set up the collectors](../deploy/otel-collector/README.md). Check the [current limits](limits.md) before deployment.
-- **Understand and contribute:** start with the [system overview](architecture.md) and [how answers are derived](how-it-works.md), then the [findings report](../bench/findings/REPORT.md) for the measured evidence and its limits. Contributor instructions are below.
+- **Understand and contribute:** start with the [system overview](architecture.md) and [how answers are derived](how-it-works.md), then the [findings](../bench/findings/README.md) for the current synthesis, historical evidence and limits. Contributor instructions are below.
 
 ## Reference map
 
@@ -17,6 +17,6 @@ Start with the [README](../README.md) for the pitch and a demo. Then choose a pa
 | [operate.md](operate.md) | The defaults and routes of `serve`, the loopback rule, retention, services and their calls, and builds |
 | [limits.md](limits.md) | What toposhift does not do yet |
 | [../deploy/otel-collector/README.md](../deploy/otel-collector/README.md) | How to set up the collectors that feed `serve` |
-| [../bench/findings/REPORT.md](../bench/findings/REPORT.md) | What was measured and compared, what was not, and each figure's provenance |
+| [../bench/findings/README.md](../bench/findings/README.md) | Current findings, historical measurements, limits and provenance |
 
 Contributors start with [CONTRIBUTING.md](../CONTRIBUTING.md) and [AGENTS.md](../AGENTS.md).

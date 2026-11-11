@@ -1,5 +1,18 @@
 # Findings
 
+Start with the [November 2026 update](2026-11-update.md): what the later storage investigations established, how they changed the decision, and what remains unresolved.
+
+Per-entity history with checkpoints has a demonstrated benefit on selected warm historical reads. Native Postgres interval tables also bounded read work in their registered experiment. A report-only background-retention observation remains unfavorable. These studies have different contracts and configurations; they do not rank complete systems or establish serving-path performance.
+
+| Read | Purpose |
+|---|---|
+| [Current synthesis: November 2026](2026-11-update.md) | Later evidence, decisions it narrowed, remaining questions and reproduction limits |
+| [Warm-read figure](2026-11-warm-reads.md) | All primary aarch64 timings, job variation, control and secondary outcomes |
+| [Historical report](REPORT.md) | Earlier measurements at their recorded commits, with their original scope and dated corrections |
+| [Benchmark guide](../README.md) | Tools, protocols and command references |
+
+## Publication rules
+
 The findings report lives here. It is a showcase of what was measured and compared, not an official benchmark publication.
 
 Every figure in it carries its provenance:
