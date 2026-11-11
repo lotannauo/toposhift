@@ -1,10 +1,14 @@
 # toposhift
 
-toposhift records how Kubernetes infrastructure was connected, so you can ask what existed together at a past instant or over a window.
+toposhift records how Kubernetes infrastructure was connected, so you can ask what changed and what existed together at a past instant or over a time window.
 
-What was running on this node before it stopped being ready? Which pods shared a host at the same time? What changed between two observations?
+It supports:
 
-It records assertions about pods, nodes, containers, hosts and services, then answers historical questions through the Model Context Protocol (MCP). Every record has an event time and an ingest sequence. Paths require overlapping lifetimes; computed answers, including possible blast radius, are labelled derived and never stored as facts.
+- Reconstructing what was running on a node before it stopped being ready.
+- Finding pods that shared a host at the same time.
+- Comparing topology at two points in time.
+
+It records assertions about pods, nodes, containers, hosts and services, then answers historical questions through MCP. Every record is bitemporal, keeping the reported event time and the order in which toposhift learned of it. Paths require overlapping lifetimes; computed answers, including possible blast radius, are labelled derived and never stored as facts.
 
 **Status: early.** There is no authentication. Read tools are served only on loopback, and ingest accepts whatever reaches it. Interfaces, answers and the store format may change between releases. See [Known shortcomings](#known-shortcomings) before collecting real data.
 
@@ -124,7 +128,14 @@ Every HTTP request needs both headers. For a 415, check `Content-Type`; for a 40
 curl http://127.0.0.1:7070/healthz
 ```
 
-`serve` starts with zero configuration: it listens on `127.0.0.1:7070`, keeps a local Pebble store under `$HOME/.local/share/toposhift`, receives OpenTelemetry logs and metrics, and serves the tools at `/mcp`. The [collector setup](deploy/otel-collector/README.md) covers Kubernetes objects, optional host agents and optional service traces.
+`serve` starts with zero configuration:
+
+- **Listen:** `127.0.0.1:7070`.
+- **Store:** local Pebble data under `$HOME/.local/share/toposhift`.
+- **Receive:** OpenTelemetry logs and metrics.
+- **Query:** MCP tools at `/mcp`.
+
+The [collector setup](deploy/otel-collector/README.md) covers Kubernetes objects, optional host agents and optional service traces.
 
 A collector in a cluster needs `--listen` or `TOPOSHIFT_LISTEN` on a reachable address. A non-loopback listener accepts ingest but leaves read tools and JSON subgraph routes unmounted. To ingest and query through one `serve`, the collector must reach its loopback listener, for example on the same machine or through a forwarded port. Anything reaching that forward can reach every mounted route. See the [listener model](docs/operate.md#loopback-and-the-tools) before deployment.
 
@@ -184,13 +195,13 @@ See [all current limits](docs/limits.md) and the research report's [evidence lim
 
 | Read | To learn |
 |---|---|
-| [System overview](docs/architecture.md) | Collection, durable writes, reads and component ownership |
-| [MCP reference](docs/mcp.md) | Tools, transports and reproducible investigations |
-| [How answers are derived](docs/how-it-works.md) | Facts, lifetimes, knowledge tokens and interval overlap |
-| [Operation](docs/operate.md) | Running `serve`, retention, expiry and backup limits |
-| [Current limits](docs/limits.md) | What is unavailable or still unresolved |
-| [Collector setup](deploy/otel-collector/README.md) | Feeding observations to `serve` |
-| [Findings](bench/findings/README.md) | Current learning, measured scope and historical evidence |
+| [`docs/architecture.md`](docs/architecture.md) | Collection, durable writes, reads and component ownership |
+| [`docs/mcp.md`](docs/mcp.md) | Tools, transports and reproducible investigations |
+| [`docs/how-it-works.md`](docs/how-it-works.md) | Facts, lifetimes, knowledge tokens and interval overlap |
+| [`docs/operate.md`](docs/operate.md) | Running `serve`, retention, expiry and backup limits |
+| [`docs/limits.md`](docs/limits.md) | What is unavailable or still unresolved |
+| [`deploy/otel-collector/README.md`](deploy/otel-collector/README.md) | Feeding observations to `serve` |
+| [`bench/findings/`](bench/findings/README.md) | Current learning, measured scope and historical evidence |
 
 The [documentation map](docs/README.md) has reading paths for trying, operating and contributing.
 
